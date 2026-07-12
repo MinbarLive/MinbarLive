@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MinbarLive | Live-Untertitel für islamische Vorträge</title>
+<meta name="description" content="MinbarLive zeigt übersetzte Untertitel in Echtzeit an. Open Source, lokal, für jede Moschee. Real-time translated subtitles for mosque lectures.">
+<link rel="icon" href="favicon.ico">
+<link rel="canonical" href="https://minbarlive.info/">
+<meta property="og:title" content="MinbarLive | Islamic Live Translation">
+<meta property="og:description" content="Real-time translated subtitles for mosque lectures. Open source, runs locally, no expensive hardware.">
+<meta property="og:image" content="https://minbarlive.info/assets/MinbarLive2.png">
+<meta property="og:url" content="https://minbarlive.info/">
+<meta property="og:type" content="website">
+<style>
+  :root {
+    --navy: #1d4a6b;
+    --navy-deep: #163a56;
+    --navy-soft: #2b6a97;
+    --ink: #24384a;
+    --ink-muted: #5b7188;
+    --card: rgba(255, 255, 255, 0.72);
+    --card-solid: #ffffff;
+    --border: rgba(29, 74, 107, 0.14);
+    --shadow: 0 10px 30px rgba(29, 74, 107, 0.10);
+    --shadow-lg: 0 18px 50px rgba(29, 74, 107, 0.16);
+    --radius: 22px;
+    --pill: 999px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: "Inter", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    color: var(--ink);
+    line-height: 1.6;
+    background:
+      radial-gradient(1200px 800px at 0% 0%, rgba(253, 244, 224, 0.9), transparent 60%),
+      radial-gradient(1000px 700px at 100% 15%, rgba(216, 214, 250, 0.75), transparent 60%),
+      radial-gradient(1100px 800px at 85% 100%, rgba(206, 240, 227, 0.85), transparent 60%),
+      radial-gradient(900px 700px at 10% 90%, rgba(222, 222, 248, 0.6), transparent 60%),
+      #f2f3fa;
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---------- animated background ---------- */
+  .bg-blobs {
+    position: fixed; inset: 0; z-index: -1;
+    overflow: hidden; pointer-events: none;
+  }
+  .blob {
+    position: absolute; border-radius: 50%;
+    filter: blur(60px); opacity: 0.7; will-change: transform;
+  }
+  .blob-1 {
+    width: 640px; height: 640px; top: -180px; left: -160px;
+    background: radial-gradient(circle, rgba(200, 196, 248, 0.95), transparent 70%);
+    animation: drift1 18s ease-in-out infinite alternate;
+  }
+  .blob-2 {
+    width: 700px; height: 700px; bottom: -220px; right: -180px;
+    background: radial-gradient(circle, rgba(178, 236, 214, 0.95), transparent 70%);
+    animation: drift2 22s ease-in-out infinite alternate;
+  }
+  .blob-3 {
+    width: 540px; height: 540px; top: 28%; right: 10%;
+    background: radial-gradient(circle, rgba(252, 234, 196, 0.9), transparent 70%);
+    animation: drift3 26s ease-in-out infinite alternate;
+  }
+  .blob-4 {
+    width: 480px; height: 480px; bottom: 16%; left: 4%;
+    background: radial-gradient(circle, rgba(176, 206, 240, 0.8), transparent 70%);
+    animation: drift1 30s ease-in-out infinite alternate-reverse;
+  }
+  @keyframes drift1 { to { transform: translate(200px, 140px) scale(1.2); } }
+  @keyframes drift2 { to { transform: translate(-190px, -130px) scale(1.25); } }
+  @keyframes drift3 { to { transform: translate(-160px, 180px) scale(0.82); } }
+
+  @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+
+  /* ---------- scroll reveal ---------- */
+  .reveal { opacity: 0; transform: translateY(22px); transition: opacity .65s ease, transform .65s ease; }
+  .reveal.in { opacity: 1; transform: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .blob, .hero img.logo { animation: none !important; }
+    .reveal { opacity: 1 !important; transform: none !important; transition: none !important; }
+    html { scroll-behavior: auto; }
+  }
+
+  /* ---------- top bar ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    background: rgba(255, 255, 255, 0.55);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar-inner {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 24px; max-width: 1060px; margin: 0 auto;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+  .brand img { height: 40px; width: auto; }
+  .brand span { font-weight: 800; font-size: 1.05rem; color: var(--navy); letter-spacing: -0.01em; }
+
+  .nav-links { display: flex; align-items: center; gap: 4px; }
+  .nav-links a {
+    text-decoration: none; color: var(--ink-muted); font-size: 0.9rem; font-weight: 600;
+    padding: 7px 12px; border-radius: var(--pill); transition: all .18s ease;
+  }
+  .nav-links a:hover { color: var(--navy); background: rgba(29, 74, 107, 0.08); }
+
+  .lang-switch {
+    display: flex; gap: 2px; padding: 3px;
+    background: rgba(29, 74, 107, 0.08); border-radius: var(--pill);
+  }
+  .lang-switch button {
+    border: none; cursor: pointer; font: inherit; font-size: 0.82rem; font-weight: 700;
+    padding: 5px 14px; border-radius: var(--pill); color: var(--ink-muted);
+    background: transparent; transition: all .18s ease;
+  }
+  .lang-switch button.active { background: var(--navy); color: #fff; }
+
+  /* ---------- hero ---------- */
+  .hero { text-align: center; padding: 90px 24px 0; }
+  .hero img.logo {
+    height: 210px; width: auto; max-width: 90%;
+    filter: drop-shadow(0 14px 34px rgba(29, 74, 107, 0.22));
+    animation: float 7s ease-in-out infinite;
+  }
+  .hero h1 {
+    font-size: clamp(2rem, 5vw, 3.1rem); font-weight: 800; letter-spacing: -0.03em;
+    color: var(--navy-deep); line-height: 1.15; max-width: 780px; margin: 30px auto 0;
+  }
+  .hero p.lead {
+    max-width: 660px; margin: 20px auto 0; font-size: 1.12rem; color: var(--ink-muted);
+  }
+  .hero .vision {
+    max-width: 640px; margin: 30px auto 0;
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 22px 28px 20px; box-shadow: var(--shadow);
+  }
+  .vision-tag {
+    display: inline-block; margin-bottom: 12px;
+    background: rgba(29, 74, 107, 0.10); color: var(--navy);
+    border: 1px solid rgba(29, 74, 107, 0.18);
+    font-size: 0.8rem; font-weight: 700; letter-spacing: 0.03em;
+    padding: 5px 14px; border-radius: var(--pill);
+  }
+  .hero .vision p { font-size: 1.02rem; font-weight: 600; color: var(--navy); }
+
+  .cta-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-top: 38px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 9px;
+    text-decoration: none; font-weight: 700; font-size: 1rem;
+    padding: 14px 30px; border-radius: var(--pill); transition: all .18s ease;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--navy-soft), var(--navy-deep));
+    color: #fff; box-shadow: 0 10px 26px rgba(29, 74, 107, 0.35);
+  }
+  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 14px 32px rgba(29, 74, 107, 0.45); }
+  .btn-secondary {
+    background: var(--card-solid); color: var(--navy);
+    border: 1.5px solid rgba(29, 74, 107, 0.25); box-shadow: var(--shadow);
+  }
+  .btn-secondary:hover { transform: translateY(-2px); border-color: var(--navy-soft); }
+
+  .hero .meta { margin-top: 18px; font-size: 0.85rem; color: var(--ink-muted); }
+
+  /* ---------- stats strip (inside the hero, between vision and download) ---------- */
+  .stats { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; margin-top: 36px; }
+  .stat {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 16px 26px; text-align: center; min-width: 150px;
+  }
+  .stat b { display: block; font-size: 1.45rem; color: var(--navy); letter-spacing: -0.02em; }
+  .stat span { font-size: 0.82rem; color: var(--ink-muted); font-weight: 600; }
+
+  /* ---------- sections ---------- */
+  section { padding: 0; scroll-margin-top: 92px; }
+  /* standalone divider between sections: identical margin above and below,
+     so it is always exactly centered in the gap */
+  .divider {
+    width: 200px; height: 4px; border-radius: 2px;
+    margin: 80px auto;
+    background: linear-gradient(90deg, transparent, rgba(29, 74, 107, 0.42), transparent);
+  }
+  /* the community banner separates itself by color, no divider needed */
+  #community { margin-top: 60px; }
+  .section-head { text-align: center; max-width: 640px; margin: 0 auto 56px; }
+  .section-head h2 {
+    font-size: clamp(1.5rem, 3.4vw, 2.1rem); font-weight: 800; letter-spacing: -0.02em; color: var(--navy-deep);
+  }
+  .section-head p { margin-top: 10px; color: var(--ink-muted); font-size: 1.02rem; }
+
+  /* features */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 22px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 26px 24px; box-shadow: var(--shadow);
+    transition: transform .18s ease, box-shadow .18s ease;
+  }
+  .card:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); }
+  .card .emoji {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 48px; height: 48px; font-size: 1.5rem; border-radius: 14px;
+    background: linear-gradient(135deg, rgba(43,106,151,0.12), rgba(29,74,107,0.18));
+    margin-bottom: 14px;
+  }
+  .card h3 { font-size: 1.05rem; font-weight: 700; color: var(--navy-deep); margin-bottom: 6px; }
+  .card p { font-size: 0.92rem; color: var(--ink-muted); }
+
+  /* steps */
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 22px; }
+  .step {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 26px 22px; box-shadow: var(--shadow); position: relative;
+  }
+  .step .num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 38px; height: 38px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--navy-soft), var(--navy-deep));
+    color: #fff; font-weight: 800; font-size: 1rem; margin-bottom: 14px;
+    box-shadow: 0 6px 16px rgba(29, 74, 107, 0.3);
+  }
+  .step h3 { font-size: 1rem; font-weight: 700; color: var(--navy-deep); margin-bottom: 6px; }
+  .step p { font-size: 0.9rem; color: var(--ink-muted); }
+  .step a { color: var(--navy-soft); font-weight: 600; }
+
+  .callout {
+    margin-top: 28px; display: flex; gap: 14px; align-items: flex-start;
+    background: rgba(255, 244, 214, 0.75); border: 1px solid rgba(190, 150, 60, 0.3);
+    border-radius: var(--radius); padding: 18px 22px; box-shadow: var(--shadow);
+  }
+  .callout .icon { font-size: 1.3rem; line-height: 1.4; }
+  .callout p { font-size: 0.92rem; color: #6b5518; }
+  .callout b { color: #574410; }
+
+  .callout.info {
+    background: rgba(224, 238, 250, 0.75); border-color: rgba(43, 106, 151, 0.25);
+  }
+  .callout.info p { color: #2c5675; }
+  .callout.info b { color: var(--navy-deep); }
+  .callout.info a { color: var(--navy-soft); font-weight: 600; }
+
+  /* linktree-style links */
+  .linklist { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+  .linkbtn {
+    display: flex; align-items: center; gap: 16px;
+    background: var(--card-solid); border: 1.5px solid rgba(29, 74, 107, 0.16);
+    border-radius: var(--pill); padding: 15px 26px;
+    text-decoration: none; box-shadow: var(--shadow);
+    transition: all .18s ease;
+  }
+  .linkbtn:hover {
+    transform: translateY(-2px) scale(1.015);
+    border-color: var(--navy-soft); box-shadow: var(--shadow-lg);
+  }
+  .linkbtn .li-icon { font-size: 1.35rem; width: 34px; text-align: center; flex-shrink: 0; }
+  .linkbtn .li-text b { display: block; color: var(--navy-deep); font-size: 0.98rem; }
+  .linkbtn .li-text span { font-size: 0.82rem; color: var(--ink-muted); }
+  .linkbtn .li-arrow { margin-left: auto; color: var(--navy-soft); font-weight: 700; }
+
+  /* community */
+  .community {
+    background: linear-gradient(135deg, var(--navy-soft), var(--navy-deep));
+    border-radius: calc(var(--radius) + 6px); padding: 48px 34px; text-align: center;
+    box-shadow: 0 20px 50px rgba(22, 58, 86, 0.35); color: #fff;
+  }
+  .community h2 { font-size: clamp(1.4rem, 3vw, 1.9rem); font-weight: 800; letter-spacing: -0.02em; }
+  .community p { max-width: 560px; margin: 12px auto 0; color: rgba(255, 255, 255, 0.85); }
+  .community .cta-row { margin-top: 28px; }
+  .community .btn-light { background: #fff; color: var(--navy-deep); box-shadow: 0 10px 26px rgba(0,0,0,0.25); }
+  .community .btn-light:hover { transform: translateY(-2px); }
+  .community .btn-outline {
+    border: 1.5px solid rgba(255,255,255,0.6); color: #fff; background: transparent;
+  }
+  .community .btn-outline:hover { background: rgba(255,255,255,0.12); transform: translateY(-2px); }
+
+  /* footer: needs the footer.wrap selector, otherwise .wrap's padding overrides it */
+  footer.wrap { padding: 80px 24px 70px; text-align: center; }
+  footer img { height: 60px; opacity: 0.9; }
+  footer p { font-size: 0.85rem; color: var(--ink-muted); margin-top: 12px; max-width: 560px; margin-left: auto; margin-right: auto; }
+  footer .foot-links { margin-top: 14px; display: flex; gap: 18px; justify-content: center; flex-wrap: wrap; }
+  footer .foot-links a { color: var(--navy-soft); text-decoration: none; font-size: 0.88rem; font-weight: 600; }
+  footer .foot-links a:hover { text-decoration: underline; }
+
+  /* ---------- phones (must stay at the end so it overrides the base rules) ---------- */
+  @media (max-width: 720px) {
+    /* two-row top bar: brand + language toggle above, nav below */
+    .topbar-inner { flex-wrap: wrap; padding: 8px 14px; }
+    .nav-links {
+      order: 3; width: 100%; justify-content: center;
+      overflow-x: auto; -webkit-overflow-scrolling: touch;
+      padding-bottom: 4px;
+    }
+    .nav-links a { padding: 6px 10px; font-size: 0.85rem; white-space: nowrap; }
+    section { scroll-margin-top: 128px; } /* taller two-row topbar */
+
+    .hero { padding-top: 48px; }
+    .hero img.logo { height: 150px; }
+    .hero .vision { padding: 18px 18px 16px; }
+    .stat { min-width: 130px; padding: 14px 18px; flex: 1 1 40%; }
+    .divider { margin: 56px auto; }
+    .community { padding: 38px 20px; }
+    #community { margin-top: 44px; }
+    footer.wrap { padding: 60px 16px 56px; }
+
+    /* iOS ignores fixed backgrounds and repaints per scroll; the fixed blobs
+       already provide the ambient color there */
+    body { background-attachment: scroll; }
+  }
+</style>
+</head>
+<body>
+
+<div class="bg-blobs" aria-hidden="true">
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+  <div class="blob blob-3"></div>
+  <div class="blob blob-4"></div>
+</div>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#top">
+      <img src="assets/MinbarLive_white_stroke.png" alt="MinbarLive Logo">
+      <span>MinbarLive</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#top" data-i18n="nav_start">Start</a>
+      <a href="#features" data-i18n="nav_features">Funktionen</a>
+      <a href="#install" data-i18n="nav_install">Installation</a>
+      <a href="#links" data-i18n="nav_links">Links</a>
+      <a href="#community" data-i18n="nav_community">Mitmachen</a>
+    </nav>
+    <div class="lang-switch" role="group" aria-label="Language">
+      <button id="btn-de" onclick="setLang('de')">DE</button>
+      <button id="btn-en" onclick="setLang('en')">EN</button>
+    </div>
+  </div>
+</div>
+
+<main id="top">
+
+  <!-- HERO -->
+  <header class="hero wrap">
+    <img class="logo" src="assets/MinbarLive_white_stroke.png" alt="MinbarLive">
+    <h1 data-i18n="hero_title">Live-Untertitel für islamische Vorträge, übersetzt in Echtzeit</h1>
+    <p class="lead" data-i18n="hero_lead">MinbarLive hört live zu, übersetzt mit KI und zeigt Untertitel auf einem Bildschirm, Beamer oder in OBS an. Wort für Wort, während gesprochen wird.</p>
+    <div class="vision">
+      <span class="vision-tag" data-i18n="hero_badge">🕌 Kostenlos & Open Source · für jede Moschee</span>
+      <p data-i18n="hero_vision">🎯 Unsere Vision: Jede Moschee soll Vorträge mehrsprachig zugänglich machen können, ohne teure Hardware.</p>
+    </div>
+    <div class="stats">
+      <div class="stat"><b data-i18n="stat1_num">~1–3 s</b><span data-i18n="stat1_label">Verzögerung (Echtzeit)</span></div>
+      <div class="stat"><b>15+</b><span data-i18n="stat2_label">Ausgangssprachen</span></div>
+      <div class="stat"><b>35+</b><span data-i18n="stat3_label">Zielsprachen</span></div>
+      <div class="stat"><b data-i18n="stat4_num">~0,50 $</b><span data-i18n="stat4_label">Kosten pro Stunde (KI-Dienst)</span></div>
+    </div>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/mosait/MinbarLive/releases" data-i18n="hero_cta_download">🚀 Download für Windows</a>
+      <a class="btn btn-secondary" href="https://github.com/mosait/MinbarLive" data-i18n="hero_cta_github">👨‍💻 Auf GitHub ansehen</a>
+    </div>
+    <p class="meta" data-i18n="hero_meta">100 % kostenlos · Läuft direkt auf deinem Windows-PC · Du brauchst nur einen KI-Zugangsschlüssel (API-Key)</p>
+  </header>
+
+  <div class="divider" aria-hidden="true"></div>
+
+  <!-- FEATURES -->
+  <section id="features" class="wrap">
+    <div class="section-head">
+      <h2 data-i18n="features_title">Was MinbarLive kann</h2>
+      <p data-i18n="features_sub">Entwickelt für Freitagspredigten, Vorträge und Unterricht.</p>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <div class="emoji">⚡</div>
+        <h3 data-i18n="f1_title">Echtzeit-Streaming</h3>
+        <p data-i18n="f1_text">Der gesprochene Text erscheint Wort für Wort, die Übersetzung folgt nach jedem Satz, in ~1–3 Sekunden.</p>
+      </div>
+      <div class="card">
+        <div class="emoji">📖</div>
+        <h3 data-i18n="f2_title">Verifizierte Koranverse</h3>
+        <p data-i18n="f2_text">Erkennt rezitierte Verse und zeigt die exakte, geprüfte Übersetzung statt einer KI-Paraphrase an.</p>
+      </div>
+      <div class="card">
+        <div class="emoji">🌍</div>
+        <h3 data-i18n="f3_title">Zweisprachige Untertitel</h3>
+        <p data-i18n="f3_text">Originaltext über der Übersetzung. Koran- und Athan-Wörterbücher auf Deutsch, Englisch, Türkisch, Albanisch und Bosnisch.</p>
+      </div>
+      <div class="card">
+        <div class="emoji">🤖</div>
+        <h3 data-i18n="f4_title">KI-Anbieter frei wählbar</h3>
+        <p data-i18n="f4_text">OpenAI (Standard), Google Gemini oder Anthropic Claude, jederzeit in den Einstellungen umschaltbar.</p>
+      </div>
+      <div class="card">
+        <div class="emoji">🎥</div>
+        <h3 data-i18n="f5_title">Beamer, Monitor & OBS</h3>
+        <p data-i18n="f5_text">Vollbild-Untertitel für den zweiten Monitor oder Beamer, auch für Livestreams und Aufnahmen (z. B. mit OBS).</p>
+      </div>
+      <div class="card">
+        <div class="emoji">📼</div>
+        <h3 data-i18n="f6_title">Aufnahmen nachträglich untertiteln</h3>
+        <p data-i18n="f6_text">Wandelt eine Audio- oder Videoaufnahme automatisch in eine fertige Untertiteldatei um, z. B. für YouTube-Videos.</p>
+      </div>
+      <div class="card">
+        <div class="emoji">🕘</div>
+        <h3 data-i18n="f7_title">Verlauf & KI-Zusammenfassungen</h3>
+        <p data-i18n="f7_text">Alle Sitzungen werden gespeichert und lassen sich durchsuchen, inklusive KI-Zusammenfassung auf Knopfdruck.</p>
+      </div>
+      <div class="card">
+        <div class="emoji">🔐</div>
+        <h3 data-i18n="f8_title">Lokal & sicher</h3>
+        <p data-i18n="f8_text">Die App läuft auf deinem eigenen PC, kein Konto und keine Anmeldung nötig. Dein Zugangsschlüssel wird sicher auf dem Gerät gespeichert.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="divider" aria-hidden="true"></div>
+
+  <!-- INSTALL -->
+  <section id="install" class="wrap">
+    <div class="section-head">
+      <h2 data-i18n="install_title">🚀 In 4 Schritten startklar</h2>
+      <p data-i18n="install_sub">Keine Installation nötig: Datei herunterladen, öffnen, loslegen.</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div class="num">1</div>
+        <h3 data-i18n="s1_title">Download</h3>
+        <p data-i18n="s1_text">Lade die neueste Version von der <a href="https://github.com/mosait/MinbarLive/releases">Release-Seite</a> herunter.</p>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
+        <h3 data-i18n="s2_title">MinbarLive.exe starten</h3>
+        <p data-i18n="s2_text">Der Einrichtungsassistent führt dich durch Sprache, Mikrofon und KI-Anbieter.</p>
+      </div>
+      <div class="step">
+        <div class="num">3</div>
+        <h3 data-i18n="s3_title">API-Key einfügen</h3>
+        <p data-i18n="s3_text">Dein persönlicher Schlüssel für die KI, in wenigen Minuten erstellt. Ein OpenAI-Key genügt für alles. <a href="https://youtu.be/SISlgzB_qpQ" data-href-de="https://youtu.be/SISlgzB_qpQ" data-href-en="https://youtu.be/OB99E7Y1cMA">Video-Tutorial ansehen</a>.</p>
+      </div>
+      <div class="step">
+        <div class="num">4</div>
+        <h3 data-i18n="s4_title">Untertitel erscheinen!</h3>
+        <p data-i18n="s4_text">Start drücken und die Übersetzung läuft live auf dem Untertitelfenster.</p>
+      </div>
+    </div>
+
+    <div class="callout">
+      <div class="icon">⚠️</div>
+      <p data-i18n="smartscreen"><b>Hinweis:</b> Beim ersten Start kann eine Windows-Warnung erscheinen, da die Datei nicht signiert ist. Das ist normal, die Datei über den offiziellen Link ist sicher. Einfach „Weitere Informationen" → „Trotzdem ausführen" wählen.</p>
+    </div>
+
+    <div class="callout info">
+      <div class="icon">💰</div>
+      <p data-i18n="cost_note"><b>API-Kosten:</b> MinbarLive selbst ist kostenlos, nutzt aber deinen eigenen KI-API-Key. Eine Stunde Live-Übersetzung kostet ca. 0,50 $ (OpenAI, Arabisch → Deutsch). Tipp: Setze ein Nutzungslimit in deinem Anbieter-Konto.</p>
+    </div>
+  </section>
+
+  <div class="divider" aria-hidden="true"></div>
+
+  <!-- LINKS -->
+  <section id="links" class="wrap">
+    <div class="section-head">
+      <h2 data-i18n="links_title">🔗 Alle Links</h2>
+      <p data-i18n="links_sub">Download, Tutorials und nützliche Tools auf einen Blick.</p>
+    </div>
+    <div class="linklist">
+      <a class="linkbtn" href="https://github.com/mosait/MinbarLive/releases">
+        <span class="li-icon">🚀</span>
+        <span class="li-text"><b data-i18n="l1_title">Download</b><span data-i18n="l1_sub">Neueste Version für Windows, kostenlos</span></span>
+        <span class="li-arrow">→</span>
+      </a>
+      <a class="linkbtn" href="https://github.com/mosait/MinbarLive">
+        <span class="li-icon">👨‍💻</span>
+        <span class="li-text"><b>GitHub</b><span data-i18n="l2_sub">Für Entwickler: Quellcode & Projektseite</span></span>
+        <span class="li-arrow">→</span>
+      </a>
+      <a class="linkbtn" href="https://forms.gle/Cf9Z2RW3sJSCPvb26">
+        <span class="li-icon">💭</span>
+        <span class="li-text"><b>Feedback</b><span data-i18n="l3_sub">Anonymes Feedback über Google Forms</span></span>
+        <span class="li-arrow">→</span>
+      </a>
+      <a class="linkbtn" href="https://youtu.be/SISlgzB_qpQ" data-href-de="https://youtu.be/SISlgzB_qpQ" data-href-en="https://youtu.be/OB99E7Y1cMA">
+        <span class="li-icon">🛠️</span>
+        <span class="li-text"><b data-i18n="l4_title">Tutorial: OpenAI-API-Key erstellen</b><span data-i18n="l4_sub">Schritt-für-Schritt-Video auf YouTube</span></span>
+        <span class="li-arrow">→</span>
+      </a>
+      <a class="linkbtn" href="https://vb-audio.com/Cable/">
+        <span class="li-icon">🎧</span>
+        <span class="li-text"><b>VB-CABLE</b><span data-i18n="l5_sub">Ton vom Computer übersetzen (z. B. YouTube), kostenloses Hilfsprogramm</span></span>
+        <span class="li-arrow">→</span>
+      </a>
+      <a class="linkbtn" href="https://obsproject.com/">
+        <span class="li-icon">🎥</span>
+        <span class="li-text"><b>OBS Studio</b><span data-i18n="l6_sub">Kostenloses Programm zum Anzeigen, Streamen & Aufnehmen</span></span>
+        <span class="li-arrow">→</span>
+      </a>
+      <a class="linkbtn" href="https://linktr.ee/MinbarLive">
+        <span class="li-icon">🔗</span>
+        <span class="li-text"><b>Linktree</b><span data-i18n="l7_sub">Alle Links an einem Ort</span></span>
+        <span class="li-arrow">→</span>
+      </a>
+    </div>
+  </section>
+
+  <!-- COMMUNITY -->
+  <section id="community" class="wrap">
+    <div class="community">
+      <h2 data-i18n="community_title">Wir suchen Tester, Feedbackgeber und Entwickler! 🤝</h2>
+      <p data-i18n="community_text">MinbarLive ist ein Open-Source-Projekt aus der Community für die Community. Probiere die App in deiner Moschee aus, melde Fehler oder entwickle mit. Jede Hilfe zählt.</p>
+      <div class="cta-row">
+        <a class="btn btn-light" href="https://forms.gle/Cf9Z2RW3sJSCPvb26" data-i18n="community_cta1">💭 Feedback geben</a>
+        <a class="btn btn-outline" href="https://github.com/mosait/MinbarLive/blob/main/CONTRIBUTING.md" data-i18n="community_cta2">🧑‍💻 Mitentwickeln</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer class="wrap">
+    <img src="assets/MinbarLive_white_stroke.png" alt="MinbarLive">
+    <p data-i18n="footer_disclaimer">KI-Übersetzungen können Fehler enthalten. MinbarLive ist ein Hilfsmittel und ersetzt keine qualifizierte Übersetzung religiöser Inhalte.</p>
+    <div class="foot-links">
+      <a href="https://github.com/mosait/MinbarLive" >GitHub</a>
+      <a href="https://github.com/mosait/MinbarLive/blob/main/LICENSE" data-i18n="footer_license">Lizenz (GPL-3.0)</a>
+      <a href="https://github.com/mosait/MinbarLive/issues" data-i18n="footer_issues">Fehler melden</a>
+      <a href="https://linktr.ee/MinbarLive">Linktree</a>
+    </div>
+    <p>© 2026 MinbarLive · Open Source (GPL-3.0)</p>
+  </footer>
+
+</main>
+
+<script>
+const translations = {
+  de: {
+    _title: "MinbarLive | Live-Untertitel für islamische Vorträge",
+    _desc: "MinbarLive zeigt übersetzte Untertitel in Echtzeit an. Open Source, lokal, für jede Moschee.",
+    nav_start: "Start",
+    nav_features: "Funktionen",
+    nav_install: "Installation",
+    nav_links: "Links",
+    nav_community: "Mitmachen",
+    hero_badge: "🕌 Kostenlos & Open Source · für jede Moschee",
+    hero_title: "Live-Untertitel für islamische Vorträge, übersetzt in Echtzeit",
+    hero_lead: "MinbarLive hört live zu, übersetzt mit KI und zeigt Untertitel auf einem Bildschirm, Beamer oder in OBS an. Wort für Wort, während gesprochen wird.",
+    hero_vision: "🎯 Unsere Vision: Jede Moschee soll Vorträge mehrsprachig zugänglich machen können, ohne teure Hardware.",
+    hero_cta_download: "🚀 Download für Windows",
+    hero_cta_github: "👨‍💻 Auf GitHub ansehen",
+    hero_meta: "100 % kostenlos · Läuft direkt auf deinem Windows-PC · Du brauchst nur einen KI-Zugangsschlüssel (API-Key)",
+    stat1_num: "~1–3 s",
+    stat1_label: "Verzögerung (Echtzeit)",
+    stat2_label: "Ausgangssprachen",
+    stat3_label: "Zielsprachen",
+    stat4_num: "~0,50 $",
+    stat4_label: "Kosten pro Stunde (KI-Dienst)",
+    features_title: "Was MinbarLive kann",
+    features_sub: "Entwickelt für Freitagspredigten, Vorträge und Unterricht.",
+    f1_title: "Echtzeit-Streaming",
+    f1_text: "Der gesprochene Text erscheint Wort für Wort, die Übersetzung folgt nach jedem Satz, in ~1–3 Sekunden.",
+    f2_title: "Verifizierte Koranverse",
+    f2_text: "Erkennt rezitierte Verse und zeigt die exakte, geprüfte Übersetzung statt einer KI-Paraphrase an.",
+    f3_title: "Zweisprachige Untertitel",
+    f3_text: "Originaltext über der Übersetzung. Koran- und Athan-Wörterbücher auf Deutsch, Englisch, Türkisch, Albanisch und Bosnisch.",
+    f4_title: "KI-Anbieter frei wählbar",
+    f4_text: "OpenAI (Standard), Google Gemini oder Anthropic Claude, jederzeit in den Einstellungen umschaltbar.",
+    f5_title: "Beamer, Monitor & OBS",
+    f5_text: "Vollbild-Untertitel für den zweiten Monitor oder Beamer, auch für Livestreams und Aufnahmen (z. B. mit OBS).",
+    f6_title: "Aufnahmen nachträglich untertiteln",
+    f6_text: "Wandelt eine Audio- oder Videoaufnahme automatisch in eine fertige Untertiteldatei um, z. B. für YouTube-Videos.",
+    f7_title: "Verlauf & KI-Zusammenfassungen",
+    f7_text: "Alle Sitzungen werden gespeichert und lassen sich durchsuchen, inklusive KI-Zusammenfassung auf Knopfdruck.",
+    f8_title: "Lokal & sicher",
+    f8_text: "Die App läuft auf deinem eigenen PC, kein Konto und keine Anmeldung nötig. Dein Zugangsschlüssel wird sicher auf dem Gerät gespeichert.",
+    install_title: "🚀 In 4 Schritten startklar",
+    install_sub: "Keine Installation nötig: Datei herunterladen, öffnen, loslegen.",
+    s1_title: "Download",
+    s1_text: 'Lade die neueste Version von der <a href="https://github.com/mosait/MinbarLive/releases">Release-Seite</a> herunter.',
+    s2_title: "MinbarLive.exe starten",
+    s2_text: "Der Einrichtungsassistent führt dich durch Sprache, Mikrofon und KI-Anbieter.",
+    s3_title: "API-Key einfügen",
+    s3_text: 'Dein persönlicher Schlüssel für die KI, in wenigen Minuten erstellt. Ein OpenAI-Key genügt für alles. <a href="https://youtu.be/SISlgzB_qpQ">Video-Tutorial ansehen</a>.',
+    s4_title: "Untertitel erscheinen!",
+    s4_text: "Start drücken und die Übersetzung läuft live auf dem Untertitelfenster.",
+    smartscreen: "<b>Hinweis:</b> Beim ersten Start kann eine Windows-Warnung erscheinen, da die Datei nicht signiert ist. Das ist normal, die Datei über den offiziellen Link ist sicher. Einfach „Weitere Informationen“ → „Trotzdem ausführen“ wählen.",
+    cost_note: "<b>API-Kosten:</b> MinbarLive selbst ist kostenlos, nutzt aber deinen eigenen KI-API-Key. Eine Stunde Live-Übersetzung kostet ca. 0,50 $ (OpenAI, Arabisch → Deutsch). Tipp: Setze ein Nutzungslimit in deinem Anbieter-Konto.",
+    links_title: "🔗 Alle Links",
+    links_sub: "Download, Tutorials und nützliche Tools auf einen Blick.",
+    l1_title: "Download",
+    l1_sub: "Neueste Version für Windows, kostenlos",
+    l2_sub: "Für Entwickler: Quellcode & Projektseite",
+    l3_sub: "Anonymes Feedback über Google Forms",
+    l4_title: "Tutorial: OpenAI-API-Key erstellen",
+    l4_sub: "Schritt-für-Schritt-Video auf YouTube",
+    l5_sub: "Ton vom Computer übersetzen (z. B. YouTube), kostenloses Hilfsprogramm",
+    l6_sub: "Kostenloses Programm zum Anzeigen, Streamen & Aufnehmen",
+    l7_sub: "Alle Links an einem Ort",
+    community_title: "Wir suchen Tester, Feedbackgeber und Entwickler! 🤝",
+    community_text: "MinbarLive ist ein Open-Source-Projekt aus der Community für die Community. Probiere die App in deiner Moschee aus, melde Fehler oder entwickle mit. Jede Hilfe zählt.",
+    community_cta1: "💭 Feedback geben",
+    community_cta2: "🧑‍💻 Mitentwickeln",
+    footer_disclaimer: "KI-Übersetzungen können Fehler enthalten. MinbarLive ist ein Hilfsmittel und ersetzt keine qualifizierte Übersetzung religiöser Inhalte.",
+    footer_license: "Lizenz (GPL-3.0)",
+    footer_issues: "Fehler melden"
+  },
+  en: {
+    _title: "MinbarLive | Live Subtitles for Islamic Lectures",
+    _desc: "MinbarLive displays translated subtitles in real time. Open source, local, for every mosque.",
+    nav_start: "Home",
+    nav_features: "Features",
+    nav_install: "Get Started",
+    nav_links: "Links",
+    nav_community: "Contribute",
+    hero_badge: "🕌 Free & open source · for every mosque",
+    hero_title: "Live subtitles for Islamic lectures, translated in real time",
+    hero_lead: "MinbarLive listens live, translates with AI, and displays subtitles on a screen, projector, or in OBS. Word by word, while the speaker talks.",
+    hero_vision: "🎯 Our vision: Every mosque should be able to make lectures accessible in multiple languages, without expensive hardware.",
+    hero_cta_download: "🚀 Download for Windows",
+    hero_cta_github: "👨‍💻 View on GitHub",
+    hero_meta: "100% free · Runs directly on your Windows PC · You only need an AI access key (API key)",
+    stat1_num: "~1–3 s",
+    stat1_label: "Delay (real-time)",
+    stat2_label: "Source languages",
+    stat3_label: "Target languages",
+    stat4_num: "~$0.50",
+    stat4_label: "Cost per hour (AI service)",
+    features_title: "What MinbarLive can do",
+    features_sub: "Built for Friday sermons, lectures, and classes.",
+    f1_title: "Real-time streaming",
+    f1_text: "The spoken text appears word by word, and the translation follows each sentence, in ~1–3 seconds.",
+    f2_title: "Verified Quran verses",
+    f2_text: "Recognizes recited verses and displays the exact published translation instead of an AI paraphrase.",
+    f3_title: "Bilingual subtitles",
+    f3_text: "Original text shown above the translation. Quran and Athan dictionaries in German, English, Turkish, Albanian, and Bosnian.",
+    f4_title: "Choose your AI provider",
+    f4_text: "OpenAI (default), Google Gemini, or Anthropic Claude, switchable anytime in the settings.",
+    f5_title: "Projector, monitor & OBS",
+    f5_text: "Full-screen subtitles for a second monitor or projector, also for livestreams and recordings (e.g. with OBS).",
+    f6_title: "Subtitle your recordings",
+    f6_text: "Automatically turns an audio or video recording into a ready-to-use subtitle file, e.g. for YouTube videos.",
+    f7_title: "History & AI summaries",
+    f7_text: "All sessions are saved and browsable, including AI-generated session summaries at the click of a button.",
+    f8_title: "Local & secure",
+    f8_text: "The app runs on your own PC, no account or sign-up needed. Your access key is stored securely on your device.",
+    install_title: "🚀 Ready in 4 steps",
+    install_sub: "No installation needed: download the file, open it, and go.",
+    s1_title: "Download",
+    s1_text: 'Get the latest version from the <a href="https://github.com/mosait/MinbarLive/releases">releases page</a>.',
+    s2_title: "Run MinbarLive.exe",
+    s2_text: "The setup wizard walks you through language, microphone, and AI provider.",
+    s3_title: "Add your API key",
+    s3_text: 'Your personal key for the AI, created in a few minutes. One OpenAI key covers everything. <a href="https://youtu.be/OB99E7Y1cMA">Watch the video tutorial</a>.',
+    s4_title: "Subtitles appear!",
+    s4_text: "Press Start and the translation runs live on the subtitle window.",
+    smartscreen: "<b>Note:</b> On first launch, Windows may show a warning because the file is not code-signed. This is normal, the file from the official link is safe. Just click “More info” → “Run anyway”.",
+    cost_note: "<b>API costs:</b> MinbarLive itself is free, but uses your own AI API key. One hour of live translation costs about $0.50 (OpenAI, Arabic → German). Tip: set a usage limit in your provider account.",
+    links_title: "🔗 All Links",
+    links_sub: "Download, tutorials, and useful tools at a glance.",
+    l1_title: "Download",
+    l1_sub: "Latest version for Windows, free",
+    l2_sub: "For developers: source code & project page",
+    l3_sub: "Anonymous feedback via Google Forms",
+    l4_title: "Tutorial: Create an OpenAI API key",
+    l4_sub: "Step-by-step video on YouTube",
+    l5_sub: "Translate sound from your computer (e.g. YouTube), free helper tool",
+    l6_sub: "Free tool for displaying, streaming & recording",
+    l7_sub: "All links in one place",
+    community_title: "We're looking for testers, feedback & developers! 🤝",
+    community_text: "MinbarLive is an open source project from the community, for the community. Try the app in your mosque, report bugs, or contribute code. Every bit of help counts.",
+    community_cta1: "💭 Give feedback",
+    community_cta2: "🧑‍💻 Contribute",
+    footer_disclaimer: "AI translations may contain errors. MinbarLive is an aid and does not replace qualified translation of religious content.",
+    footer_license: "License (GPL-3.0)",
+    footer_issues: "Report a bug"
+  }
+};
+
+function setLang(lang) {
+  const dict = translations[lang] || translations.de;
+  document.documentElement.lang = lang;
+  document.title = dict._title;
+  document.querySelector('meta[name="description"]').setAttribute("content", dict._desc);
+  document.querySelectorAll("[data-i18n]").forEach(el => {
+    const val = dict[el.dataset.i18n];
+    if (val !== undefined) el.innerHTML = val;
+  });
+  document.querySelectorAll("[data-href-de]").forEach(el => {
+    el.href = lang === "de" ? el.dataset.hrefDe : el.dataset.hrefEn;
+  });
+  document.getElementById("btn-de").classList.toggle("active", lang === "de");
+  document.getElementById("btn-en").classList.toggle("active", lang === "en");
+  try { localStorage.setItem("minbarlive-lang", lang); } catch (e) { /* private mode */ }
+}
+
+(function initLang() {
+  let lang = null;
+  const param = new URLSearchParams(location.search).get("lang");
+  if (param === "de" || param === "en") lang = param;
+  if (!lang) { try { lang = localStorage.getItem("minbarlive-lang"); } catch (e) {} }
+  if (lang !== "de" && lang !== "en") {
+    lang = (navigator.language || "").toLowerCase().startsWith("de") ? "de" : "en";
+  }
+  setLang(lang);
+})();
+
+/* gentle reveal-on-scroll; content stays visible without JS or with reduced motion */
+(function initReveal() {
+  const items = document.querySelectorAll(".card, .step, .stat, .linkbtn, .section-head, .callout, .community");
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduced || !("IntersectionObserver" in window)) return;
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      entry.target.classList.add("in");
+      observer.unobserve(entry.target);
+    });
+  }, { threshold: 0.12, rootMargin: "0px 0px -40px 0px" });
+  items.forEach((el, i) => {
+    el.classList.add("reveal");
+    // small stagger within each row so cards cascade instead of popping at once
+    const siblings = el.parentElement ? Array.from(el.parentElement.children) : [el];
+    el.style.transitionDelay = (siblings.indexOf(el) % 4) * 90 + "ms";
+    observer.observe(el);
+  });
+})();
+</script>
+
+</body>
+</html>

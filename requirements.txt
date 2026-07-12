@@ -1,0 +1,58 @@
+# MinbarLive - Dependencies
+# Versions pinned for reproducibility (tested with Python 3.10-3.12)
+
+# OpenAI API client
+openai==2.14.0
+
+# Gemini API client (optional provider; imported lazily)
+google-genai==2.10.0
+
+# Anthropic Claude API client (optional provider; imported lazily)
+anthropic==0.116.0
+
+# Deepgram streaming transcription (optional, real-time mode only; imported lazily)
+deepgram-sdk==7.4.0
+
+# WebSocket transport for the streaming engines — the DEFAULT (OpenAI Realtime)
+# plus Deepgram and Gemini Live. openai only pulls it in via its [realtime]
+# extra, and the other two only require >=12, so pin it explicitly here or a
+# fresh install could resolve a version the default engine can't use.
+websockets==16.0
+
+# Load OPENAI_API_KEY from .env
+python-dotenv==1.2.1
+
+# Audio processing
+sounddevice==0.5.3
+scipy==1.16.3
+numpy==2.4.0
+
+# Voice-activity noise filter (webrtcvad fork with prebuilt wheels; the app
+# degrades to pass-through if it is missing)
+webrtcvad-wheels==2.0.14
+
+# GUI
+screeninfo==0.8.1
+customtkinter==5.2.2
+
+# Arabic text shaping and bidi rendering
+arabic-reshaper==3.0.0
+python-bidi==0.6.7
+
+# Secure API key storage (OS keychain)
+keyring==25.6.0
+
+# Testing (development only)
+pytest==9.0.2
+
+# Linting (development only)
+ruff==0.11.12
+
+# Creating Exe
+pyinstaller==6.18.0
+pyinstaller-hooks-contrib==2025.11
+
+# Note: tkinter is part of Python standard library
+
+# For looser version constraints (if pinned versions cause issues):
+# pip install openai>=1.0.0 python-dotenv>=1.0.0 sounddevice>=0.4.0 scipy>=1.10.0 numpy>=1.24.0 screeninfo>=0.8.0 pytest>=8.0.0

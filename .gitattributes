@@ -1,0 +1,2 @@
+**/quran_embeddings.json filter=lfs diff=lfs merge=lfs -text
+**/quran_embeddings*.npz filter=lfs diff=lfs merge=lfs -text

@@ -1,0 +1,13 @@
+# This folder contains static data files:
+#
+# Structure:
+#   translations/
+#     quran/
+#       de.json    # Arabic → German verse mappings
+#     athan/
+#       de.json    # Athan phrase translations (German)
+#     footer_translations.json
+#   embeddings/
+#     quran_embeddings.json  # Precomputed embeddings for RAG
+#
+# To add a new language, create {lang_code}.json in quran/ and athan/
