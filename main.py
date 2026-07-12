@@ -99,16 +99,23 @@ def _show_already_running_dialog() -> bool:
     sh = dlg.winfo_screenheight()
     dlg.geometry(f"{W}x{H}+{(sw - W) // 2}+{(sh - H) // 2}")
 
-    if os.path.exists(_icon_ico):
-        try:
-            dlg.after(200, lambda: dlg.iconbitmap(_icon_ico))
-        except Exception:
-            pass
+    if sys.platform.startswith("win") and os.path.exists(_icon_ico):
+        def set_win_icon():
+            try:
+                dlg.iconbitmap(_icon_ico)
+            except Exception:
+                pass
+        dlg.after(200, set_win_icon)
     elif os.path.exists(_icon_png):
         import tkinter as tk
 
         try:
-            dlg.iconphoto(True, tk.PhotoImage(file=_icon_png))
+            img = tk.PhotoImage(file=_icon_png)
+            w, h = img.width(), img.height()
+            factor = max(1, w // 64, h // 64)
+            if factor > 1:
+                img = img.subsample(factor, factor)
+            dlg.iconphoto(True, img)
         except Exception:
             pass
 

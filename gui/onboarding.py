@@ -17,6 +17,7 @@ Steps:
 from __future__ import annotations
 
 import os
+import sys
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox
@@ -206,15 +207,21 @@ class OnboardingWizard(ctk.CTk):
 
     def _set_icon(self) -> None:
         self.title("MinbarLive")
-        if os.path.exists(ICON_PATH):
+        if sys.platform.startswith("win") and os.path.exists(ICON_PATH):
+            def set_win_icon():
+                try:
+                    self.iconbitmap(ICON_PATH)
+                except Exception:
+                    pass
+            self.after(200, set_win_icon)
+        elif os.path.exists(ICON_PATH_PNG):
             try:
-                self.after(200, lambda: self.iconbitmap(ICON_PATH))
-                return
-            except Exception:
-                pass
-        if os.path.exists(ICON_PATH_PNG):
-            try:
-                self.iconphoto(True, tk.PhotoImage(file=ICON_PATH_PNG))
+                img = tk.PhotoImage(file=ICON_PATH_PNG)
+                w, h = img.width(), img.height()
+                factor = max(1, w // 64, h // 64)
+                if factor > 1:
+                    img = img.subsample(factor, factor)
+                self.iconphoto(True, img)
             except Exception:
                 pass
 

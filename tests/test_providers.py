@@ -560,7 +560,7 @@ class TestProviderChoiceHelpers:
         ) == providers.get_model_choices("openai", "translation")
 
     def test_default_model(self):
-        assert providers.get_default_model("gemini", "translation") == "gemini-2.5-flash"
+        assert providers.get_default_model("gemini", "translation") == "gemini-3.5-flash"
         assert providers.get_default_model("nope", "translation") == (
             providers.get_default_model("openai", "translation")
         )

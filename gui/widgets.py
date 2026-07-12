@@ -10,6 +10,7 @@ themed-widget registries (``_cards``, ``_labels``, ``_buttons``,
 """
 
 import os
+import sys
 import tkinter as tk
 from collections.abc import Callable
 from typing import Any
@@ -80,7 +81,7 @@ class WidgetFactoryMixin:
         titlebar. On Windows ``iconbitmap()`` resets the DWM titlebar to the
         light default, which left a white title bar above our dark windows."""
         loaded = False
-        if os.path.exists(ICON_PATH):
+        if sys.platform.startswith("win") and os.path.exists(ICON_PATH):
             try:
                 win.iconbitmap(ICON_PATH)
                 loaded = True
@@ -88,7 +89,12 @@ class WidgetFactoryMixin:
                 pass
         if not loaded and os.path.exists(ICON_PATH_PNG):
             try:
-                win.iconphoto(False, tk.PhotoImage(file=ICON_PATH_PNG))
+                img = tk.PhotoImage(file=ICON_PATH_PNG)
+                w, h = img.width(), img.height()
+                factor = max(1, w // 64, h // 64)
+                if factor > 1:
+                    img = img.subsample(factor, factor)
+                win.iconphoto(False, img)
             except Exception:
                 pass
         self._reassert_dark_titlebar(win)

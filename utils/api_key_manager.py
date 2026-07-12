@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tkinter as tk
 from collections.abc import Callable
 
@@ -126,14 +127,19 @@ def show_message(
     dlg.grab_set()
 
     def _set_icon() -> None:
-        if os.path.exists(ICON_PATH):
+        if sys.platform.startswith("win") and os.path.exists(ICON_PATH):
             try:
                 dlg.iconbitmap(ICON_PATH)
             except Exception:
                 pass
         elif os.path.exists(ICON_PATH_PNG):
             try:
-                dlg.iconphoto(False, tk.PhotoImage(file=ICON_PATH_PNG))
+                img = tk.PhotoImage(file=ICON_PATH_PNG)
+                w, h = img.width(), img.height()
+                factor = max(1, w // 64, h // 64)
+                if factor > 1:
+                    img = img.subsample(factor, factor)
+                dlg.iconphoto(False, img)
             except Exception:
                 pass
         apply_dark_titlebar(dlg)  # iconbitmap resets the titlebar → re-assert
@@ -301,7 +307,7 @@ def prompt_for_api_key(
 
     # Apply icon with a delay (CTkToplevel defers window creation)
     def _set_icon() -> None:
-        if os.path.exists(ICON_PATH):
+        if sys.platform.startswith("win") and os.path.exists(ICON_PATH):
             try:
                 dialog.iconbitmap(ICON_PATH)
                 return
@@ -309,7 +315,12 @@ def prompt_for_api_key(
                 pass
         if os.path.exists(ICON_PATH_PNG):
             try:
-                dialog.iconphoto(False, tk.PhotoImage(file=ICON_PATH_PNG))
+                img = tk.PhotoImage(file=ICON_PATH_PNG)
+                w, h = img.width(), img.height()
+                factor = max(1, w // 64, h // 64)
+                if factor > 1:
+                    img = img.subsample(factor, factor)
+                dialog.iconphoto(False, img)
             except Exception:
                 pass
 

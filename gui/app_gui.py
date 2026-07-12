@@ -1,5 +1,6 @@
 import os
 import queue
+import sys
 import tkinter as tk
 
 import customtkinter as ctk
@@ -243,14 +244,19 @@ class AppGUI(
         self.bind("<FocusIn>", self._schedule_control_window_surface_restore)
         self.bind("<Map>", self._schedule_control_window_surface_restore)
 
-        if os.path.exists(ICON_PATH_PNG):
-            try:
-                self.iconphoto(False, tk.PhotoImage(file=ICON_PATH_PNG))
-            except Exception:
-                pass
-        if os.path.exists(ICON_PATH):
+        if sys.platform.startswith("win") and os.path.exists(ICON_PATH):
             try:
                 self.iconbitmap(ICON_PATH)
+            except Exception:
+                pass
+        elif os.path.exists(ICON_PATH_PNG):
+            try:
+                img = tk.PhotoImage(file=ICON_PATH_PNG)
+                w, h = img.width(), img.height()
+                factor = max(1, w // 64, h // 64)
+                if factor > 1:
+                    img = img.subsample(factor, factor)
+                self.iconphoto(False, img)
             except Exception:
                 pass
 
