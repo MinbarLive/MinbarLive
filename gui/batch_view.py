@@ -549,7 +549,7 @@ class BatchViewMixin:
             hover_color=self._colors["button_hover"],
             text_color=self._colors["text"],
         )
-        self.batch_defaults_btn.grid(row=4, column=0, columnspan=2, sticky="", pady=(2, 0))
+        self.batch_defaults_btn.grid(row=4, column=1, columnspan=2, sticky="e", pady=(2, 0))
 
     def _batch_more_button_text(self) -> str:
         arrow = "▾" if self._batch_more_open else "▸"
