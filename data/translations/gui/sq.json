@@ -98,7 +98,7 @@
   "wizard_languages_title": "Gjuhët e përkthimit",
   "wizard_source_language": "Gjuha e folur (burimi)",
   "wizard_target_language": "Gjuha e titrave (objektivi)",
-  "wizard_audio_title": "Mikrofoni",
+  "wizard_audio_title": "Pajisja hyrëse",
   "wizard_audio_sub": "Zgjidh hyrjen audio për përkthimin e drejtpërdrejtë.",
   "wizard_no_devices": "Nuk u gjet asnjë pajisje hyrëse — mund ta zgjedhësh më vonë në panelin e kontrollit.",
   "wizard_provider_title": "Ofruesi i IA-së dhe çelësi API",

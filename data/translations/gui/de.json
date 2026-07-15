@@ -109,7 +109,7 @@
   "wizard_languages_title": "Übersetzungssprachen",
   "wizard_source_language": "Gesprochene Sprache (Quelle)",
   "wizard_target_language": "Untertitelsprache (Ziel)",
-  "wizard_audio_title": "Mikrofon",
+  "wizard_audio_title": "Eingabegerät",
   "wizard_audio_sub": "Wähle den Audioeingang für die Live-Übersetzung.",
   "wizard_no_devices": "Keine Eingabegeräte gefunden — du kannst später eines im Bedienfenster auswählen.",
   "wizard_provider_title": "KI-Anbieter & API-Schlüssel",

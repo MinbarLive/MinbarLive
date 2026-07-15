@@ -98,7 +98,7 @@
   "wizard_languages_title": "Çeviri dilleri",
   "wizard_source_language": "Konuşulan dil (kaynak)",
   "wizard_target_language": "Altyazı dili (hedef)",
-  "wizard_audio_title": "Mikrofon",
+  "wizard_audio_title": "Giriş Cihazı",
   "wizard_audio_sub": "Canlı çeviri için kullanılacak ses girişini seç.",
   "wizard_no_devices": "Giriş cihazı bulunamadı — daha sonra kontrol panelinden seçebilirsin.",
   "wizard_provider_title": "Yapay zekâ sağlayıcısı ve API anahtarı",

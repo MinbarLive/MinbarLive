@@ -233,6 +233,50 @@ class TestFactories:
         assert len(warnings) == 1
 
 
+class TestResolveProviderByKeys:
+    """Key-decided provider ("Standard" semantics, onboarding + startup
+    repair): the default provider wins whenever its key exists or no key
+    exists at all; otherwise the highest-ranked keyed provider."""
+
+    def _keys(self, monkeypatch, keyed):
+        monkeypatch.setattr(providers, "has_usable_key", lambda p: p in keyed)
+
+    def test_no_keys_at_all_is_default(self, monkeypatch):
+        self._keys(monkeypatch, set())
+        assert providers.resolve_provider_by_keys() == "gemini"
+
+    def test_default_key_wins_over_all_others(self, monkeypatch):
+        self._keys(monkeypatch, {"gemini", "openai", "anthropic"})
+        assert providers.resolve_provider_by_keys() == "gemini"
+
+    def test_only_openai_key_selects_openai(self, monkeypatch):
+        self._keys(monkeypatch, {"openai"})
+        assert providers.resolve_provider_by_keys() == "openai"
+
+    def test_only_anthropic_key_selects_anthropic(self, monkeypatch):
+        self._keys(monkeypatch, {"anthropic"})
+        assert providers.resolve_provider_by_keys() == "anthropic"
+
+    def test_ranking_decides_between_non_default_keys(self, monkeypatch):
+        self._keys(monkeypatch, {"openai", "anthropic"})
+        assert providers.resolve_provider_by_keys() == "openai"
+
+    def test_session_typed_key_counts(self, monkeypatch):
+        self._keys(monkeypatch, set())
+        assert (
+            providers.resolve_provider_by_keys({"anthropic": "sk-ant-x"})
+            == "anthropic"
+        )
+
+    def test_session_typed_default_key_wins(self, monkeypatch):
+        self._keys(monkeypatch, {"openai"})
+        assert providers.resolve_provider_by_keys({"gemini": "AIza-x"}) == "gemini"
+
+    def test_blank_session_key_is_ignored(self, monkeypatch):
+        self._keys(monkeypatch, set())
+        assert providers.resolve_provider_by_keys({"anthropic": "   "}) == "gemini"
+
+
 class TestKeyAwareFallback:
     """Fallback paths pick the highest-ranked provider WITH a usable key
     instead of hardcoded OpenAI. Explicit user choices are never overridden

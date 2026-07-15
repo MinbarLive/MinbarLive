@@ -109,7 +109,7 @@
   "wizard_languages_title": "Translation languages",
   "wizard_source_language": "Spoken language (source)",
   "wizard_target_language": "Subtitle language (target)",
-  "wizard_audio_title": "Microphone",
+  "wizard_audio_title": "Input Device",
   "wizard_audio_sub": "Choose the audio input used for the live translation.",
   "wizard_no_devices": "No input devices found — you can choose one later in the control panel.",
   "wizard_provider_title": "AI provider & API key",

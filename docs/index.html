@@ -297,11 +297,16 @@
     /* two-row top bar: brand + language toggle above, nav below */
     .topbar-inner { flex-wrap: wrap; padding: 8px 14px; }
     .nav-links {
-      order: 3; width: 100%; justify-content: center;
+      /* start-aligned + auto margins on the ends: centers when the tabs fit,
+         but stays fully scrollable when they overflow (justify-content:center
+         with overflow makes the left end unreachable) */
+      order: 3; width: 100%; justify-content: flex-start;
       overflow-x: auto; -webkit-overflow-scrolling: touch;
       padding-bottom: 4px;
     }
-    .nav-links a { padding: 6px 10px; font-size: 0.85rem; white-space: nowrap; }
+    .nav-links a { padding: 6px 8px; font-size: 0.82rem; white-space: nowrap; }
+    .nav-links a:first-child { margin-left: auto; }
+    .nav-links a:last-child { margin-right: auto; }
     section { scroll-margin-top: 128px; } /* taller two-row topbar */
 
     .hero { padding-top: 48px; }
@@ -365,7 +370,7 @@
       <div class="stat"><b>35+</b><span data-i18n="stat3_label">Zielsprachen</span></div>
     </div>
     <div class="cta-row">
-      <a class="btn btn-primary" href="https://github.com/mosait/MinbarLive/releases" data-i18n="hero_cta_download">🚀 Download für Windows</a>
+      <a class="btn btn-primary" href="https://github.com/mosait/MinbarLive/releases/latest/download/MinbarLive.exe" data-i18n="hero_cta_download">🚀 Download für Windows</a>
       <a class="btn btn-secondary" href="https://github.com/mosait/MinbarLive" data-i18n="hero_cta_github">👨‍💻 Auf GitHub ansehen</a>
     </div>
     <p class="meta" data-i18n="hero_meta">100 % kostenlos · Läuft direkt auf deinem Windows-PC · Du brauchst nur einen KI-Zugangsschlüssel (API-Key)</p>
@@ -474,7 +479,7 @@
       <p data-i18n="links_sub">Download, Tutorials und nützliche Tools auf einen Blick.</p>
     </div>
     <div class="linklist">
-      <a class="linkbtn" href="https://github.com/mosait/MinbarLive/releases">
+      <a class="linkbtn" href="https://github.com/mosait/MinbarLive/releases/latest/download/MinbarLive.exe">
         <span class="li-icon">🚀</span>
         <span class="li-text"><b data-i18n="l1_title">Download</b><span data-i18n="l1_sub">Neueste Version für Windows, kostenlos</span></span>
         <span class="li-arrow">→</span>

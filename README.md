@@ -159,8 +159,9 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 
 MinbarLive would not exist without the help of:
 
-- **[Helaloov](https://github.com/Helaloov)** & **[marxmoo](https://github.com/marxmoo)** — backend
+- **[marxmoo](https://github.com/marxmoo)** — backend
 - **[Merisgrund](https://github.com/Merisgrund)** — frontend
+- Others who wish to remain anonymous
 
 Barakallahu feekum 🌙
 

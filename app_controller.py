@@ -62,7 +62,7 @@ from utils.settings import (
     get_source_language_code,
     load_settings,
 )
-from utils.user_messages import get_user_message
+from utils.user_messages import classify_error, get_user_message
 
 
 class _StreamingUtteranceSession:
@@ -369,9 +369,9 @@ class AppController:
                         )
                     except Exception:
                         pass
-                    # Show connection error in subtitles (target language)
+                    # Show the classified error in subtitles (target language)
                     self.translation_queue.put(
-                        (get_user_message("connection_error"), None)
+                        (get_user_message(classify_error(e)), None)
                     )
 
             # During pure silence no segments arrive (the writer skips
@@ -447,7 +447,7 @@ class AppController:
             self._translate_and_queue(context_mgr, trans_text)
         except Exception as e:
             log(f"AUDIO-PROCESSOR Buffer flush error: {e}", level="ERROR")
-            self.translation_queue.put((get_user_message("connection_error"), None))
+            self.translation_queue.put((get_user_message(classify_error(e)), None))
 
     def _input_stream_thread(self, device: int):
         stop_event = self.stop_event  # session-local: see _process_audio
@@ -662,7 +662,7 @@ class AppController:
             except Exception as e:
                 log(f"STREAMING-PROCESSOR Error: {e}", level="ERROR")
                 self.translation_queue.put(
-                    (get_user_message("connection_error"), None)
+                    (get_user_message(classify_error(e)), None)
                 )
             finally:
                 # The subtitle (or error message) for this utterance is out —
@@ -812,7 +812,7 @@ class AppController:
                 # retries must not stack further error subtitles.
                 self._streaming_outage = True
                 self.translation_queue.put(
-                    (get_user_message("connection_error"), None)
+                    (get_user_message(classify_error(exc)), None)
                 )
             self._streaming_reconnect_event.set()
 

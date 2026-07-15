@@ -285,6 +285,8 @@ class SubtitleWindow(tk.Toplevel):
         self.line_spacing = LINE_SPACING
         self.margin_bottom = MARGIN_BOTTOM
         self._canvas_footer_items: list[int] = []  # canvas item IDs for pill footer
+        self._stopped_hint = False  # "translation stopped" pill while idle
+        self._stopped_hint_items: list[int] = []
         # Live (in-progress) transcript line — Realtime mode only, never part
         # of the stack. "Settled" = utterance finished, translation in flight
         # (rendered in the primary color instead of the muted one).
@@ -450,6 +452,7 @@ class SubtitleWindow(tk.Toplevel):
         )
         if self._canvas_footer_items:
             self._draw_canvas_footer()
+        self._refresh_stopped_hint()
         if self._subtitle_mode == SUBTITLE_MODE_STATIC and self._transparent_static:
             self._apply_transparent_mode()
         else:
@@ -468,6 +471,10 @@ class SubtitleWindow(tk.Toplevel):
             self._remove_canvas_footer()
             self.footer.place_forget()
             self.margin_bottom = 8
+        # The stopped-hint pill sits relative to the footer pill, so every
+        # site that redraws the footer (resize, monitor, mode, height changes)
+        # must reposition the hint too.
+        self._refresh_stopped_hint()
 
     def _draw_canvas_footer(self):
         """Draw the footer as a centred rounded pill directly on the canvas."""
@@ -529,8 +536,68 @@ class SubtitleWindow(tk.Toplevel):
         z-order — items stack in creation order, so freshly added subtitles
         (and the live line) would otherwise draw over the warning as they
         scroll through its area."""
+        for item_id in self._stopped_hint_items:
+            self.canvas.tag_raise(item_id)
         for item_id in self._canvas_footer_items:
             self.canvas.tag_raise(item_id)
+
+    def set_stopped_hint(self, visible: bool):
+        """Show or remove the "translation stopped" pill.
+
+        Shown while the window stays open with the pipeline stopped (the
+        default hide_subtitle_on_stop=False setup), so the audience knows
+        missing subtitles are deliberate. The text comes from
+        status_messages in the target language, fetched at draw time so
+        language and theme changes pick up the current wording.
+        """
+        self._stopped_hint = visible
+        self._refresh_stopped_hint()
+
+    def _refresh_stopped_hint(self):
+        """(Re)draw or remove the stopped-hint pill above the footer pill."""
+        for item_id in self._stopped_hint_items:
+            self.canvas.delete(item_id)
+        self._stopped_hint_items = []
+        if not self._stopped_hint or not self.canvas_width or not self.canvas_height:
+            return
+        import tkinter.font as tkfont
+
+        from utils.user_messages import get_user_message
+
+        text = get_user_message("app_stopped")
+        font_spec = (self._footer_font_family, 13, "bold")
+        font_obj = tkfont.Font(family=self._footer_font_family, size=13, weight="bold")
+        pad_x, pad_y = 22, 9
+        pill_w = min(font_obj.measure(text) + pad_x * 2, self.canvas_width - 40)
+        pill_h = font_obj.metrics("linespace") + pad_y * 2
+        cx = self.canvas_width / 2
+        # Directly above the disclaimer pill when it is shown (both pills use
+        # the same font, so their heights match), else in its bottom spot.
+        y2 = self.canvas_height - 10
+        if self._canvas_footer_items:
+            y2 -= pill_h + 8
+        y1 = y2 - pill_h
+        bg_id = self.canvas.create_polygon(
+            self._rounded_rect_points(
+                cx - pill_w / 2, y1, cx + pill_w / 2, y2, pill_h / 2
+            ),
+            smooth=True,
+            splinesteps=18,
+            fill=self._card_fill,
+            outline=self._card_outline,
+            width=1,
+        )
+        text_id = self.canvas.create_text(
+            cx,
+            (y1 + y2) / 2,
+            text=_reshape_rtl(text),
+            fill=self._secondary_text,
+            font=font_spec,
+            anchor="center",
+            justify="center",
+            width=int(pill_w - pad_x * 2),
+        )
+        self._stopped_hint_items = [bg_id, text_id]
 
     def _update_font(self):
         """Recalculate font based on canvas width and font size base (divisor)."""
@@ -575,6 +642,7 @@ class SubtitleWindow(tk.Toplevel):
         self.footer.configure(text=footer_text)
         if self._canvas_footer_items:
             self._draw_canvas_footer()
+        self._refresh_stopped_hint()
 
     def set_show_footer(self, enabled: bool):
         """Show or hide the footer disclaimer."""
@@ -1081,9 +1149,13 @@ class SubtitleWindow(tk.Toplevel):
         self._live_settled = False
         self._remove_live_items()
 
-        # 2. Hide the footer (both label and canvas pill)
+        # 2. Hide the footer (both label and canvas pill) and the stopped
+        # hint (the flag survives, so show() restores the pill)
         self.footer.place_forget()
         self._remove_canvas_footer()
+        for item_id in self._stopped_hint_items:
+            self.canvas.delete(item_id)
+        self._stopped_hint_items = []
 
         if sys.platform == "win32":
             chroma_color = self._transparent_key_color
@@ -1109,6 +1181,8 @@ class SubtitleWindow(tk.Toplevel):
             self._apply_opaque_mode()
         if self._show_footer:
             self._update_footer_visibility()
+        else:
+            self._refresh_stopped_hint()
 
     def _rounded_rect_points(
         self, x1: float, y1: float, x2: float, y2: float, radius: float

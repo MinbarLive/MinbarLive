@@ -26,6 +26,7 @@ from providers import (
     get_stored_api_key,
     get_streaming_key_provider,
     has_usable_key,
+    resolve_provider_by_keys,
 )
 from providers.openai.client import set_api_key
 from utils.api_key_manager import (
@@ -123,6 +124,7 @@ class AppGUI(
 
     def __init__(self, controller):
         self._saved_settings = load_settings()
+        self._repair_default_provider()
         self._theme_mode = getattr(self._saved_settings, "theme_mode", "dark")
         ctk.set_appearance_mode(self._theme_mode)
         ctk.set_default_color_theme("green")
@@ -1193,6 +1195,10 @@ class AppGUI(
             ),
         )
         self.height_slider.set(self._saved_settings.window_height_percent)
+        if not self._running:
+            # Window kept open while stopped (default setup): tell the
+            # audience the missing subtitles are deliberate. Cleared on Start.
+            self.subtitle_window.set_stopped_hint(True)
 
     def _destroy_subtitle_window(self) -> None:
         try:
@@ -1406,6 +1412,8 @@ class AppGUI(
             not self.subtitle_window or not self.subtitle_window.winfo_exists()
         ):
             self._create_subtitle_window()
+        if self.subtitle_window and self.subtitle_window.winfo_exists():
+            self.subtitle_window.set_stopped_hint(False)
         log(self.gui_texts.get("log_started", "Started."), level="INFO")
 
     def on_stop(self) -> None:
@@ -1426,6 +1434,8 @@ class AppGUI(
         self._cancel_inactivity_check()
         if self._saved_settings.hide_subtitle_on_stop:
             self._destroy_subtitle_window()
+        elif self.subtitle_window and self.subtitle_window.winfo_exists():
+            self.subtitle_window.set_stopped_hint(True)
         log(self.gui_texts.get("log_stopped", "Stopped."), level="INFO")
 
     # ── Inactivity auto-stop ────────────────────────────────────────────────
@@ -2263,6 +2273,32 @@ class AppGUI(
         self._sync_advanced_enabled_states()
         if save:
             self._save_current_settings()
+
+    def _repair_default_provider(self) -> None:
+        """Repair a stored "Use default" + non-default translation provider.
+
+        Early onboarding wrote the last-BROWSED provider as ai_provider even
+        when no key was ever entered for it; the provider dropdown is disabled
+        while "Use default" is on, so the GUI itself can never produce (or
+        leave) that state. Keys decide, mirroring onboarding: the default
+        provider wins when its key exists or none is stored at all; otherwise
+        the highest-ranked keyed provider is kept with "Use default" off.
+        Runs before any widgets exist.
+        """
+        s = self._saved_settings
+        if not s.use_default_translation_model or s.ai_provider == DEFAULT_AI_PROVIDER:
+            return
+        stale = s.ai_provider
+        provider = resolve_provider_by_keys()
+        s.ai_provider = provider
+        s.translation_model = get_default_model(provider, "translation")
+        s.use_default_translation_model = provider == DEFAULT_AI_PROVIDER
+        save_settings(s)
+        log(
+            f"Repaired inconsistent provider default: {stale} -> {provider} "
+            f"(use default: {s.use_default_translation_model})",
+            level="INFO",
+        )
 
     def _on_use_default_transcription_change(
         self, save: bool = True, reset_provider: bool = True

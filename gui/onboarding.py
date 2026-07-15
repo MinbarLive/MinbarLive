@@ -31,11 +31,13 @@ from providers import (
     get_default_model,
     get_stored_api_key,
     get_streaming_key_provider,
+    resolve_provider_by_keys,
     save_api_key,
 )
 from utils.icons import ICO_SUPPORTED, scaled_icon_photo
 from utils.logging import log
 from utils.settings import (
+    DEFAULT_AI_PROVIDER,
     DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER,
     GUI_LANGUAGES,
     PIPELINE_MODE_STREAMING,
@@ -131,8 +133,6 @@ class OnboardingWizard(ctk.CTk):
             "source_language": settings.source_language,
             "target_language": settings.target_language,
             "device_name": settings.input_device_name,
-            "provider": settings.ai_provider,  # translation provider (ai_provider)
-            "model": settings.translation_model,
             "selected_provider": settings.ai_provider,  # which key field is shown
             "provider_keys": {},  # provider_id -> key typed this session
         }
@@ -378,6 +378,23 @@ class OnboardingWizard(ctk.CTk):
             self._build_step_disclaimer,
         ][self._step]
         builder()
+        self._fit_height()
+
+    def _fit_height(self) -> None:
+        """Grow the window when a step needs more room than the base height
+        (the stacked provider notes on the key step overflow it under
+        Anthropic in the more verbose GUI languages) and shrink back when
+        the content fits again.
+
+        winfo_reqheight() is physical px but CTk.geometry() scales WxH by
+        the DPI factor, so convert to the logical units it expects (same
+        pattern as BatchViewMixin._resize_batch_window); +X+Y pass through
+        unscaled.
+        """
+        self.update_idletasks()
+        scaling = ctk.ScalingTracker.get_window_scaling(self)
+        h = max(_H, int(self.winfo_reqheight() / scaling) + 1)
+        self.geometry(f"{_W}x{h}+{self.winfo_x()}+{self.winfo_y()}")
 
     # ── Step 1: GUI language ───────────────────────────────────────────────
 
@@ -468,7 +485,7 @@ class OnboardingWizard(ctk.CTk):
 
     def _build_step_audio(self) -> None:
         self._section_label(
-            self._container, self._t("wizard_audio_title", "Microphone")
+            self._container, self._t("wizard_audio_title", "Input Device")
         )
         self._section_label(
             self._container,
@@ -537,17 +554,11 @@ class OnboardingWizard(ctk.CTk):
             self._capture_current_key()  # remember the key for the old provider
             new = provider_ids[provider_names.index(value)]
             self._state["selected_provider"] = new
-            if new != "deepgram":  # Deepgram is STT-only, not a translation provider
-                self._state["provider"] = new
-                self._state["model"] = get_default_model(new, "translation")
             self._render()
 
         provider_combo.configure(command=_on_provider_change)
 
-        # No model picker — always use the active translation provider's default.
-        self._state["model"] = get_default_model(
-            self._state["provider"], "translation"
-        )
+        # No model picker — _finish uses the resolved provider's default model.
 
         # One key field, for whichever provider is selected. Keys typed for other
         # providers are remembered and all saved on finish, so several provider
@@ -716,12 +727,15 @@ class OnboardingWizard(ctk.CTk):
         settings.target_language = self._state["target_language"]
         if self._state["device_name"]:
             settings.input_device_name = self._state["device_name"]
-        provider = self._state["provider"]
+        # Keys decide the provider, not the dropdown's last position (browsing
+        # to a provider without entering its key must not select it): the
+        # default (Gemini) wins whenever its key exists or no key was given at
+        # all; otherwise the highest-ranked provider with a key is used and
+        # "Use default" is unchecked so the control panel shows the real one.
+        provider = resolve_provider_by_keys(self._state["provider_keys"])
         settings.ai_provider = provider
-        settings.translation_model = self._state["model"]
-        settings.use_default_translation_model = self._state[
-            "model"
-        ] == get_default_model(provider, "translation")
+        settings.translation_model = get_default_model(provider, "translation")
+        settings.use_default_translation_model = provider == DEFAULT_AI_PROVIDER
         # Onboarding lands on real-time streaming — on the engine that
         # belongs to the CHOSEN provider, so the key the user just entered is
         # the one the pipeline authenticates with. (A pinned Gemini engine
@@ -742,7 +756,11 @@ class OnboardingWizard(ctk.CTk):
         settings.transcription_provider = engine
         settings.pipeline_mode = PIPELINE_MODE_STREAMING
         settings.transcription_model = get_default_model(engine, "transcription")
-        settings.use_default_transcription_model = True
+        # "Use default" only when the engine IS the default one — a greyed
+        # non-default engine next to a ticked "Standard" reads as broken.
+        settings.use_default_transcription_model = (
+            engine == DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER
+        )
         settings.disclaimer_accepted = True
         settings.onboarding_completed = True
         save_settings(settings)

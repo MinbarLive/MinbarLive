@@ -98,7 +98,7 @@
   "wizard_languages_title": "Jezici prevođenja",
   "wizard_source_language": "Govorni jezik (izvor)",
   "wizard_target_language": "Jezik titlova (cilj)",
-  "wizard_audio_title": "Mikrofon",
+  "wizard_audio_title": "Ulazni uređaj",
   "wizard_audio_sub": "Odaberi audio ulaz za prijevod uživo.",
   "wizard_no_devices": "Nije pronađen nijedan ulazni uređaj — možeš ga odabrati kasnije u kontrolnom panelu.",
   "wizard_provider_title": "AI provajder i API ključ",

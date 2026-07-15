@@ -51,6 +51,7 @@ from providers.openai import (
 )
 from utils.logging import log
 from utils.settings import (
+    DEFAULT_AI_PROVIDER,
     DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER,
     DEFAULT_TRANSCRIPTION_MODEL,
     DEFAULT_TRANSLATION_MODEL,
@@ -216,6 +217,26 @@ def ranked_keyed_provider(candidates: list[str]) -> str:
         if has_usable_key(pid):
             return pid
     return candidates[0]
+
+
+def resolve_provider_by_keys(extra_keys: dict[str, str] | None = None) -> str:
+    """Key-decided translation provider ("Standard" semantics).
+
+    The app default wins whenever its key exists — or no provider has one at
+    all; otherwise the highest-ranked provider with a usable key is chosen.
+    `extra_keys` are keys not persisted yet (typed during onboarding).
+    """
+    extra = extra_keys or {}
+
+    def _keyed(pid: str) -> bool:
+        return bool((extra.get(pid) or "").strip()) or has_usable_key(pid)
+
+    if _keyed(DEFAULT_AI_PROVIDER):
+        return DEFAULT_AI_PROVIDER
+    for pid in PROVIDER_RANKING:
+        if _keyed(pid):
+            return pid
+    return DEFAULT_AI_PROVIDER
 
 
 def _resolve(registry: dict, capability: str, name: str) -> tuple[str, object]:

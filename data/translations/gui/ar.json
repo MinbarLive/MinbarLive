@@ -98,7 +98,7 @@
   "wizard_languages_title": "لغات الترجمة",
   "wizard_source_language": "اللغة المنطوقة (المصدر)",
   "wizard_target_language": "لغة الترجمة النصية (الهدف)",
-  "wizard_audio_title": "الميكروفون",
+  "wizard_audio_title": "جهاز الإدخال",
   "wizard_audio_sub": "اختر مدخل الصوت المستخدم للترجمة المباشرة.",
   "wizard_no_devices": "لم يتم العثور على أجهزة إدخال — يمكنك اختيار جهاز لاحقًا من لوحة التحكم.",
   "wizard_provider_title": "مزوّد الذكاء الاصطناعي ومفتاح API",
