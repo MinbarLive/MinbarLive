@@ -16,7 +16,9 @@ from audio.capture import (
     get_default_input_device,
     is_silence,
     reset_ring_buffer,
+    write_samples_to_ring,
 )
+from audio.loopback import get_speaker as get_loopback_speaker
 from audio.vad import StreamNoiseGate, has_speech
 from audio.writer import async_write_audio, clear_write_queue, segment_writer
 from config import (
@@ -178,6 +180,7 @@ class AppController:
         self._input_stop_event = threading.Event()  # Separate stop for input stream
         self._input_thread: threading.Thread | None = None
         self._current_device: int | None = None
+        self._streaming_capture_rate: int = FS  # rate used by the current streaming input thread
         self.threads: list[threading.Thread] = []
         # Items are (display_text, source_text): source_text is the original
         # transcription for bilingual display, None when there is no separate
@@ -203,16 +206,26 @@ class AppController:
         self._streaming_reconnect_event = threading.Event()
         self._streaming_backoff = STREAMING_RECONNECT_BASE_SECONDS
         self._streaming_outage = False
+        # Last time a transcription arrived (either pipeline mode) — the GUI
+        # polls this for the inactivity auto-stop.
+        self._last_pipeline_activity = time.time()
 
     def _process_audio(self):
         context_mgr = get_context_manager()
         files_processed = 0
+        # Session-local stop event: start() REPLACES self.stop_event, so a
+        # thread that outlives stop()'s join timeout (e.g. a transcription
+        # call in flight) must capture its own event — reading the attribute
+        # live re-armed such a leftover thread on the next start(), where it
+        # ran as a zombie inside a streaming session (strategy is None there)
+        # and double-processed audio. Same pattern in every thread loop below.
+        stop_event = self.stop_event
         # Raw transcription of the previous segment, for overlap dedup. Reset
         # to "" on any pause/skip (silence, non-speech, failure) so the dedup
         # only ever fires between two temporally adjacent speech segments.
         prev_transcription = ""
 
-        while not self.stop_event.is_set():
+        while not stop_event.is_set():
             files = sorted([f for f in os.listdir(AUDIO_DIR) if f.endswith(".wav")])
 
             for file in files:
@@ -268,6 +281,7 @@ class AppController:
                         continue  # Skip this audio file
 
                     log("AUDIO-PROCESSOR Transcription received", level="DEBUG")
+                    self._last_pipeline_activity = time.time()
 
                     # Strip the OVERLAP-second repeat of the previous segment's
                     # tail (a visible duplicate on every boundary). Compare
@@ -436,15 +450,19 @@ class AppController:
             self.translation_queue.put((get_user_message("connection_error"), None))
 
     def _input_stream_thread(self, device: int):
+        stop_event = self.stop_event  # session-local: see _process_audio
+        input_stop = self._input_stop_event
+        speaker = get_loopback_speaker(device)
+        if speaker is not None:
+            self._loopback_segmented_loop(device, speaker)
+            return
         try:
             with sd.InputStream(
                 samplerate=FS, channels=1, callback=audio_callback, device=device
             ):
                 log(f"InputStream started on device {device}", level="INFO")
                 # Check both stop events - main stop or input-specific stop
-                while (
-                    not self.stop_event.is_set() and not self._input_stop_event.is_set()
-                ):
+                while not stop_event.is_set() and not input_stop.is_set():
                     time.sleep(0.1)
                 log(f"InputStream stopping on device {device}", level="DEBUG")
         except OSError as e:
@@ -452,6 +470,32 @@ class AppController:
             self.error_queue.put(f"audio_device_lost:{device}")
         except Exception as e:
             log(f"InputStream error: {e}", level="ERROR")
+            self.error_queue.put(f"input_stream_error:{e}")
+
+    def _loopback_segmented_loop(self, device: int, speaker) -> None:
+        """Capture loopback audio from an output device into the ring buffer."""
+        stop_event = self.stop_event  # session-local: see _process_audio
+        input_stop = self._input_stop_event
+        try:
+            import soundcard as sc  # noqa: PLC0415
+
+            block_frames = int(FS * 0.1)  # 100 ms
+            mic = sc.get_microphone(id=str(speaker.id), include_loopback=True)
+            # channels=2: avoids the soundcard/WASAPI single-channel-garbage bug
+            with mic.recorder(samplerate=FS, channels=2,
+                               blocksize=block_frames * 4) as recorder:
+                log(f"Loopback recorder started for '{speaker.name}'", level="INFO")
+                while not stop_event.is_set() and not input_stop.is_set():
+                    data = recorder.record(numframes=block_frames)
+                    # Mix stereo to mono
+                    chunk = data.mean(axis=1).astype(np.float32)
+                    write_samples_to_ring(chunk)
+                log("Loopback recorder stopping", level="DEBUG")
+        except OSError as e:
+            log(f"Loopback device error (device {device}): {e}", level="ERROR")
+            self.error_queue.put(f"audio_device_lost:{device}")
+        except Exception as e:
+            log(f"Loopback capture error: {e}", level="ERROR")
             self.error_queue.put(f"input_stream_error:{e}")
 
     def _streaming_audio_callback(self, indata, frames, time_info, status):
@@ -462,7 +506,15 @@ class AppController:
         except queue.Full:
             pass  # unbounded by default; defensive only
 
-    def _streaming_input_stream_thread(self, device: int, samplerate: int = FS):
+    def _streaming_input_stream_thread(
+        self, device: int, samplerate: int = FS
+    ):
+        stop_event = self.stop_event  # session-local: see _process_audio
+        input_stop = self._input_stop_event
+        speaker = get_loopback_speaker(device)
+        if speaker is not None:
+            self._loopback_streaming_loop(device, speaker, samplerate)
+            return
         # The capture rate is engine-specific (Deepgram is told FS at connect;
         # OpenAI Realtime only accepts 24 kHz PCM).
         chunk_frames = max(1, int(samplerate * STREAMING_CHUNK_MS / 1000))
@@ -476,9 +528,7 @@ class AppController:
                 device=device,
             ):
                 log(f"Streaming InputStream started on device {device}", level="INFO")
-                while (
-                    not self.stop_event.is_set() and not self._input_stop_event.is_set()
-                ):
+                while not stop_event.is_set() and not input_stop.is_set():
                     time.sleep(0.1)
                 log("Streaming InputStream stopping", level="DEBUG")
         except OSError as e:
@@ -488,8 +538,44 @@ class AppController:
             log(f"Streaming InputStream error: {e}", level="ERROR")
             self.error_queue.put(f"input_stream_error:{e}")
 
+    def _loopback_streaming_loop(
+        self, device: int, speaker, samplerate: int
+    ) -> None:
+        """Feed loopback audio from an output device into the streaming pipeline."""
+        stop_event = self.stop_event  # session-local: see _process_audio
+        input_stop = self._input_stop_event
+        try:
+            import soundcard as sc  # noqa: PLC0415
+
+            chunk_frames = max(1, int(samplerate * STREAMING_CHUNK_MS / 1000))
+            mic = sc.get_microphone(id=str(speaker.id), include_loopback=True)
+            with mic.recorder(samplerate=samplerate, channels=2,
+                               blocksize=chunk_frames * 4) as recorder:
+                log(
+                    f"Loopback streaming recorder started for '{speaker.name}' "
+                    f"at {samplerate} Hz",
+                    level="INFO",
+                )
+                while not stop_event.is_set() and not input_stop.is_set():
+                    data = recorder.record(numframes=chunk_frames)
+                    mono = data.mean(axis=1)  # stereo -> mono
+                    # Convert float32 [-1,1] to int16 bytes (engine expects PCM16)
+                    pcm = (mono * 32767).clip(-32768, 32767).astype(np.int16)
+                    try:
+                        self._streaming_feed_queue.put_nowait(pcm.tobytes())
+                    except Exception:
+                        pass
+                log("Loopback streaming recorder stopping", level="DEBUG")
+        except OSError as e:
+            log(f"Loopback streaming device error (device {device}): {e}", level="ERROR")
+            self.error_queue.put(f"audio_device_lost:{device}")
+        except Exception as e:
+            log(f"Loopback streaming capture error: {e}", level="ERROR")
+            self.error_queue.put(f"input_stream_error:{e}")
+
     def _streaming_feeder_thread(self):
-        while not self.stop_event.is_set():
+        stop_event = self.stop_event  # session-local: see _process_audio
+        while not stop_event.is_set():
             try:
                 chunk = self._streaming_feed_queue.get(timeout=0.2)
             except queue.Empty:
@@ -523,8 +609,10 @@ class AppController:
         never starts this thread — it self-heals per segment via the retry
         chain.
         """
-        while not self.stop_event.is_set():
-            if not self._streaming_reconnect_event.wait(timeout=0.2):
+        stop_event = self.stop_event  # session-local: see _process_audio
+        reconnect_event = self._streaming_reconnect_event
+        while not stop_event.is_set():
+            if not reconnect_event.wait(timeout=0.2):
                 continue
             # Back off BEFORE reconnecting: paces retry storms and coalesces
             # the duplicate error callbacks one disconnect can produce.
@@ -532,9 +620,9 @@ class AppController:
             self._streaming_backoff = min(
                 delay * 2, STREAMING_RECONNECT_MAX_SECONDS
             )
-            if self.stop_event.wait(delay):
+            if stop_event.wait(delay):
                 break
-            self._streaming_reconnect_event.clear()
+            reconnect_event.clear()
             old = self._streaming_handle
             self._streaming_handle = None  # feeder drops chunks while down
             if old is not None:
@@ -556,11 +644,12 @@ class AppController:
                 # open_stream rarely raises (connect failures arrive async
                 # via on_error) — but if it does, queue another attempt.
                 log(f"STREAMING Reconnect attempt failed: {e}", level="WARNING")
-                self._streaming_reconnect_event.set()
+                reconnect_event.set()
         log("STREAMING reconnect supervisor ended", level="DEBUG")
 
     def _process_streaming_utterances(self, session: _StreamingUtteranceSession):
         context_mgr = get_context_manager()
+        stop_event = self.stop_event  # session-local: see _process_audio
 
         def _emit(trans_text: str, live_rev: int) -> None:
             # Mirror _process_audio's per-item recovery: an unexpected error
@@ -613,7 +702,7 @@ class AppController:
             else:
                 hold_deadline = time.time() + STREAMING_COALESCE_HOLD_SECONDS
 
-        while not self.stop_event.is_set():
+        while not stop_event.is_set():
             try:
                 trans_text, live_rev = self._streaming_utterance_queue.get(timeout=0.2)
                 _accept(trans_text, live_rev)
@@ -691,6 +780,7 @@ class AppController:
         def _on_transcript(text: str, is_final: bool) -> None:
             if not text.strip():
                 return
+            self._last_pipeline_activity = time.time()
             if self._streaming_outage:
                 # Proof of life after a reconnect: end the outage and reset
                 # the backoff for the next disconnect.
@@ -728,9 +818,8 @@ class AppController:
 
         # Always created; the feeder consults the noise_filter setting per
         # chunk, so the settings checkbox toggles the gate live mid-session.
-        self._noise_gate = StreamNoiseGate(
-            get_streaming_capture_sample_rate(provider_id)
-        )
+        self._streaming_capture_rate = get_streaming_capture_sample_rate(provider_id)
+        self._noise_gate = StreamNoiseGate(self._streaming_capture_rate)
 
         streaming_model = resolve_streaming_transcription_model(
             provider_id, settings.transcription_model
@@ -762,7 +851,10 @@ class AppController:
 
         self._input_thread = threading.Thread(
             target=self._streaming_input_stream_thread,
-            args=(input_device, get_streaming_capture_sample_rate(provider_id)),
+            args=(
+                input_device,
+                self._streaming_capture_rate,
+            ),
             daemon=True,
             name="streaming-input",
         )
@@ -820,6 +912,9 @@ class AppController:
 
         self._current_device = input_device
         log(f"Using input device index: {input_device}", level="INFO")
+
+        # A session with no speech at all should still auto-stop 10 min in.
+        self._last_pipeline_activity = time.time()
 
         # Log the provider and the models actually in use (the settings values
         # may belong to a different provider and would then be ignored)
@@ -945,6 +1040,11 @@ class AppController:
         session = self._streaming_session
         return session.get_live_state() if session is not None else ("", False)
 
+    def seconds_since_last_activity(self) -> float:
+        """Seconds since the last transcription arrived (either pipeline
+        mode). The GUI polls this for the inactivity auto-stop."""
+        return time.time() - self._last_pipeline_activity
+
     def change_input_device(self, new_device: int, timeout: float = 1.0) -> bool:
         """
         Hot-swap the input device without stopping the rest of the pipeline.
@@ -961,12 +1061,10 @@ class AppController:
             return False
 
         if self._streaming_handle is not None:
-            log(
-                "Cannot hot-swap device in streaming mode yet (P7 phase 1 "
-                "limitation) — stop and restart instead.",
-                level="WARNING",
-            )
-            return False
+            # In streaming mode only the capture thread needs to change —
+            # the WebSocket connection stays alive.  Use the same rate that
+            # was used when the session started.
+            pass  # fall through to the shared restart logic below
 
         if new_device == self._current_device:
             log(f"Device {new_device} already active, no change needed", level="DEBUG")
@@ -988,12 +1086,20 @@ class AppController:
         # Reset and start new input stream
         self._input_stop_event = threading.Event()
         self._current_device = new_device
-        self._input_thread = threading.Thread(
-            target=self._input_stream_thread,
-            args=(new_device,),
-            daemon=True,
-            name="input-stream",
-        )
+        if self._streaming_handle is not None:
+            self._input_thread = threading.Thread(
+                target=self._streaming_input_stream_thread,
+                args=(new_device, self._streaming_capture_rate),
+                daemon=True,
+                name="streaming-input",
+            )
+        else:
+            self._input_thread = threading.Thread(
+                target=self._input_stream_thread,
+                args=(new_device,),
+                daemon=True,
+                name="input-stream",
+            )
         self._input_thread.start()
 
         log(f"Input device switched to {new_device}", level="INFO")

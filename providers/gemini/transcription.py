@@ -44,5 +44,10 @@ class GeminiTranscriptionProvider:
                 types.Part.from_bytes(data=audio_wav, mime_type="audio/wav"),
                 instruction,
             ],
+            # Verbatim transcription needs no reasoning; thinking only adds
+            # latency on the Gemini 3.x models (see translation.py).
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(thinking_budget=0)
+            ),
         )
         return (resp.text or "").strip()

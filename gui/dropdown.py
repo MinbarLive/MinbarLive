@@ -5,6 +5,7 @@ onboarding wizard (gui/onboarding.py) so the two look and behave
 identically. Extracted from app_gui.py.
 """
 
+import time
 import tkinter as tk
 from collections.abc import Callable
 from typing import Any
@@ -26,6 +27,9 @@ class CustomDropdown(ctk.CTkFrame):
 
     _active: "CustomDropdown | None" = None  # currently open dropdown
     _bound_root: Any = None  # tk root the app-level handlers are bound to
+    # Monotonic timestamp of the last OS-level window FocusIn event.
+    # Used to detect "click that restored window focus" vs a normal click.
+    _focus_in_time: float = -999.0
 
     def __init__(
         self,
@@ -131,25 +135,63 @@ class CustomDropdown(ctk.CTkFrame):
         if cls._bound_root is not root:
             root.bind_all("<Button-1>", cls._on_global_click, add="+")
             root.bind_all("<MouseWheel>", cls._on_global_scroll, add="+")
+            root.bind_all("<FocusIn>", cls._on_any_focus_in, add="+")
             cls._bound_root = root
 
     @staticmethod
+    def _on_any_focus_in(event: "tk.Event[Any]") -> None:
+        """Record when a top-level window gains OS focus (not internal widget focus).
+
+        <FocusIn> fires on the Toplevel widget itself only when the OS activates
+        the window from outside (another app, taskbar, Alt+Tab).  When a child
+        widget gets keyboard focus inside an already-focused window the event
+        goes to the child, so str(event.widget) != str(winfo_toplevel()) and we
+        correctly ignore it.
+        """
+        try:
+            w = event.widget
+            if str(w) == str(w.winfo_toplevel()):
+                CustomDropdown._focus_in_time = time.monotonic()
+        except Exception:
+            pass
+
+    @staticmethod
     def _on_global_click(event: "tk.Event[Any]") -> None:
+        # Any click anywhere consumes the focus-restore state.
+        CustomDropdown._focus_in_time = -999.0
         active = CustomDropdown._active
         if active is None or not active._is_open:
             return
-        w_path = str(event.widget)
-        self_path = str(active)
-        popup_path = str(active._popup) if active._popup else ""
-        if (
-            w_path == self_path
-            or w_path.startswith(self_path + ".")
-            or (
-                popup_path
-                and (w_path == popup_path or w_path.startswith(popup_path + "."))
-            )
-        ):
-            return  # click is on this widget or inside the popup
+        # Use screen-space coordinates rather than widget paths.  On Windows,
+        # clicking an unfocused window can deliver a <Button-1> whose
+        # event.widget is the root window rather than the dropdown; path checks
+        # fail in that case and the popup is closed immediately.  Coordinates
+        # always reflect where the user actually clicked.
+        x, y = event.x_root, event.y_root
+        # Still inside the open popup?
+        if active._popup:
+            try:
+                if active._popup.winfo_exists():
+                    px = active._popup.winfo_rootx()
+                    py = active._popup.winfo_rooty()
+                    if (
+                        px <= x < px + active._popup.winfo_width()
+                        and py <= y < py + active._popup.winfo_height()
+                    ):
+                        return
+            except Exception:
+                pass
+        # Still on the dropdown button itself?
+        try:
+            dx = active.winfo_rootx()
+            dy = active.winfo_rooty()
+            if (
+                dx <= x < dx + active.winfo_width()
+                and dy <= y < dy + active.winfo_height()
+            ):
+                return
+        except Exception:
+            pass
         active._close()
 
     @staticmethod
@@ -164,13 +206,21 @@ class CustomDropdown(ctk.CTkFrame):
 
     # ── Toggle ────────────────────────────────────────────────────────────
 
-    def _on_click(self, _event: "tk.Event[Any]") -> None:
+    def _on_click(self, _event: "tk.Event[Any]") -> str:
         if not self._enabled:
-            return
+            return "break"
+        # If the window just gained OS focus, this click is the focus-restore
+        # click.  Accept the focus but don't open/close the dropdown; the user
+        # can click a second time to interact with it.
+        just_focused = time.monotonic() - CustomDropdown._focus_in_time < 0.05
+        CustomDropdown._focus_in_time = -999.0  # consume regardless
+        if just_focused:
+            return "break"
         if self._is_open:
             self._close()
         else:
             self._open()
+        return "break"  # stop event propagation to parent widgets
 
     # ── Open popup ────────────────────────────────────────────────────────
 

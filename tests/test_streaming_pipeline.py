@@ -228,7 +228,7 @@ class TestStreamingStartValidation:
         self, streaming_env, monkeypatch
     ):
         monkeypatch.setattr(app_controller, "has_usable_key", lambda p: False)
-        with pytest.raises(ValueError, match="OpenAI API key"):
+        with pytest.raises(ValueError, match="Gemini API key"):
             streaming_env.controller.start(input_device=0)
         streaming_env.context_mgr.start.assert_not_called()
         assert streaming_env.controller._running is False
@@ -290,10 +290,10 @@ class TestStreamingPipeline:
 
     def test_stream_opened_with_language_and_model(self, streaming_env):
         _controller, provider = self._start(streaming_env)
-        # Default engine (openai_realtime) with the default transcription
+        # Default engine (gemini_realtime) with the default transcription
         # model — passed through as-is.
         assert provider.opened_with == {
-            "model": "gpt-4o-transcribe",
+            "model": "gemini-2.5-flash-native-audio-latest",
             "language": "ar",
         }
 

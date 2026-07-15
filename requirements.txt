@@ -27,6 +27,9 @@ sounddevice==0.5.3
 scipy==1.16.3
 numpy==2.4.0
 
+# Loopback audio capture from output devices (speakers/headphones) on Windows
+SoundCard>=0.4.6
+
 # Voice-activity noise filter (webrtcvad fork with prebuilt wheels; the app
 # degrades to pass-through if it is missing)
 webrtcvad-wheels==2.0.14

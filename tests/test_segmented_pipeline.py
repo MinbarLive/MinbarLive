@@ -157,6 +157,23 @@ class TestSegmentedPipeline:
         # The processed file is consumed.
         assert _wait_for(lambda: not any(env.audio_dir.iterdir()))
 
+    def test_leftover_thread_not_rearmed_by_new_session_event(self, segmented_env):
+        """stop() joins with a timeout, so a processor thread busy in an API
+        call can outlive it; the next start() then REPLACES self.stop_event.
+        The leftover thread must exit on its own captured event instead of
+        being re-armed by the fresh one — a re-armed zombie ran inside a
+        streaming session (strategy=None) and double-processed audio
+        (observed live 2026-07-15)."""
+        env = segmented_env
+        t = env.start()
+        env.add_wav()  # prove the loop is running before swapping the event
+        assert _wait_for(lambda: not env.controller.translation_queue.empty())
+        old_event = env.controller.stop_event
+        env.controller.stop_event = threading.Event()  # what start() does
+        old_event.set()  # what the old session's stop() did
+        t.join(timeout=2.0)
+        assert not t.is_alive(), "old thread was re-armed by the new event"
+
     def test_unchanged_translation_suppresses_source_line(self, segmented_env):
         """Bilingual guard: a pass-through translation must not render the
         same text twice (source line is dropped)."""

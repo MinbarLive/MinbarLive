@@ -48,7 +48,7 @@ Select your preferred language from the dropdown in the top-right corner. Change
 
 ### Processing Strategy Options
 
-- **Real-time streaming** (default): live word-by-word transcript, translation per utterance (~1–3 s latency). Engine selectable: OpenAI Realtime, Google Gemini Live, Deepgram.
+- **Real-time streaming** (default): live word-by-word transcript, translation per utterance (~1–3 s latency). Engine selectable: Google Gemini Live (default), OpenAI Realtime, Deepgram.
 - **Chunk-based**: translates each 12 s audio segment immediately (~4–14 s latency). No streaming connection needed.
 - **Semantic buffering** (Beta): waits for complete sentences before translating. Best sentence quality, highest latency; heuristics tuned for Arabic.
 
@@ -58,9 +58,10 @@ Model selection is **user-configurable in the GUI** and lives in `utils/settings
 
 | Capability              | Default                  | Fallback chain                                    |
 | ----------------------- | ------------------------ | ------------------------------------------------- |
+| Translation (Gemini)    | `gemini-3.1-flash-lite`  | `gemini-3.1-flash-lite` → `gemini-3.5-flash`      |
 | Translation (OpenAI)    | `gpt-5.2`                | `gpt-5.2` → `gpt-5.1` → `gpt-4.1` → `gpt-4o-mini` |
 | Transcription (OpenAI)  | `gpt-4o-transcribe`      | `gpt-4o-transcribe` → `gpt-4o-mini-transcribe` → `whisper-1` |
-| Embeddings (RAG)        | `text-embedding-3-large` | — (must match the precomputed verse matrix)       |
+| Embeddings (RAG)        | `gemini-embedding-001` / `text-embedding-3-large` | — (must match the precomputed verse matrix of the active space) |
 
 See [providers.md](providers.md) for the Gemini/Anthropic/streaming model catalogs.
 

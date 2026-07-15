@@ -48,7 +48,7 @@ def _batch_stt_fallback(provider_id: str) -> str:
     mode and no shared key family — pick the highest-ranked segmented STT
     provider the user actually holds a key for."""
     if provider_id == "deepgram":
-        return ranked_keyed_provider(["openai", "gemini"])
+        return ranked_keyed_provider(["gemini", "openai"])
     return _BATCH_STT_FALLBACKS.get(provider_id, provider_id)
 
 

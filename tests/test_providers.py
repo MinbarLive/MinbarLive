@@ -78,6 +78,15 @@ class TestProtocolConformance:
 class TestFactories:
     """Provider selection from the ai_provider setting."""
 
+    @pytest.fixture(autouse=True)
+    def _no_keys(self, monkeypatch):
+        # Fallback paths are key-aware; pin to "no keys" so the ranked
+        # fallback deterministically lands on the highest-ranked provider
+        # (Gemini) regardless of which keys exist on this machine.
+        monkeypatch.setattr(providers, "has_usable_key", lambda p: False)
+        monkeypatch.setattr(providers, "_fallback_cache", {})
+        monkeypatch.setattr(providers, "_warned_fallbacks", set())
+
     def _set_provider(self, monkeypatch, name, transcription_provider=None):
         # Transcription defaults to the same provider unless overridden — this
         # mirrors the pre-split behavior the existing assertions expect.
@@ -97,16 +106,16 @@ class TestFactories:
             providers.get_translation_provider(), OpenAITranslationProvider
         )
 
-    def test_unknown_provider_falls_back_to_openai(self, monkeypatch):
+    def test_unknown_provider_falls_back_to_gemini(self, monkeypatch):
         self._set_provider(monkeypatch, "not-a-provider")
         assert isinstance(
-            providers.get_translation_provider(), OpenAITranslationProvider
+            providers.get_translation_provider(), GeminiTranslationProvider
         )
 
-    def test_empty_provider_falls_back_to_openai(self, monkeypatch):
+    def test_empty_provider_falls_back_to_gemini(self, monkeypatch):
         self._set_provider(monkeypatch, "")
         assert isinstance(
-            providers.get_translation_provider(), OpenAITranslationProvider
+            providers.get_translation_provider(), GeminiTranslationProvider
         )
 
     def test_gemini_selected(self, monkeypatch):
@@ -154,11 +163,12 @@ class TestFactories:
             providers.get_translation_provider(), AnthropicTranslationProvider
         )
 
-    def test_anthropic_transcription_falls_back_to_openai(self, monkeypatch):
-        """Anthropic has no STT API — the registry falls back to OpenAI."""
+    def test_anthropic_transcription_falls_back_to_gemini(self, monkeypatch):
+        """Anthropic has no STT API — the registry falls back to the
+        highest-ranked provider (Gemini since 2026-07-14)."""
         self._set_provider(monkeypatch, "anthropic")
         assert isinstance(
-            providers.get_transcription_provider(), OpenAITranscriptionProvider
+            providers.get_transcription_provider(), GeminiTranscriptionProvider
         )
 
     def test_transcription_independent_of_translation(self, monkeypatch):
@@ -198,11 +208,11 @@ class TestFactories:
     def test_streaming_engine_falls_back_to_default(self, monkeypatch):
         """A non-streaming transcription_provider (stale settings) must not
         break streaming start — it falls back to the default engine
-        (OpenAI Realtime since 2026-07-09)."""
+        (Gemini Live since 2026-07-14)."""
         self._set_provider(monkeypatch, "gemini")
         assert isinstance(
             providers.get_streaming_transcription_provider(),
-            OpenAIRealtimeTranscriptionProvider,
+            GeminiLiveTranscriptionProvider,
         )
 
     def test_fallback_warning_logged_once(self, monkeypatch):
@@ -344,9 +354,9 @@ class TestModelChains:
         assert all(m.startswith("gemini") for m in chain)
 
     def test_valid_gemini_setting_leads_chain(self, monkeypatch):
-        self._set(monkeypatch, "gemini", translation_model="gemini-2.0-flash")
+        self._set(monkeypatch, "gemini", translation_model="gemini-3.5-flash")
         chain = providers.get_translation_model_chain()
-        assert chain[0] == "gemini-2.0-flash"
+        assert chain[0] == "gemini-3.5-flash"
 
     def test_openai_model_not_sent_to_anthropic(self, monkeypatch):
         self._set(monkeypatch, "anthropic", translation_model="gpt-5.2")
@@ -366,11 +376,14 @@ class TestModelChains:
         chain = providers.get_translation_model_chain()
         assert chain[0] == "claude-opus-4-8"
 
-    def test_anthropic_transcription_chain_uses_openai(self, monkeypatch):
-        """No Anthropic STT — the chain must come from the OpenAI fallback."""
+    def test_anthropic_transcription_chain_uses_ranked_fallback(self, monkeypatch):
+        """No Anthropic STT — the chain comes from the ranked key-aware
+        fallback (Gemini when no key decides otherwise)."""
         self._set(monkeypatch, "anthropic", transcription_model="")
+        monkeypatch.setattr(providers, "has_usable_key", lambda p: False)
+        monkeypatch.setattr(providers, "_fallback_cache", {})
         chain = providers.get_transcription_model_chain()
-        assert chain[0] == providers._MODEL_CHAINS["openai"]["transcription"][0]
+        assert chain[0] == providers._MODEL_CHAINS["gemini"]["transcription"][0]
 
 
 class TestGeminiTranslationProvider:
@@ -398,11 +411,16 @@ class TestGeminiTranslationProvider:
         assert kwargs["config"].system_instruction == "sys"
         assert kwargs["config"].max_output_tokens == 40
         assert kwargs["config"].temperature == 0.2
+        assert kwargs["config"].thinking_config.thinking_budget == 0
 
-    def test_user_only_has_no_config(self, monkeypatch):
+    def test_user_only_defaults_to_thinking_off(self, monkeypatch):
+        # Even a bare call sends a config: Gemini 3.x models think by
+        # default, which live subtitles can't afford (probed 2026-07-15).
         client = self._client_mock(monkeypatch)
         GeminiTranslationProvider().complete(model="m", user_prompt="usr")
-        assert client.models.generate_content.call_args.kwargs["config"] is None
+        cfg = client.models.generate_content.call_args.kwargs["config"]
+        assert cfg.system_instruction is None
+        assert cfg.thinking_config.thinking_budget == 0
 
     def test_none_text_returns_empty_string(self, monkeypatch):
         self._client_mock(monkeypatch, text=None)
@@ -429,6 +447,8 @@ class TestGeminiTranscriptionProvider:
         assert part.inline_data.data == b"wav-bytes"
         assert "verbatim" in instruction
         assert "'ar'" in instruction
+        cfg = client.models.generate_content.call_args.kwargs["config"]
+        assert cfg.thinking_config.thinking_budget == 0
 
     def test_auto_detect_has_no_language_hint(self, monkeypatch):
         client = self._client_mock(monkeypatch)
@@ -554,18 +574,23 @@ class TestProviderChoiceHelpers:
         gemini_ids = [m for _n, m in providers.get_model_choices("gemini", "translation")]
         assert all(m.startswith("gemini") for m in gemini_ids)
 
-    def test_unknown_provider_falls_back_to_openai_choices(self):
+    def test_unknown_provider_falls_back_to_gemini_choices(self):
         assert providers.get_model_choices(
             "nope", "translation"
-        ) == providers.get_model_choices("openai", "translation")
+        ) == providers.get_model_choices("gemini", "translation")
 
     def test_default_model(self):
-        assert providers.get_default_model("gemini", "translation") == "gemini-3.5-flash"
+        assert (
+            providers.get_default_model("gemini", "translation")
+            == "gemini-3.1-flash-lite"
+        )
         assert providers.get_default_model("nope", "translation") == (
-            providers.get_default_model("openai", "translation")
+            providers.get_default_model("gemini", "translation")
         )
 
-    def test_anthropic_choices(self):
+    def test_anthropic_choices(self, monkeypatch):
+        monkeypatch.setattr(providers, "has_usable_key", lambda p: False)
+        monkeypatch.setattr(providers, "_fallback_cache", {})
         translation_ids = [
             m for _n, m in providers.get_model_choices("anthropic", "translation")
         ]
@@ -573,12 +598,12 @@ class TestProviderChoiceHelpers:
         assert providers.get_default_model("anthropic", "translation") == (
             "claude-sonnet-5"
         )
-        # Transcription surfaces the OpenAI models (registry fallback)
+        # Transcription surfaces the ranked fallback engine's models (Gemini)
         assert providers.get_model_choices("anthropic", "transcription") == (
-            providers.get_model_choices("openai", "transcription")
+            providers.get_model_choices("gemini", "transcription")
         )
         assert providers.get_default_model("anthropic", "transcription") == (
-            providers.get_default_model("openai", "transcription")
+            providers.get_default_model("gemini", "transcription")
         )
 
 
@@ -1182,10 +1207,10 @@ class TestStreamingEngineHelpers:
             )
 
     def test_resolve_model_unknown_engine_uses_default_engine(self):
-        # Default streaming engine is OpenAI Realtime (2026-07-09 decision).
+        # Default streaming engine is Gemini Live (2026-07-14 decision).
         assert (
             providers.resolve_streaming_transcription_model("bogus", "whatever")
-            == "gpt-4o-transcribe"
+            == "gemini-2.5-flash-native-audio-latest"
         )
 
     def test_key_provider_mapping(self):

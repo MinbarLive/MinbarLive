@@ -21,6 +21,9 @@ TRANSLATION_MODELS = [
     ("Claude Sonnet 5 (Recommended)", "claude-sonnet-5"),
     ("Claude Haiku 4.5 (Fastest)", "claude-haiku-4-5"),
     ("Claude Opus 4.8 (Highest quality)", "claude-opus-4-8"),
+    # Listed on the account's models endpoint (2026-07-15); premium tier,
+    # same cost opt-in treatment as Opus. Unverified live (no credits).
+    ("Claude Fable 5 (Premium)", "claude-fable-5"),
 ]
 
 __all__ = [

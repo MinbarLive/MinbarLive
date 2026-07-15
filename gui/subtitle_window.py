@@ -18,19 +18,29 @@ try:
 except ImportError:
     _ARABIC_SUPPORT = False
 
+# Arabic-block codepoints that survive reshaping (؟ ، ؛ ٪ and Arabic-Indic
+# digits have no presentation forms; reshaped letters become U+FBxx/FExx).
+_ARABIC_BLOCK_RE = re.compile(r"[؀-ۿݐ-ݿࢠ-ࣿ]")
+# Windows Tk (GDI/Uniscribe) runs its own Arabic bidi+shaping pass over any
+# string still containing Arabic-block codepoints. Pure presentation-form
+# strings don't trigger it — that's why the reshape+bidi pipeline normally
+# renders correctly here.
+_TK_HANDLES_ARABIC = sys.platform == "win32"
+
 
 def _reshape_rtl(text: str) -> str:
     """Reshape and apply bidi algorithm to Arabic/RTL text for correct rendering.
 
-    Tkinter does not natively handle Arabic text shaping or RTL direction,
-    so we pre-process the text with arabic-reshaper and python-bidi before
-    passing it to the canvas.  Non-Arabic text is returned unchanged.
+    Tkinter does not natively handle Arabic text shaping or RTL direction
+    on all platforms, so we pre-process the text with arabic-reshaper and
+    python-bidi before passing it to the canvas. Non-Arabic text is
+    returned unchanged.
     """
     if not _ARABIC_SUPPORT:
         return text
     try:
         reshaped = arabic_reshaper.reshape(text)
-        return bidi_get_display(reshaped)
+        visual = bidi_get_display(reshaped)
     except Exception as exc:
         # A silent fallback renders Arabic reversed with disconnected
         # letters — make the cause visible so it can be diagnosed.
@@ -41,6 +51,14 @@ def _reshape_rtl(text: str) -> str:
         except Exception:
             pass
         return text
+    if _TK_HANDLES_ARABIC and _ARABIC_BLOCK_RE.search(visual):
+        # ؟ ، ؛ or Arabic digits survived reshaping: their presence makes
+        # Windows Tk re-run bidi over our already-visual string, reversing
+        # it back to logical order with disconnected letters (the "breaks
+        # only with ؟/!" bug). Tk renders the plain logical text correctly
+        # on its own in exactly these cases — hand it the original text.
+        return text
+    return visual
 
 
 if _ARABIC_SUPPORT:
@@ -50,13 +68,65 @@ if _ARABIC_SUPPORT:
     _reshape_rtl("تهيئة")
 
 
-from config import FOOTER_TRANSLATIONS_PATH, LINE_SPACING, MARGIN_BOTTOM
+from config import (
+    FOOTER_TRANSLATIONS_PATH,
+    LINE_SPACING,
+    MARGIN_BOTTOM,
+    REALTIME_BLOCK_SPACING,
+    REALTIME_LIVE_MAX_ROWS,
+    REALTIME_MAX_BLOCK_CHARS,
+)
 from utils.json_helpers import load_json
 from utils.settings import (
     SUBTITLE_MODE_CONTINUOUS,
     SUBTITLE_MODE_REALTIME,
     SUBTITLE_MODE_STATIC,
 )
+
+# Sentence boundaries for splitting oversized Realtime blocks: terminal
+# punctuation (Latin + Arabic), optionally followed by closing quotes.
+_SENTENCE_RE = re.compile(r"[^.!?…؟؛]*[.!?…؟؛]+[\"'“”„»«]*\s*|[^.!?…؟؛]+$")
+
+# Any Arabic-script character, incl. the presentation forms the reshaper
+# emits — checked on rendered text to pick the source/live-line font.
+_ARABIC_ANY_RE = re.compile(
+    r"[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]"
+)
+
+# Ink classification for _stack_overlap. Deliberately biased LOOSE: the
+# classes reserve more headroom than the ink probe measured, so a wrong
+# guess can only widen the gap, never let letters touch.
+# Capital letters with diacritics (Ä Ü Š İ Ç …) reach well above plain caps.
+_TALL_DIACRITIC_RE = re.compile(r"[À-ÖØ-ÞĀ-ɏ̀-ͯ]")
+# The Allah honorifics the translator inserts into TARGET-language lines
+# (Allah ﷻ, Muhammad ﷺ) are Arabic presentation-form ligatures but render
+# within plain Latin ink bounds (probed 33/30px vs plain text 35px below the
+# box top at 64pt) — they must not push a German line into the loose Arabic
+# headroom class.
+_HONORIFIC_LIGATURE_RE = re.compile(r"[ﷺﷻ]")
+
+
+def split_display_chunks(text: str, max_chars: int) -> list[str]:
+    """Split a long settled translation at sentence boundaries into chunks
+    of at most ``max_chars`` (a single over-long sentence stays whole).
+    Continuous speech flushes up to 12s of speech as one utterance — its
+    translation would otherwise render as a wall of text in the feed."""
+    text = text.strip()
+    if len(text) <= max_chars:
+        return [text] if text else []
+    sentences = [m.group(0).strip() for m in _SENTENCE_RE.finditer(text)]
+    sentences = [s for s in sentences if s]
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        if current and len(current) + 1 + len(sentence) > max_chars:
+            chunks.append(current)
+            current = sentence
+        else:
+            current = f"{current} {sentence}".strip()
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 # Load footer translations from JSON file
@@ -165,8 +235,16 @@ class SubtitleWindow(tk.Toplevel):
         self._box_padding_y = 6
         self._box_radius = 8
         self._line_gap = 8
+        # Bounding-box gap between a source line and its translation in
+        # static mode, where each line has its own background card (cards
+        # must not overlap). The text-only modes use _stack_overlap instead
+        # so source/translation and wrapped rows sit visibly tighter.
+        self._pair_gap = 2
         self._transparent_key_color = "#00fe00"
         self._font_family = "Segoe UI Semibold" if is_windows else "Helvetica"
+        # Regular-weight family for the italic source/live styling (the main
+        # family bakes Semibold into its name, so "not bold" needs its own).
+        self._slant_font_family = "Segoe UI" if is_windows else "Helvetica"
         self._footer_font_family = "Segoe UI" if is_windows else "Helvetica"
         self._apply_theme_palette(self._theme_mode)
 
@@ -463,7 +541,20 @@ class SubtitleWindow(tk.Toplevel):
         self._current_font_size = font_size
         self.font = (self._font_family, font_size, "bold")
         # Bilingual mode renders the original text smaller above the translation
-        self.source_font = (self._font_family, max(12, int(font_size * 0.7)), "bold")
+        source_size = max(12, int(font_size * 0.7))
+        self.source_font = (self._font_family, source_size, "bold")
+        # Latin-script source/live text: italic + regular weight, so it reads
+        # apart from the bold upright translation even in the same script.
+        # Arabic keeps the upright fonts — it has no italic tradition (Tk
+        # would fake a slant) and the script itself already differs.
+        self.source_font_latin = (self._slant_font_family, source_size, "italic")
+        self.live_font_latin = (self._slant_font_family, font_size, "italic")
+
+    def _source_font_for(self, text: str):
+        return self.source_font if _ARABIC_ANY_RE.search(text) else self.source_font_latin
+
+    def _live_font_for(self, text: str):
+        return self.font if _ARABIC_ANY_RE.search(text) else self.live_font_latin
 
     def increase_font(self):
         """Increase subtitle font size."""
@@ -522,9 +613,12 @@ class SubtitleWindow(tk.Toplevel):
     def set_bilingual_mode(self, enabled: bool):
         """Show or hide the original text above the translation.
 
-        Applies to subtitles added after the change; existing ones stay as-is.
+        Applies to subtitles added after the change; existing ones stay
+        as-is. Since 2026-07-15 this no longer gates the live transcript
+        line — that follows its own "Show live transcript" setting.
         """
         self._bilingual_mode = enabled
+        self._render_live_line()
 
     def set_live_text(self, text: str | None, settled: bool = False):
         """Update or remove the live (in-progress) transcript line.
@@ -568,21 +662,34 @@ class SubtitleWindow(tk.Toplevel):
         if self._subtitle_mode != SUBTITLE_MODE_REALTIME:
             return
         if not self._live_text:
+            # The live line is gated solely by the "Show live transcript"
+            # setting — the GUI mirrors "" while it is off. "Show original
+            # text" only affects settled bilingual blocks (decoupled
+            # 2026-07-15; supersedes the 2026-07-14 coupling — the two
+            # switches were confusingly both required).
             self._layout_live_feed()
             return
 
-        self.update_idletasks()
-        self.canvas_width = self.canvas.winfo_width()
-        self.canvas_height = self.canvas.winfo_height()
-
+        # Use the maintained canvas_width/height attributes — every resize
+        # path keeps them current. Re-reading winfo here is stale when called
+        # synchronously inside set_window_height_percent (the <Configure>
+        # event hasn't been processed yet) and clobbered the fresh size,
+        # corrupting the feed scroll target.
         max_width = self.canvas_width - 140
-        lines = self._wrap_text_to_lines(self._live_text, max_width, self.font)
+        live_font = self._live_font_for(self._live_text)
+        lines = self._wrap_text_to_lines(self._live_text, max_width, live_font)
+        # Show only the newest row(s): a long interim otherwise wraps to
+        # several rows and shoves the settled history up by that much at once
+        # (the feed never scrolls back down). The full utterance still
+        # arrives as the settled translation block.
+        if len(lines) > REALTIME_LIVE_MAX_ROWS:
+            lines = lines[-REALTIME_LIVE_MAX_ROWS:]
         text_id = self.canvas.create_text(
             self.canvas_width / 2,
             self.canvas_height,
             text="\n".join(lines),
             fill=self._primary_text if self._live_settled else self._secondary_text,
-            font=self.font,
+            font=live_font,
             anchor="s",
             justify="center",
         )
@@ -630,7 +737,9 @@ class SubtitleWindow(tk.Toplevel):
         bottoms: list[float] = []
         for block in self.subtitle_stack:
             bottoms.append(cursor + block.height)
-            cursor = bottoms[-1] + self.line_spacing
+            # Wider than continuous mode's line_spacing so a bilingual pair
+            # (tight _pair_gap inside) reads as one group per utterance.
+            cursor = bottoms[-1] + REALTIME_BLOCK_SPACING
         if self._live_items:
             live_h = self._measure_block_height(
                 self._live_items[0][0], self._live_items, None
@@ -656,12 +765,19 @@ class SubtitleWindow(tk.Toplevel):
         for i, (block, natural_bottom) in enumerate(
             zip(self.subtitle_stack, bottoms, strict=True)
         ):
-            self.canvas.coords(block.text_id, cx, natural_bottom - scroll)
-            self._position_source_above(block.text_id, block.source_items)
-            self.canvas.itemconfig(
-                block.text_id,
-                fill=self._primary_text if i == last else self._secondary_text,
-            )
+            fill = self._primary_text if i == last else self._secondary_text
+            if block.line_items:
+                # Multi-row block: bottom row anchors the block, the rows
+                # above re-chain at the tight ink-aware distance.
+                self._stack_rows_tight(block.line_items, natural_bottom - scroll)
+                for line_id, _box_id in block.line_items:
+                    self.canvas.itemconfig(line_id, fill=fill)
+                anchor_id = block.line_items[0][0]
+            else:
+                self.canvas.coords(block.text_id, cx, natural_bottom - scroll)
+                self.canvas.itemconfig(block.text_id, fill=fill)
+                anchor_id = block.text_id
+            self._position_source_above(anchor_id, block.source_items)
 
         if self._live_items:
             self.canvas.coords(self._live_items[0][0], cx, content_bottom - scroll)
@@ -671,7 +787,9 @@ class SubtitleWindow(tk.Toplevel):
         while self.subtitle_stack and bottoms and (bottoms[0] - scroll) <= 0:
             evicted = self.subtitle_stack.pop(0)
             self._delete_item(evicted)
-            extent = evicted.height + self.line_spacing
+            # Must mirror _feed_natural_layout's block spacing exactly, or
+            # the scroll compensation drifts per eviction.
+            extent = evicted.height + REALTIME_BLOCK_SPACING
             self._live_feed_scroll -= extent
             self._live_feed_scroll_target -= extent
             bottoms.pop(0)
@@ -876,18 +994,66 @@ class SubtitleWindow(tk.Toplevel):
                 bottoms.append(bbox[3])
         return (max(bottoms) - min(tops)) if tops else 75
 
+    def _stack_overlap(self, lower_text: str) -> int:
+        """How far a line's bounding box may overlap the box of `lower_text`
+        (translation font) directly below it.
+
+        Tk boxes are font-METRIC sized: even at zero box gap the glyphs sit
+        ~0.5em apart, because the lower font's leading above its tallest ink
+        is blank pixels inside the box. Overlapping by that (ink-probe
+        measured, loose-biased) amount pulls the lines visually together
+        while the ink itself can never touch.
+
+        The upper line always keeps its full descent zone, even when its
+        text has no descenders: baseline distances must stay CONSTANT for
+        the spacing to READ as even — the eye measures baselines, not
+        descender tips, so tucking a descender-less line closer makes it an
+        outlier (live-session feedback 2026-07-15)."""
+        size = self._current_font_size
+        lower_text = _HONORIFIC_LIGATURE_RE.sub("", lower_text)
+        if _ARABIC_ANY_RE.search(lower_text):
+            lower_ws = 0.03 * size  # Arabic marks reach almost the box top
+        elif _TALL_DIACRITIC_RE.search(lower_text):
+            lower_ws = 0.28 * size  # capital diacritics (probed 0.33×size)
+        else:
+            lower_ws = 0.50 * size  # plain caps/ascenders (probed 0.55×size)
+        return max(0, round(lower_ws - 0.12 * size))
+
+    def _stack_rows_tight(self, line_items, bottom_y: float | None = None):
+        """Position a multi-row Realtime block's rows bottom-up so each row
+        sits at the tight ink-aware distance above the one below
+        (_stack_overlap). `bottom_y` anchors the bottom row; None keeps its
+        current position (e.g. re-chaining after a font change)."""
+        cx = self.canvas_width / 2
+        below_id = below_text = None
+        for line_id, _box_id in reversed(line_items):
+            if below_id is None:
+                if bottom_y is not None:
+                    self.canvas.coords(line_id, cx, bottom_y)
+            else:
+                self.canvas.coords(
+                    line_id,
+                    cx,
+                    self.canvas.bbox(below_id)[1] + self._stack_overlap(below_text),
+                )
+            below_id = line_id
+            below_text = self.canvas.itemcget(line_id, "text")
+
     def _position_source_above(self, text_id: int, source_items):
         """Anchor the source text directly above the translation text.
 
-        Used in continuous mode, where the source is a single canvas
-        text item; static mode positions per-line source cards itself.
+        Used in Realtime and continuous mode, where the source is a single
+        canvas text item; static mode positions per-line source cards itself.
+        In Realtime mode `text_id` is the block's TOP row when the
+        translation wraps to several per-row items.
         """
         if not source_items:
             return
         bbox = self.canvas.bbox(text_id)
         if not bbox:
             return
-        source_y = bbox[1] - self._line_gap
+        lower_first_line = self.canvas.itemcget(text_id, "text").split("\n")[0]
+        source_y = bbox[1] + self._stack_overlap(lower_first_line)
         for source_id, _box_id in source_items:
             self.canvas.coords(source_id, self.canvas_width / 2, source_y)
 
@@ -1125,13 +1291,20 @@ class SubtitleWindow(tk.Toplevel):
                 self.canvas.itemconfig(block.text_id, font=self.font)
             if block.source_items:
                 for source_id, box_id in block.source_items:
-                    self.canvas.itemconfig(source_id, font=self.source_font)
+                    rendered = self.canvas.itemcget(source_id, "text")
+                    self.canvas.itemconfig(
+                        source_id, font=self._source_font_for(rendered)
+                    )
                     if box_id:
                         bbox = self.canvas.bbox(source_id)
                         if bbox:
                             self._update_line_background(box_id, bbox)
 
         for block in self.subtitle_stack:
+            if block.line_items and self._subtitle_mode == SUBTITLE_MODE_REALTIME:
+                # Multi-row Realtime blocks: re-chain the rows with the new
+                # font BEFORE measuring — their height is position-dependent.
+                self._stack_rows_tight(block.line_items)
             block.height = self._measure_block_height(
                 block.text_id, block.line_items, block.source_items
             )
@@ -1156,6 +1329,10 @@ class SubtitleWindow(tk.Toplevel):
             height = int(mon.height * self._window_height_percent / 100)
             y = mon.y + (mon.height - height)
             x, width = mon.x, mon.width
+        # Size just applied to the window. winfo_width/height lag the native
+        # resize until the resulting <Configure> event is processed, so
+        # callers that need the fresh size right away read this instead.
+        self._applied_size = (width, height)
 
         # On Windows with hwnd, use SetWindowPos for precise borderless positioning
         if sys.platform == "win32" and self._hwnd:
@@ -1213,12 +1390,13 @@ class SubtitleWindow(tk.Toplevel):
         """Change the monitor where the subtitle window is displayed."""
         self._monitor_index = monitor_index
 
-        # Reposition window to the new monitor
+        # Reposition window to the new monitor (winfo lags the native
+        # resize — trust the size that was just applied, see
+        # set_window_height_percent)
         self._set_screen_position()
-        self.update_idletasks()
-        self.canvas_width = self.canvas.winfo_width()
-        self.canvas_height = self.canvas.winfo_height()
+        self.canvas_width, self.canvas_height = self._applied_size
         self._update_font()
+        self._update_footer_visibility()  # pill is drawn in canvas coords
         self._reposition_subtitles()
         self._render_live_line()
 
@@ -1226,10 +1404,33 @@ class SubtitleWindow(tk.Toplevel):
         """Set window height as percentage of screen height (5-100)."""
         self._window_height_percent = max(5, min(100, percent))
         # Use force_redraw to prevent visual glitches during resize
+        old_height = self.canvas_height
         self._set_screen_position(force_redraw=True)
-        self.canvas_width = self.canvas.winfo_width()
-        self.canvas_height = self.canvas.winfo_height()
+        # The canvas fills the window (relwidth/relheight=1), so take the
+        # size _set_screen_position just applied — winfo still reports the
+        # pre-resize size until the <Configure> event is processed.
+        self.canvas_width, self.canvas_height = self._applied_size
+        # The window is bottom-anchored on screen, so a height change moves
+        # only the top edge. The Realtime feed is laid out from the canvas
+        # top — shift its scroll by the height delta so the text keeps its
+        # on-screen position instead of jumping with the top edge. (Shrinking
+        # raises the scroll; blocks pushed above the new top edge are evicted
+        # by _render_feed_positions as usual.)
+        if (
+            self._subtitle_mode == SUBTITLE_MODE_REALTIME
+            and old_height > 1
+            and self.canvas_height > 1
+        ):
+            delta = self.canvas_height - old_height
+            if delta:
+                self._live_feed_scroll -= delta
+                self._live_feed_scroll_target -= delta
         self._update_font()
+        # The pill is drawn at fixed canvas coordinates near the bottom; the
+        # canvas origin (window top-left) just moved, so redraw it at the new
+        # canvas_height — otherwise it rides up on grow and sinks below the
+        # screen on shrink.
+        self._update_footer_visibility()
         self._reposition_subtitles()
         self._render_live_line()
         # Bring window to front after resize
@@ -1237,7 +1438,26 @@ class SubtitleWindow(tk.Toplevel):
 
     def add_subtitle(self, text: str, source_text: str | None = None):
         """Render a subtitle; in bilingual mode the original transcription is
-        shown above the translation in a smaller, muted font."""
+        shown above the translation in a smaller, muted font.
+
+        In Realtime mode an oversized settled translation (continuous speech
+        flushes up to 12s of speech as one utterance) is split at sentence
+        boundaries into separate, readable feed blocks. Bilingual pairs stay
+        whole — the original can't be aligned to the translation
+        per-sentence."""
+        if not (text or "").strip():
+            return
+        if (
+            self._subtitle_mode == SUBTITLE_MODE_REALTIME
+            and not (self._bilingual_mode and source_text)
+            and len(text) > REALTIME_MAX_BLOCK_CHARS
+        ):
+            for chunk in split_display_chunks(text, REALTIME_MAX_BLOCK_CHARS):
+                self._add_subtitle_block(chunk, None)
+            return
+        self._add_subtitle_block(text, source_text)
+
+    def _add_subtitle_block(self, text: str, source_text: str | None = None):
         if not (text or "").strip():
             return
 
@@ -1269,12 +1489,12 @@ class SubtitleWindow(tk.Toplevel):
                 top_bbox = self.canvas.bbox(line_items[0][0])
                 source_y = (
                     top_bbox[1] if top_bbox else self.canvas_height - 80
-                ) - self._line_gap
+                ) - self._pair_gap
                 _, source_items = self._create_outlined_text(
                     self.canvas_width / 2,
                     source_y,
                     text=source,
-                    font=self.source_font,
+                    font=self._source_font_for(source),
                     fill=self._secondary_text,
                 )
             text_height = self._measure_block_height(text_id, line_items, source_items)
@@ -1286,35 +1506,61 @@ class SubtitleWindow(tk.Toplevel):
             # (Tkinter's built-in width= wrapping does not handle RTL/Arabic).
             max_width = self.canvas_width - 140
             lines = self._wrap_text_to_lines(text, max_width)
-            shaped_text = "\n".join(lines)
-            text_id = self.canvas.create_text(
-                self.canvas_width / 2,
-                self.canvas_height,
-                text=shaped_text,
-                fill=self._primary_text,
-                font=self.font,
-                anchor="s",
-                justify="center",
-            )
+            line_items = None
+            if self._subtitle_mode == SUBTITLE_MODE_REALTIME and len(lines) > 1:
+                # One canvas item per wrapped row: a single multiline item is
+                # locked to the font's linespace, but the rows should stack
+                # at the same tight ink-aware distance as the source line
+                # above the translation (_stack_overlap).
+                line_items = [
+                    (
+                        self.canvas.create_text(
+                            self.canvas_width / 2,
+                            self.canvas_height,
+                            text=line_text,
+                            fill=self._primary_text,
+                            font=self.font,
+                            anchor="s",
+                            justify="center",
+                        ),
+                        None,
+                    )
+                    for line_text in lines
+                ]
+                self._stack_rows_tight(line_items)
+                text_id = line_items[-1][0]
+            else:
+                text_id = self.canvas.create_text(
+                    self.canvas_width / 2,
+                    self.canvas_height,
+                    text="\n".join(lines),
+                    fill=self._primary_text,
+                    font=self.font,
+                    anchor="s",
+                    justify="center",
+                )
             source_items = None
             if source:
+                source_font = self._source_font_for(source)
                 source_lines = self._wrap_text_to_lines(
-                    source, max_width, self.source_font
+                    source, max_width, source_font
                 )
                 source_id = self.canvas.create_text(
                     self.canvas_width / 2,
                     self.canvas_height,
                     text="\n".join(source_lines),
                     fill=self._secondary_text,
-                    font=self.source_font,
+                    font=source_font,
                     anchor="s",
                     justify="center",
                 )
                 source_items = [(source_id, None)]
-                self._position_source_above(text_id, source_items)
-            text_height = self._measure_block_height(text_id, None, source_items)
+                self._position_source_above(
+                    line_items[0][0] if line_items else text_id, source_items
+                )
+            text_height = self._measure_block_height(text_id, line_items, source_items)
             self.subtitle_stack.append(
-                _SubtitleBlock(text_id, text_height, None, source_items)
+                _SubtitleBlock(text_id, text_height, line_items, source_items)
             )
 
         if self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:

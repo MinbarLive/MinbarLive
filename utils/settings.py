@@ -85,8 +85,8 @@ TARGET_LANGUAGE_NAMES = [name for name, _ in TARGET_LANGUAGES]
 # Available translation providers (see providers/ package). Only registered
 # providers belong here; unknown values in settings.json fall back to the
 # default. This drives the ``ai_provider`` setting (translation only).
-AI_PROVIDERS = ["openai", "gemini", "anthropic"]
-DEFAULT_AI_PROVIDER = "openai"
+AI_PROVIDERS = ["gemini", "openai", "anthropic"]
+DEFAULT_AI_PROVIDER = "gemini"
 
 # Available transcription providers. "openai"/"gemini" run the segmented
 # pipeline; the "*_realtime" ids and "deepgram" are real-time streaming
@@ -95,34 +95,38 @@ DEFAULT_AI_PROVIDER = "openai"
 # but use the same API keys. Kept separate from AI_PROVIDERS so the
 # translation LLM and the speech-to-text engine can be chosen independently.
 TRANSCRIPTION_PROVIDERS = [
-    "openai",
     "gemini",
+    "openai",
     "deepgram",
-    "openai_realtime",
     "gemini_realtime",
+    "openai_realtime",
 ]
-# Fresh installs default to real-time streaming on OpenAI — one key covers
-# translation, transcription and RAG. Invalid stored values fall back to the
-# segmented default below instead.
-DEFAULT_TRANSCRIPTION_PROVIDER = "openai_realtime"
-DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER = "openai"
-STREAMING_TRANSCRIPTION_PROVIDERS = ["openai_realtime", "gemini_realtime", "deepgram"]
-DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER = "openai_realtime"
+# Fresh installs default to real-time streaming on Gemini — one key covers
+# translation, transcription and RAG (the Gemini embedding space ships with
+# the app). Invalid stored values fall back to the segmented default below
+# instead.
+DEFAULT_TRANSCRIPTION_PROVIDER = "gemini_realtime"
+DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER = "gemini"
+STREAMING_TRANSCRIPTION_PROVIDERS = ["gemini_realtime", "openai_realtime", "deepgram"]
+DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER = "gemini_realtime"
 
 # Available translation models (display_name, model_id)
 # Keep this list focused on practical TEXT translation models.
 # Excludes image/audio/realtime/search/codex variants and legacy deprecated options.
 # Organized by speed/cost: fastest first, highest quality last.
 TRANSLATION_MODELS = [
-    # Quality tier
-    ("GPT-5.4 (Highest Quality)", "gpt-5.4"),
+    # Quality tier (gpt-5.5 live-probed 2026-07-15: 3.9s Arabic→German)
+    ("GPT-5.5 (Highest Quality)", "gpt-5.5"),
+    ("GPT-5.4", "gpt-5.4"),
     ("GPT-5.2 (Stable High Quality)", "gpt-5.2"),
     # Balanced tier
     ("GPT-5.1", "gpt-5.1"),
     ("GPT-5", "gpt-5"),
     ("GPT-4.1", "gpt-4.1"),
     ("GPT-4o", "gpt-4o"),
-    # Real-time tier (low latency)
+    # Real-time tier (low latency; 5.4-mini/nano probed 1.2s/1.0s)
+    ("GPT-5.4 Mini", "gpt-5.4-mini"),
+    ("GPT-5.4 Nano", "gpt-5.4-nano"),
     ("GPT-5 Mini", "gpt-5-mini"),
     ("GPT-5 Nano", "gpt-5-nano"),
     ("GPT-4.1 Mini", "gpt-4.1-mini"),
@@ -246,7 +250,9 @@ class Settings:
         DEFAULT_THEME_MODE  # Subtitle-window theme (dark or light)
     )
     show_footer: bool = True  # Show footer disclaimer in subtitle window
-    bilingual_mode: bool = False  # Show original text above the translation
+    # Show original text above the translation (default ON since 2026-07-15,
+    # together with the live transcript line — user decision)
+    bilingual_mode: bool = True
     # Realtime mode only: show the in-progress transcript ("live line") while
     # the speaker is still talking. Off = the feed shows only finished
     # translation blocks as they land.
@@ -268,6 +274,10 @@ class Settings:
     log_panel_collapsed: bool = True  # Log panel hidden by default (AV volunteers)
     window_geometry: str = ""  # Last window geometry (WxH+X+Y), empty = use default
     auto_start: bool = False  # Start translation automatically when app launches
+    # Stop a running session automatically after 10 min without any
+    # transcription (AUTO_STOP_INACTIVITY_SECONDS) — cost guard for
+    # forgotten sessions, esp. streaming's per-minute billing.
+    auto_stop_inactivity: bool = True
     ai_provider: str = DEFAULT_AI_PROVIDER  # Translation provider (providers/ pkg)
     transcription_provider: str = (
         DEFAULT_TRANSCRIPTION_PROVIDER  # STT engine (streaming ones => streaming)
@@ -352,9 +362,9 @@ def load_settings(use_cache: bool = True) -> Settings:
                 transcription_provider = ai_provider
             else:
                 # Legacy file (e.g. anthropic) with no transcription engine —
-                # keep it segmented rather than silently requiring a Deepgram
-                # key it never had.
-                transcription_provider = DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER
+                # those sessions transcribed via the OpenAI fallback, so keep
+                # that (literal: the app default moved to Gemini later).
+                transcription_provider = "openai"
         if transcription_provider not in TRANSCRIPTION_PROVIDERS:
             transcription_provider = DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER
         pipeline_mode = (
@@ -400,7 +410,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             theme_mode=theme_mode,
             subtitle_theme_mode=subtitle_theme_mode,
             show_footer=data.get("show_footer", True),
-            bilingual_mode=data.get("bilingual_mode", False),
+            bilingual_mode=data.get("bilingual_mode", True),
             show_interim_transcript=data.get("show_interim_transcript", True),
             islamic_mode=data.get("islamic_mode", True),
             hide_subtitle_on_stop=data.get("hide_subtitle_on_stop", False),
@@ -418,6 +428,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             log_panel_collapsed=data.get("log_panel_collapsed", True),
             window_geometry=data.get("window_geometry", ""),
             auto_start=data.get("auto_start", False),
+            auto_stop_inactivity=data.get("auto_stop_inactivity", True),
             ai_provider=ai_provider,
             transcription_provider=transcription_provider,
             onboarding_completed=data.get("onboarding_completed", False),
@@ -472,6 +483,7 @@ def save_settings(settings: Settings) -> None:
         "log_panel_collapsed": settings.log_panel_collapsed,
         "window_geometry": settings.window_geometry,
         "auto_start": settings.auto_start,
+        "auto_stop_inactivity": settings.auto_stop_inactivity,
         "ai_provider": settings.ai_provider,
         "transcription_provider": settings.transcription_provider,
         "onboarding_completed": settings.onboarding_completed,

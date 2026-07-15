@@ -30,6 +30,21 @@ def reset_ring_buffer():
         _ring_write_idx = 0
 
 
+def write_samples_to_ring(chunk: np.ndarray) -> None:
+    """Write a 1-D float32 array to the ring buffer (used by loopback capture)."""
+    global _ring_write_idx
+    n = chunk.shape[0]
+    with _ring_lock:
+        end = (_ring_write_idx + n) % RING_CAPACITY
+        if end > _ring_write_idx:
+            _ring[_ring_write_idx:end] = chunk
+        else:
+            part = RING_CAPACITY - _ring_write_idx
+            _ring[_ring_write_idx:] = chunk[:part]
+            _ring[:end] = chunk[part:]
+        _ring_write_idx = end
+
+
 def audio_callback(indata, frames, time_info, status):
     """
     Sounddevice callback that writes incoming audio to the ring buffer.

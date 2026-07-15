@@ -58,6 +58,7 @@ hiddenimports = (
     + collect_submodules("arabic_reshaper")
     + collect_submodules("bidi")
     + collect_submodules("webrtcvad")  # imported lazily by audio/vad.py
+    + collect_submodules("soundcard")  # imported lazily for WASAPI loopback capture
 )
 
 # Exclude the MASSIVE unused libraries

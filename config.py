@@ -251,6 +251,26 @@ STREAMING_GEMINI_SILENCE_MS = 800
 STREAMING_MAX_UTTERANCE_SECONDS = DURATION
 STREAMING_MODEL = "nova-3"
 
+# Auto-stop: end a running session after this long without any transcription
+# arriving (mic muted, khutbah over, forgotten session) — saves API cost,
+# especially streaming's per-audio-minute billing which includes silence.
+# Toggled by the "auto_stop_inactivity" checkbox (Advanced, default on).
+AUTO_STOP_INACTIVITY_SECONDS = 600
+
+# Realtime feed: continuous speech flushes up to STREAMING_MAX_UTTERANCE_
+# SECONDS of speech as ONE utterance, whose translation renders as a wall of
+# text. Settled translations longer than this are split at sentence
+# boundaries into separate feed blocks (display-only — no extra API calls).
+REALTIME_MAX_BLOCK_CHARS = 220
+# The live (in-progress) transcript line renders only its last N wrapped
+# rows — a long interim otherwise wraps to several rows and shoves the
+# settled history up by that much at once (and the feed never scrolls back
+# down). The full text still arrives as the settled block.
+REALTIME_LIVE_MAX_ROWS = 1
+# Feed spacing between blocks. Wider than the intra-pair gap so a bilingual
+# (source above translation) pair reads as one visual group.
+REALTIME_BLOCK_SPACING = 34
+
 # Micro-utterance coalescing: the streaming engines endpoint on natural
 # pauses, so a rhetorical pause yields a 1-3 word "utterance" that GPT would
 # translate in isolation (the "Sack."/"Das Licht." class, and context-starved
@@ -263,7 +283,7 @@ STREAMING_COALESCE_MIN_WORDS = 6
 # Kept short so a trailing clause reaches translation quickly — the shorter the
 # hold, the sooner the translation lands under the transcription in Realtime
 # mode (at the cost of GPT occasionally seeing a slightly shorter clause).
-STREAMING_COALESCE_HOLD_SECONDS = 1.5
+STREAMING_COALESCE_HOLD_SECONDS = 2
 
 # -------------------------
 # CONTEXT MANAGEMENT

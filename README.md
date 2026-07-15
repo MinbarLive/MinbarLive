@@ -12,15 +12,15 @@ Real-time translation system for mosque lectures and prayers, supporting multipl
 
 This application captures live audio from a microphone, transcribes and translates the speech using AI models, and displays the translation as subtitles on a full-screen window (ideal for a second monitor, a projector, or an OBS overlay).
 
-By default it runs in **real-time streaming mode**: the spoken text appears word by word while the speaker talks, and the translation follows each finished utterance after ~1–3 seconds. You can choose your AI provider — **OpenAI** (default), **Google Gemini**, or **Anthropic Claude** — and a first-run setup wizard walks you through language, microphone, provider, and API key.
+By default it runs in **real-time streaming mode**: the spoken text appears word by word while the speaker talks, and the translation follows each finished utterance after ~1–3 seconds. You can choose your AI provider — **Google Gemini** (default), **OpenAI**, or **Anthropic Claude** — and a first-run setup wizard walks you through language, microphone, provider, and API key.
 
 > **⚠️ Language Note:** The primary development and testing focus was **Arabic → German**. While the app supports 15+ source languages and 35+ target languages, other language combinations have not been extensively tested. The Quran and Athan dictionaries are available in **German, English, Turkish, Albanian, and Bosnian**. Contributions for additional language support are welcome!
 
 ### Key Features
 
-- **Real-time streaming transcription** (default): live word-by-word transcript with utterance-based translation — engines: OpenAI Realtime, Google Gemini Live, or Deepgram
+- **Real-time streaming transcription** (default): live word-by-word transcript with utterance-based translation — engines: Google Gemini Live, OpenAI Realtime, or Deepgram
 - **Segmented mode** as an alternative: chunk-based or semantic sentence buffering
-- **Multiple AI providers**: translation via OpenAI, Google Gemini, or Anthropic Claude — switchable in the settings
+- **Multiple AI providers**: translation via Google Gemini, OpenAI, or Anthropic Claude — switchable in the settings
 - **Verified Quran verse output**: RAG matching over precomputed verse embeddings; high-confidence matches display the exact published translation (marked 📖) instead of an AI paraphrase
 - Dictionary matching for Athan phrases
 - **Bilingual subtitles**: optionally show the original text above the translation
@@ -39,7 +39,7 @@ By default it runs in **real-time streaming mode**: the spoken text appears word
 
 This application makes continuous API calls while running. **You will be charged for usage by your AI provider.**
 
-Rough guide for the default OpenAI setup (segmented mode, Arabic → German):
+Rough guide for an OpenAI setup (segmented mode, Arabic → German); Gemini (the default) is in a similar or lower range:
 
 | Usage Pattern                   | Transcription | Translation | Embeddings | **Total**        |
 | ------------------------------- | ------------- | ----------- | ---------- | ---------------- |
@@ -47,23 +47,21 @@ Rough guide for the default OpenAI setup (segmented mode, Arabic → German):
 | Weekly Friday prayer (1 hr × 4) | ~$1.44        | ~$0.40      | ~$0.20     | **~$2.00/month** |
 
 - **Real-time streaming mode** (the default) bills every audio minute **including silence**, and translates per utterance (more, smaller translation calls). Expect a somewhat higher total than segmented mode for the same session.
-- Costs differ per provider and model — check [OpenAI](https://openai.com/pricing), [Google Gemini](https://ai.google.dev/pricing), [Anthropic](https://www.anthropic.com/pricing), or [Deepgram](https://deepgram.com/pricing) pricing for current rates, and set a usage limit in your provider account to avoid surprises.
+- Costs differ per provider and model — check [Google Gemini](https://ai.google.dev/pricing), [OpenAI](https://openai.com/pricing), [Anthropic](https://www.anthropic.com/pricing), or [Deepgram](https://deepgram.com/pricing) pricing for current rates, and set a usage limit in your provider account to avoid surprises.
 
 ## Setup
 
 ### Prerequisites
 
-- An API key for your AI provider — an **OpenAI key is the simplest option**: one key covers translation, real-time transcription, and Quran verse matching. (Gemini/Claude/Deepgram keys are only needed if you choose those providers; Claude has no speech-to-text, so it additionally needs an OpenAI key for transcription.)
-- Audio input device (microphone or virtual audio cable)
+- An API key for your AI provider — a **Google Gemini key is the simplest option**: one key covers translation, real-time transcription, and Quran verse matching. (OpenAI/Claude/Deepgram keys are only needed if you choose those providers; Claude has no speech-to-text, so it additionally needs a transcription key.)
+- Audio input device (microphone)
 - Python 3.10+ (Option B only)
-
-> **Routing computer audio as input:** To translate audio playing on your computer (e.g., from a stream or recording), use a virtual audio cable to loop the system output back as a microphone input. [VB-CABLE](https://vb-audio.com/Cable/) is a free option for Windows and macOS.
 
 ### Option A: Use the EXE (recommended)
 
 1. Download the latest EXE: [Click here](https://github.com/mosait/MinbarLive/releases)
 2. Run `MinbarLive.exe`
-3. Follow the first-run wizard: interface language & appearance → spoken/subtitle language → microphone → AI provider & API key → disclaimer. API key tutorial: [EN](https://youtu.be/OB99E7Y1cMA)/[DE](https://youtu.be/SISlgzB_qpQ?si=v3yiOK0-1C3GxYaf)
+3. Follow the first-run wizard: interface language & appearance → spoken/subtitle language → microphone → AI provider & API key → disclaimer. Gemini API key tutorial: [EN](https://www.youtube.com/watch?v=Cl4XKgz6EJQ)/[DE](https://youtu.be/alNk5N-pv7Y), or create one directly at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys)
 4. It's Running!
 
 > **Windows SmartScreen:** You may see a warning because the EXE is not code-signed. Click "More info" → "Run anyway".
@@ -101,7 +99,7 @@ The **Processing Strategy** dropdown in the control panel selects the pipeline:
 | **Chunk-based**                   | Fixed 12 s audio segments, each translated immediately                            | ~4–14 s                 |
 | **Semantic buffering** (Beta)     | Buffers segments until a complete sentence is detected                            | ~5–15 s                 |
 
-Real-time mode supports three transcription engines: **OpenAI Realtime** (default — uses your existing OpenAI key), **Google Gemini Live**, and **Deepgram Nova**. Segmented mode transcribes via OpenAI or Gemini. See [docs/providers.md](docs/providers.md).
+Real-time mode supports three transcription engines: **Google Gemini Live** (default — uses your existing Gemini key), **OpenAI Realtime**, and **Deepgram Nova**. Segmented mode transcribes via Gemini or OpenAI. See [docs/providers.md](docs/providers.md).
 
 ## Batch Mode: Subtitle Files from Recordings
 

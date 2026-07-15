@@ -47,7 +47,7 @@ class TestSettingsDataclass:
         assert settings.scroll_speed == 1.0
         assert settings.transparent_static is False
         assert settings.adaptive_subtitle_catchup is True
-        assert settings.bilingual_mode is False
+        assert settings.bilingual_mode is True  # default ON since 2026-07-15
         assert settings.islamic_mode is True
         assert settings.noise_filter is True
         assert settings.theme_mode == DEFAULT_THEME_MODE == "light"
@@ -182,9 +182,10 @@ class TestPipelineMode:
     engines => streaming); it is no longer a directly stored/selected value."""
 
     def test_defaults_to_streaming(self):
-        # Fresh installs default to real-time streaming on OpenAI — one key
-        # covers translation + transcription (user decision 2026-07-09).
-        assert DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER == "openai_realtime"
+        # Fresh installs default to real-time streaming on Gemini — one key
+        # covers translation + transcription + RAG (user decision 2026-07-14,
+        # supersedes the 2026-07-09 OpenAI default).
+        assert DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER == "gemini_realtime"
         assert (
             Settings().transcription_provider
             == DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import tkinter as tk
 from collections.abc import Callable
 
@@ -11,6 +10,7 @@ import customtkinter as ctk
 
 from config import ICON_PATH, ICON_PATH_PNG
 from providers import PROVIDER_CHOICES, clear_api_key, save_api_key
+from utils.icons import ICO_SUPPORTED, scaled_icon_photo
 from utils.keyring_storage import is_keyring_available
 from utils.logging import log
 
@@ -127,19 +127,14 @@ def show_message(
     dlg.grab_set()
 
     def _set_icon() -> None:
-        if sys.platform.startswith("win") and os.path.exists(ICON_PATH):
+        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
             try:
                 dlg.iconbitmap(ICON_PATH)
             except Exception:
                 pass
         elif os.path.exists(ICON_PATH_PNG):
             try:
-                img = tk.PhotoImage(file=ICON_PATH_PNG)
-                w, h = img.width(), img.height()
-                factor = max(1, w // 64, h // 64)
-                if factor > 1:
-                    img = img.subsample(factor, factor)
-                dlg.iconphoto(False, img)
+                dlg.iconphoto(False, scaled_icon_photo(ICON_PATH_PNG))
             except Exception:
                 pass
         apply_dark_titlebar(dlg)  # iconbitmap resets the titlebar → re-assert
@@ -307,7 +302,7 @@ def prompt_for_api_key(
 
     # Apply icon with a delay (CTkToplevel defers window creation)
     def _set_icon() -> None:
-        if sys.platform.startswith("win") and os.path.exists(ICON_PATH):
+        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
             try:
                 dialog.iconbitmap(ICON_PATH)
                 return
@@ -315,12 +310,7 @@ def prompt_for_api_key(
                 pass
         if os.path.exists(ICON_PATH_PNG):
             try:
-                img = tk.PhotoImage(file=ICON_PATH_PNG)
-                w, h = img.width(), img.height()
-                factor = max(1, w // 64, h // 64)
-                if factor > 1:
-                    img = img.subsample(factor, factor)
-                dialog.iconphoto(False, img)
+                dialog.iconphoto(False, scaled_icon_photo(ICON_PATH_PNG))
             except Exception:
                 pass
 

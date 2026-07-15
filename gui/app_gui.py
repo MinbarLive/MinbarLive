@@ -1,12 +1,16 @@
 import os
 import queue
-import sys
 import tkinter as tk
 
 import customtkinter as ctk
 from screeninfo import get_monitors
 
-from config import GUI_TRANSLATIONS_DIR, ICON_PATH, ICON_PATH_PNG
+from config import (
+    AUTO_STOP_INACTIVITY_SECONDS,
+    GUI_TRANSLATIONS_DIR,
+    ICON_PATH,
+    ICON_PATH_PNG,
+)
 from gui.batch_view import BatchViewMixin
 from gui.device_list import get_input_devices
 from gui.dropdown import CustomDropdown
@@ -28,6 +32,7 @@ from utils.api_key_manager import (
     apply_dark_titlebar,
     prompt_for_api_key,
 )
+from utils.icons import ICO_SUPPORTED, scaled_icon_photo
 from utils.json_helpers import load_json
 from utils.logging import log, log_queue
 from utils.settings import (
@@ -153,6 +158,7 @@ class AppGUI(
         self.error_poll_job: str | None = None
         self.log_poll_job: str | None = None
         self.height_apply_job: str | None = None
+        self.inactivity_check_job: str | None = None
 
         self._running = False
         self._log_polling = False
@@ -244,19 +250,14 @@ class AppGUI(
         self.bind("<FocusIn>", self._schedule_control_window_surface_restore)
         self.bind("<Map>", self._schedule_control_window_surface_restore)
 
-        if sys.platform.startswith("win") and os.path.exists(ICON_PATH):
+        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
             try:
                 self.iconbitmap(ICON_PATH)
             except Exception:
                 pass
         elif os.path.exists(ICON_PATH_PNG):
             try:
-                img = tk.PhotoImage(file=ICON_PATH_PNG)
-                w, h = img.width(), img.height()
-                factor = max(1, w // 64, h // 64)
-                if factor > 1:
-                    img = img.subsample(factor, factor)
-                self.iconphoto(False, img)
+                self.iconphoto(False, scaled_icon_photo(ICON_PATH_PNG))
             except Exception:
                 pass
 
@@ -595,7 +596,7 @@ class AppGUI(
         device_frame = self._field(
             card, "input_device", "◉", row=2, column=1, columnspan=1, padx=(8, 18)
         )
-        self.device_names, self.device_base_names, self.device_indices = (
+        self.device_names, self.device_base_names, self.device_indices, self.device_loopback_flags = (
             self._get_input_devices()
         )
         self.device_combo = self._combo(
@@ -954,8 +955,8 @@ class AppGUI(
             if pid not in STREAMING_TRANSCRIPTION_PROVIDERS
         ]
         self._streaming_transcription_provider_choices = [
-            ("OpenAI", "openai_realtime"),
             ("Google Gemini", "gemini_realtime"),
+            ("OpenAI", "openai_realtime"),
             ("Deepgram", "deepgram"),
         ]
         self._transcription_provider_display_names = []
@@ -1085,7 +1086,20 @@ class AppGUI(
             self.auto_start_var,
             self._on_auto_start_change,
         )
-        self.auto_start_cb.grid(row=12, column=0, sticky="ew", padx=16, pady=(0, 12))
+        self.auto_start_cb.grid(row=12, column=0, sticky="ew", padx=16, pady=(0, 8))
+
+        self.auto_stop_inactivity_var = tk.BooleanVar(
+            value=self._saved_settings.auto_stop_inactivity
+        )
+        self.auto_stop_inactivity_cb = self._checkbox(
+            self.advanced_frame,
+            "auto_stop_inactivity",
+            self.auto_stop_inactivity_var,
+            self._on_auto_stop_inactivity_change,
+        )
+        self.auto_stop_inactivity_cb.grid(
+            row=13, column=0, sticky="ew", padx=16, pady=(0, 12)
+        )
 
         self._sync_advanced_enabled_states()
         self._update_speed_button_states()
@@ -1387,6 +1401,7 @@ class AppGUI(
         self._set_status(True)
         self._sync_advanced_enabled_states()
         self._start_log_polling()
+        self._schedule_inactivity_check()
         if self._saved_settings.hide_subtitle_on_stop and (
             not self.subtitle_window or not self.subtitle_window.winfo_exists()
         ):
@@ -1408,9 +1423,47 @@ class AppGUI(
         self._refresh_provider_combos()  # restore the full provider list
         self._set_status(False)
         self._sync_advanced_enabled_states()
+        self._cancel_inactivity_check()
         if self._saved_settings.hide_subtitle_on_stop:
             self._destroy_subtitle_window()
         log(self.gui_texts.get("log_stopped", "Stopped."), level="INFO")
+
+    # ── Inactivity auto-stop ────────────────────────────────────────────────
+    # Cost guard for forgotten sessions: while running, poll the controller's
+    # last-transcription timestamp and stop when nothing arrived for
+    # AUTO_STOP_INACTIVITY_SECONDS (checkbox in Advanced, default on).
+
+    def _schedule_inactivity_check(self) -> None:
+        self._cancel_inactivity_check()
+        self.inactivity_check_job = self.after(
+            15_000, self._check_inactivity_auto_stop
+        )
+
+    def _cancel_inactivity_check(self) -> None:
+        if self.inactivity_check_job is not None:
+            try:
+                self.after_cancel(self.inactivity_check_job)
+            except Exception:
+                pass
+            self.inactivity_check_job = None
+
+    def _check_inactivity_auto_stop(self) -> None:
+        self.inactivity_check_job = None
+        if not self._running:
+            return
+        if (
+            self._saved_settings.auto_stop_inactivity
+            and self.controller.seconds_since_last_activity()
+            >= AUTO_STOP_INACTIVITY_SECONDS
+        ):
+            log(
+                "Auto-stop: no transcription for "
+                f"{AUTO_STOP_INACTIVITY_SECONDS // 60} minutes — stopping.",
+                level="INFO",
+            )
+            self.on_stop()
+            return
+        self._schedule_inactivity_check()
 
     def _set_status(self, running: bool) -> None:
         if running:
@@ -1461,7 +1514,7 @@ class AppGUI(
             )
             self.strategy_running_hint.grid_remove()
 
-    def _get_input_devices(self) -> tuple[list[str], list[str], list[int]]:
+    def _get_input_devices(self) -> tuple[list[str], list[str], list[int], list[bool]]:
         return get_input_devices()
 
     def get_selected_device_index(self) -> int | None:
@@ -1469,6 +1522,12 @@ class AppGUI(
         if idx is None or idx < 0 or idx >= len(self.device_indices):
             return None
         return self.device_indices[idx]
+
+    def _selected_device_loopback(self) -> bool:
+        idx = self.device_combo.current()
+        if idx is None or idx < 0 or idx >= len(self.device_loopback_flags):
+            return False
+        return self.device_loopback_flags[idx]
 
     def _on_device_change(self) -> None:
         selection = self.device_combo.current()
@@ -1768,6 +1827,16 @@ class AppGUI(
         log(
             "Auto cleanup content: "
             f"{'on' if self.auto_cleanup_content_var.get() else 'off'}",
+            level="INFO",
+        )
+        self._save_current_settings()
+
+    def _on_auto_stop_inactivity_change(self) -> None:
+        # Read live by the running check loop — no restart needed.
+        self._saved_settings.auto_stop_inactivity = self.auto_stop_inactivity_var.get()
+        log(
+            "Auto-stop on inactivity: "
+            f"{'on' if self.auto_stop_inactivity_var.get() else 'off'}",
             level="INFO",
         )
         self._save_current_settings()

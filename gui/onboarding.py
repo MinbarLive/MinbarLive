@@ -17,7 +17,6 @@ Steps:
 from __future__ import annotations
 
 import os
-import sys
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox
@@ -31,18 +30,28 @@ from providers import (
     PROVIDER_CHOICES,
     get_default_model,
     get_stored_api_key,
+    get_streaming_key_provider,
     save_api_key,
 )
+from utils.icons import ICO_SUPPORTED, scaled_icon_photo
 from utils.logging import log
 from utils.settings import (
     DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER,
     GUI_LANGUAGES,
     PIPELINE_MODE_STREAMING,
     SOURCE_LANGUAGES,
+    STREAMING_TRANSCRIPTION_PROVIDERS,
     TARGET_LANGUAGE_NAMES,
     load_settings,
     save_settings,
 )
+
+# Translation providers that have a real-time streaming engine of their own
+# (same API key). Anthropic has none — see _finish for its fallback.
+_REALTIME_ENGINE_FOR_PROVIDER = {
+    "gemini": "gemini_realtime",
+    "openai": "openai_realtime",
+}
 
 _DARK = {
     "app_bg": "#0b1020",
@@ -95,6 +104,15 @@ _KEY_HELP_LINKS: dict[str, dict[str, str]] = {
     "deepgram": {
         "en": "https://www.youtube.com/watch?v=FVJEkE69ei0",
     },
+}
+
+# Direct links to each provider's API-key console page (shown as a second
+# button next to the video tutorial).
+_KEY_SITE_LINKS: dict[str, str] = {
+    "gemini": "https://aistudio.google.com/api-keys",
+    "openai": "https://platform.openai.com/api-keys",
+    "anthropic": "https://console.anthropic.com/settings/keys",
+    "deepgram": "https://console.deepgram.com/",
 }
 
 
@@ -207,21 +225,19 @@ class OnboardingWizard(ctk.CTk):
 
     def _set_icon(self) -> None:
         self.title("MinbarLive")
-        if sys.platform.startswith("win") and os.path.exists(ICON_PATH):
-            def set_win_icon():
+        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
+            def _set_win_icon() -> None:
+                # Guard inside the callback: the outer try can't catch an
+                # exception raised 200 ms later inside Tk's event loop.
                 try:
                     self.iconbitmap(ICON_PATH)
                 except Exception:
                     pass
-            self.after(200, set_win_icon)
+
+            self.after(200, _set_win_icon)
         elif os.path.exists(ICON_PATH_PNG):
             try:
-                img = tk.PhotoImage(file=ICON_PATH_PNG)
-                w, h = img.width(), img.height()
-                factor = max(1, w // 64, h // 64)
-                if factor > 1:
-                    img = img.subsample(factor, factor)
-                self.iconphoto(True, img)
+                self.iconphoto(True, scaled_icon_photo(ICON_PATH_PNG))
             except Exception:
                 pass
 
@@ -463,7 +479,7 @@ class OnboardingWizard(ctk.CTk):
             muted=True,
         )
 
-        display_names, base_names, _indices = self._devices
+        display_names, base_names, _indices, _loopback = self._devices
         if not display_names:
             self._section_label(
                 self._container,
@@ -543,23 +559,34 @@ class OnboardingWizard(ctk.CTk):
             self._state["provider_keys"].get(selected, "")
         )
 
-        # Video tutorial for getting a key from the selected provider, in the
-        # wizard's GUI language when available (falls back to English).
+        # Video tutorial + direct key-console link for the selected provider.
+        # Tutorial in the wizard's GUI language when available (falls back to
+        # English); the console link is per provider.
         help_links = _KEY_HELP_LINKS.get(selected, {})
         help_url = help_links.get(self._state["gui_language"]) or help_links.get("en")
-        if help_url:
-            help_btn = ctk.CTkButton(
-                self._container,
-                text="🛈  " + self._t("wizard_key_help", "Where do I get an API key?"),
-                command=lambda url=help_url: webbrowser.open(url),
-                height=34,
-                corner_radius=10,
-                font=ctk.CTkFont(family="Segoe UI", size=13),
-                fg_color=self._c["button"],
-                hover_color=self._c["button_hover"],
-                text_color=self._c["text"],
-            )
-            help_btn.pack(anchor="w", padx=26, pady=(10, 0))
+        site_url = _KEY_SITE_LINKS.get(selected)
+        if help_url or site_url:
+            btn_row = ctk.CTkFrame(self._container, fg_color="transparent")
+            btn_row.pack(anchor="w", padx=26, pady=(10, 0))
+            for text, url in (
+                ("🛈  " + self._t("wizard_key_help", "Where do I get an API key?"),
+                 help_url),
+                ("🔑  " + self._t("wizard_key_site", "Open the API key page"),
+                 site_url),
+            ):
+                if not url:
+                    continue
+                ctk.CTkButton(
+                    btn_row,
+                    text=text,
+                    command=lambda u=url: webbrowser.open(u),
+                    height=34,
+                    corner_radius=10,
+                    font=ctk.CTkFont(family="Segoe UI", size=13),
+                    fg_color=self._c["button"],
+                    hover_color=self._c["button_hover"],
+                    text_color=self._c["text"],
+                ).pack(side="left", padx=(0, 8))
 
         if get_stored_api_key(selected):
             self._section_label(
@@ -577,16 +604,17 @@ class OnboardingWizard(ctk.CTk):
             self._t(
                 "wizard_keys_info",
                 "Add keys for as many providers as you like by switching the "
-                "list above. With OpenAI (the default), one key covers both "
-                "translation and real-time transcription.",
+                "list above. With Google Gemini (the default), one key covers "
+                "both translation and real-time transcription.",
             ),
             muted=True,
             pady=(14, 10),
         )
 
-        # Provider-specific notes — keyed to the SELECTED provider so they match
-        # the dropdown (Deepgram is STT-only, so it shows neither).
-        if selected not in ("openai", "deepgram"):
+        # Provider-specific notes — keyed to the SELECTED provider so they
+        # match the dropdown. Gemini has its own bundled embedding space, so
+        # the RAG note only applies to Anthropic (embeddings stay OpenAI).
+        if selected == "anthropic":
             self._section_label(
                 self._container,
                 self._t(
@@ -694,14 +722,26 @@ class OnboardingWizard(ctk.CTk):
         settings.use_default_translation_model = self._state[
             "model"
         ] == get_default_model(provider, "translation")
-        # Real-time streaming on OpenAI is the app default, so onboarding
-        # lands there too — the OpenAI key collected above covers it. Other
-        # engines (Deepgram/Gemini) stay available via the Advanced panel.
-        settings.transcription_provider = DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER
+        # Onboarding lands on real-time streaming — on the engine that
+        # belongs to the CHOSEN provider, so the key the user just entered is
+        # the one the pipeline authenticates with. (A pinned Gemini engine
+        # used to prompt OpenAI-only users for a Gemini key on first Start.)
+        # Anthropic has no realtime engine of its own: use the first engine
+        # whose key exists (entered this session or already stored), falling
+        # back to the app default.
+        engine = _REALTIME_ENGINE_FOR_PROVIDER.get(provider)
+        if engine is None:
+            engine = DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER
+            for candidate in STREAMING_TRANSCRIPTION_PROVIDERS:
+                key_provider = get_streaming_key_provider(candidate)
+                if self._state["provider_keys"].get(key_provider) or get_stored_api_key(
+                    key_provider
+                ):
+                    engine = candidate
+                    break
+        settings.transcription_provider = engine
         settings.pipeline_mode = PIPELINE_MODE_STREAMING
-        settings.transcription_model = get_default_model(
-            DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER, "transcription"
-        )
+        settings.transcription_model = get_default_model(engine, "transcription")
         settings.use_default_transcription_model = True
         settings.disclaimer_accepted = True
         settings.onboarding_completed = True

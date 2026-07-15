@@ -19,7 +19,13 @@ class GeminiTranslationProvider:
     ) -> str:
         from google.genai import types
 
-        config_kwargs = {}
+        config_kwargs = {
+            # Gemini 3.x flash models think by default, which multiplies
+            # latency (live-probed 2026-07-15: 4.6s → 2.3s on 3.5-flash).
+            # Live subtitles can't afford it — same decision as Anthropic's
+            # disabled extended thinking.
+            "thinking_config": types.ThinkingConfig(thinking_budget=0),
+        }
         if system_prompt:
             config_kwargs["system_instruction"] = system_prompt
         if max_output_tokens is not None:
@@ -30,8 +36,6 @@ class GeminiTranslationProvider:
         resp = get_client().models.generate_content(
             model=model,
             contents=user_prompt,
-            config=types.GenerateContentConfig(**config_kwargs)
-            if config_kwargs
-            else None,
+            config=types.GenerateContentConfig(**config_kwargs),
         )
         return (resp.text or "").strip()

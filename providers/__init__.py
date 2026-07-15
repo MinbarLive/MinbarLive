@@ -122,14 +122,14 @@ _STREAMING_CAPTURE_RATES = {
     "gemini_realtime": FS,
 }
 
-DEFAULT_PROVIDER = "openai"
+DEFAULT_PROVIDER = "gemini"
 
 # Fallback preference when a configured provider lacks a capability (e.g.
 # Anthropic has no STT) or is unknown: the highest-ranked provider the user
-# actually holds a key for, so an OpenAI-less setup never "falls back" to a
+# actually holds a key for, so a Gemini-less setup never "falls back" to a
 # provider it cannot authenticate with. Explicit user choices are never
 # overridden by this ranking — it applies to fallback paths only.
-PROVIDER_RANKING = ["openai", "gemini", "anthropic"]
+PROVIDER_RANKING = ["gemini", "openai", "anthropic"]
 
 # Per-provider model chains: (default, fallbacks) per capability. The user's
 # model setting is only honored when it belongs to the active provider —
@@ -319,7 +319,7 @@ def get_embedding_space() -> str:
         QURAN_EMBEDDINGS_GEMINI_NPZ_PATH
     ):
         return "gemini"
-    return DEFAULT_PROVIDER
+    return "openai"  # the shipped fallback space, regardless of app default
 
 
 def get_embedding_provider() -> EmbeddingProvider:
@@ -421,8 +421,8 @@ def resolve_streaming_transcription_model(
 
 # (display_name, provider_id) for the translation-provider dropdown
 PROVIDER_CHOICES = [
-    ("OpenAI", "openai"),
     ("Google Gemini", "gemini"),
+    ("OpenAI", "openai"),
     ("Anthropic Claude", "anthropic"),
 ]
 
@@ -430,10 +430,10 @@ PROVIDER_CHOICES = [
 # The "(real-time)" entries are streaming engines; the others run the
 # segmented pipeline.
 TRANSCRIPTION_PROVIDER_CHOICES = [
-    ("OpenAI", "openai"),
     ("Google Gemini", "gemini"),
-    ("OpenAI (real-time)", "openai_realtime"),
+    ("OpenAI", "openai"),
     ("Google Gemini (real-time)", "gemini_realtime"),
+    ("OpenAI (real-time)", "openai_realtime"),
     ("Deepgram (real-time)", "deepgram"),
 ]
 
