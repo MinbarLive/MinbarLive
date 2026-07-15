@@ -257,6 +257,29 @@ class OnboardingWizard(ctk.CTk):
         label.pack(anchor="w", padx=26, pady=pady)
         return label
 
+    def _warning_box(self, parent, text: str, pady=(14, 4)) -> ctk.CTkFrame:
+        """A bordered, warning-colored callout. Used for the provider caveats
+        and the AI-accuracy disclaimer so they stand out from the muted info
+        text instead of blending in as grey notes."""
+        box = ctk.CTkFrame(
+            parent,
+            fg_color="transparent",
+            border_color=self._c["warning"],
+            border_width=2,
+            corner_radius=12,
+        )
+        box.pack(fill="x", padx=26, pady=pady)
+        ctk.CTkLabel(
+            box,
+            text="⚠  " + text,
+            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            text_color=self._c["warning"],
+            wraplength=_W - 170,
+            justify="left",
+            anchor="w",
+        ).pack(anchor="w", padx=14, pady=10)
+        return box
+
     def _combo(self, parent, values: list[str]) -> CustomDropdown:
         combo = CustomDropdown(
             parent,
@@ -625,28 +648,25 @@ class OnboardingWizard(ctk.CTk):
         # Provider-specific notes — keyed to the SELECTED provider so they
         # match the dropdown. Gemini has its own bundled embedding space, so
         # the RAG note only applies to Anthropic (embeddings stay OpenAI).
+        # Shown as warning callouts so users don't miss the extra-key caveat.
         if selected == "anthropic":
-            self._section_label(
+            self._warning_box(
                 self._container,
                 self._t(
                     "wizard_gemini_rag_note",
                     "Quran verse detection uses OpenAI embeddings. Without an "
                     "OpenAI key, verse matching is disabled.",
                 ),
-                muted=True,
-                pady=(14, 10),
+                pady=(14, 4),
             )
-
-        if selected == "anthropic":
-            self._section_label(
+            self._warning_box(
                 self._container,
                 self._t(
                     "wizard_anthropic_stt_note",
                     "Claude has no speech-to-text — transcription runs on "
                     "OpenAI, so an OpenAI key is also required.",
                 ),
-                muted=True,
-                pady=(14, 10),
+                pady=(8, 10),
             )
 
     # ── Step 5: disclaimer ─────────────────────────────────────────────────
@@ -655,7 +675,7 @@ class OnboardingWizard(ctk.CTk):
         self._section_label(
             self._container, self._t("wizard_disclaimer_title", "Please note")
         )
-        self._section_label(
+        self._warning_box(
             self._container,
             self._t(
                 "wizard_disclaimer_text",
@@ -666,7 +686,6 @@ class OnboardingWizard(ctk.CTk):
                 "Do not rely on the subtitles as an authoritative religious "
                 "source.",
             ),
-            muted=True,
         )
 
         cb = ctk.CTkCheckBox(

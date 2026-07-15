@@ -163,6 +163,20 @@ VAD_STREAM_HANGOVER_SECONDS = 2.0
 # window, so a single false-positive frame on hiss cannot reopen the gate.
 VAD_STREAM_WINDOW_SECONDS = 1.0
 VAD_STREAM_OPEN_RATIO = 0.1
+# webrtcvad's classifier is energy-sensitive: real speech quieter than about
+# -46 dBFS peak (e.g. a low mic-gain audio interface) stops being detected,
+# so the gate starved a quiet mic (user-confirmed 2026-07-15: filter off let
+# sentences through). The copy used for the DECISION is boosted toward this
+# peak — the audio actually fed onward is never touched. Measured (SAPI
+# speech + synthetic noise, aggressiveness 2): speech ratio ~0.73 at -30
+# dBFS peak; hiss reads as fake speech only from -14 dBFS, 50 Hz hum+hiss
+# from -20, 60 Hz hum+hiss from ~-25 → the -30.5 dBFS target keeps ≥4 dB
+# margin below every flip, so no noise floor can be boosted into a false
+# open. The cap bounds how deep a floor is raised (x16 = +24 dB rescues
+# speech down to ~-60 dBFS peak). 100 Hz hum reads as speech at EVERY level
+# — a pre-existing webrtcvad limit the boost cannot worsen.
+VAD_DECISION_TARGET_PEAK = 0.03  # ≈ -30.5 dBFS
+VAD_DECISION_MAX_BOOST = 16.0  # +24 dB
 
 # -------------------------
 # BATCH (file → SRT) SEGMENTATION

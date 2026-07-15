@@ -35,6 +35,8 @@ import numpy as np
 from config import (
     FS,
     VAD_AGGRESSIVENESS,
+    VAD_DECISION_MAX_BOOST,
+    VAD_DECISION_TARGET_PEAK,
     VAD_MIN_SPEECH_RATIO,
     VAD_STREAM_HANGOVER_SECONDS,
     VAD_STREAM_OPEN_RATIO,
@@ -84,6 +86,26 @@ def _to_vad_rate(pcm: np.ndarray, rate: int) -> tuple[np.ndarray | None, int]:
     return None, 0
 
 
+def _boost_for_decision(pcm: np.ndarray) -> np.ndarray:
+    """Bounded normalization of the VAD *decision* copy.
+
+    webrtcvad stops detecting real speech below ~-46 dBFS peak, so a quiet
+    mic (low interface gain) made the gate classify everything as non-speech
+    and starve the pipeline. The copy judged by the VAD is boosted toward
+    VAD_DECISION_TARGET_PEAK (capped at VAD_DECISION_MAX_BOOST) — the audio
+    actually fed onward is never modified. The target sits ≥4 dB below the
+    earliest measured noise flip (see config.py), so quiet hiss/hum cannot
+    be boosted into a false gate-open.
+    """
+    peak = int(np.abs(pcm).max()) if pcm.size else 0
+    if peak == 0:
+        return pcm
+    boost = min(VAD_DECISION_MAX_BOOST, VAD_DECISION_TARGET_PEAK * 32768.0 / peak)
+    if boost <= 1.0:
+        return pcm
+    return np.clip(pcm.astype(np.float32) * boost, -32768, 32767).astype(np.int16)
+
+
 def _frame_decisions(pcm: np.ndarray, rate: int, vad) -> list[bool]:
     """webrtcvad speech decision per 30 ms frame; trailing partial dropped."""
     frame_len = int(rate * _FRAME_MS / 1000)
@@ -111,7 +133,7 @@ def has_speech(audio: np.ndarray, sample_rate: int = FS) -> bool:
         pcm, rate = _to_vad_rate(pcm, sample_rate)
         if pcm is None:
             return True
-        decisions = _frame_decisions(pcm, rate, vad)
+        decisions = _frame_decisions(_boost_for_decision(pcm), rate, vad)
         if not decisions:
             return True  # shorter than one frame — nothing to judge
         return sum(decisions) / len(decisions) >= VAD_MIN_SPEECH_RATIO
@@ -158,7 +180,9 @@ class StreamNoiseGate:
             vad_pcm, vad_rate = _to_vad_rate(pcm, self._rate)
             if vad_pcm is None:
                 return chunk
-            self._frames.extend(_frame_decisions(vad_pcm, vad_rate, self._vad))
+            self._frames.extend(
+                _frame_decisions(_boost_for_decision(vad_pcm), vad_rate, self._vad)
+            )
         except Exception as e:
             # Disable for the rest of the session instead of failing (and
             # logging) again on every 200 ms chunk.

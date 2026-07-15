@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import tkinter as tk
@@ -70,12 +71,15 @@ if _ARABIC_SUPPORT:
 
 from config import (
     FOOTER_TRANSLATIONS_PATH,
+    ICON_PATH,
+    ICON_PATH_PNG,
     LINE_SPACING,
     MARGIN_BOTTOM,
     REALTIME_BLOCK_SPACING,
     REALTIME_LIVE_MAX_ROWS,
     REALTIME_MAX_BLOCK_CHARS,
 )
+from utils.icons import ICO_SUPPORTED, scaled_icon_photo
 from utils.json_helpers import load_json
 from utils.settings import (
     SUBTITLE_MODE_CONTINUOUS,
@@ -193,6 +197,15 @@ class SubtitleWindow(tk.Toplevel):
         bilingual_mode: bool = False,
     ):
         super().__init__(master)
+        # Build fully transparent: a fresh Toplevel paints white with a
+        # caption until the dark background + borderless styling below land
+        # — the "white window pops up" flash. Revealed at the end of
+        # __init__. Same -alpha 0→1 pattern as the settings/batch windows
+        # (withdraw() is the vanish trap — see gui/settings_view.py).
+        try:
+            self.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
         is_windows = sys.platform == "win32"
         self._on_close = on_close
         self._monitor_index = monitor_index
@@ -307,6 +320,13 @@ class SubtitleWindow(tk.Toplevel):
         self._update_font()
         self._update_footer_visibility()
 
+        # Fully built and styled — reveal. Restored BEFORE the transparent
+        # mode below: that path manages its own alpha (macOS) and must win.
+        try:
+            self.attributes("-alpha", 1.0)
+        except tk.TclError:
+            pass
+
         if self._transparent_static and self._subtitle_mode == SUBTITLE_MODE_STATIC:
             self._apply_transparent_mode()
 
@@ -328,6 +348,24 @@ class SubtitleWindow(tk.Toplevel):
         """
         # Give the window a title so OBS can identify it
         self.title("MinbarLive Subtitles")
+
+        # The window deliberately stays in the taskbar/alt-tab (OBS window
+        # capture needs WS_EX_APPWINDOW) — without an explicit icon it shows
+        # Tk's default feather there. Same pattern as _set_toplevel_icon in
+        # gui/widgets.py; no titlebar to re-theme here (caption is stripped
+        # below).
+        icon_loaded = False
+        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
+            try:
+                self.iconbitmap(ICON_PATH)
+                icon_loaded = True
+            except Exception:
+                pass
+        if not icon_loaded and os.path.exists(ICON_PATH_PNG):
+            try:
+                self.iconphoto(False, scaled_icon_photo(ICON_PATH_PNG))
+            except Exception:
+                pass
 
         # Store hwnd for later use (Windows only)
         self._hwnd = None

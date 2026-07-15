@@ -97,6 +97,75 @@ class TestHasSpeechLogic:
         assert has_speech(_hiss()) is True
 
 
+class RecordingVad:
+    """FakeVad that records the PCM frames it is asked to judge."""
+
+    def __init__(self, speech=True):
+        self.speech = speech
+        self.frames = []
+
+    def is_speech(self, data, rate):
+        self.frames.append(np.frombuffer(data, dtype=np.int16))
+        return self.speech
+
+
+class TestDecisionBoost:
+    """Quiet-mic fix: the VAD judges a boosted copy of quiet audio; the
+    audio actually fed onward is never modified (user-confirmed defect:
+    a low-gain mic was classified all-non-speech and the gate starved the
+    streaming pipeline)."""
+
+    def _quiet_chunk(self, peak=100, n=3200):  # ~-50 dBFS peak, 200 ms
+        rng = np.random.default_rng(7)
+        return (
+            rng.normal(0, peak / 4, n).clip(-peak, peak).astype(np.int16)
+        )
+
+    def test_gate_judges_boosted_copy_but_output_is_unchanged(self, monkeypatch):
+        rec = RecordingVad(speech=True)
+        monkeypatch.setattr(vad_mod, "_new_vad", lambda: rec)
+        gate = StreamNoiseGate(FS)
+        quiet = self._quiet_chunk()
+        chunk = quiet.tobytes()
+        assert gate.process(chunk) == chunk  # fed audio byte-identical
+        seen = np.concatenate(rec.frames)
+        assert np.abs(seen).max() > np.abs(quiet).max() * 4  # decision boosted
+
+    def test_boost_targets_decision_peak(self):
+        pcm = np.full(4800, 40, dtype=np.int16)  # ≈ -58 dBFS
+        boosted = vad_mod._boost_for_decision(pcm)
+        target = vad_mod.VAD_DECISION_TARGET_PEAK * 32768
+        assert np.abs(boosted).max() <= target + 1
+        assert np.abs(boosted).max() == 40 * vad_mod.VAD_DECISION_MAX_BOOST
+
+    def test_loud_audio_is_not_boosted(self):
+        pcm = (np.sin(np.linspace(0, 100, 4800)) * 16000).astype(np.int16)
+        assert vad_mod._boost_for_decision(pcm) is pcm
+
+    def test_silence_stays_silent(self):
+        pcm = np.zeros(4800, dtype=np.int16)
+        assert vad_mod._boost_for_decision(pcm) is pcm
+
+
+class TestDecisionBoostRealVad:
+    """The boost must never turn a quiet noise floor into a false gate-open:
+    the target peak (-30.5 dBFS) sits below every measured noise flip
+    (hiss -14, 50 Hz hum+hiss -20, 60 Hz hum+hiss ~-25 dBFS)."""
+
+    @pytest.fixture(autouse=True)
+    def _require_webrtcvad(self):
+        pytest.importorskip("webrtcvad")
+
+    def test_quiet_hiss_still_not_speech_after_boost(self):
+        assert has_speech(_hiss(amp=0.0005)) is False
+
+    def test_quiet_hum_hiss_still_not_speech_after_boost(self):
+        n = FS * 5
+        hum = 0.002 * np.sin(2 * np.pi * 50 * np.arange(n) / FS)
+        audio = (hum + _hiss(5.0, amp=0.0005)).astype(np.float32)
+        assert has_speech(audio) is False
+
+
 class TestToVadRate:
     def test_supported_rate_unchanged(self):
         pcm = np.arange(480, dtype=np.int16)
