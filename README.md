@@ -137,6 +137,13 @@ Runtime files are written to a per-user app data folder:
 
 API keys are **never** written there — they live in the OS keychain.
 
+## Update Check
+
+At startup the app makes one anonymous request to the GitHub releases API to
+see if a newer version exists — if so, a dismissible notice appears in the
+control panel. No data about you or your installation is sent (GitHub sees
+only the request itself), and you can turn the check off in ⚙ Settings.
+
 ## Documentation
 
 | Document                                               | Description                                            |

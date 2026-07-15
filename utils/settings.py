@@ -278,6 +278,9 @@ class Settings:
     # transcription (AUTO_STOP_INACTIVITY_SECONDS) — cost guard for
     # forgotten sessions, esp. streaming's per-minute billing.
     auto_stop_inactivity: bool = True
+    # Startup update check: one anonymous GET to the GitHub releases API;
+    # a newer release shows a dismissible notice in the control panel.
+    check_for_updates: bool = True
     ai_provider: str = DEFAULT_AI_PROVIDER  # Translation provider (providers/ pkg)
     transcription_provider: str = (
         DEFAULT_TRANSCRIPTION_PROVIDER  # STT engine (streaming ones => streaming)
@@ -429,6 +432,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             window_geometry=data.get("window_geometry", ""),
             auto_start=data.get("auto_start", False),
             auto_stop_inactivity=data.get("auto_stop_inactivity", True),
+            check_for_updates=data.get("check_for_updates", True),
             ai_provider=ai_provider,
             transcription_provider=transcription_provider,
             onboarding_completed=data.get("onboarding_completed", False),
@@ -484,6 +488,7 @@ def save_settings(settings: Settings) -> None:
         "window_geometry": settings.window_geometry,
         "auto_start": settings.auto_start,
         "auto_stop_inactivity": settings.auto_stop_inactivity,
+        "check_for_updates": settings.check_for_updates,
         "ai_provider": settings.ai_provider,
         "transcription_provider": settings.transcription_provider,
         "onboarding_completed": settings.onboarding_completed,

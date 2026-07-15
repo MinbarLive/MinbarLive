@@ -169,5 +169,7 @@
   "summary_failed": "Sažimanje nije uspjelo: {error}",
   "wizard_disclaimer_title": "Napomena",
   "wizard_disclaimer_text": "MinbarLive koristi vještačku inteligenciju za transkripciju i prevođenje govora u stvarnom vremenu. AI prijevodi mogu biti pogrešni, nepotpuni ili neprecizni — posebno kod vjerskog sadržaja. Zvuk se šalje odabranom AI provajderu na obradu. Ne oslanjaj se na titlove kao mjerodavan vjerski izvor.",
-  "wizard_disclaimer_accept": "Razumijem da AI prijevodi mogu biti neprecizni."
+  "wizard_disclaimer_accept": "Razumijem da AI prijevodi mogu biti neprecizni.",
+  "update_available": "Verzija {version} je dostupna — kliknite za preuzimanje",
+  "check_updates_on_launch": "Provjeri ažuriranja pri pokretanju"
 }

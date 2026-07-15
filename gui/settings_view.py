@@ -240,6 +240,18 @@ class SettingsViewMixin:
         islamic_hint._text_key = "islamic_mode_hint"  # type: ignore[attr-defined]
         self._settings_muted_labels.append(islamic_hint)
 
+        # Update check (one anonymous GitHub API request at startup, opt-out)
+        self._check_updates_var = tk.BooleanVar(
+            value=self._saved_settings.check_for_updates
+        )
+        update_cb = self._checkbox(
+            scroll,
+            "check_updates_on_launch",
+            self._check_updates_var,
+            self._on_check_updates_change,
+        )
+        update_cb.grid(row=11, column=0, sticky="w", padx=22, pady=(0, 12))
+
         # API Key section — styled card
         api_card = ctk.CTkFrame(
             scroll,
@@ -430,6 +442,12 @@ class SettingsViewMixin:
     def _apply_islamic_mode(self, enabled: bool) -> None:
         self._saved_settings.islamic_mode = enabled
         log(f"Islamic mode: {'on' if enabled else 'off'}", level="INFO")
+        self._save_current_settings()
+
+    def _on_check_updates_change(self) -> None:
+        enabled = self._check_updates_var.get()
+        self._saved_settings.check_for_updates = enabled
+        log(f"Update check on startup: {'on' if enabled else 'off'}", level="INFO")
         self._save_current_settings()
 
     def _on_settings_change_key(self) -> None:

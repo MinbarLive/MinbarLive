@@ -270,6 +270,31 @@ class TestIslamicModeSetting:
             settings_module._cached_settings = None
 
 
+class TestCheckForUpdatesSetting:
+    def test_round_trip_off(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            settings_module, "_settings_path", lambda: tmp_path / "settings.json"
+        )
+        settings_module._cached_settings = None
+        save_settings(Settings(check_for_updates=False))
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).check_for_updates is False
+        finally:
+            settings_module._cached_settings = None
+
+    def test_missing_key_defaults_on(self, tmp_path, monkeypatch):
+        """Pre-existing settings files get the update check by default."""
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({}), encoding="utf-8")
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).check_for_updates is True
+        finally:
+            settings_module._cached_settings = None
+
+
 class TestShowInterimTranscriptSetting:
     def test_round_trip_off(self, tmp_path, monkeypatch):
         monkeypatch.setattr(

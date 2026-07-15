@@ -169,5 +169,7 @@
   "summary_failed": "Özetleme başarısız: {error}",
   "wizard_disclaimer_title": "Lütfen dikkat",
   "wizard_disclaimer_text": "MinbarLive, konuşmayı gerçek zamanlı olarak yazıya dökmek ve çevirmek için yapay zekâ kullanır. Yapay zekâ çevirileri yanlış, eksik veya hatalı olabilir — özellikle dinî içeriklerde. Ses, işlenmek üzere seçilen yapay zekâ sağlayıcısına gönderilir. Altyazılara bağlayıcı bir dinî kaynak olarak güvenme.",
-  "wizard_disclaimer_accept": "Yapay zekâ çevirilerinin hatalı olabileceğini anlıyorum."
+  "wizard_disclaimer_accept": "Yapay zekâ çevirilerinin hatalı olabileceğini anlıyorum.",
+  "update_available": "Sürüm {version} mevcut — indirmek için tıklayın",
+  "check_updates_on_launch": "Başlangıçta güncellemeleri denetle"
 }

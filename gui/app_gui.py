@@ -1,6 +1,8 @@
 import os
 import queue
+import threading
 import tkinter as tk
+import webbrowser
 
 import customtkinter as ctk
 from screeninfo import get_monitors
@@ -54,6 +56,7 @@ from utils.settings import (
     load_settings,
     save_settings,
 )
+from utils.update_check import UpdateInfo, check_for_update
 from version import __version__
 
 
@@ -161,6 +164,13 @@ class AppGUI(
         self.log_poll_job: str | None = None
         self.height_apply_job: str | None = None
         self.inactivity_check_job: str | None = None
+
+        # Startup update check (worker thread writes, after-poll reads).
+        self._update_check_result: UpdateInfo | None = None
+        self._update_check_done = False
+        self._update_poll_job: str | None = None
+        self._update_poll_tries = 0
+        self._update_available: UpdateInfo | None = None
 
         self._running = False
         self._log_polling = False
@@ -304,16 +314,17 @@ class AppGUI(
         )
         self.sidebar_container.grid(row=0, column=0, sticky="nsew")
         self.sidebar_container.grid_columnconfigure(0, weight=1)
-        self.sidebar_container.grid_rowconfigure(1, weight=1)
+        self.sidebar_container.grid_rowconfigure(2, weight=1)
 
         self._create_sidebar_header()
+        self._create_update_banner()
 
         self.sidebar = ctk.CTkScrollableFrame(
             self.sidebar_container,
             fg_color=self._colors["sidebar"],
             corner_radius=0,
         )
-        self.sidebar.grid(row=1, column=0, sticky="nsew")
+        self.sidebar.grid(row=2, column=0, sticky="nsew")
         self.sidebar.grid_columnconfigure(0, weight=1)
         # Cap + center the collapsed card grid whenever the window resizes.
         self._applied_collapsed_margin: int | None = None
@@ -521,6 +532,101 @@ class AppGUI(
         )
         self._log_toggle_btn.grid(row=0, column=4, sticky="e", padx=(0, 16), pady=12)
         self._buttons.append(self._log_toggle_btn)
+
+    # ── Update notice ───────────────────────────────────────────────────────
+    # Dismissible banner between the header and the cards, shown when the
+    # startup check (one anonymous GET to the GitHub releases API, opt-out
+    # via the check_for_updates setting) finds a newer release. Clicking it
+    # opens the release page; it never blocks or interrupts anything.
+
+    def _create_update_banner(self) -> None:
+        banner = ctk.CTkFrame(
+            self.sidebar_container,
+            fg_color=self._colors["accent_soft"],
+            corner_radius=14,
+        )
+        banner.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 4))
+        banner.grid_columnconfigure(0, weight=1)
+
+        label = ctk.CTkLabel(
+            banner,
+            text="",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=self._colors["accent"],
+            anchor="w",
+            justify="left",
+            cursor="hand2",
+        )
+        label.grid(row=0, column=0, sticky="ew", padx=(14, 8), pady=8)
+
+        close_btn = ctk.CTkButton(
+            banner,
+            text="✕",
+            command=self._dismiss_update_banner,
+            width=28,
+            height=28,
+            corner_radius=14,
+            font=ctk.CTkFont(family="Segoe UI Symbol", size=13),
+            fg_color="transparent",
+            hover=False,
+            text_color=self._colors["accent"],
+        )
+        close_btn.grid(row=0, column=1, sticky="e", padx=(0, 8), pady=6)
+
+        banner.bind("<Button-1>", self._open_release_page)
+        label.bind("<Button-1>", self._open_release_page)
+        banner.configure(cursor="hand2")
+        banner.grid_remove()  # hidden until a newer release is confirmed
+
+        self._update_banner = banner
+        self._update_banner_label = label
+        self._update_banner_close = close_btn
+
+    def _start_update_check(self) -> None:
+        if not self._saved_settings.check_for_updates:
+            return
+
+        def worker() -> None:
+            # check_for_update never raises; result lands via the after-poll
+            # below (Tk widgets must not be touched from a worker thread).
+            self._update_check_result = check_for_update()
+            self._update_check_done = True
+
+        threading.Thread(target=worker, daemon=True, name="UPDATE-CHECK").start()
+        self._update_poll_job = self.after(2000, self._poll_update_check)
+
+    def _poll_update_check(self) -> None:
+        self._update_poll_job = None
+        if not self._update_check_done:
+            self._update_poll_tries += 1
+            if self._update_poll_tries < 30:  # give up after ~1 min
+                self._update_poll_job = self.after(2000, self._poll_update_check)
+            return
+        info = self._update_check_result
+        if info is not None:
+            log(f"Update available: v{info.version}", level="INFO")
+            self._show_update_banner(info)
+
+    def _show_update_banner(self, info: UpdateInfo) -> None:
+        self._update_available = info
+        self._update_banner_label.configure(text=self._update_banner_text())
+        self._update_banner.grid()
+
+    def _update_banner_text(self) -> str:
+        template = self.gui_texts.get(
+            "update_available", "Version {version} available — click to download"
+        )
+        try:
+            return template.format(version=self._update_available.version)
+        except Exception:
+            return template
+
+    def _dismiss_update_banner(self) -> None:
+        self._update_banner.grid_remove()
+
+    def _open_release_page(self, _event: object | None = None) -> None:
+        if self._update_available is not None:
+            webbrowser.open(self._update_available.url)
 
     def _create_control_card(self) -> None:
         card = self._section_card(self._col_left, "▶", "control_center")
@@ -1218,6 +1324,7 @@ class AppGUI(
         self.translation_poll_job = self.after(50, self._process_translation_queue)
         self.error_poll_job = self.after(250, self._poll_errors)
         self.after(300, lambda: self._setup_autohide_scrollbar(self.sidebar))
+        self._start_update_check()
         log(self.gui_texts.get("stopped", "Ready"), level="INFO")
         if self._saved_settings.auto_start:
             self.after(700, self.on_start)
@@ -2425,6 +2532,9 @@ class AppGUI(
         self.configure(fg_color=self._colors["app_bg"])
         self.sidebar_container.configure(fg_color=self._colors["sidebar"])
         self._sidebar_header.configure(fg_color=self._colors["sidebar"])
+        self._update_banner.configure(fg_color=self._colors["accent_soft"])
+        self._update_banner_label.configure(text_color=self._colors["accent"])
+        self._update_banner_close.configure(text_color=self._colors["accent"])
         self.sidebar.configure(fg_color=self._colors["sidebar"])
         self.content.configure(fg_color=self._colors["app_bg"])
         self._restore_control_window_surface()
@@ -2632,6 +2742,8 @@ class AppGUI(
         self.strategy_running_hint.configure(
             text=self.gui_texts.get("hint_stop_to_change", "⚠ Stop program to change")
         )
+        if self._update_available is not None:
+            self._update_banner_label.configure(text=self._update_banner_text())
         self.start_btn.configure(text=f"▶  {self._clean_action_label('start')}")
         self.stop_btn.configure(text=f"■  {self._clean_action_label('stop')}")
         self.logs_label.configure(text=f"▤  {self.gui_texts.get('logs', 'Logs')}")

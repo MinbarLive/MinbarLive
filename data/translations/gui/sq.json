@@ -169,5 +169,7 @@
   "summary_failed": "Përmbledhja dështoi: {error}",
   "wizard_disclaimer_title": "Kujdes",
   "wizard_disclaimer_text": "MinbarLive përdor inteligjencën artificiale për të transkriptuar dhe përkthyer fjalimin në kohë reale. Përkthimet e IA-së mund të jenë të gabuara, të paplota ose të pasakta — sidomos për përmbajtje fetare. Audioja dërgohet te ofruesi i zgjedhur i IA-së për përpunim. Mos u mbështet te titrat si burim fetar autoritativ.",
-  "wizard_disclaimer_accept": "E kuptoj që përkthimet e IA-së mund të jenë të pasakta."
+  "wizard_disclaimer_accept": "E kuptoj që përkthimet e IA-së mund të jenë të pasakta.",
+  "update_available": "Versioni {version} është i disponueshëm — klikoni për ta shkarkuar",
+  "check_updates_on_launch": "Kontrollo për përditësime në nisje"
 }

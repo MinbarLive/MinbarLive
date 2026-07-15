@@ -118,6 +118,8 @@ WIZARD_KEYS = [
     "api_key_status_saved",
     "api_key_status_none",
     "api_key_select_provider",
+    "update_available",
+    "check_updates_on_launch",
 ]
 
 
@@ -152,6 +154,7 @@ class TestWizardTranslationCoverage:
         assert "{minutes}" in data["history_minutes"]
         assert "{seconds}" in data["history_seconds"]
         assert "{error}" in data["summary_failed"]
+        assert "{version}" in data["update_available"]
 
 
 if __name__ == "__main__":

@@ -180,5 +180,7 @@
   "summary_failed": "Summary failed: {error}",
   "wizard_disclaimer_title": "Please note",
   "wizard_disclaimer_text": "MinbarLive uses artificial intelligence to transcribe and translate speech in real time. AI translations can be wrong, incomplete or inaccurate — especially for religious content. The audio is sent to the selected AI provider for processing. Do not rely on the subtitles as an authoritative religious source.",
-  "wizard_disclaimer_accept": "I understand that AI translations can be inaccurate."
+  "wizard_disclaimer_accept": "I understand that AI translations can be inaccurate.",
+  "update_available": "Version {version} available — click to download",
+  "check_updates_on_launch": "Check for updates at startup"
 }
