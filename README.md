@@ -38,12 +38,6 @@ By default it runs in **real-time streaming mode**: the spoken text appears word
 
 🎬 **Video tutorial:** [Watch how to set up and use MinbarLive](https://youtu.be/_VI6Y8qFDZQ)
 
-<div align="center">
-    <a href="https://youtu.be/_VI6Y8qFDZQ">
-        <img alt="MinbarLive Setup Tutorial" width="480" src="https://img.youtube.com/vi/_VI6Y8qFDZQ/mqdefault.jpg">
-    </a>
-</div>
-
 📚 **More details:** See the [docs/](docs/) folder for architecture, providers, configuration, and data file documentation.
 
 ## ⚠️ API Cost Warning
