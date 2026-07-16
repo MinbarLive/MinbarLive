@@ -36,7 +36,13 @@ By default it runs in **real-time streaming mode**: the spoken text appears word
 - Automatic silence detection, retries with exponential backoff, model fallback chains
 - **Cost guards**: silent segments are never sent to the API, and a forgotten session auto-stops after 10 minutes without speech
 
-🎬 **Video tutorial:** [Watch how to set up and use MinbarLive](https://drive.google.com/file/d/1aTvCRsDeWyuS2pEuiBJ_pKZS1e58TnfI/view) (Google Drive)
+🎬 **Video tutorial:** [Watch how to set up and use MinbarLive](https://youtu.be/_VI6Y8qFDZQ)
+
+<div align="center">
+    <a href="https://youtu.be/_VI6Y8qFDZQ">
+        <img alt="MinbarLive Setup Tutorial" width="480" src="https://img.youtube.com/vi/_VI6Y8qFDZQ/mqdefault.jpg">
+    </a>
+</div>
 
 📚 **More details:** See the [docs/](docs/) folder for architecture, providers, configuration, and data file documentation.
 

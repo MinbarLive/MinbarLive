@@ -244,18 +244,9 @@
     font-size: 1.05rem; font-weight: 700; color: var(--navy-deep); margin-bottom: 14px;
   }
   .videoframe {
-    position: relative; aspect-ratio: 16 / 9;
-    border-radius: 14px; overflow: hidden; background: #000;
+    aspect-ratio: 16 / 9; border-radius: 14px; overflow: hidden; background: #000;
   }
   .videoframe iframe { display: block; width: 100%; height: 100%; border: 0; }
-  /* The Drive player is not responsive: its controls are a fixed pixel size and it needs
-     room to lay out, so on a phone it clips. Render it at the desktop width and scale the
-     whole player down to fit (scale is 1 on desktop, so nothing changes there). */
-  .videoframe.fit iframe {
-    position: absolute; top: 0; left: 0;
-    width: 714px; height: 401.625px;
-    transform-origin: top left; transform: scale(var(--vscale, 1));
-  }
   .videobox .videonote { margin-top: 12px; font-size: 0.85rem; color: var(--ink-muted); }
 
   .callout {
@@ -464,8 +455,10 @@
     <div class="videobox">
       <h3 data-i18n="video_title">🎬 Video-Tutorial: MinbarLive einrichten und nutzen</h3>
       <div class="videoframe">
-        <iframe src="https://drive.google.com/file/d/1aTvCRsDeWyuS2pEuiBJ_pKZS1e58TnfI/preview"
-                title="MinbarLive Tutorial" allow="autoplay; fullscreen" allowfullscreen loading="lazy"></iframe>
+        <iframe src="https://www.youtube-nocookie.com/embed/_VI6Y8qFDZQ"
+                title="MinbarLive Setup Tutorial" loading="lazy"
+                allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
       </div>
       <p class="videonote" data-i18n="video_note">Lieber lesen? Die vier Schritte unten führen dich genauso ans Ziel.</p>
     </div>
@@ -533,9 +526,9 @@
         <span class="li-text"><b>Feedback</b><span data-i18n="l3_sub">Anonymes Feedback über Google Forms</span></span>
         <span class="li-arrow">→</span>
       </a>
-      <a class="linkbtn" href="https://drive.google.com/file/d/1aTvCRsDeWyuS2pEuiBJ_pKZS1e58TnfI/view">
+      <a class="linkbtn" href="https://youtu.be/_VI6Y8qFDZQ">
         <span class="li-icon">🎬</span>
-        <span class="li-text"><b data-i18n="l8_title">Tutorial: MinbarLive einrichten</b><span data-i18n="l8_sub">Komplettes Video-Tutorial</span></span>
+        <span class="li-text"><b data-i18n="l8_title">Tutorial: MinbarLive einrichten</b><span data-i18n="l8_sub">Komplettes Video-Tutorial auf YouTube</span></span>
         <span class="li-arrow">→</span>
       </a>
       <a class="linkbtn" href="https://youtu.be/alNk5N-pv7Y" data-href-de="https://youtu.be/alNk5N-pv7Y" data-href-en="https://youtu.be/Cl4XKgz6EJQ">
@@ -646,7 +639,7 @@ const translations = {
     l4_title: "Tutorial: Gemini-API-Key erstellen",
     l4_sub: "Schritt-für-Schritt-Video auf YouTube",
     l8_title: "Tutorial: MinbarLive einrichten",
-    l8_sub: "Komplettes Video-Tutorial",
+    l8_sub: "Komplettes Video-Tutorial auf YouTube",
     l6_sub: "Kostenloses Programm zum Anzeigen, Streamen & Aufnehmen",
     l7_sub: "Alle Links an einem Ort",
     community_title: "Wir suchen Tester, Feedbackgeber und Entwickler! 🤝",
@@ -718,7 +711,7 @@ const translations = {
     l4_title: "Tutorial: Create a Gemini API key",
     l4_sub: "Step-by-step video on YouTube",
     l8_title: "Tutorial: Set up MinbarLive",
-    l8_sub: "Full video tutorial",
+    l8_sub: "Full video tutorial on YouTube",
     l6_sub: "Free tool for displaying, streaming & recording",
     l7_sub: "All links in one place",
     community_title: "We're looking for testers, feedback & developers! 🤝",
@@ -757,22 +750,6 @@ function setLang(lang) {
     lang = (navigator.language || "").toLowerCase().startsWith("de") ? "de" : "en";
   }
   setLang(lang);
-})();
-
-/* The Drive player lays out at a fixed size and clips when the iframe is narrower than its
-   design width, so on phones it renders oversized. Render it at 714px (the desktop width,
-   where scale stays 1) and scale the whole player to fit. Without JS it keeps width:100%. */
-(function fitVideo() {
-  const frame = document.querySelector(".videoframe");
-  if (!frame) return;
-  const BASE = 714;
-  const fit = () => {
-    frame.classList.add("fit");
-    frame.style.setProperty("--vscale", frame.clientWidth / BASE);
-  };
-  fit();
-  window.addEventListener("resize", fit);
-  window.addEventListener("orientationchange", fit);
 })();
 
 /* gentle reveal-on-scroll; content stays visible without JS or with reduced motion */
