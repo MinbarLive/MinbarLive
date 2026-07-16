@@ -7,7 +7,7 @@ Thank you for your interest in contributing to MinbarLive! Contributions are wel
 Before contributing, you might want to share feedback or report issues:
 
 - **GitHub Issues**: [Open an issue](https://github.com/MinbarLive/MinbarLive/issues) for bugs or feature requests
-- **Google Forms**: [Submit feedback](https://forms.gle/T7hvU4yEbVRM4PmWA) anonymously
+- **Google Forms**: [Submit feedback](https://forms.gle/DJ3F25HKrrLjH9h59) anonymously
 
 ## How to Contribute
 

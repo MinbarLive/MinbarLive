@@ -36,6 +36,8 @@ By default it runs in **real-time streaming mode**: the spoken text appears word
 - Automatic silence detection, retries with exponential backoff, model fallback chains
 - **Cost guards**: silent segments are never sent to the API, and a forgotten session auto-stops after 10 minutes without speech
 
+🎬 **Video tutorial:** [Watch how to set up and use MinbarLive](https://drive.google.com/file/d/1aTvCRsDeWyuS2pEuiBJ_pKZS1e58TnfI/view) (Google Drive)
+
 📚 **More details:** See the [docs/](docs/) folder for architecture, providers, configuration, and data file documentation.
 
 ## ⚠️ API Cost Warning
@@ -174,7 +176,7 @@ only the request itself), and you can turn the check off in ⚙ Settings.
 ## Feedback
 
 - **GitHub Issues**: [Open an issue](https://github.com/MinbarLive/MinbarLive/issues)
-- **Google Forms**: [Submit feedback](https://forms.gle/T7hvU4yEbVRM4PmWA) anonymously
+- **Google Forms**: [Submit feedback](https://forms.gle/DJ3F25HKrrLjH9h59) anonymously
 - **Email**: [minbar.live@outlook.com](mailto:minbar.live@outlook.com)
 
 ## Contributing

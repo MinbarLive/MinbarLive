@@ -234,6 +234,21 @@
   .step p { font-size: 0.9rem; color: var(--ink-muted); }
   .step a { color: var(--navy-soft); font-weight: 600; }
 
+  /* video */
+  .videobox {
+    max-width: 760px; margin: 0 auto 48px;
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 22px; box-shadow: var(--shadow); text-align: center;
+  }
+  .videobox h3 {
+    font-size: 1.05rem; font-weight: 700; color: var(--navy-deep); margin-bottom: 14px;
+  }
+  .videoframe {
+    aspect-ratio: 16 / 9; border-radius: 14px; overflow: hidden; background: #000;
+  }
+  .videoframe iframe { display: block; width: 100%; height: 100%; border: 0; }
+  .videobox .videonote { margin-top: 12px; font-size: 0.85rem; color: var(--ink-muted); }
+
   .callout {
     margin-top: 28px; display: flex; gap: 14px; align-items: flex-start;
     background: rgba(255, 244, 214, 0.75); border: 1px solid rgba(190, 150, 60, 0.3);
@@ -436,6 +451,16 @@
       <h2 data-i18n="install_title">🚀 In 4 Schritten startklar</h2>
       <p data-i18n="install_sub">Keine Installation nötig: Datei herunterladen, öffnen, loslegen.</p>
     </div>
+
+    <div class="videobox">
+      <h3 data-i18n="video_title">🎬 Video-Tutorial: MinbarLive einrichten und nutzen</h3>
+      <div class="videoframe">
+        <iframe src="https://drive.google.com/file/d/1aTvCRsDeWyuS2pEuiBJ_pKZS1e58TnfI/preview"
+                title="MinbarLive Tutorial" allow="autoplay; fullscreen" allowfullscreen loading="lazy"></iframe>
+      </div>
+      <p class="videonote" data-i18n="video_note">Lieber lesen? Die vier Schritte unten führen dich genauso ans Ziel.</p>
+    </div>
+
     <div class="steps">
       <div class="step">
         <div class="num">1</div>
@@ -494,9 +519,14 @@
         <span class="li-text"><b>GitHub</b><span data-i18n="l2_sub">Für Entwickler: Quellcode & Projektseite</span></span>
         <span class="li-arrow">→</span>
       </a>
-      <a class="linkbtn" href="https://forms.gle/Cf9Z2RW3sJSCPvb26">
+      <a class="linkbtn" href="https://forms.gle/DJ3F25HKrrLjH9h59">
         <span class="li-icon">💭</span>
         <span class="li-text"><b>Feedback</b><span data-i18n="l3_sub">Anonymes Feedback über Google Forms</span></span>
+        <span class="li-arrow">→</span>
+      </a>
+      <a class="linkbtn" href="https://drive.google.com/file/d/1aTvCRsDeWyuS2pEuiBJ_pKZS1e58TnfI/view">
+        <span class="li-icon">🎬</span>
+        <span class="li-text"><b data-i18n="l8_title">Tutorial: MinbarLive einrichten</b><span data-i18n="l8_sub">Komplettes Video-Tutorial</span></span>
         <span class="li-arrow">→</span>
       </a>
       <a class="linkbtn" href="https://youtu.be/alNk5N-pv7Y" data-href-de="https://youtu.be/alNk5N-pv7Y" data-href-en="https://youtu.be/Cl4XKgz6EJQ">
@@ -523,7 +553,7 @@
       <h2 data-i18n="community_title">Wir suchen Tester, Feedbackgeber und Entwickler! 🤝</h2>
       <p data-i18n="community_text">MinbarLive ist ein Open-Source-Projekt aus der Community für die Community. Probiere die App in deiner Moschee aus, melde Fehler oder entwickle mit. Jede Hilfe zählt.</p>
       <div class="cta-row">
-        <a class="btn btn-light" href="https://forms.gle/Cf9Z2RW3sJSCPvb26" data-i18n="community_cta1">💭 Feedback geben</a>
+        <a class="btn btn-light" href="https://forms.gle/DJ3F25HKrrLjH9h59" data-i18n="community_cta1">💭 Feedback geben</a>
         <a class="btn btn-outline" href="https://github.com/MinbarLive/MinbarLive/blob/main/CONTRIBUTING.md" data-i18n="community_cta2">🧑‍💻 Mitentwickeln</a>
       </div>
     </div>
@@ -585,6 +615,8 @@ const translations = {
     f8_text: "Die App läuft auf deinem eigenen PC, kein Konto und keine Anmeldung nötig. Dein Zugangsschlüssel wird sicher auf dem Gerät gespeichert.",
     install_title: "🚀 In 4 Schritten startklar",
     install_sub: "Keine Installation nötig: Datei herunterladen, öffnen, loslegen.",
+    video_title: "🎬 Video-Tutorial: MinbarLive einrichten und nutzen",
+    video_note: "Lieber lesen? Die vier Schritte unten führen dich genauso ans Ziel.",
     s1_title: "Download",
     s1_text: 'Lade die neueste Version "MinbarLive.exe" von der <a href="https://github.com/MinbarLive/MinbarLive/releases">Release-Seite</a> herunter.',
     s2_title: "MinbarLive.exe starten",
@@ -604,6 +636,8 @@ const translations = {
     l3_sub: "Anonymes Feedback über Google Forms",
     l4_title: "Tutorial: Gemini-API-Key erstellen",
     l4_sub: "Schritt-für-Schritt-Video auf YouTube",
+    l8_title: "Tutorial: MinbarLive einrichten",
+    l8_sub: "Komplettes Video-Tutorial",
     l6_sub: "Kostenloses Programm zum Anzeigen, Streamen & Aufnehmen",
     l7_sub: "Alle Links an einem Ort",
     community_title: "Wir suchen Tester, Feedbackgeber und Entwickler! 🤝",
@@ -653,6 +687,8 @@ const translations = {
     f8_text: "The app runs on your own PC, no account or sign-up needed. Your access key is stored securely on your device.",
     install_title: "🚀 Ready in 4 steps",
     install_sub: "No installation needed: download the file, open it, and go.",
+    video_title: "🎬 Video tutorial: setting up and using MinbarLive",
+    video_note: "Prefer to read? The four steps below get you there just as well.",
     s1_title: "Download",
     s1_text: 'Get the latest version "MinbarLive.exe" from the <a href="https://github.com/MinbarLive/MinbarLive/releases">releases page</a>.',
     s2_title: "Run MinbarLive.exe",
@@ -672,6 +708,8 @@ const translations = {
     l3_sub: "Anonymous feedback via Google Forms",
     l4_title: "Tutorial: Create a Gemini API key",
     l4_sub: "Step-by-step video on YouTube",
+    l8_title: "Tutorial: Set up MinbarLive",
+    l8_sub: "Full video tutorial",
     l6_sub: "Free tool for displaying, streaming & recording",
     l7_sub: "All links in one place",
     community_title: "We're looking for testers, feedback & developers! 🤝",
@@ -714,7 +752,7 @@ function setLang(lang) {
 
 /* gentle reveal-on-scroll; content stays visible without JS or with reduced motion */
 (function initReveal() {
-  const items = document.querySelectorAll(".card, .step, .stat, .linkbtn, .section-head, .callout, .community");
+  const items = document.querySelectorAll(".card, .step, .stat, .linkbtn, .section-head, .callout, .community, .videobox");
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (reduced || !("IntersectionObserver" in window)) return;
   const observer = new IntersectionObserver((entries) => {
