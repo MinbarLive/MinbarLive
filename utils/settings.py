@@ -10,7 +10,7 @@ see config.py instead.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from utils.app_paths import get_app_data_dir
@@ -365,6 +365,9 @@ class Settings:
     # back to ai_provider / target_language at open time).
     last_summary_provider: str = ""
     last_summary_language: str = ""
+    # Recent announcement (megaphone) texts, most-recent-first, for quick
+    # re-use in the announcement window. Capped at ANNOUNCEMENT_HISTORY_MAX.
+    announcement_history: list[str] = field(default_factory=list)
 
 
 def _settings_path() -> Path:
@@ -454,6 +457,12 @@ def load_settings(use_cache: bool = True) -> Settings:
             and pipeline_mode == PIPELINE_MODE_STREAMING
         ):
             subtitle_mode = SUBTITLE_MODE_REALTIME
+        announcement_history = data.get("announcement_history", [])
+        if not isinstance(announcement_history, list):
+            announcement_history = []
+        announcement_history = [
+            t for t in announcement_history if isinstance(t, str) and t.strip()
+        ][:5]
         _cached_settings = Settings(
             monitor_index=data.get("monitor_index", 1),
             input_device_name=data.get("input_device_name"),
@@ -512,6 +521,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             pipeline_mode=pipeline_mode,
             last_summary_provider=data.get("last_summary_provider", ""),
             last_summary_language=data.get("last_summary_language", ""),
+            announcement_history=announcement_history,
         )
         return _cached_settings
     except Exception:
@@ -569,6 +579,7 @@ def save_settings(settings: Settings) -> None:
         "pipeline_mode": settings.pipeline_mode,
         "last_summary_provider": settings.last_summary_provider,
         "last_summary_language": settings.last_summary_language,
+        "announcement_history": settings.announcement_history,
     }
     tmp = _settings_path().with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

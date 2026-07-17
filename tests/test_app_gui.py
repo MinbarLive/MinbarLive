@@ -394,5 +394,142 @@ class TestLocalizationAndTheme:
         assert settings.log_panel_collapsed is True
 
 
+class _FakeSubtitleWindow:
+    """Records the announcement/overlay calls the AppGUI drives, without
+    opening a real fullscreen overlay."""
+
+    def __init__(self):
+        self.announcement = None
+        self.stopped_hint = None
+        self.destroyed = False
+
+    def winfo_exists(self):
+        return not self.destroyed
+
+    def set_announcement(self, text):
+        self.announcement = text
+
+    def clear_announcement(self):
+        self.announcement = ""
+
+    def set_stopped_hint(self, visible):
+        self.stopped_hint = visible
+
+    def destroy(self):
+        self.destroyed = True
+
+
+class TestAnnouncement:
+    """The megaphone announcement window + overlay lifecycle."""
+
+    def _duration_label(self, gui, key):
+        return gui.gui_texts[key]
+
+    def test_send_shows_message_and_records_history(self, make_gui):
+        gui, _c, settings = make_gui()
+        gui._open_announce_window()
+        fake = _FakeSubtitleWindow()
+        gui.subtitle_window = fake
+
+        gui._announce_textbox.insert("1.0", "Please silence your phones")
+        gui._announce_duration_combo.set(
+            self._duration_label(gui, "announce_duration_until_stopped")
+        )
+        gui._send_announcement()
+
+        assert fake.announcement == "Please silence your phones"
+        assert gui._announcement_text_active == "Please silence your phones"
+        assert gui._has_active_announcement() is True
+        assert gui._announcement_until_stopped is True
+        assert gui._announcement_job is None  # "until stopped" arms no timer
+        assert settings.announcement_history[0] == "Please silence your phones"
+
+    def test_timed_duration_arms_a_timer(self, make_gui):
+        gui, _c, _s = make_gui()
+        gui._open_announce_window()
+        gui.subtitle_window = _FakeSubtitleWindow()
+        gui._announce_textbox.insert("1.0", "Break for 10 minutes")
+        gui._announce_duration_combo.set(
+            self._duration_label(gui, "announce_duration_5m")
+        )
+        gui._send_announcement()
+        assert gui._announcement_job is not None
+        assert gui._announcement_until_stopped is False
+
+    def test_empty_message_is_a_no_op(self, make_gui):
+        gui, _c, settings = make_gui()
+        gui._open_announce_window()
+        fake = _FakeSubtitleWindow()
+        gui.subtitle_window = fake
+        gui._announce_textbox.insert("1.0", "   ")
+        gui._send_announcement()
+        assert fake.announcement is None
+        assert gui._has_active_announcement() is False
+        assert settings.announcement_history == []
+
+    def test_send_replaces_the_previous_announcement(self, make_gui):
+        gui, _c, _s = make_gui()
+        gui._open_announce_window()
+        fake = _FakeSubtitleWindow()
+        gui.subtitle_window = fake
+
+        gui._announce_textbox.insert("1.0", "First")
+        gui._announce_duration_combo.set(
+            self._duration_label(gui, "announce_duration_until_stopped")
+        )
+        gui._send_announcement()
+
+        gui._announce_textbox.delete("1.0", "end")
+        gui._announce_textbox.insert("1.0", "Second")
+        gui._send_announcement()
+
+        assert fake.announcement == "Second"
+        assert gui._announcement_text_active == "Second"
+
+    def test_stop_clears_the_message(self, make_gui):
+        gui, _c, _s = make_gui()
+        gui._open_announce_window()
+        fake = _FakeSubtitleWindow()
+        gui.subtitle_window = fake
+        gui._announce_textbox.insert("1.0", "Notice")
+        gui._announce_duration_combo.set(
+            self._duration_label(gui, "announce_duration_until_stopped")
+        )
+        gui._send_announcement()
+        gui._stop_announcement()
+
+        assert fake.announcement == ""
+        assert gui._has_active_announcement() is False
+        assert gui._announcement_job is None
+
+    def test_history_dedupes_and_caps_at_five(self, make_gui):
+        gui, _c, settings = make_gui()
+        for text in ["a", "b", "c", "d", "e", "f", "a"]:
+            gui._push_announcement_history(text)
+        # Most-recent-first, deduped, capped at 5.
+        assert settings.announcement_history == ["a", "f", "e", "d", "c"]
+
+    def test_on_stop_keeps_overlay_when_announcement_active(self, make_gui):
+        # hide_subtitle_on_stop=True normally destroys the overlay on stop, but
+        # an active "until stopped" announcement must survive the stop.
+        gui, _c, _s = make_gui(hide_subtitle_on_stop=True)
+        fake = _FakeSubtitleWindow()
+        gui.subtitle_window = fake
+        gui._running = True
+        gui._announcement_text_active = "Stays up"
+        gui.on_stop()
+        assert gui.subtitle_window is fake
+        assert fake.destroyed is False
+
+    def test_on_stop_destroys_overlay_without_announcement(self, make_gui):
+        gui, _c, _s = make_gui(hide_subtitle_on_stop=True)
+        fake = _FakeSubtitleWindow()
+        gui.subtitle_window = fake
+        gui._running = True
+        gui.on_stop()
+        assert gui.subtitle_window is None
+        assert fake.destroyed is True
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

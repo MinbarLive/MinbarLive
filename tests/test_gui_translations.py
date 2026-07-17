@@ -121,6 +121,19 @@ WIZARD_KEYS = [
     "api_key_select_provider",
     "update_available",
     "check_updates_on_launch",
+    # Announcement (megaphone) window
+    "announce_title",
+    "announce_sub",
+    "announce_duration_label",
+    "announce_duration_10s",
+    "announce_duration_30s",
+    "announce_duration_1m",
+    "announce_duration_5m",
+    "announce_duration_until_stopped",
+    "announce_recent",
+    "announce_recent_empty",
+    "announce_send",
+    "announce_stop",
 ]
 
 

@@ -13,6 +13,7 @@ from config import (
     ICON_PATH,
     ICON_PATH_PNG,
 )
+from gui.announce_view import AnnounceViewMixin
 from gui.batch_view import BatchViewMixin
 from gui.control_state import (
     STRATEGY_IDS,
@@ -125,7 +126,12 @@ def _clear_stale_scaling_windows(force: bool = False) -> None:
 
 
 class AppGUI(
-    BatchViewMixin, HistoryViewMixin, SettingsViewMixin, WidgetFactoryMixin, ctk.CTk
+    AnnounceViewMixin,
+    BatchViewMixin,
+    HistoryViewMixin,
+    SettingsViewMixin,
+    WidgetFactoryMixin,
+    ctk.CTk,
 ):
     # Minimum window size in CTk logical units, shared by _setup_window and
     # _toggle_log_panel (a mismatch there once locked the window at the
@@ -382,6 +388,7 @@ class AppGUI(
         self._col_right.grid_columnconfigure(0, weight=1)
 
         self._init_batch_state()
+        self._init_announce_state()
         self._create_control_card()
         self._create_language_card()
         self._create_display_card()
@@ -536,6 +543,21 @@ class AppGUI(
         self._batch_btn.grid(row=0, column=2, sticky="e", padx=(0, 8), pady=12)
         self._buttons.append(self._batch_btn)
 
+        self._announce_btn = ctk.CTkButton(
+            header,
+            text="📣",
+            command=self._open_announce_window,
+            width=44,
+            height=44,
+            corner_radius=14,
+            font=ctk.CTkFont(family="Segoe UI Symbol", size=20),
+            fg_color=self._colors["button"],
+            hover_color=self._colors["button_hover"],
+            text_color=self._colors["text"],
+        )
+        self._announce_btn.grid(row=0, column=3, sticky="e", padx=(0, 8), pady=12)
+        self._buttons.append(self._announce_btn)
+
         self._settings_btn = ctk.CTkButton(
             header,
             text="⚙",
@@ -548,7 +570,7 @@ class AppGUI(
             hover_color=self._colors["button_hover"],
             text_color=self._colors["text"],
         )
-        self._settings_btn.grid(row=0, column=3, sticky="e", padx=(0, 8), pady=12)
+        self._settings_btn.grid(row=0, column=4, sticky="e", padx=(0, 8), pady=12)
         self._buttons.append(self._settings_btn)
 
         self._log_toggle_btn = ctk.CTkButton(
@@ -563,7 +585,7 @@ class AppGUI(
             hover_color=self._colors["button_hover"],
             text_color=self._colors["text"],
         )
-        self._log_toggle_btn.grid(row=0, column=4, sticky="e", padx=(0, 16), pady=12)
+        self._log_toggle_btn.grid(row=0, column=5, sticky="e", padx=(0, 16), pady=12)
         self._buttons.append(self._log_toggle_btn)
 
     # ── Update notice ───────────────────────────────────────────────────────
@@ -1359,6 +1381,9 @@ class AppGUI(
             # Window kept open while stopped (default setup): tell the
             # audience the missing subtitles are deliberate. Cleared on Start.
             self.subtitle_window.set_stopped_hint(True)
+        # An 'until stopped' announcement survives window recreation — re-draw
+        # it on the fresh overlay.
+        self._apply_active_announcement()
         # The control panel now has an overlay to float above.
         self._apply_control_window_topmost()
 
@@ -1596,7 +1621,13 @@ class AppGUI(
         self._set_status(False)
         self._sync_advanced_enabled_states()
         self._cancel_inactivity_check()
-        if self._saved_settings.hide_subtitle_on_stop:
+        # Keep the overlay alive if an 'until stopped' announcement is showing —
+        # it must survive a translation stop (user decision). Stopping the
+        # announcement itself then closes the overlay if hide-on-stop is set.
+        if (
+            self._saved_settings.hide_subtitle_on_stop
+            and not self._has_active_announcement()
+        ):
             self._destroy_subtitle_window()
         elif self.subtitle_window and self.subtitle_window.winfo_exists():
             self.subtitle_window.set_stopped_hint(True)
@@ -2601,6 +2632,7 @@ class AppGUI(
         # stale one so it isn't left with old-theme/old-language widgets.
         self._close_history_window()
         self._close_batch_window()
+        self._close_announce_window()
         # Update settings window if it's open
         if self._settings_win_exists():
             # Settings stays open across the switch (it hosts the toggle), so its
@@ -2720,6 +2752,7 @@ class AppGUI(
         # stale one so it isn't left with old-theme/old-language widgets.
         self._close_history_window()
         self._close_batch_window()
+        self._close_announce_window()
         for label in self._labels + self._section_titles:
             key = getattr(label, "_text_key", None)
             if key:

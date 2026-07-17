@@ -323,6 +323,13 @@ class SubtitleWindow(tk.Toplevel):
         self._live_feed_scroll = 0.0
         self._live_feed_scroll_target = 0.0
         self._feed_anim_job: str | None = None
+        # Announcement overlay (megaphone): a big centred operator message.
+        # Drawn above the subtitles and the live line but below the disclaimer
+        # pills (kept visible). The text/timer are owned by AppGUI so an
+        # announcement survives a translation stop and window recreation — this
+        # window only renders whatever text it was last given.
+        self._announcement_text = ""
+        self._announcement_items: list[int] = []
 
         self.update_idletasks()
         self.canvas_width = self.canvas.winfo_width()
@@ -506,6 +513,7 @@ class SubtitleWindow(tk.Toplevel):
         else:
             self._apply_opaque_mode()
         self._refresh_subtitles()
+        self._render_announcement()
 
     def _update_footer_visibility(self):
         """Draw or hide the footer pill and keep subtitle spacing readable."""
@@ -583,7 +591,13 @@ class SubtitleWindow(tk.Toplevel):
         """Keep the disclaimer pill above the subtitle text in the canvas
         z-order — items stack in creation order, so freshly added subtitles
         (and the live line) would otherwise draw over the warning as they
-        scroll through its area."""
+        scroll through its area.
+
+        The announcement card is raised first (above subtitles/live line), then
+        the two pills on top of it — the operator message covers the subtitles
+        but the disclaimer stays visible (user decision)."""
+        for item_id in self._announcement_items:
+            self.canvas.tag_raise(item_id)
         for item_id in self._stopped_hint_items:
             self.canvas.tag_raise(item_id)
         for item_id in self._canvas_footer_items:
@@ -646,6 +660,84 @@ class SubtitleWindow(tk.Toplevel):
             width=int(pill_w - pad_x * 2),
         )
         self._stopped_hint_items = [bg_id, text_id]
+
+    def set_announcement(self, text: str):
+        """Show (or replace) the big centred announcement card, or clear it
+        when ``text`` is empty. Idempotent — re-setting the same text is a
+        no-op so AppGUI can re-assert it cheaply on every window it creates."""
+        text = (text or "").strip()
+        if text == self._announcement_text:
+            return
+        self._announcement_text = text
+        self._render_announcement()
+
+    def clear_announcement(self):
+        """Remove the announcement card from the canvas."""
+        self.set_announcement("")
+
+    def _remove_announcement_items(self):
+        for item_id in self._announcement_items:
+            self.canvas.delete(item_id)
+        self._announcement_items = []
+
+    def _render_announcement(self):
+        """(Re)draw the announcement card centred on the canvas, big enough to
+        read across a hall. Removed when there is no announcement text."""
+        import tkinter.font as tkfont
+
+        self._remove_announcement_items()
+        if (
+            not self._announcement_text
+            or not self.canvas_width
+            or not self.canvas_height
+        ):
+            return
+
+        # A touch smaller than the max subtitle size so a longer message wraps
+        # to a few lines inside the card instead of overflowing the screen.
+        size = max(28, min(72, int(self.canvas_width / 22)))
+        font_spec = (self._font_family, size, "bold")
+        font_obj = tkfont.Font(family=self._font_family, size=size, weight="bold")
+
+        max_text_w = int(self.canvas_width * 0.8)
+        # Honour the operator's explicit line breaks, then width-wrap each
+        # paragraph (a blank line stays blank for spacing).
+        lines: list[str] = []
+        for paragraph in self._announcement_text.split("\n"):
+            lines.extend(self._wrap_text_to_lines(paragraph, max_text_w, font_spec))
+
+        pad_x, pad_y = 44, 32
+        line_h = font_obj.metrics("linespace")
+        text_w = max((font_obj.measure(line) for line in lines), default=0)
+        text_h = line_h * len(lines)
+        card_w = min(text_w + pad_x * 2, self.canvas_width - 40)
+        card_h = min(text_h + pad_y * 2, self.canvas_height - 40)
+        cx = self.canvas_width / 2
+        cy = self.canvas_height / 2
+        x1, x2 = cx - card_w / 2, cx + card_w / 2
+        y1, y2 = cy - card_h / 2, cy + card_h / 2
+
+        bg_id = self.canvas.create_polygon(
+            self._rounded_rect_points(x1, y1, x2, y2, 24),
+            smooth=True,
+            splinesteps=18,
+            fill=self._card_fill,
+            outline=self._card_outline,
+            width=1,
+        )
+        # lines are already shaped by _wrap_text_to_lines — do NOT reshape.
+        text_id = self.canvas.create_text(
+            cx,
+            cy,
+            text="\n".join(lines),
+            fill=self._primary_text,
+            font=font_spec,
+            anchor="center",
+            justify="center",
+        )
+        self._announcement_items = [bg_id, text_id]
+        # Keep the disclaimer pills above the card (see _raise_footer).
+        self._raise_footer()
 
     def _update_font(self):
         """Recalculate font based on canvas width and font size base (divisor)."""
@@ -1081,6 +1173,9 @@ class SubtitleWindow(tk.Toplevel):
 
         # Re-anchor the live line against the new mode's footer margin
         self._render_live_line()
+        # The announcement card is mode-independent; redraw to restore its
+        # z-order above the freshly re-added subtitle items.
+        self._render_announcement()
 
     def get_subtitle_mode(self) -> str:
         """Get current subtitle mode."""
@@ -1211,6 +1306,9 @@ class SubtitleWindow(tk.Toplevel):
         for item_id in self._stopped_hint_items:
             self.canvas.delete(item_id)
         self._stopped_hint_items = []
+        # Remove the announcement card too; the text is kept so show() can
+        # restore it (the flag survives, like the stopped hint).
+        self._remove_announcement_items()
 
         if sys.platform == "win32":
             chroma_color = self._transparent_key_color
@@ -1238,6 +1336,7 @@ class SubtitleWindow(tk.Toplevel):
             self._update_footer_visibility()
         else:
             self._refresh_stopped_hint()
+        self._render_announcement()
 
     def _rounded_rect_points(
         self, x1: float, y1: float, x2: float, y2: float, radius: float
@@ -1597,6 +1696,7 @@ class SubtitleWindow(tk.Toplevel):
         self._update_footer_visibility()
         self._reposition_subtitles()
         self._render_live_line()
+        self._render_announcement()
 
     def set_monitor(self, monitor_index: int):
         """Change the monitor where the subtitle window is displayed."""
@@ -1611,6 +1711,7 @@ class SubtitleWindow(tk.Toplevel):
         self._update_footer_visibility()  # pill is drawn in canvas coords
         self._reposition_subtitles()
         self._render_live_line()
+        self._render_announcement()
 
     def set_window_height_percent(self, percent: int):
         """Set window height as percentage of screen height (5-100)."""
@@ -1645,6 +1746,7 @@ class SubtitleWindow(tk.Toplevel):
         self._update_footer_visibility()
         self._reposition_subtitles()
         self._render_live_line()
+        self._render_announcement()
         # Bring window to front after resize
         self.lift()
 
