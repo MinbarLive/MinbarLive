@@ -319,8 +319,24 @@ class AppGUI(
         except tk.TclError:
             pass
         try:
-            self.attributes("-topmost", True)
+            self.attributes("-topmost", self._control_window_should_be_topmost())
             self.lift()
+        except tk.TclError:
+            pass
+
+    def _control_window_should_be_topmost(self) -> bool:
+        """The control panel only needs to float above the subtitle overlay
+        while that overlay is open — and only if the user hasn't turned
+        always-on-top off. With no overlay open it stays in normal stacking."""
+        if not self._saved_settings.always_on_top:
+            return False
+        return bool(self.subtitle_window and self.subtitle_window.winfo_exists())
+
+    def _apply_control_window_topmost(self) -> None:
+        """Re-apply the control panel's topmost attribute after the subtitle
+        overlay opens/closes or the always-on-top setting changes."""
+        try:
+            self.attributes("-topmost", self._control_window_should_be_topmost())
         except tk.TclError:
             pass
 
@@ -1229,7 +1245,20 @@ class AppGUI(
             self._on_auto_stop_inactivity_change,
         )
         self.auto_stop_inactivity_cb.grid(
-            row=13, column=0, sticky="ew", padx=16, pady=(0, 12)
+            row=13, column=0, sticky="ew", padx=16, pady=(0, 8)
+        )
+
+        self.always_on_top_var = tk.BooleanVar(
+            value=self._saved_settings.always_on_top
+        )
+        self.always_on_top_cb = self._checkbox(
+            self.advanced_frame,
+            "always_on_top",
+            self.always_on_top_var,
+            self._on_always_on_top_change,
+        )
+        self.always_on_top_cb.grid(
+            row=14, column=0, sticky="ew", padx=16, pady=(0, 12)
         )
 
         self._sync_advanced_enabled_states()
@@ -1322,6 +1351,7 @@ class AppGUI(
             theme_mode=getattr(
                 self._saved_settings, "subtitle_theme_mode", self._theme_mode
             ),
+            always_on_top=self._saved_settings.always_on_top,
             on_stop=self._request_stop_from_subtitle,
         )
         self.height_slider.set(self._saved_settings.window_height_percent)
@@ -1329,6 +1359,8 @@ class AppGUI(
             # Window kept open while stopped (default setup): tell the
             # audience the missing subtitles are deliberate. Cleared on Start.
             self.subtitle_window.set_stopped_hint(True)
+        # The control panel now has an overlay to float above.
+        self._apply_control_window_topmost()
 
     def _destroy_subtitle_window(self) -> None:
         try:
@@ -1337,6 +1369,8 @@ class AppGUI(
         except Exception as exc:
             log(f"Error destroying subtitle window: {exc}", level="DEBUG")
         self.subtitle_window = None
+        # No overlay left to float above → drop the control panel's topmost.
+        self._apply_control_window_topmost()
 
     def _finalize_setup(self) -> None:
         self._set_status(False)
@@ -2221,6 +2255,18 @@ class AppGUI(
             and (not self.subtitle_window or not self.subtitle_window.winfo_exists())
         ):
             self._create_subtitle_window()
+
+    def _on_always_on_top_change(self) -> None:
+        enabled = self.always_on_top_var.get()
+        self._saved_settings.always_on_top = enabled
+        # Applies live to both windows: the overlay drops/regains topmost, and
+        # the control panel re-evaluates (it stays topmost only while an
+        # overlay is open and this setting is on).
+        if self.subtitle_window and self.subtitle_window.winfo_exists():
+            self.subtitle_window.set_always_on_top(enabled)
+        self._apply_control_window_topmost()
+        log(f"Always on top: {'on' if enabled else 'off'}", level="INFO")
+        self._save_current_settings()
 
     def _toggle_advanced_settings(self) -> None:
         self.advanced_visible = not self.advanced_visible

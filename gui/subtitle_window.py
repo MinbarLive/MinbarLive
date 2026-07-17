@@ -195,6 +195,7 @@ class SubtitleWindow(tk.Toplevel):
         adaptive_catchup: bool = False,
         theme_mode: str = "dark",
         bilingual_mode: bool = False,
+        always_on_top: bool = True,
         on_stop=None,
     ):
         super().__init__(master)
@@ -222,6 +223,10 @@ class SubtitleWindow(tk.Toplevel):
         self._show_footer = show_footer  # Show/hide footer disclaimer
         self._adaptive_catchup = adaptive_catchup
         self._bilingual_mode = bilingual_mode  # Show original text above translation
+        # Keep the overlay above other windows (user setting). Off = the
+        # overlay stays in normal stacking even as a partial/transparent
+        # overlay. Applied via _apply_topmost / set_always_on_top.
+        self._always_on_top = always_on_top
         self._effective_scroll_speed = scroll_speed
         self._theme_mode = theme_mode
         self._theme_palettes = {
@@ -1026,7 +1031,8 @@ class SubtitleWindow(tk.Toplevel):
                 self.canvas.configure(bg=chroma_color)
 
         # Make always-on-top so subtitles stay visible over other windows
-        self.wm_attributes("-topmost", True)
+        # (respects the user's always_on_top setting).
+        self._apply_topmost()
 
     def _apply_opaque_mode(self):
         """Restore the polished opaque subtitle surface."""
@@ -1044,7 +1050,7 @@ class SubtitleWindow(tk.Toplevel):
         self.configure(bg=self._bg_color)
         self.canvas.configure(bg=self._bg_color)
 
-        self.wm_attributes("-topmost", True)
+        self._apply_topmost()
 
     def set_subtitle_mode(self, mode: str):
         """Set subtitle display mode: realtime, continuous or static."""
@@ -1435,6 +1441,50 @@ class SubtitleWindow(tk.Toplevel):
         # Redraw the live line with the new font/theme colors
         self._render_live_line()
 
+    def _monitor_work_area(self, mon) -> tuple[int, int, int, int]:
+        """Physical (x, y, w, h) work area — the monitor minus the taskbar —
+        of the monitor ``mon`` lives on. Falls back to the full monitor bounds
+        off Windows or on any failure."""
+        full = (mon.x, mon.y, mon.width, mon.height)
+        if sys.platform != "win32":
+            return full
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", wintypes.LONG),
+                    ("top", wintypes.LONG),
+                    ("right", wintypes.LONG),
+                    ("bottom", wintypes.LONG),
+                ]
+
+            class _MONITORINFO(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", wintypes.DWORD),
+                    ("rcMonitor", _RECT),
+                    ("rcWork", _RECT),
+                    ("dwFlags", wintypes.DWORD),
+                ]
+
+            user32 = ctypes.windll.user32
+            # restype must be a pointer-sized type or the 64-bit HMONITOR is
+            # truncated and GetMonitorInfo then fails.
+            user32.MonitorFromPoint.restype = ctypes.c_void_p
+            user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+            MONITOR_DEFAULTTONEAREST = 2
+            pt = wintypes.POINT(mon.x + mon.width // 2, mon.y + mon.height // 2)
+            hmon = user32.MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST)
+            info = _MONITORINFO()
+            info.cbSize = ctypes.sizeof(_MONITORINFO)
+            if user32.GetMonitorInfoW(hmon, ctypes.byref(info)):
+                w = info.rcWork
+                return (w.left, w.top, w.right - w.left, w.bottom - w.top)
+        except Exception:
+            pass
+        return full
+
     def _set_screen_position(self, force_redraw: bool = False):
         monitors = get_monitors()
         if self._monitor_index < len(monitors):
@@ -1444,14 +1494,25 @@ class SubtitleWindow(tk.Toplevel):
         else:
             mon = monitors[0]
 
-        if self._window_height_percent >= 100:
-            # Full screen - use exact monitor dimensions
-            x, y, width, height = mon.x, mon.y, mon.width, mon.height
+        # A full-height overlay always fills the whole monitor so OBS captures
+        # the entire frame (no uncovered taskbar strip at the bottom). Only a
+        # *partial* overlay with always-on-top off is clamped to the work area
+        # (monitor minus taskbar): as an ordinary window the topmost taskbar
+        # would otherwise cover its bottom strip on screen. Topmost overlays
+        # paint above the taskbar, so they never need the clamp.
+        if self._window_height_percent >= 100 or self._always_on_top:
+            base_x, base_y, base_w, base_h = mon.x, mon.y, mon.width, mon.height
         else:
-            # Partial height - anchor at bottom of screen
-            height = int(mon.height * self._window_height_percent / 100)
-            y = mon.y + (mon.height - height)
-            x, width = mon.x, mon.width
+            base_x, base_y, base_w, base_h = self._monitor_work_area(mon)
+
+        if self._window_height_percent >= 100:
+            # Full height - use the whole monitor
+            x, y, width, height = base_x, base_y, base_w, base_h
+        else:
+            # Partial height - anchor at the bottom of the base rect
+            height = int(base_h * self._window_height_percent / 100)
+            y = base_y + (base_h - height)
+            x, width = base_x, base_w
         # Size just applied to the window. winfo_width/height lag the native
         # resize until the resulting <Configure> event is processed, so
         # callers that need the fresh size right away read this instead.
@@ -1499,15 +1560,43 @@ class SubtitleWindow(tk.Toplevel):
             else:
                 self.geometry(geom)
 
-        # Keep window on top when not full-screen (otherwise it disappears behind other windows)
+        # Keep the overlay above other windows when it's a partial or
+        # transparent overlay; a full-screen opaque overlay stays in normal
+        # stacking. Gated by the user's always_on_top setting.
+        self._apply_topmost()
+
+    def _desired_topmost(self) -> bool:
+        """Whether the overlay should sit above other windows, ignoring the
+        user's always_on_top switch. A partial or transparent overlay needs it
+        (otherwise it disappears behind other windows); a full-screen opaque
+        overlay deliberately does not (it would hide the desktop)."""
         if self._window_height_percent < 100:
-            self.wm_attributes("-topmost", True)
-        else:
-            # Full-screen: only use topmost if transparent mode is active
-            if not (
-                self._subtitle_mode == SUBTITLE_MODE_STATIC and self._transparent_static
-            ):
-                self.wm_attributes("-topmost", False)
+            return True
+        return self._subtitle_mode == SUBTITLE_MODE_STATIC and self._transparent_static
+
+    def _apply_topmost(self) -> None:
+        """Apply the -topmost attribute from the current mode and the user's
+        always_on_top setting."""
+        try:
+            self.wm_attributes(
+                "-topmost", self._always_on_top and self._desired_topmost()
+            )
+        except tk.TclError:
+            pass
+
+    def set_always_on_top(self, enabled: bool):
+        """Toggle always-on-top live. Off = the overlay no longer floats above
+        other windows AND is laid out inside the work area (so the taskbar,
+        which stays topmost, never covers it); on = full monitor, above the
+        taskbar. _set_screen_position re-applies -topmost at the end, so it
+        covers both. (The control panel's own topmost is handled in AppGUI.)"""
+        self._always_on_top = enabled
+        self._set_screen_position(force_redraw=True)
+        self.canvas_width, self.canvas_height = self._applied_size
+        self._update_font()
+        self._update_footer_visibility()
+        self._reposition_subtitles()
+        self._render_live_line()
 
     def set_monitor(self, monitor_index: int):
         """Change the monitor where the subtitle window is displayed."""

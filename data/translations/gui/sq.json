@@ -71,6 +71,7 @@
   "log_gui_language_changed": "Gjuha e ndërfaqes u ndryshua në: {language}",
   "log_font_size_changed": "Madhësia e fontit u ndryshua në: {size}",
   "hide_subtitle_on_stop": "Fshih dritaren e titrave kur ndalet",
+  "always_on_top": "Mbaji dritaret gjithmonë sipër",
   "adaptive_subtitle_catchup": "Kapje adaptive e titrave",
   "auto_cleanup_logs": "Fshi automatikisht skedarët e vjetër të regjistrave (30d)",
   "auto_cleanup_content": "Fshi automatikisht historikun dhe skedarët batch të vjetër (90d)",

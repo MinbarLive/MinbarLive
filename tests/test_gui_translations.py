@@ -73,6 +73,7 @@ WIZARD_KEYS = [
     "batch_output_both",
     "batch_bilingual_srt",
     "noise_filter",
+    "always_on_top",
     "islamic_mode",
     "islamic_mode_enabled",
     "islamic_mode_hint",

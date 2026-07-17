@@ -82,6 +82,7 @@
   "log_gui_language_changed": "GUI language changed to: {language}",
   "log_font_size_changed": "Font size changed to: {size}",
   "hide_subtitle_on_stop": "Hide subtitle window when stopped",
+  "always_on_top": "Keep windows always on top",
   "adaptive_subtitle_catchup": "Adaptive subtitle catch-up",
   "auto_cleanup_logs": "Auto-delete old log files (30d)",
   "auto_cleanup_content": "Auto-delete old history & batch files (90d)",

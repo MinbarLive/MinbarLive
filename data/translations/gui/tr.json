@@ -71,6 +71,7 @@
   "log_gui_language_changed": "Arayüz dili değiştirildi: {language}",
   "log_font_size_changed": "Yazı tipi boyutu değiştirildi: {size}",
   "hide_subtitle_on_stop": "Durdurulduğunda altyazı penceresini gizle",
+  "always_on_top": "Pencereleri her zaman üstte tut",
   "adaptive_subtitle_catchup": "Uyarlanabilir altyazı yakalama",
   "auto_cleanup_logs": "Eski günlük dosyalarını otomatik sil (30g)",
   "auto_cleanup_content": "Eski geçmiş ve toplu dosyaları otomatik sil (90g)",

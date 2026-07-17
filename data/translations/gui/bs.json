@@ -71,6 +71,7 @@
   "log_gui_language_changed": "Jezik sučelja promijenjen na: {language}",
   "log_font_size_changed": "Veličina fonta promijenjena na: {size}",
   "hide_subtitle_on_stop": "Sakrij prozor titlova kada je zaustavljeno",
+  "always_on_top": "Drži prozore uvijek na vrhu",
   "adaptive_subtitle_catchup": "Adaptivno sustizanje titlova",
   "auto_cleanup_logs": "Automatsko brisanje starih log datoteka (30d)",
   "auto_cleanup_content": "Automatsko brisanje stare historije i batch datoteka (90d)",

@@ -71,6 +71,7 @@
   "log_gui_language_changed": "تم تغيير لغة الواجهة إلى: {language}",
   "log_font_size_changed": "تم تغيير حجم الخط إلى: {size}",
   "hide_subtitle_on_stop": "إخفاء نافذة الترجمة عند التوقف",
+  "always_on_top": "إبقاء النوافذ دائمًا في المقدمة",
   "adaptive_subtitle_catchup": "اللحاق التكيّفي بالترجمة",
   "auto_cleanup_logs": "حذف ملفات السجلات القديمة تلقائيًا (30ي)",
   "auto_cleanup_content": "حذف المحفوظات وملفات الدفعات القديمة تلقائيًا (90ي)",

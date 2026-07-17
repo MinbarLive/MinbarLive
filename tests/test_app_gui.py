@@ -216,6 +216,79 @@ class TestControlStateIsWiredUp:
         )
         assert gui._required_key_providers() == ["openai"]
 
+
+class _FakeOverlay:
+    """Stands in for a live SubtitleWindow (building a real fullscreen overlay
+    in a test is deliberately avoided — see the module docstring)."""
+
+    def __init__(self):
+        self.always_on_top_calls: list[bool] = []
+
+    def winfo_exists(self):
+        return True
+
+    def set_always_on_top(self, enabled):
+        self.always_on_top_calls.append(enabled)
+
+    def destroy(self):
+        pass
+
+
+def _topmost(gui) -> bool:
+    gui.update_idletasks()
+    return bool(int(gui.attributes("-topmost")))
+
+
+class TestAlwaysOnTop:
+    """The control panel floats above the subtitle overlay only while that
+    overlay is open, and only if always_on_top is on. The checkbox toggles
+    both windows live."""
+
+    def test_not_topmost_while_no_overlay_open(self, make_gui):
+        # hide_subtitle_on_stop=True (fixture default) => no overlay at startup.
+        gui, _c, _s = make_gui()
+        assert gui.subtitle_window is None
+        assert gui._control_window_should_be_topmost() is False
+        assert _topmost(gui) is False
+
+    def test_topmost_while_overlay_open(self, make_gui):
+        gui, _c, _s = make_gui()
+        gui.subtitle_window = _FakeOverlay()
+        gui._apply_control_window_topmost()
+        assert gui._control_window_should_be_topmost() is True
+        assert _topmost(gui) is True
+
+    def test_toggle_off_drops_both_windows(self, make_gui):
+        gui, _c, settings = make_gui()
+        overlay = _FakeOverlay()
+        gui.subtitle_window = overlay
+
+        gui.always_on_top_var.set(False)
+        gui._on_always_on_top_change()
+
+        assert settings.always_on_top is False
+        assert overlay.always_on_top_calls == [False]  # overlay told to drop
+        assert gui._control_window_should_be_topmost() is False
+        assert _topmost(gui) is False
+
+    def test_toggle_back_on_restores_topmost_with_overlay(self, make_gui):
+        gui, _c, settings = make_gui(always_on_top=False)
+        gui.subtitle_window = _FakeOverlay()
+
+        gui.always_on_top_var.set(True)
+        gui._on_always_on_top_change()
+
+        assert settings.always_on_top is True
+        assert gui._control_window_should_be_topmost() is True
+        assert _topmost(gui) is True
+
+    def test_off_never_topmost_even_with_overlay(self, make_gui):
+        gui, _c, _s = make_gui(always_on_top=False)
+        gui.subtitle_window = _FakeOverlay()
+        gui._apply_control_window_topmost()
+        assert gui._control_window_should_be_topmost() is False
+        assert _topmost(gui) is False
+
     def test_effective_subtitle_mode_delegates(self, make_gui):
         gui, _c, settings = make_gui(
             subtitle_mode=SUBTITLE_MODE_REALTIME,

@@ -82,6 +82,7 @@
   "log_gui_language_changed": "GUI-Sprache geändert zu: {language}",
   "log_font_size_changed": "Schriftgröße geändert zu: {size}",
   "hide_subtitle_on_stop": "Untertitelfenster ausblenden wenn gestoppt",
+  "always_on_top": "Fenster immer im Vordergrund halten",
   "adaptive_subtitle_catchup": "Adaptives Untertitel-Aufholen",
   "auto_cleanup_logs": "Alte Protokolldateien automatisch löschen (30T)",
   "auto_cleanup_content": "Alten Verlauf & Batch-Dateien automatisch löschen (90T)",

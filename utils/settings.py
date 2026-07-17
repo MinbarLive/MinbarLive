@@ -330,6 +330,10 @@ class Settings:
     # the GUI so it can't be switched off accidentally).
     islamic_mode: bool = True
     hide_subtitle_on_stop: bool = False  # Hide subtitle window when stopped
+    # Keep the subtitle overlay (and, while it is open, the control panel)
+    # above other windows. Off = neither window is ever topmost; the control
+    # panel is also never topmost while no subtitle overlay is open.
+    always_on_top: bool = True
     # Voice-activity noise filter (audio/vad.py): skip/zero-fill non-speech
     # audio (static, hum) that the loudness-based silence gate lets through.
     noise_filter: bool = True
@@ -484,6 +488,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             show_interim_transcript=data.get("show_interim_transcript", True),
             islamic_mode=data.get("islamic_mode", True),
             hide_subtitle_on_stop=data.get("hide_subtitle_on_stop", False),
+            always_on_top=data.get("always_on_top", True),
             noise_filter=data.get("noise_filter", True),
             adaptive_subtitle_catchup=data.get("adaptive_subtitle_catchup", True),
             # Migrate the old single flag: an existing user who had cleanup on
@@ -547,6 +552,7 @@ def save_settings(settings: Settings) -> None:
         "show_interim_transcript": settings.show_interim_transcript,
         "islamic_mode": settings.islamic_mode,
         "hide_subtitle_on_stop": settings.hide_subtitle_on_stop,
+        "always_on_top": settings.always_on_top,
         "noise_filter": settings.noise_filter,
         "adaptive_subtitle_catchup": settings.adaptive_subtitle_catchup,
         "auto_cleanup_logs": settings.auto_cleanup_logs,
