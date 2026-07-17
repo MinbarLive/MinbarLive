@@ -368,6 +368,9 @@ class Settings:
     # Recent announcement (megaphone) texts, most-recent-first, for quick
     # re-use in the announcement window. Capped at ANNOUNCEMENT_HISTORY_MAX.
     announcement_history: list[str] = field(default_factory=list)
+    # Last-selected announcement duration (index into
+    # ANNOUNCEMENT_DURATIONS_SECONDS); remembered across restarts. Default 30s.
+    announcement_duration_index: int = 1
 
 
 def _settings_path() -> Path:
@@ -463,6 +466,9 @@ def load_settings(use_cache: bool = True) -> Settings:
         announcement_history = [
             t for t in announcement_history if isinstance(t, str) and t.strip()
         ][:5]
+        announcement_duration_index = data.get("announcement_duration_index", 1)
+        if not isinstance(announcement_duration_index, int):
+            announcement_duration_index = 1
         _cached_settings = Settings(
             monitor_index=data.get("monitor_index", 1),
             input_device_name=data.get("input_device_name"),
@@ -522,6 +528,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             last_summary_provider=data.get("last_summary_provider", ""),
             last_summary_language=data.get("last_summary_language", ""),
             announcement_history=announcement_history,
+            announcement_duration_index=announcement_duration_index,
         )
         return _cached_settings
     except Exception:
@@ -580,6 +587,7 @@ def save_settings(settings: Settings) -> None:
         "last_summary_provider": settings.last_summary_provider,
         "last_summary_language": settings.last_summary_language,
         "announcement_history": settings.announcement_history,
+        "announcement_duration_index": settings.announcement_duration_index,
     }
     tmp = _settings_path().with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

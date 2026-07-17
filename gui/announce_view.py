@@ -47,8 +47,11 @@ class AnnounceViewMixin:
         self._announcement_until_stopped: bool = False
         self._announcement_job: str | None = None
         # Remembered duration choice (index into ANNOUNCEMENT_DURATIONS_SECONDS);
-        # session-only, defaults to 30s.
-        self._announce_duration_index: int = _DEFAULT_DURATION_INDEX
+        # persisted across restarts (utils/settings), defaults to 30s.
+        idx = self._saved_settings.announcement_duration_index
+        if not (0 <= idx < len(ANNOUNCEMENT_DURATIONS_SECONDS)):
+            idx = _DEFAULT_DURATION_INDEX
+        self._announce_duration_index: int = idx
 
     # ── window lifecycle ────────────────────────────────────────────────────
 
@@ -88,6 +91,9 @@ class AnnounceViewMixin:
             win.attributes("-alpha", 1.0)
         except tk.TclError:
             pass
+        # If an overlay is open the control panel is -topmost; match it so this
+        # window isn't hidden behind the panel.
+        self._raise_announce_window()
 
     def _resize_announce_window(self) -> None:
         """Size the window to its content's natural height (varies with GUI
@@ -250,10 +256,14 @@ class AnnounceViewMixin:
 
         for i, text in enumerate(history):
             preview = " ".join(text.split())
-            if len(preview) > 46:
-                preview = preview[:45] + "…"
-            row = ctk.CTkButton(
-                frame,
+            if len(preview) > 42:
+                preview = preview[:41] + "…"
+            row_frame = ctk.CTkFrame(frame, fg_color="transparent")
+            row_frame.grid(row=i, column=0, sticky="ew", pady=2)
+            row_frame.grid_columnconfigure(0, weight=1)
+
+            text_btn = ctk.CTkButton(
+                row_frame,
                 text=preview,
                 command=lambda t=text: self._load_recent_announcement(t),
                 height=36,
@@ -264,7 +274,61 @@ class AnnounceViewMixin:
                 hover_color=self._colors["button_hover"],
                 text_color=self._colors["text"],
             )
-            row.grid(row=i, column=0, sticky="ew", pady=2)
+            text_btn.grid(row=0, column=0, sticky="ew")
+
+            # Delete button — revealed only while the row is hovered.
+            del_btn = ctk.CTkButton(
+                row_frame,
+                text="✕",
+                width=36,
+                height=36,
+                corner_radius=12,
+                command=lambda t=text: self._delete_recent_announcement(t),
+                font=ctk.CTkFont(family="Segoe UI Symbol", size=13, weight="bold"),
+                fg_color=self._colors["button"],
+                hover_color=self._colors["button_hover"],
+                text_color=self._colors["muted"],
+            )
+            self._bind_recent_hover(row_frame, del_btn)
+
+    def _bind_recent_hover(
+        self, row_frame: ctk.CTkFrame, del_btn: ctk.CTkButton
+    ) -> None:
+        """Show ``del_btn`` while the pointer is anywhere over ``row_frame`` (the
+        text button, the delete button or the gaps). ``<Leave>`` fires when the
+        pointer crosses onto a child too, so hiding is gated on the pointer
+        actually having left the row's widget subtree."""
+
+        def _show(_e: object = None) -> None:
+            if row_frame.winfo_exists():
+                del_btn.grid(row=0, column=1, padx=(6, 0))
+
+        def _maybe_hide() -> None:
+            if not row_frame.winfo_exists():
+                return
+            x, y = row_frame.winfo_pointerxy()
+            node = row_frame.winfo_containing(x, y)
+            while node is not None:
+                if node is row_frame:
+                    return  # still inside the row
+                node = getattr(node, "master", None)
+            del_btn.grid_forget()
+
+        def _bind_tree(widget: object) -> None:
+            widget.bind("<Enter>", _show, add="+")
+            widget.bind("<Leave>", lambda _e: row_frame.after(40, _maybe_hide), add="+")
+            for child in widget.winfo_children():
+                _bind_tree(child)
+
+        _bind_tree(row_frame)
+
+    def _delete_recent_announcement(self, text: str) -> None:
+        self._saved_settings.announcement_history = [
+            t for t in self._saved_settings.announcement_history if t != text
+        ]
+        self._save_current_settings()
+        self._populate_announce_recent()
+        self._resize_announce_window()
 
     def _load_recent_announcement(self, text: str) -> None:
         if not self._announce_win_exists():
@@ -296,6 +360,7 @@ class AnnounceViewMixin:
         if idx is None or not (0 <= idx < len(ANNOUNCEMENT_DURATIONS_SECONDS)):
             idx = _DEFAULT_DURATION_INDEX
         self._announce_duration_index = idx
+        self._saved_settings.announcement_duration_index = idx
         seconds = ANNOUNCEMENT_DURATIONS_SECONDS[idx]
 
         self._push_announcement_history(text)
@@ -315,6 +380,36 @@ class AnnounceViewMixin:
 
         self._populate_announce_recent()
         self._refresh_announce_stop_state()
+        # Creating/recreating the subtitle overlay (hide-on-stop) re-topmosts
+        # the control panel and can bury this window behind it — force it back
+        # to the front.
+        self._raise_announce_window()
+
+    def _raise_announce_window(self) -> None:
+        """Keep the announcement window above the control panel. Sending a
+        message (with hide-on-stop) creates the subtitle overlay, which makes
+        the control panel -topmost when always-on-top is on — a plain lift()
+        can't rise above a -topmost window, so match its topmost state, then
+        lift and focus."""
+        if not self._announce_win_exists():
+            return
+        self._sync_announce_topmost()
+        self._announce_win.lift()
+        self._announce_win.focus_force()
+
+    def _sync_announce_topmost(self) -> None:
+        """Match the announcement window's -topmost to the control panel's, so
+        it is neither hidden behind a topmost panel nor left stuck above other
+        apps once the overlay (and the panel's topmost) is gone. No focus
+        change — safe to call from a timer-driven stop."""
+        if not self._announce_win_exists():
+            return
+        try:
+            self._announce_win.attributes(
+                "-topmost", self._control_window_should_be_topmost()
+            )
+        except tk.TclError:
+            pass
 
     def _stop_announcement(self) -> None:
         """Clear the current announcement (Stop button or timer expiry)."""
@@ -335,6 +430,10 @@ class AnnounceViewMixin:
         ):
             self._destroy_subtitle_window()
         self._refresh_announce_stop_state()
+        # Destroying the overlay drops the control panel's topmost; keep the
+        # (possibly still open) announcement window in sync so it isn't left
+        # floating above every other app.
+        self._sync_announce_topmost()
 
     def _on_announcement_timeout(self) -> None:
         self._announcement_job = None

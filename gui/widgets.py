@@ -287,10 +287,15 @@ class WidgetFactoryMixin:
         text = self.gui_texts.get(text_key, text_key)
         if symbol:
             text = f"{symbol}  {text}"
+        # The prefix symbols (▣ ◉ ⌁ ≋ ⇶ …) live in "Segoe UI Symbol", not the
+        # plain "Segoe UI" text font — the latter renders them as ".notdef"
+        # tofu boxes. Use the symbol font whenever a symbol is present (the same
+        # family the header/card icons already use); plain labels stay "Segoe UI".
+        family = "Segoe UI Symbol" if symbol else "Segoe UI"
         label = ctk.CTkLabel(
             parent,
             text=text,
-            font=ctk.CTkFont(family="Segoe UI", size=size, weight=weight),
+            font=ctk.CTkFont(family=family, size=size, weight=weight),
             text_color=self._colors["text"],
             height=max(32, size + 16),
         )
