@@ -331,4 +331,9 @@ MARGIN_BOTTOM = 45
 # "show until the operator stops it" (survives even a translation stop).
 ANNOUNCEMENT_DURATIONS_SECONDS = [10, 30, 60, 300, 0]
 # How many recent announcement texts to remember for quick re-use.
-ANNOUNCEMENT_HISTORY_MAX = 5
+ANNOUNCEMENT_HISTORY_MAX = 3
+# How many favorited (starred) announcements can be pinned at once. Favorites
+# are excluded from the auto-rotating history above, so they never get
+# evicted by newer sends. Bounded so the window can't grow unbounded from
+# over-favoriting.
+ANNOUNCEMENT_FAVORITES_MAX = 5

@@ -162,6 +162,8 @@
   "announce_duration_1m": "1 Minute",
   "announce_duration_5m": "5 Minuten",
   "announce_duration_until_stopped": "Bis zum Stoppen",
+  "announce_favorites": "Favoriten",
+  "announce_favorites_full": "Es können maximal {max} Favoriten angeheftet werden. Entferne zuerst einen, um einen neuen hinzuzufügen.",
   "announce_recent": "Zuletzt verwendet",
   "announce_recent_empty": "Keine letzten Ankündigungen",
   "announce_send": "Senden",

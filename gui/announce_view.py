@@ -20,7 +20,11 @@ import tkinter as tk
 
 import customtkinter as ctk
 
-from config import ANNOUNCEMENT_DURATIONS_SECONDS, ANNOUNCEMENT_HISTORY_MAX
+from config import (
+    ANNOUNCEMENT_DURATIONS_SECONDS,
+    ANNOUNCEMENT_FAVORITES_MAX,
+    ANNOUNCEMENT_HISTORY_MAX,
+)
 from gui.scaling import centered_position
 from utils.logging import log
 
@@ -184,6 +188,24 @@ class AnnounceViewMixin:
             row=4, column=0, columnspan=2, sticky="ew", padx=20, pady=(6, 16)
         )
 
+        self._announce_favorites_label = ctk.CTkLabel(
+            card,
+            text=self.gui_texts.get("announce_favorites", "Favorites"),
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=self._colors["text"],
+            anchor="w",
+        )
+        self._announce_favorites_label.grid(
+            row=5, column=0, columnspan=2, sticky="ew", padx=20
+        )
+
+        self._announce_favorites_frame = ctk.CTkFrame(card, fg_color="transparent")
+        self._announce_favorites_frame.grid(
+            row=6, column=0, columnspan=2, sticky="ew", padx=20, pady=(6, 14)
+        )
+        self._announce_favorites_frame.grid_columnconfigure(0, weight=1)
+        self._populate_announce_favorites()
+
         recent_label = ctk.CTkLabel(
             card,
             text=self.gui_texts.get("announce_recent", "Recent"),
@@ -191,11 +213,11 @@ class AnnounceViewMixin:
             text_color=self._colors["text"],
             anchor="w",
         )
-        recent_label.grid(row=5, column=0, columnspan=2, sticky="ew", padx=20)
+        recent_label.grid(row=7, column=0, columnspan=2, sticky="ew", padx=20)
 
         self._announce_recent_frame = ctk.CTkFrame(card, fg_color="transparent")
         self._announce_recent_frame.grid(
-            row=6, column=0, columnspan=2, sticky="ew", padx=20, pady=(6, 14)
+            row=8, column=0, columnspan=2, sticky="ew", padx=20, pady=(6, 14)
         )
         self._announce_recent_frame.grid_columnconfigure(0, weight=1)
         self._populate_announce_recent()
@@ -212,7 +234,7 @@ class AnnounceViewMixin:
             text_color="#ffffff",
         )
         self._announce_send_btn.grid(
-            row=7, column=0, sticky="ew", padx=(20, 8), pady=(0, 20)
+            row=9, column=0, sticky="ew", padx=(20, 8), pady=(0, 20)
         )
 
         self._announce_stop_btn = ctk.CTkButton(
@@ -227,20 +249,84 @@ class AnnounceViewMixin:
             text_color=self._colors["text"],
         )
         self._announce_stop_btn.grid(
-            row=7, column=1, sticky="ew", padx=(8, 20), pady=(0, 20)
+            row=9, column=1, sticky="ew", padx=(8, 20), pady=(0, 20)
         )
         self._refresh_announce_stop_state()
 
+    def _announce_preview(self, text: str) -> str:
+        preview = " ".join(text.split())
+        if len(preview) > 42:
+            preview = preview[:41] + "…"
+        return preview
+
+    def _populate_announce_favorites(self) -> None:
+        """(Re)build the starred list — hidden entirely (label + frame) while
+        empty, so users who never favorite anything see no extra clutter."""
+        label = getattr(self, "_announce_favorites_label", None)
+        frame = getattr(self, "_announce_favorites_frame", None)
+        if frame is None or not frame.winfo_exists():
+            return
+        for child in frame.winfo_children():
+            child.destroy()
+
+        favorites = self._saved_settings.announcement_favorites
+        if not favorites:
+            if label is not None and label.winfo_exists():
+                label.grid_remove()
+            frame.grid_remove()
+            return
+        if label is not None and label.winfo_exists():
+            label.grid()
+        frame.grid()
+
+        for i, text in enumerate(favorites):
+            row_frame = ctk.CTkFrame(frame, fg_color="transparent")
+            row_frame.grid(row=i, column=0, sticky="ew", pady=2)
+            row_frame.grid_columnconfigure(0, weight=1)
+
+            text_btn = ctk.CTkButton(
+                row_frame,
+                text=self._announce_preview(text),
+                command=lambda t=text: self._load_recent_announcement(t),
+                height=36,
+                corner_radius=12,
+                anchor="w",
+                font=ctk.CTkFont(family="Segoe UI", size=13),
+                fg_color=self._colors["button"],
+                hover_color=self._colors["button_hover"],
+                text_color=self._colors["text"],
+            )
+            text_btn.grid(row=0, column=0, sticky="ew")
+
+            # Filled star, always visible — click to unfavorite.
+            star_btn = ctk.CTkButton(
+                row_frame,
+                text="★",
+                width=36,
+                height=36,
+                corner_radius=12,
+                command=lambda t=text: self._unfavorite_announcement(t),
+                font=ctk.CTkFont(family="Segoe UI Symbol", size=15),
+                fg_color=self._colors["button"],
+                hover_color=self._colors["button_hover"],
+                text_color=self._colors["accent"],
+            )
+            star_btn.grid(row=0, column=1, padx=(6, 0))
+
     def _populate_announce_recent(self) -> None:
         """(Re)build the recent-texts list — one clickable row per remembered
-        message, or a muted empty-state label."""
+        message, or a muted empty-state label. Favorited texts live only in
+        the Favorites section above, never duplicated here."""
         frame = getattr(self, "_announce_recent_frame", None)
         if frame is None or not frame.winfo_exists():
             return
         for child in frame.winfo_children():
             child.destroy()
 
-        history = self._saved_settings.announcement_history
+        favorites = set(self._saved_settings.announcement_favorites)
+        history = [
+            t for t in self._saved_settings.announcement_history if t not in favorites
+        ]
         if not history:
             empty = ctk.CTkLabel(
                 frame,
@@ -255,16 +341,13 @@ class AnnounceViewMixin:
             return
 
         for i, text in enumerate(history):
-            preview = " ".join(text.split())
-            if len(preview) > 42:
-                preview = preview[:41] + "…"
             row_frame = ctk.CTkFrame(frame, fg_color="transparent")
             row_frame.grid(row=i, column=0, sticky="ew", pady=2)
             row_frame.grid_columnconfigure(0, weight=1)
 
             text_btn = ctk.CTkButton(
                 row_frame,
-                text=preview,
+                text=self._announce_preview(text),
                 command=lambda t=text: self._load_recent_announcement(t),
                 height=36,
                 corner_radius=12,
@@ -276,7 +359,19 @@ class AnnounceViewMixin:
             )
             text_btn.grid(row=0, column=0, sticky="ew")
 
-            # Delete button — revealed only while the row is hovered.
+            # Star + delete — both revealed only while the row is hovered.
+            star_btn = ctk.CTkButton(
+                row_frame,
+                text="☆",
+                width=36,
+                height=36,
+                corner_radius=12,
+                command=lambda t=text: self._favorite_announcement(t),
+                font=ctk.CTkFont(family="Segoe UI Symbol", size=15),
+                fg_color=self._colors["button"],
+                hover_color=self._colors["button_hover"],
+                text_color=self._colors["muted"],
+            )
             del_btn = ctk.CTkButton(
                 row_frame,
                 text="✕",
@@ -289,19 +384,21 @@ class AnnounceViewMixin:
                 hover_color=self._colors["button_hover"],
                 text_color=self._colors["muted"],
             )
-            self._bind_recent_hover(row_frame, del_btn)
+            self._bind_recent_hover(row_frame, [star_btn, del_btn])
 
     def _bind_recent_hover(
-        self, row_frame: ctk.CTkFrame, del_btn: ctk.CTkButton
+        self, row_frame: ctk.CTkFrame, buttons: list[ctk.CTkButton]
     ) -> None:
-        """Show ``del_btn`` while the pointer is anywhere over ``row_frame`` (the
-        text button, the delete button or the gaps). ``<Leave>`` fires when the
-        pointer crosses onto a child too, so hiding is gated on the pointer
-        actually having left the row's widget subtree."""
+        """Show ``buttons`` (left to right, starting at column 1) while the
+        pointer is anywhere over ``row_frame`` (the text button, the revealed
+        buttons or the gaps). ``<Leave>`` fires when the pointer crosses onto a
+        child too, so hiding is gated on the pointer actually having left the
+        row's widget subtree."""
 
         def _show(_e: object = None) -> None:
             if row_frame.winfo_exists():
-                del_btn.grid(row=0, column=1, padx=(6, 0))
+                for i, btn in enumerate(buttons):
+                    btn.grid(row=0, column=i + 1, padx=(6, 0))
 
         def _maybe_hide() -> None:
             if not row_frame.winfo_exists():
@@ -312,7 +409,8 @@ class AnnounceViewMixin:
                 if node is row_frame:
                     return  # still inside the row
                 node = getattr(node, "master", None)
-            del_btn.grid_forget()
+            for btn in buttons:
+                btn.grid_forget()
 
         def _bind_tree(widget: object) -> None:
             widget.bind("<Enter>", _show, add="+")
@@ -327,6 +425,49 @@ class AnnounceViewMixin:
             t for t in self._saved_settings.announcement_history if t != text
         ]
         self._save_current_settings()
+        self._populate_announce_recent()
+        self._resize_announce_window()
+
+    def _favorite_announcement(self, text: str) -> None:
+        """Star a recent text: pin it (immune to history rotation/eviction)
+        and remove the now-redundant copy from Recent.
+
+        Refuses once the cap is reached instead of silently evicting the
+        oldest favorite — silently dropping a pinned reminder to make room
+        for a new one would defeat the point of pinning it (user decision)."""
+        existing = self._saved_settings.announcement_favorites
+        if text not in existing and len(existing) >= ANNOUNCEMENT_FAVORITES_MAX:
+            self._alert(
+                self.gui_texts.get("announce_favorites", "Favorites"),
+                self.gui_texts.get(
+                    "announce_favorites_full",
+                    "You can pin up to {max} favorites. Remove one before "
+                    "adding another.",
+                ).format(max=ANNOUNCEMENT_FAVORITES_MAX),
+                parent=self._announce_win if self._announce_win_exists() else None,
+            )
+            return
+        favorites = [t for t in existing if t != text]
+        favorites.insert(0, text)
+        self._saved_settings.announcement_favorites = favorites[
+            :ANNOUNCEMENT_FAVORITES_MAX
+        ]
+        self._saved_settings.announcement_history = [
+            t for t in self._saved_settings.announcement_history if t != text
+        ]
+        self._save_current_settings()
+        self._populate_announce_favorites()
+        self._populate_announce_recent()
+        self._resize_announce_window()
+
+    def _unfavorite_announcement(self, text: str) -> None:
+        """Unstar a text. It is not restored to Recent — sending it again
+        will naturally re-add it there."""
+        self._saved_settings.announcement_favorites = [
+            t for t in self._saved_settings.announcement_favorites if t != text
+        ]
+        self._save_current_settings()
+        self._populate_announce_favorites()
         self._populate_announce_recent()
         self._resize_announce_window()
 
@@ -379,6 +520,7 @@ class AnnounceViewMixin:
         log("Announcement shown on the subtitle overlay.", level="INFO")
 
         self._populate_announce_recent()
+        self._resize_announce_window()
         self._refresh_announce_stop_state()
         # Creating/recreating the subtitle overlay (hide-on-stop) re-topmosts
         # the control panel and can bury this window behind it — force it back
@@ -466,6 +608,11 @@ class AnnounceViewMixin:
             self.subtitle_window.set_announcement(self._announcement_text_active)
 
     def _push_announcement_history(self, text: str) -> None:
+        # Favorited texts are pinned in their own list already — don't
+        # duplicate them into the rotating history where they could be
+        # displaced by newer sends.
+        if text in self._saved_settings.announcement_favorites:
+            return
         history = [t for t in self._saved_settings.announcement_history if t != text]
         history.insert(0, text)
         self._saved_settings.announcement_history = history[:ANNOUNCEMENT_HISTORY_MAX]

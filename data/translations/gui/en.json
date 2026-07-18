@@ -162,6 +162,8 @@
   "announce_duration_1m": "1 minute",
   "announce_duration_5m": "5 minutes",
   "announce_duration_until_stopped": "Until stopped",
+  "announce_favorites": "Favorites",
+  "announce_favorites_full": "You can pin up to {max} favorites. Remove one before adding another.",
   "announce_recent": "Recent",
   "announce_recent_empty": "No recent announcements",
   "announce_send": "Send",

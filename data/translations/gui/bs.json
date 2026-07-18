@@ -151,6 +151,8 @@
   "announce_duration_1m": "1 minuta",
   "announce_duration_5m": "5 minuta",
   "announce_duration_until_stopped": "Dok se ne zaustavi",
+  "announce_favorites": "Omiljeno",
+  "announce_favorites_full": "Možete zakačiti najviše {max} omiljenih. Uklonite jedno prije dodavanja novog.",
   "announce_recent": "Nedavno",
   "announce_recent_empty": "Nema nedavnih objava",
   "announce_send": "Pošalji",

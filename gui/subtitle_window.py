@@ -616,11 +616,19 @@ class SubtitleWindow(tk.Toplevel):
         self._refresh_stopped_hint()
 
     def _refresh_stopped_hint(self):
-        """(Re)draw or remove the stopped-hint pill above the footer pill."""
+        """(Re)draw or remove the stopped-hint pill above the footer pill.
+
+        Tied to ``_show_footer`` (user decision) — it rides on the same
+        disclaimer real estate, so turning the footer off also clears this."""
         for item_id in self._stopped_hint_items:
             self.canvas.delete(item_id)
         self._stopped_hint_items = []
-        if not self._stopped_hint or not self.canvas_width or not self.canvas_height:
+        if (
+            not self._stopped_hint
+            or not self._show_footer
+            or not self.canvas_width
+            or not self.canvas_height
+        ):
             return
         import tkinter.font as tkfont
 

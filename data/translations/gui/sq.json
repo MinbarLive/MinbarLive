@@ -151,6 +151,8 @@
   "announce_duration_1m": "1 minutë",
   "announce_duration_5m": "5 minuta",
   "announce_duration_until_stopped": "Deri në ndalim",
+  "announce_favorites": "Të preferuarat",
+  "announce_favorites_full": "Mund të fiksosh deri në {max} të preferuara. Hiq një përpara se të shtosh një tjetër.",
   "announce_recent": "Së fundmi",
   "announce_recent_empty": "Asnjë njoftim i fundit",
   "announce_send": "Dërgo",

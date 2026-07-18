@@ -151,6 +151,8 @@
   "announce_duration_1m": "1 dakika",
   "announce_duration_5m": "5 dakika",
   "announce_duration_until_stopped": "Durdurulana kadar",
+  "announce_favorites": "Favoriler",
+  "announce_favorites_full": "En fazla {max} favori sabitleyebilirsin. Yeni birini eklemeden önce birini kaldır.",
   "announce_recent": "Son kullanılanlar",
   "announce_recent_empty": "Son duyuru yok",
   "announce_send": "Gönder",

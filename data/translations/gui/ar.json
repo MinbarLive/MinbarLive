@@ -151,6 +151,8 @@
   "announce_duration_1m": "دقيقة واحدة",
   "announce_duration_5m": "5 دقائق",
   "announce_duration_until_stopped": "حتى الإيقاف",
+  "announce_favorites": "المفضلة",
+  "announce_favorites_full": "يمكنك تثبيت حتى {max} من المفضلة. احذف واحدة قبل إضافة أخرى.",
   "announce_recent": "الأخيرة",
   "announce_recent_empty": "لا توجد إعلانات حديثة",
   "announce_send": "إرسال",

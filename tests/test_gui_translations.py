@@ -130,6 +130,8 @@ WIZARD_KEYS = [
     "announce_duration_1m",
     "announce_duration_5m",
     "announce_duration_until_stopped",
+    "announce_favorites",
+    "announce_favorites_full",
     "announce_recent",
     "announce_recent_empty",
     "announce_send",

@@ -257,7 +257,7 @@ class TestAnnouncementHistory:
 
     def test_sanitizes_and_caps_on_load(self, tmp_path, monkeypatch):
         path = tmp_path / "settings.json"
-        # Non-strings, blanks and an over-long list must be cleaned to ≤5 texts.
+        # Non-strings, blanks and an over-long list must be cleaned to ≤3 texts.
         path.write_text(
             json.dumps(
                 {
@@ -280,13 +280,7 @@ class TestAnnouncementHistory:
         settings_module._cached_settings = None
         try:
             loaded = load_settings(use_cache=False)
-            assert loaded.announcement_history == [
-                "one",
-                "two",
-                "three",
-                "four",
-                "five",
-            ]
+            assert loaded.announcement_history == ["one", "two", "three"]
         finally:
             settings_module._cached_settings = None
 
@@ -312,6 +306,73 @@ class TestAnnouncementHistory:
         try:
             loaded = load_settings(use_cache=False)
             assert loaded.pipeline_mode == PIPELINE_MODE_SEGMENTED
+        finally:
+            settings_module._cached_settings = None
+
+
+class TestAnnouncementFavorites:
+    """The starred (favorited) announcement list persists to settings.json."""
+
+    def test_default_is_empty(self):
+        assert Settings().announcement_favorites == []
+
+    def test_round_trip(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            settings_module, "_settings_path", lambda: tmp_path / "settings.json"
+        )
+        settings_module._cached_settings = None
+        save_settings(Settings(announcement_favorites=["Hello", "مرحبا"]))
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.announcement_favorites == ["Hello", "مرحبا"]
+        finally:
+            settings_module._cached_settings = None
+
+    def test_sanitizes_and_caps_on_load(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        # Non-strings, blanks and an over-long list must be cleaned to ≤5 texts.
+        path.write_text(
+            json.dumps(
+                {
+                    "announcement_favorites": [
+                        "one",
+                        "  ",
+                        2,
+                        None,
+                        "two",
+                        "three",
+                        "four",
+                        "five",
+                        "six",
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.announcement_favorites == [
+                "one",
+                "two",
+                "three",
+                "four",
+                "five",
+            ]
+        finally:
+            settings_module._cached_settings = None
+
+    def test_non_list_falls_back_to_empty(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"announcement_favorites": "not a list"}), encoding="utf-8"
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).announcement_favorites == []
         finally:
             settings_module._cached_settings = None
 

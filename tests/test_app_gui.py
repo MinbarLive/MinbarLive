@@ -502,12 +502,107 @@ class TestAnnouncement:
         assert gui._has_active_announcement() is False
         assert gui._announcement_job is None
 
-    def test_history_dedupes_and_caps_at_five(self, make_gui):
+    def test_history_dedupes_and_caps_at_three(self, make_gui):
         gui, _c, settings = make_gui()
         for text in ["a", "b", "c", "d", "e", "f", "a"]:
             gui._push_announcement_history(text)
-        # Most-recent-first, deduped, capped at 5.
-        assert settings.announcement_history == ["a", "f", "e", "d", "c"]
+        # Most-recent-first, deduped, capped at 3.
+        assert settings.announcement_history == ["a", "f", "e"]
+
+    def test_send_resizes_the_window(self, make_gui, monkeypatch):
+        # Regression: sending used to repopulate the Recent list without
+        # resizing, so newly added rows could render below the window's
+        # bottom edge until it was closed and reopened.
+        gui, _c, _s = make_gui()
+        gui._open_announce_window()
+        gui.subtitle_window = _FakeSubtitleWindow()
+        calls = []
+        monkeypatch.setattr(gui, "_resize_announce_window", lambda: calls.append(1))
+        gui._announce_textbox.insert("1.0", "Please silence your phones")
+        gui._send_announcement()
+        assert calls
+
+    def test_favorite_pins_text_and_removes_from_history(self, make_gui):
+        gui, _c, settings = make_gui()
+        gui._push_announcement_history("Please silence your phones")
+        gui._favorite_announcement("Please silence your phones")
+        assert settings.announcement_favorites == ["Please silence your phones"]
+        assert settings.announcement_history == []
+
+    def test_favorited_text_survives_history_rotation(self, make_gui):
+        gui, _c, settings = make_gui()
+        gui._push_announcement_history("Keep me")
+        gui._favorite_announcement("Keep me")
+        for text in ["a", "b", "c", "d", "e", "f"]:
+            gui._push_announcement_history(text)
+        assert settings.announcement_favorites == ["Keep me"]
+        assert "Keep me" not in settings.announcement_history
+        assert len(settings.announcement_history) == 3
+
+    def test_unfavorite_does_not_restore_to_history(self, make_gui):
+        gui, _c, settings = make_gui()
+        gui._push_announcement_history("Notice")
+        gui._favorite_announcement("Notice")
+        gui._unfavorite_announcement("Notice")
+        assert settings.announcement_favorites == []
+        assert settings.announcement_history == []
+
+    def test_sending_a_favorited_text_does_not_duplicate_into_history(
+        self, make_gui
+    ):
+        gui, _c, settings = make_gui()
+        gui._open_announce_window()
+        gui.subtitle_window = _FakeSubtitleWindow()
+        gui._favorite_announcement("Pinned reminder")
+        gui._announce_textbox.insert("1.0", "Pinned reminder")
+        gui._send_announcement()
+        assert settings.announcement_history == []
+        assert settings.announcement_favorites == ["Pinned reminder"]
+
+    def test_favorites_reject_new_entry_once_full(self, make_gui, monkeypatch):
+        # Once the cap is reached, favoriting one more DISTINCT text must be
+        # refused (with a warning) rather than silently evicting the oldest
+        # pin — that would defeat the point of pinning it.
+        from config import ANNOUNCEMENT_FAVORITES_MAX
+
+        gui, _c, settings = make_gui()
+        alerts = []
+        monkeypatch.setattr(
+            gui, "_alert", lambda title, message, **k: alerts.append(message)
+        )
+        for i in range(ANNOUNCEMENT_FAVORITES_MAX):
+            gui._favorite_announcement(f"msg{i}")
+        assert len(settings.announcement_favorites) == ANNOUNCEMENT_FAVORITES_MAX
+        assert alerts == []
+
+        gui._favorite_announcement("one_too_many")
+        assert alerts
+        assert "one_too_many" not in settings.announcement_favorites
+        assert len(settings.announcement_favorites) == ANNOUNCEMENT_FAVORITES_MAX
+
+    def test_refavoriting_existing_entry_reorders_even_when_full(
+        self, make_gui, monkeypatch
+    ):
+        from config import ANNOUNCEMENT_FAVORITES_MAX
+
+        gui, _c, settings = make_gui()
+        monkeypatch.setattr(gui, "_alert", lambda *a, **k: None)
+        for i in range(ANNOUNCEMENT_FAVORITES_MAX):
+            gui._favorite_announcement(f"msg{i}")
+        # Re-favoriting an already-pinned text is a reorder, not a new
+        # entry, so it is exempt from the full-list rejection.
+        gui._favorite_announcement("msg0")
+        assert settings.announcement_favorites[0] == "msg0"
+        assert len(settings.announcement_favorites) == ANNOUNCEMENT_FAVORITES_MAX
+
+    def test_favorites_section_hidden_when_empty_shown_after_favoriting(
+        self, make_gui
+    ):
+        gui, _c, _s = make_gui()
+        gui._open_announce_window()
+        assert not gui._announce_favorites_frame.grid_info()
+        gui._favorite_announcement("Pinned")
+        assert gui._announce_favorites_frame.grid_info()
 
     def test_on_stop_keeps_overlay_when_announcement_active(self, make_gui):
         # hide_subtitle_on_stop=True normally destroys the overlay on stop, but
