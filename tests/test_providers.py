@@ -236,10 +236,16 @@ class TestFactories:
 class TestResolveProviderByKeys:
     """Key-decided provider ("Standard" semantics, onboarding + startup
     repair): the default provider wins whenever its key exists or no key
-    exists at all; otherwise the highest-ranked keyed provider."""
+    exists at all; otherwise the highest-ranked keyed provider.
+
+    Unless a test overrides has_usable_key separately (see the ambient/pure
+    env tests below), _keys() pins both has_configured_key and has_usable_key
+    to the same set — these older tests never cared about the tier
+    distinction, only about default-precedence and ranking."""
 
     def _keys(self, monkeypatch, keyed):
         monkeypatch.setattr(providers, "has_configured_key", lambda p: p in keyed)
+        monkeypatch.setattr(providers, "has_usable_key", lambda p: p in keyed)
 
     def test_no_keys_at_all_is_default(self, monkeypatch):
         self._keys(monkeypatch, set())
@@ -276,16 +282,29 @@ class TestResolveProviderByKeys:
         self._keys(monkeypatch, set())
         assert providers.resolve_provider_by_keys({"anthropic": "   "}) == "gemini"
 
-    def test_ambient_env_key_does_not_win_selection(self, monkeypatch):
-        """A GEMINI_API_KEY/OPENAI_API_KEY env var left over from some
-        unrelated tool must not make this pick a provider the user never
-        configured in MinbarLive — only has_configured_key (keyring/session)
-        counts, not has_usable_key (which also sees environment variables)."""
-        self._keys(monkeypatch, set())
-        monkeypatch.setattr(providers, "has_usable_key", lambda p: True)
-        assert providers.resolve_provider_by_keys() == "gemini"
-        self._keys(monkeypatch, {"openai"})
+    def test_ambient_env_key_does_not_override_a_configured_provider(
+        self, monkeypatch
+    ):
+        """A GEMINI_API_KEY env var left over from some unrelated tool must
+        not outrank an OpenAI key the user actually saved in MinbarLive —
+        once ANY provider is has_configured_key()-true, ambient env-only
+        keys for every other provider (incl. the default) are ignored."""
+        monkeypatch.setattr(providers, "has_usable_key", lambda p: True)  # ambient everywhere
+        monkeypatch.setattr(
+            providers, "has_configured_key", lambda p: p == "openai"
+        )
         assert providers.resolve_provider_by_keys() == "openai"
+
+    def test_pure_env_only_setup_still_auto_selects(self, monkeypatch):
+        """Nothing ever entered through MinbarLive anywhere (has_configured_key
+        false for everyone), but an env var makes a non-default provider
+        has_usable_key()-true: it must still be auto-selected — someone who
+        configures MinbarLive purely via environment variables, without ever
+        opening the key dialogs, is a legitimate setup, not just the leak
+        this two-tier split closes."""
+        monkeypatch.setattr(providers, "has_configured_key", lambda p: False)
+        monkeypatch.setattr(providers, "has_usable_key", lambda p: p == "anthropic")
+        assert providers.resolve_provider_by_keys() == "anthropic"
 
 
 class TestKeyAwareFallback:

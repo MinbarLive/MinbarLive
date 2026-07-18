@@ -226,23 +226,36 @@ def resolve_provider_by_keys(extra_keys: dict[str, str] | None = None) -> str:
     all; otherwise the highest-ranked provider with a usable key is chosen.
     `extra_keys` are keys not persisted yet (typed during onboarding).
 
-    Deliberately checks has_configured_key(), not has_usable_key(): an
-    ambient environment variable (GEMINI_API_KEY, OPENAI_API_KEY, ...) left
-    over from some unrelated tool must not make this silently pick a
-    provider the user never actually configured in MinbarLive. The env-var
-    fallback still works for authenticating calls once a provider is
-    actually selected — it just can't drive the selection itself.
+    Checked in two tiers so an incidental environment variable can neither
+    hijack the pick away from a provider the user actually set up in
+    MinbarLive, nor break a machine that relies purely on env vars (no
+    MinbarLive key ever entered anywhere):
+
+    1. Prefer a provider explicitly configured in MinbarLive
+       (has_configured_key — keyring, or typed this session). If ANY
+       provider is configured this way, environment variables for every
+       OTHER provider are ignored for this decision (e.g. an ambient
+       GEMINI_API_KEY left over from an unrelated tool must not outrank an
+       OpenAI key the user actually saved here).
+    2. Only when NO provider is configured in MinbarLive at all does this
+       fall back to has_usable_key (keyring or environment) — so a pure
+       env-var setup (e.g. just OPENAI_API_KEY set, nothing ever entered in
+       the app) still auto-selects the provider that actually works.
     """
     extra = extra_keys or {}
 
-    def _keyed(pid: str) -> bool:
+    def _configured(pid: str) -> bool:
         return bool((extra.get(pid) or "").strip()) or has_configured_key(pid)
 
-    if _keyed(DEFAULT_AI_PROVIDER):
-        return DEFAULT_AI_PROVIDER
-    for pid in PROVIDER_RANKING:
-        if _keyed(pid):
-            return pid
+    def _usable(pid: str) -> bool:
+        return bool((extra.get(pid) or "").strip()) or has_usable_key(pid)
+
+    for is_keyed in (_configured, _usable):
+        if is_keyed(DEFAULT_AI_PROVIDER):
+            return DEFAULT_AI_PROVIDER
+        for pid in PROVIDER_RANKING:
+            if is_keyed(pid):
+                return pid
     return DEFAULT_AI_PROVIDER
 
 
