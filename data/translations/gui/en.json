@@ -58,6 +58,7 @@
   "dlg_remove_key_question": "Remove the saved API key?",
   "dlg_key_removed": "API key removed.",
   "dlg_stop_before_remove": "Stop the app before removing the key.",
+  "dlg_stop_before_change_key": "Stop the app before changing the key.",
   "subtitle_mode_realtime": "Realtime",
   "subtitle_mode_continuous": "Continuous (ticker)",
   "subtitle_mode_static": "Static (latest only)",

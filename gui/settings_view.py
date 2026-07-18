@@ -454,6 +454,16 @@ class SettingsViewMixin:
         provider = self._selected_api_key_provider()
         if provider is None:
             return
+        if self._running:
+            self._alert(
+                "Stop first",
+                self.gui_texts.get(
+                    "dlg_stop_before_change_key",
+                    "Stop the app before changing the key.",
+                ),
+                parent=self._settings_win if self._settings_win_exists() else self,
+            )
+            return
         self.on_change_key(provider=provider)
         self._refresh_api_key_status()
 

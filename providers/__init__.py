@@ -225,11 +225,18 @@ def resolve_provider_by_keys(extra_keys: dict[str, str] | None = None) -> str:
     The app default wins whenever its key exists — or no provider has one at
     all; otherwise the highest-ranked provider with a usable key is chosen.
     `extra_keys` are keys not persisted yet (typed during onboarding).
+
+    Deliberately checks has_configured_key(), not has_usable_key(): an
+    ambient environment variable (GEMINI_API_KEY, OPENAI_API_KEY, ...) left
+    over from some unrelated tool must not make this silently pick a
+    provider the user never actually configured in MinbarLive. The env-var
+    fallback still works for authenticating calls once a provider is
+    actually selected — it just can't drive the selection itself.
     """
     extra = extra_keys or {}
 
     def _keyed(pid: str) -> bool:
-        return bool((extra.get(pid) or "").strip()) or has_usable_key(pid)
+        return bool((extra.get(pid) or "").strip()) or has_configured_key(pid)
 
     if _keyed(DEFAULT_AI_PROVIDER):
         return DEFAULT_AI_PROVIDER
@@ -532,6 +539,18 @@ def get_default_model(provider: str, capability: str) -> str:
 # plaintext fallback when no keyring backend exists).
 _KEYED_PROVIDERS = ("openai", "gemini", "anthropic", "deepgram")
 
+# Env vars each provider's key lookup falls back to (get_stored_api_key above,
+# and each providers/<id>/client._load_stored_key). load_dotenv() bakes these
+# into os.environ for the whole process at startup, so clear_api_key() must
+# also drop them here — otherwise a .env-sourced key keeps authenticating for
+# the rest of the running session no matter how many times it is "removed".
+_ENV_VARS_FOR_PROVIDER = {
+    "openai": ("OPENAI_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "deepgram": ("DEEPGRAM_API_KEY",),
+}
+
 
 def _client_module(provider: str):
     import importlib
@@ -572,6 +591,29 @@ def has_usable_key(provider: str) -> bool:
         return False
     module = _client_module(provider)
     return module.has_api_key() or get_stored_api_key(provider) is not None
+
+
+def has_configured_key(provider: str) -> bool:
+    """True if a key was explicitly saved for this provider through MinbarLive
+    (OS keychain, or the legacy openai settings-file fallback).
+
+    Unlike has_usable_key()/get_stored_api_key(), this deliberately ignores
+    the GEMINI_API_KEY/OPENAI_API_KEY/ANTHROPIC_API_KEY/DEEPGRAM_API_KEY
+    environment-variable fallback each provider's client module also checks
+    — an ambient env var left over from some unrelated tool is a real,
+    working credential (fine for actually authenticating a call), but it is
+    not evidence the user configured that provider in MinbarLive, so it must
+    not count for provider-selection decisions (resolve_provider_by_keys).
+    """
+    if provider not in _KEYED_PROVIDERS:
+        return False
+    if provider == "openai":
+        from utils.settings import get_saved_api_key
+
+        return get_saved_api_key() is not None
+    from utils.keyring_storage import get_api_key_from_keyring
+
+    return get_api_key_from_keyring(provider) is not None
 
 
 def save_api_key(provider: str, key: str) -> bool:
@@ -617,5 +659,7 @@ def clear_api_key(provider: str) -> None:
 
         delete_api_key_from_keyring(provider)
     _client_module(provider).set_api_key(None)
+    for env_var in _ENV_VARS_FOR_PROVIDER.get(provider, ()):
+        os.environ.pop(env_var, None)
     _fallback_cache.clear()
     _warned_fallbacks.clear()

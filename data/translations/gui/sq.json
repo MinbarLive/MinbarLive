@@ -58,6 +58,7 @@
   "dlg_remove_key_question": "Hiqni çelësin API të ruajtur?",
   "dlg_key_removed": "Çelësi API u hoq.",
   "dlg_stop_before_remove": "Ndalo aplikacionin para se të heqësh çelësin.",
+  "dlg_stop_before_change_key": "Ndalo aplikacionin para se të ndryshosh çelësin.",
   "subtitle_mode_realtime": "Në kohë reale",
   "subtitle_mode_continuous": "Vazhdimisht (ticker)",
   "subtitle_mode_static": "Statik (vetëm i fundit)",

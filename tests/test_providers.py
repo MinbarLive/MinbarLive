@@ -239,7 +239,7 @@ class TestResolveProviderByKeys:
     exists at all; otherwise the highest-ranked keyed provider."""
 
     def _keys(self, monkeypatch, keyed):
-        monkeypatch.setattr(providers, "has_usable_key", lambda p: p in keyed)
+        monkeypatch.setattr(providers, "has_configured_key", lambda p: p in keyed)
 
     def test_no_keys_at_all_is_default(self, monkeypatch):
         self._keys(monkeypatch, set())
@@ -275,6 +275,17 @@ class TestResolveProviderByKeys:
     def test_blank_session_key_is_ignored(self, monkeypatch):
         self._keys(monkeypatch, set())
         assert providers.resolve_provider_by_keys({"anthropic": "   "}) == "gemini"
+
+    def test_ambient_env_key_does_not_win_selection(self, monkeypatch):
+        """A GEMINI_API_KEY/OPENAI_API_KEY env var left over from some
+        unrelated tool must not make this pick a provider the user never
+        configured in MinbarLive — only has_configured_key (keyring/session)
+        counts, not has_usable_key (which also sees environment variables)."""
+        self._keys(monkeypatch, set())
+        monkeypatch.setattr(providers, "has_usable_key", lambda p: True)
+        assert providers.resolve_provider_by_keys() == "gemini"
+        self._keys(monkeypatch, {"openai"})
+        assert providers.resolve_provider_by_keys() == "openai"
 
 
 class TestKeyAwareFallback:
@@ -656,6 +667,30 @@ class TestKeyHelpers:
         monkeypatch.setattr("utils.settings.get_saved_api_key", lambda: None)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
         assert providers.get_stored_api_key("openai") == "sk-env"
+
+    def test_has_configured_key_ignores_openai_env_fallback(self, monkeypatch):
+        """Unlike has_usable_key/get_stored_api_key, has_configured_key must
+        NOT see an ambient OPENAI_API_KEY the user never saved in MinbarLive."""
+        monkeypatch.setattr("utils.settings.get_saved_api_key", lambda: None)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+        assert providers.has_configured_key("openai") is False
+        monkeypatch.setattr("utils.settings.get_saved_api_key", lambda: "sk-real")
+        assert providers.has_configured_key("openai") is True
+
+    def test_has_configured_key_ignores_gemini_env_fallback(self, monkeypatch):
+        monkeypatch.setattr(
+            "utils.keyring_storage.get_api_key_from_keyring", lambda provider: None
+        )
+        monkeypatch.setenv("GEMINI_API_KEY", "AIza-env")
+        assert providers.has_configured_key("gemini") is False
+        monkeypatch.setattr(
+            "utils.keyring_storage.get_api_key_from_keyring",
+            lambda provider: "AIza-real" if provider == "gemini" else None,
+        )
+        assert providers.has_configured_key("gemini") is True
+
+    def test_has_configured_key_unknown_provider(self):
+        assert providers.has_configured_key("nope") is False
 
     def test_stored_key_gemini(self, monkeypatch):
         monkeypatch.setattr(

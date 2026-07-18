@@ -58,6 +58,7 @@
   "dlg_remove_key_question": "Gespeicherten API-Schlüssel entfernen?",
   "dlg_key_removed": "API-Schlüssel entfernt.",
   "dlg_stop_before_remove": "Stoppen Sie die App, bevor Sie den Schlüssel entfernen.",
+  "dlg_stop_before_change_key": "Stoppen Sie die App, bevor Sie den Schlüssel ändern.",
   "subtitle_mode_realtime": "Echtzeit",
   "subtitle_mode_continuous": "Fortlaufend (Ticker)",
   "subtitle_mode_static": "Statisch (nur aktuell)",

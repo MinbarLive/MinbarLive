@@ -58,6 +58,7 @@
   "dlg_remove_key_question": "Kaydedilen API anahtarı kaldırılsın mı?",
   "dlg_key_removed": "API anahtarı kaldırıldı.",
   "dlg_stop_before_remove": "Anahtarı kaldırmadan önce uygulamayı durdurun.",
+  "dlg_stop_before_change_key": "Anahtarı değiştirmeden önce uygulamayı durdurun.",
   "subtitle_mode_realtime": "Gerçek zamanlı",
   "subtitle_mode_continuous": "Sürekli (kayan)",
   "subtitle_mode_static": "Statik (sadece son)",

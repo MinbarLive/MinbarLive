@@ -58,6 +58,7 @@
   "dlg_remove_key_question": "إزالة مفتاح API المحفوظ؟",
   "dlg_key_removed": "تم إزالة مفتاح API.",
   "dlg_stop_before_remove": "أوقف التطبيق قبل إزالة المفتاح.",
+  "dlg_stop_before_change_key": "أوقف التطبيق قبل تغيير المفتاح.",
   "subtitle_mode_realtime": "في الوقت الفعلي",
   "subtitle_mode_continuous": "مستمر (شريط)",
   "subtitle_mode_static": "ثابت (الأخير فقط)",

@@ -58,6 +58,7 @@
   "dlg_remove_key_question": "Ukloniti sačuvani API ključ?",
   "dlg_key_removed": "API ključ je uklonjen.",
   "dlg_stop_before_remove": "Zaustavite aplikaciju prije uklanjanja ključa.",
+  "dlg_stop_before_change_key": "Zaustavite aplikaciju prije promjene ključa.",
   "subtitle_mode_realtime": "U stvarnom vremenu",
   "subtitle_mode_continuous": "Kontinuirano (ticker)",
   "subtitle_mode_static": "Statično (samo zadnje)",
