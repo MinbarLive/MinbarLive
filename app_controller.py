@@ -31,6 +31,7 @@ from config import (
     STREAMING_MAX_UTTERANCE_SECONDS,
     STREAMING_RECONNECT_BASE_SECONDS,
     STREAMING_RECONNECT_MAX_SECONDS,
+    STREAMING_STALL_TIMEOUT_SECONDS,
 )
 from providers import (
     get_streaming_capture_sample_rate,
@@ -651,6 +652,54 @@ class AppController:
                 reconnect_event.set()
         log("STREAMING reconnect supervisor ended", level="DEBUG")
 
+    def _streaming_stall_watchdog(self):
+        """Silently reopen the connection if it stays up but stops producing
+        transcripts.
+
+        Observed live: the connection reports no error and the reconnect
+        supervisor above never fires, yet no interim/final transcript arrives
+        for 15-26s straight during continuous speech, and content from that
+        stretch is lost. Unlike an error-triggered reconnect, this never
+        shows an audience-facing message and never backs off — a real long
+        pause in speech looks identical from here, and reconnecting during
+        genuine silence has no visible cost, so a false trigger is harmless.
+        """
+        stop_event = self.stop_event  # session-local: see _process_audio
+        while not stop_event.wait(timeout=2.0):
+            if self._streaming_outage or self._streaming_handle is None:
+                continue  # the error-triggered supervisor already owns recovery
+            if (
+                time.time() - self._last_pipeline_activity
+                <= STREAMING_STALL_TIMEOUT_SECONDS
+            ):
+                continue
+            log(
+                f"STREAMING No transcript for over "
+                f"{STREAMING_STALL_TIMEOUT_SECONDS:.0f}s with no error reported "
+                "— reconnecting silently in case the session is stuck.",
+                level="WARNING",
+            )
+            old = self._streaming_handle
+            self._streaming_handle = None  # feeder drops chunks during the swap
+            if old is not None:
+                try:
+                    old.close()
+                except Exception as e:
+                    log(f"STREAMING error closing stalled handle: {e}", level="DEBUG")
+            connect = self._streaming_connect
+            if connect is None:
+                break  # stop() already tore the session down
+            try:
+                self._streaming_handle = connect()
+                # Restart the timer now, not on the next transcript — otherwise
+                # a connection that also takes a few seconds to speak would
+                # trip the watchdog again before it gets a chance.
+                self._last_pipeline_activity = time.time()
+                log("STREAMING Silently reconnected after a stall.", level="INFO")
+            except Exception as e:
+                log(f"STREAMING Silent reconnect attempt failed: {e}", level="WARNING")
+        log("STREAMING stall watchdog ended", level="DEBUG")
+
     def _process_streaming_utterances(self, session: _StreamingUtteranceSession):
         context_mgr = get_context_manager()
         stop_event = self.stop_event  # session-local: see _process_audio
@@ -868,6 +917,7 @@ class AppController:
             (self._streaming_feeder_thread, (), "streaming-feeder"),
             (self._process_streaming_utterances, (session,), "streaming-processor"),
             (self._streaming_reconnect_supervisor, (), "streaming-supervisor"),
+            (self._streaming_stall_watchdog, (), "streaming-stall-watchdog"),
         ]
         for target, args, name in thread_defs:
             t = threading.Thread(target=target, args=args, daemon=True, name=name)

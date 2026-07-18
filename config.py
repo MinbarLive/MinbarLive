@@ -161,7 +161,7 @@ VAD_MIN_SPEECH_RATIO = 0.05
 VAD_STREAM_HANGOVER_SECONDS = 2.0
 # Streaming open/close decision: fraction of speech frames over a rolling
 # window, so a single false-positive frame on hiss cannot reopen the gate.
-VAD_STREAM_WINDOW_SECONDS = 0.1
+VAD_STREAM_WINDOW_SECONDS = 1
 VAD_STREAM_OPEN_RATIO = 0.1
 # webrtcvad's classifier is energy-sensitive: real speech quieter than about
 # -46 dBFS peak (e.g. a low mic-gain audio interface) stops being detected,
@@ -262,6 +262,14 @@ LOOPBACK_CAPTURE_BUFFER_SECONDS = 0.5
 # successful reconnect resets the backoff.
 STREAMING_RECONNECT_BASE_SECONDS = 1.0
 STREAMING_RECONNECT_MAX_SECONDS = 30.0
+# Watchdog for a connection that stays open with no error but quietly stops
+# producing transcripts (observed live: 15-26s of total silence — no interim,
+# no final, no error callback — during continuous speech the reconnect logic
+# above never sees). Unlike that reconnect-with-backoff, a stall reconnect
+# never shows an audience-facing error message (a genuine long pause in
+# speech looks identical from here, and reconnecting during real silence has
+# no visible cost) and never backs off — each check is independent.
+STREAMING_STALL_TIMEOUT_SECONDS = 15.0
 STREAMING_ENDPOINTING_MS = 300  # Deepgram endpointing sensitivity (silence -> final)
 STREAMING_UTTERANCE_END_MS = 1000  # Deepgram UtteranceEnd silence threshold (ms)
 # Gemini Live VAD: silence before the turn (utterance) is considered ended.
