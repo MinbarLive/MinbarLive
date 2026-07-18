@@ -161,7 +161,7 @@ VAD_MIN_SPEECH_RATIO = 0.05
 VAD_STREAM_HANGOVER_SECONDS = 2.0
 # Streaming open/close decision: fraction of speech frames over a rolling
 # window, so a single false-positive frame on hiss cannot reopen the gate.
-VAD_STREAM_WINDOW_SECONDS = 1.0
+VAD_STREAM_WINDOW_SECONDS = 0.1
 VAD_STREAM_OPEN_RATIO = 0.1
 # webrtcvad's classifier is energy-sensitive: real speech quieter than about
 # -46 dBFS peak (e.g. a low mic-gain audio interface) stops being detected,
