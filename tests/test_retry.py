@@ -32,10 +32,31 @@ class MockAuthenticationError(Exception):
     pass
 
 
+class MockGeminiClientError(Exception):
+    """Mock google-genai ClientError: covers ALL 4xx by class name alone
+    (429 rate-limit and 401 auth both raise this same class), so retryability
+    must come from the status code, not the name."""
+
+    def __init__(self, code: int, message: str = "error"):
+        super().__init__(message)
+        self.code = code
+
+
+class MockAnthropicStatusError(Exception):
+    """Mock an Anthropic/OpenAI APIStatusError-shaped exception whose class
+    name isn't in the whitelist but exposes status_code."""
+
+    def __init__(self, status_code: int, message: str = "error"):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 # Monkey-patch the class names to match what retry logic checks
 MockRateLimitError.__name__ = "RateLimitError"
 MockAPIConnectionError.__name__ = "APIConnectionError"
 MockAuthenticationError.__name__ = "AuthenticationError"
+MockGeminiClientError.__name__ = "ClientError"
+MockAnthropicStatusError.__name__ = "SomeUnrecognizedStatusError"
 
 
 class TestIsRetryableException:
@@ -59,6 +80,34 @@ class TestIsRetryableException:
     def test_generic_exception_not_retryable(self):
         """Generic exceptions should not be retryable."""
         exc = ValueError("some error")
+        assert _is_retryable_exception(exc) is False
+
+    def test_gemini_429_is_retryable_by_code(self):
+        """A Gemini ClientError(429) must retry even though its class name
+        ('ClientError') is shared with hard 4xx errors and isn't whitelisted."""
+        exc = MockGeminiClientError(429, "RESOURCE_EXHAUSTED")
+        assert _is_retryable_exception(exc) is True
+
+    def test_gemini_400_not_retryable_by_code(self):
+        """A Gemini ClientError(400) shares its class name with the 429 case
+        above — only the status code tells them apart."""
+        exc = MockGeminiClientError(400, "invalid argument")
+        assert _is_retryable_exception(exc) is False
+
+    def test_gemini_503_is_retryable_by_code(self):
+        """A Gemini ServerError(503) should retry."""
+        exc = MockGeminiClientError(503, "UNAVAILABLE")
+        assert _is_retryable_exception(exc) is True
+
+    def test_unrecognized_class_with_status_code_429_is_retryable(self):
+        """Any SDK's status_code attribute is honored, not just google-genai's
+        'code' — covers OpenAI/Anthropic APIStatusError-shaped exceptions
+        whose specific subclass name isn't in the whitelist."""
+        exc = MockAnthropicStatusError(429, "rate limited")
+        assert _is_retryable_exception(exc) is True
+
+    def test_unrecognized_class_with_status_code_401_not_retryable(self):
+        exc = MockAnthropicStatusError(401, "invalid key")
         assert _is_retryable_exception(exc) is False
 
 

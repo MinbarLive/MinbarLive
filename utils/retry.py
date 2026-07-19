@@ -17,23 +17,33 @@ DEFAULT_BASE_DELAY = 1.0  # seconds
 DEFAULT_MAX_DELAY = 30.0  # seconds
 DEFAULT_EXPONENTIAL_BASE = 2
 
-# Exceptions that should trigger a retry (transient errors)
-# These are imported lazily to avoid circular imports
+# Exceptions that should trigger a retry (transient errors), matched by class
+# name. Covers OpenAI/Anthropic SDK errors, which name their exceptions after
+# the specific failure (RateLimitError, etc).
 RETRYABLE_EXCEPTIONS = (
     "RateLimitError",
     "APIConnectionError",
     "APITimeoutError",
     "InternalServerError",
     "ServiceUnavailableError",
+    "OverloadedError",
 )
+
+# HTTP status codes worth retrying, checked when a name match fails. Needed
+# for google-genai, whose SDK only distinguishes ClientError (any 4xx) from
+# ServerError (any 5xx) — a name check alone would treat a transient 429
+# rate-limit the same as a hard 400/401, never retrying either.
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504, 529}
 
 T = TypeVar("T")
 
 
 def _is_retryable_exception(exc: Exception) -> bool:
-    """Check if an exception is retryable based on its class name."""
-    exc_name = type(exc).__name__
-    return exc_name in RETRYABLE_EXCEPTIONS
+    """Check if an exception is retryable, by class name or status code."""
+    if type(exc).__name__ in RETRYABLE_EXCEPTIONS:
+        return True
+    code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    return code in _RETRYABLE_STATUS_CODES
 
 
 def retry_with_backoff(
