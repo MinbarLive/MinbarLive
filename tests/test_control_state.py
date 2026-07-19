@@ -14,13 +14,27 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from gui import control_state
 from gui.control_state import (
+    PROVIDER_PROFILE_CUSTOM,
+    PROVIDER_PROFILE_GEMINI,
+    PROVIDER_PROFILE_OPENAI,
+    PROVIDER_ROLE_TRANSCRIPTION,
+    PROVIDER_ROLE_TRANSLATION,
+    PROVIDER_STATUS_CONFIGURED,
+    PROVIDER_STATUS_ERROR,
+    PROVIDER_STATUS_KEY_MISSING,
+    PROVIDER_STATUS_RUNNING,
+    PROVIDER_STATUSES,
     STRATEGY_IDS,
+    apply_provider_profile,
     apply_strategy,
     current_strategy_index,
     effective_subtitle_mode,
+    infer_provider_profile,
+    provider_start_readiness,
     repair_default_provider,
     required_key_providers,
     subtitle_mode_choices,
+    transcription_provider_for_profile,
     visible_provider_choices,
 )
 from utils.settings import (
@@ -170,6 +184,29 @@ class TestRepairDefaultProvider:
         assert repair_default_provider(settings) is None
         assert settings.ai_provider == DEFAULT_AI_PROVIDER
 
+    @pytest.mark.parametrize(
+        ("pipeline", "transcription_provider"),
+        [
+            (PIPELINE_MODE_STREAMING, "openai_realtime"),
+            (PIPELINE_MODE_SEGMENTED, "openai"),
+        ],
+    )
+    def test_explicit_openai_profile_survives_startup_repair(
+        self, pipeline, transcription_provider
+    ):
+        settings = make_settings(
+            pipeline_mode=pipeline,
+            ai_provider="openai",
+            transcription_provider=transcription_provider,
+            use_default_translation_model=True,
+            use_default_transcription_model=True,
+        )
+        before = vars(settings).copy()
+
+        assert repair_default_provider(settings) is None
+        assert vars(settings) == before
+        assert infer_provider_profile(settings) == PROVIDER_PROFILE_OPENAI
+
     def test_repair_to_a_non_default_provider_turns_the_default_off(
         self, monkeypatch
     ):
@@ -223,6 +260,13 @@ class TestStrategySelection:
             "an engine the user already chose must not be replaced"
         )
 
+    def test_selecting_realtime_keeps_the_openai_service_family(self):
+        settings = make_settings(
+            ai_provider="openai", transcription_provider="openai"
+        )
+        apply_strategy(settings, STRATEGY_IDS.index("realtime"))
+        assert settings.transcription_provider == "openai_realtime"
+
     @pytest.mark.parametrize("strategy", ["chunk", "semantic"])
     def test_selecting_segmented_leaves_streaming(self, strategy):
         settings = make_settings(transcription_provider="deepgram")
@@ -237,6 +281,13 @@ class TestStrategySelection:
     def test_selecting_segmented_keeps_a_segmented_engine(self):
         settings = make_settings(transcription_provider="openai")
         apply_strategy(settings, STRATEGY_IDS.index("chunk"))
+        assert settings.transcription_provider == "openai"
+
+    def test_leaving_realtime_keeps_the_openai_service_family(self):
+        settings = make_settings(
+            ai_provider="openai", transcription_provider="openai_realtime"
+        )
+        apply_strategy(settings, STRATEGY_IDS.index("semantic"))
         assert settings.transcription_provider == "openai"
 
     @pytest.mark.parametrize("index", [-1, 3, 99])
@@ -280,6 +331,221 @@ class TestVisibleProviderChoices:
         result = visible_provider_choices(self.CHOICES, running=False)
         result.clear()
         assert self.CHOICES, "the caller's list must not be mutated"
+
+
+class TestProviderProfiles:
+    @pytest.mark.parametrize(
+        ("profile", "pipeline", "expected_transcription"),
+        [
+            (PROVIDER_PROFILE_GEMINI, PIPELINE_MODE_STREAMING, "gemini_realtime"),
+            (PROVIDER_PROFILE_GEMINI, PIPELINE_MODE_SEGMENTED, "gemini"),
+            (PROVIDER_PROFILE_OPENAI, PIPELINE_MODE_STREAMING, "openai_realtime"),
+            (PROVIDER_PROFILE_OPENAI, PIPELINE_MODE_SEGMENTED, "openai"),
+        ],
+    )
+    def test_strategy_aware_transcription_mapping(
+        self, profile, pipeline, expected_transcription
+    ):
+        assert (
+            transcription_provider_for_profile(profile, pipeline)
+            == expected_transcription
+        )
+
+    @pytest.mark.parametrize("profile", [PROVIDER_PROFILE_CUSTOM, "unknown"])
+    def test_custom_and_unknown_profiles_have_no_implied_engine(self, profile):
+        with pytest.raises(ValueError):
+            transcription_provider_for_profile(profile, PIPELINE_MODE_STREAMING)
+
+    @pytest.mark.parametrize(
+        ("profile", "pipeline", "transcription"),
+        [
+            (PROVIDER_PROFILE_GEMINI, PIPELINE_MODE_STREAMING, "gemini_realtime"),
+            (PROVIDER_PROFILE_GEMINI, PIPELINE_MODE_SEGMENTED, "gemini"),
+            (PROVIDER_PROFILE_OPENAI, PIPELINE_MODE_STREAMING, "openai_realtime"),
+            (PROVIDER_PROFILE_OPENAI, PIPELINE_MODE_SEGMENTED, "openai"),
+        ],
+    )
+    def test_infers_simple_profile_only_for_an_exact_strategy_match(
+        self, profile, pipeline, transcription
+    ):
+        settings = make_settings(
+            ai_provider=profile,
+            transcription_provider=transcription,
+            pipeline_mode=pipeline,
+        )
+        assert infer_provider_profile(settings) == profile
+
+    @pytest.mark.parametrize(
+        ("translation", "transcription", "pipeline"),
+        [
+            ("openai", "gemini_realtime", PIPELINE_MODE_STREAMING),
+            ("anthropic", "deepgram", PIPELINE_MODE_STREAMING),
+            ("gemini", "gemini", PIPELINE_MODE_STREAMING),
+            ("openai", "openai_realtime", PIPELINE_MODE_SEGMENTED),
+        ],
+    )
+    def test_mixed_or_strategy_mismatched_configuration_is_custom(
+        self, translation, transcription, pipeline
+    ):
+        settings = make_settings(
+            ai_provider=translation,
+            transcription_provider=transcription,
+            pipeline_mode=pipeline,
+        )
+        assert infer_provider_profile(settings) == PROVIDER_PROFILE_CUSTOM
+
+    @pytest.mark.parametrize(
+        ("profile", "pipeline", "expected_transcription"),
+        [
+            (PROVIDER_PROFILE_GEMINI, PIPELINE_MODE_STREAMING, "gemini_realtime"),
+            (PROVIDER_PROFILE_GEMINI, PIPELINE_MODE_SEGMENTED, "gemini"),
+            (PROVIDER_PROFILE_OPENAI, PIPELINE_MODE_STREAMING, "openai_realtime"),
+            (PROVIDER_PROFILE_OPENAI, PIPELINE_MODE_SEGMENTED, "openai"),
+        ],
+    )
+    def test_applying_simple_profile_sets_both_roles_and_compatible_models(
+        self, profile, pipeline, expected_transcription
+    ):
+        settings = make_settings(
+            ai_provider="anthropic",
+            transcription_provider="deepgram",
+            pipeline_mode=pipeline,
+            translation_model="old-translation-model",
+            transcription_model="old-transcription-model",
+            use_default_translation_model=False,
+            use_default_transcription_model=False,
+        )
+
+        assert apply_provider_profile(settings, profile) == profile
+
+        assert settings.ai_provider == profile
+        assert settings.transcription_provider == expected_transcription
+        assert settings.translation_model == control_state.get_default_model(
+            profile, "translation"
+        )
+        assert settings.transcription_model == control_state.get_default_model(
+            expected_transcription, "transcription"
+        )
+        assert settings.use_default_translation_model is True
+        assert settings.use_default_transcription_model is True
+        assert infer_provider_profile(settings) == profile
+
+    def test_applying_custom_preserves_the_complete_mixed_configuration(self):
+        settings = make_settings(
+            ai_provider="anthropic",
+            transcription_provider="deepgram",
+            pipeline_mode=PIPELINE_MODE_STREAMING,
+            translation_model="claude-custom",
+            transcription_model="nova-custom",
+            use_default_translation_model=False,
+            use_default_transcription_model=False,
+        )
+        before = vars(settings).copy()
+
+        assert apply_provider_profile(settings, PROVIDER_PROFILE_CUSTOM) == (
+            PROVIDER_PROFILE_CUSTOM
+        )
+        assert vars(settings) == before
+
+    def test_unknown_profile_is_rejected_without_mutation(self):
+        settings = make_settings(ai_provider="openai", transcription_provider="openai")
+        before = vars(settings).copy()
+        assert apply_provider_profile(settings, "future-provider") is None
+        assert vars(settings) == before
+
+
+class TestProviderStartReadiness:
+    def test_one_shared_key_is_looked_up_once_for_both_roles(self):
+        calls: list[str] = []
+
+        def lookup(provider):
+            calls.append(provider)
+            return True
+
+        settings = make_settings(
+            ai_provider="gemini", transcription_provider="gemini_realtime"
+        )
+        readiness = provider_start_readiness(settings, key_lookup=lookup)
+
+        assert calls == ["gemini"]
+        assert readiness.can_start is True
+        assert readiness.blockers == ()
+        assert readiness.missing_key_providers == ()
+        assert readiness.status == PROVIDER_STATUS_CONFIGURED
+        assert [role.status for role in readiness.roles] == [
+            PROVIDER_STATUS_CONFIGURED,
+            PROVIDER_STATUS_CONFIGURED,
+        ]
+
+    def test_openai_key_does_not_make_active_gemini_roles_ready(self):
+        """Regression: saving an OpenAI key while Gemini remains selected
+        must identify Gemini, not call the stored OpenAI key invalid."""
+        settings = make_settings(
+            ai_provider="gemini", transcription_provider="gemini_realtime"
+        )
+        readiness = provider_start_readiness(
+            settings, key_lookup=lambda provider: provider == "openai"
+        )
+
+        assert readiness.can_start is False
+        assert readiness.status == PROVIDER_STATUS_KEY_MISSING
+        assert readiness.missing_key_providers == ("gemini",)
+        assert {blocker.role for blocker in readiness.blockers} == {
+            PROVIDER_ROLE_TRANSLATION,
+            PROVIDER_ROLE_TRANSCRIPTION,
+        }
+        assert {blocker.key_provider_id for blocker in readiness.blockers} == {
+            "gemini"
+        }
+
+    def test_mixed_providers_report_each_role_and_only_the_missing_key(self):
+        settings = make_settings(
+            ai_provider="anthropic", transcription_provider="openai_realtime"
+        )
+        readiness = provider_start_readiness(
+            settings, key_lookup=lambda provider: provider == "anthropic"
+        )
+        by_role = {role.role: role for role in readiness.roles}
+
+        assert readiness.profile_id == PROVIDER_PROFILE_CUSTOM
+        assert by_role[PROVIDER_ROLE_TRANSLATION].key_provider_id == "anthropic"
+        assert by_role[PROVIDER_ROLE_TRANSLATION].status == (
+            PROVIDER_STATUS_CONFIGURED
+        )
+        assert by_role[PROVIDER_ROLE_TRANSCRIPTION].provider_id == "openai_realtime"
+        assert by_role[PROVIDER_ROLE_TRANSCRIPTION].key_provider_id == "openai"
+        assert by_role[PROVIDER_ROLE_TRANSCRIPTION].status == (
+            PROVIDER_STATUS_KEY_MISSING
+        )
+        assert readiness.missing_key_providers == ("openai",)
+
+    def test_running_and_error_are_explicit_factual_states(self):
+        settings = make_settings(
+            ai_provider="openai", transcription_provider="openai_realtime"
+        )
+        readiness = provider_start_readiness(
+            settings,
+            running=True,
+            error_roles=(PROVIDER_ROLE_TRANSCRIPTION,),
+            key_lookup=lambda _provider: True,
+        )
+        by_role = {role.role: role.status for role in readiness.roles}
+
+        assert by_role == {
+            PROVIDER_ROLE_TRANSLATION: PROVIDER_STATUS_RUNNING,
+            PROVIDER_ROLE_TRANSCRIPTION: PROVIDER_STATUS_ERROR,
+        }
+        assert readiness.status == PROVIDER_STATUS_ERROR
+        assert readiness.can_start is True
+
+    def test_public_status_vocabulary_contains_no_validation_claims(self):
+        assert set(PROVIDER_STATUSES) == {
+            "configured",
+            "key_missing",
+            "running",
+            "error",
+        }
+        assert not ({"verified", "connected", "valid"} & set(PROVIDER_STATUSES))
 
 
 if __name__ == "__main__":

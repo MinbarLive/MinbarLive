@@ -73,8 +73,7 @@ class TestClassifyError:
 
     def test_gemini_invalid_key_is_a_400(self):
         exc = Exception(
-            "400 INVALID_ARGUMENT. API key not valid. Please pass a valid "
-            "API key."
+            "400 INVALID_ARGUMENT. API key not valid. Please pass a valid API key."
         )
         assert user_messages.classify_error(exc) == "invalid_api_key"
 
@@ -93,9 +92,7 @@ class TestClassifyError:
         assert user_messages.classify_error(exc) == "api_credits_exhausted"
 
     def test_anthropic_low_credit_is_a_400(self):
-        exc = Exception(
-            "Your credit balance is too low to access the Anthropic API."
-        )
+        exc = Exception("Your credit balance is too low to access the Anthropic API.")
         assert user_messages.classify_error(exc) == "api_credits_exhausted"
 
     def test_gemini_resource_exhausted(self):
@@ -128,6 +125,18 @@ class TestClassifyError:
         assert (
             user_messages.classify_error(Exception("failed (req_401abc)"))
             == "connection_error"
+        )
+
+    def test_bare_403_is_not_misclassified_as_invalid_key(self):
+        assert (
+            user_messages.classify_error(Exception("HTTP 403 model access denied"))
+            == "connection_error"
+        )
+
+    def test_403_with_explicit_invalid_key_message_is_still_auth(self):
+        assert (
+            user_messages.classify_error(Exception("HTTP 403 invalid API key"))
+            == "invalid_api_key"
         )
 
 

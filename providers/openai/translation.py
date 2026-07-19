@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from providers.openai.client import create_chat_completion
+from utils.cost_tracking import record_openai_chat_response
 from utils.logging import log
 
 
@@ -33,6 +34,7 @@ class OpenAITranslationProvider:
             max_output_tokens=max_output_tokens,
             **kwargs,
         )
+        record_openai_chat_response(resp, model=model)
         choice = resp.choices[0]
         # On reasoning models the hidden reasoning tokens count against the
         # output budget too — a silent cutoff looks like a model bug upstream.

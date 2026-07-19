@@ -4,6 +4,14 @@ import argparse
 import os
 import sys
 
+# DPI awareness must be configured before the first Tk/CustomTkinter window is
+# created.  Otherwise Windows virtualizes native SetWindowPos coordinates while
+# Tk renders in logical units, which mis-sizes the subtitle window on 125-200%
+# and mixed-DPI monitor setups.
+from utils.windows_dpi import enable_windows_dpi_awareness
+
+enable_windows_dpi_awareness()
+
 # Set Windows taskbar icon (must be done before tkinter imports)
 # Note: sys.platform is always "win32" on Windows, even on 64-bit systems
 if sys.platform == "win32":

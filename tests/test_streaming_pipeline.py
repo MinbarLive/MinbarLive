@@ -73,6 +73,12 @@ class FakeInputStream:
     def __init__(self, **kwargs):
         pass
 
+    def start(self):
+        return self
+
+    def close(self):
+        return None
+
     def __enter__(self):
         return self
 
@@ -242,6 +248,22 @@ class TestStreamingStartValidation:
         assert streaming_env.controller._running is True
         assert streaming_env.context_mgr.start.call_count == 1
 
+    def test_provider_startup_error_is_synchronous_and_leaves_no_state(
+        self, streaming_env, monkeypatch
+    ):
+        def reject_startup(**_kwargs):
+            raise RuntimeError("invalid_api_key")
+
+        monkeypatch.setattr(streaming_env.provider, "open_stream", reject_startup)
+
+        with pytest.raises(RuntimeError, match="invalid_api_key"):
+            streaming_env.controller.start(input_device=0)
+
+        streaming_env.context_mgr.start.assert_not_called()
+        assert streaming_env.controller._running is False
+        assert streaming_env.controller._streaming_handle is None
+        assert streaming_env.controller._streaming_session is None
+
 
 class TestStreamingPipeline:
     def _start(self, env):
@@ -360,6 +382,8 @@ class TestStreamingPipeline:
         message, source = controller.translation_queue.get_nowait()
         assert message == "MSG:connection_error"
         assert source is None
+        assert _wait_for(lambda: not controller.error_queue.empty())
+        assert controller.error_queue.get_nowait() == "translation_error:boom"
 
         # The processor thread must survive and handle the next utterance
         provider.on_transcript("second", True)
@@ -375,6 +399,9 @@ class TestStreamingPipeline:
         message, source = controller.translation_queue.get_nowait()
         assert message == "MSG:connection_error"
         assert source is None
+        assert controller.error_queue.get_nowait() == (
+            "transcription_error:socket dropped"
+        )
 
     def test_audio_chunks_reach_the_stream(self, streaming_env):
         controller, provider = self._start(streaming_env)
@@ -454,6 +481,101 @@ class TestStreamingEngineSelection:
         streaming_env.controller.start(input_device=0)
         assert _wait_for(lambda: rates == [24000, app_controller.FS])
 
+    def test_wasapi_auto_convert_reaches_the_opened_stream(
+        self, streaming_env, monkeypatch
+    ):
+        opened_with = []
+
+        class FakeWasapiSettings:
+            def __init__(self, *, auto_convert=False):
+                self.auto_convert = auto_convert
+
+        class RecordingInputStream(FakeInputStream):
+            def __init__(self, **kwargs):
+                opened_with.append(kwargs)
+
+        fake_sd = SimpleNamespace(
+            InputStream=RecordingInputStream,
+            WasapiSettings=FakeWasapiSettings,
+            query_devices=lambda index: {"hostapi": 0},
+            query_hostapis=lambda: [{"name": "Windows WASAPI"}],
+        )
+        monkeypatch.setattr(app_controller, "sd", fake_sd)
+        streaming_env.settings.transcription_provider = "openai_realtime"
+
+        streaming_env.controller.start(input_device=21)
+
+        assert len(opened_with) == 1
+        assert opened_with[0]["samplerate"] == 24000
+        assert opened_with[0]["extra_settings"].auto_convert is True
+
+    def test_audio_open_failure_rolls_back_before_live_state(
+        self, streaming_env, monkeypatch
+    ):
+        instances = []
+
+        class FailingInputStream(FakeInputStream):
+            def __init__(self, **kwargs):
+                self.closed = False
+                instances.append(self)
+
+            def start(self):
+                raise RuntimeError("microphone open failed")
+
+            def close(self):
+                self.closed = True
+
+        monkeypatch.setattr(
+            app_controller,
+            "sd",
+            SimpleNamespace(InputStream=FailingInputStream),
+        )
+
+        with pytest.raises(RuntimeError, match="microphone open failed"):
+            streaming_env.controller.start(input_device=9)
+
+        assert streaming_env.controller._running is False
+        assert streaming_env.controller._input_thread is None
+        assert streaming_env.provider.handle.closed is True
+        streaming_env.context_mgr.start.assert_not_called()
+        assert len(instances) == app_controller.INPUT_STREAM_OPEN_ATTEMPTS
+        assert all(instance.closed for instance in instances)
+
+    def test_transient_audio_start_failure_is_closed_and_retried(
+        self, streaming_env, monkeypatch
+    ):
+        instances = []
+
+        class FlakyInputStream(FakeInputStream):
+            def __init__(self, **kwargs):
+                self.closed = False
+                instances.append(self)
+
+            def start(self):
+                if len(instances) == 1:
+                    raise RuntimeError("WdmSyncIoctl element not found")
+                return self
+
+            def close(self):
+                self.closed = True
+
+        monkeypatch.setattr(
+            app_controller,
+            "sd",
+            SimpleNamespace(InputStream=FlakyInputStream),
+        )
+
+        streaming_env.controller.start(input_device=21)
+
+        assert len(instances) == 2
+        assert instances[0].closed is True
+        assert instances[1].closed is False
+        assert streaming_env.provider.open_count == 1
+        streaming_env.context_mgr.start.assert_called_once()
+
+        streaming_env.controller.stop(timeout=1.0)
+        assert instances[1].closed is True
+
 
 class TestLiveTranscript:
     """get_live_transcript() feeds the subtitle window's live line (Realtime
@@ -500,9 +622,7 @@ class TestLiveTranscript:
         assert _wait_for(lambda: not controller.translation_queue.empty())
         assert _wait_for(lambda: controller.get_live_transcript() == ("", False))
 
-    def test_newer_speech_survives_translation_clear(
-        self, streaming_env, monkeypatch
-    ):
+    def test_newer_speech_survives_translation_clear(self, streaming_env, monkeypatch):
         import threading
 
         release = threading.Event()
@@ -613,12 +733,8 @@ class TestStreamingReconnect:
 
     def _start(self, env, monkeypatch):
         # Real backoff is 1s+ — compress it so tests run in milliseconds.
-        monkeypatch.setattr(
-            app_controller, "STREAMING_RECONNECT_BASE_SECONDS", 0.02
-        )
-        monkeypatch.setattr(
-            app_controller, "STREAMING_RECONNECT_MAX_SECONDS", 0.1
-        )
+        monkeypatch.setattr(app_controller, "STREAMING_RECONNECT_BASE_SECONDS", 0.02)
+        monkeypatch.setattr(app_controller, "STREAMING_RECONNECT_MAX_SECONDS", 0.1)
         env.controller.start(input_device=0)
         assert env.provider.on_transcript is not None
         return env.controller, env.provider
@@ -633,6 +749,42 @@ class TestStreamingReconnect:
         assert _wait_for(lambda: controller._streaming_handle is provider.handle)
         controller._streaming_feed_queue.put(b"\x01\x00")
         assert _wait_for(lambda: provider.handle.fed == [b"\x01\x00"])
+
+    def test_invalid_api_key_is_terminal_without_reconnect_or_audience_message(
+        self, streaming_env, monkeypatch
+    ):
+        controller, provider = self._start(streaming_env, monkeypatch)
+        first_handle = provider.handle
+        callback = provider.on_error
+
+        callback(RuntimeError("HTTP 401 invalid_api_key"))
+
+        assert controller.error_queue.get_nowait() == (
+            "fatal_transcription_error:invalid_api_key"
+        )
+        assert first_handle.closed is True
+        assert controller.translation_queue.empty()
+        time.sleep(0.15)
+        assert provider.open_count == 1
+
+        # A close can trigger a second callback from the same socket. The
+        # terminal event is idempotent and must not stack in the GUI queue.
+        callback(RuntimeError("HTTP 401 invalid_api_key"))
+        assert controller.error_queue.empty()
+
+    def test_bare_403_remains_transient(self, streaming_env, monkeypatch):
+        controller, provider = self._start(streaming_env, monkeypatch)
+
+        provider.on_error(RuntimeError("HTTP 403 model access denied"))
+
+        assert _wait_for(lambda: provider.open_count == 2)
+        assert controller.error_queue.get_nowait() == (
+            "transcription_error:HTTP 403 model access denied"
+        )
+        assert controller.translation_queue.get_nowait() == (
+            "MSG:connection_error",
+            None,
+        )
 
     def test_one_error_subtitle_per_outage(self, streaming_env, monkeypatch):
         """A disconnect can fire several error callbacks and retries — the
@@ -680,9 +832,7 @@ class TestStreamingReconnect:
         time.sleep(0.15)
         assert provider.open_count == 1
 
-    def test_backoff_grows_and_resets_on_transcript(
-        self, streaming_env, monkeypatch
-    ):
+    def test_backoff_grows_and_resets_on_transcript(self, streaming_env, monkeypatch):
         controller, provider = self._start(streaming_env, monkeypatch)
         base = app_controller.STREAMING_RECONNECT_BASE_SECONDS
         provider.on_error(RuntimeError("stream ended by server"))

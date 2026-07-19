@@ -7,6 +7,7 @@ generate_content with a verbatim-transcription instruction.
 from __future__ import annotations
 
 from providers.gemini.client import get_client
+from utils.cost_tracking import record_gemini_response
 
 _INSTRUCTION = (
     "Transcribe the speech in this audio recording verbatim. "
@@ -50,4 +51,5 @@ class GeminiTranscriptionProvider:
                 thinking_config=types.ThinkingConfig(thinking_budget=0)
             ),
         )
+        record_gemini_response(resp, model=model, role="transcription")
         return (resp.text or "").strip()

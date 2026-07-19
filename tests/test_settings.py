@@ -44,6 +44,9 @@ class TestSettingsDataclass:
         # Note: openai_api_key is now stored in keyring, not in Settings
         assert settings.monitor_index == 1
         assert settings.font_size_base == 40
+        assert settings.source_font_size_base == pytest.approx(40 / 0.7)
+        assert settings.translation_text_color == ""
+        assert settings.source_text_color == ""
         assert settings.source_language == "Automatic"
         assert settings.target_language == "German"
         assert settings.subtitle_mode == SUBTITLE_MODE_REALTIME
@@ -62,6 +65,9 @@ class TestSettingsDataclass:
         settings = Settings(
             monitor_index=0,
             font_size_base=50,
+            source_font_size_base=72.5,
+            translation_text_color="#F7F3EA",
+            source_text_color="#A9B8C3",
             source_language="Turkish",
             target_language="English",
             subtitle_mode=SUBTITLE_MODE_STATIC,
@@ -74,6 +80,9 @@ class TestSettingsDataclass:
         )
         assert settings.monitor_index == 0
         assert settings.font_size_base == 50
+        assert settings.source_font_size_base == 72.5
+        assert settings.translation_text_color == "#F7F3EA"
+        assert settings.source_text_color == "#A9B8C3"
         assert settings.source_language == "Turkish"
         assert settings.target_language == "English"
         assert settings.subtitle_mode == SUBTITLE_MODE_STATIC
@@ -83,6 +92,160 @@ class TestSettingsDataclass:
         assert settings.bilingual_mode is True
         assert settings.translation_model == "gpt-4o"
         assert settings.transcription_model == "gpt-4o-mini-transcribe"
+
+
+class TestSubtitleOutputSettings:
+    """The optional audience window is a strict, migration-safe boolean."""
+
+    def test_defaults_to_enabled(self):
+        assert Settings().subtitle_output_enabled is True
+
+    def test_disabled_round_trip_preserves_monitor_index(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        save_settings(Settings(monitor_index=2, subtitle_output_enabled=False))
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["subtitle_output_enabled"] is False
+        assert payload["monitor_index"] == 2
+
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.subtitle_output_enabled is False
+            assert loaded.monitor_index == 2
+        finally:
+            settings_module._cached_settings = None
+
+    def test_missing_field_uses_legacy_enabled_default(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"monitor_index": 0}), encoding="utf-8")
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.subtitle_output_enabled is True
+            assert loaded.monitor_index == 0
+        finally:
+            settings_module._cached_settings = None
+
+    @pytest.mark.parametrize(
+        "stored",
+        [None, 0, 1, "false", "true", [], {}],
+    )
+    def test_non_bool_values_use_enabled_default(self, tmp_path, monkeypatch, stored):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"subtitle_output_enabled": stored}), encoding="utf-8"
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).subtitle_output_enabled is True
+        finally:
+            settings_module._cached_settings = None
+
+
+class TestSubtitleTypographySettings:
+    """Separate source/translation typography persists without breaking old files."""
+
+    def test_round_trip(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        save_settings(
+            Settings(
+                font_size_base=45,
+                source_font_size_base=67.5,
+                translation_text_color="#F7F3EA",
+                source_text_color="#a9B8c3",
+            )
+        )
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["source_font_size_base"] == 67.5
+        assert payload["translation_text_color"] == "#F7F3EA"
+        assert payload["source_text_color"] == "#a9B8c3"
+
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.font_size_base == 45
+            assert loaded.source_font_size_base == 67.5
+            assert loaded.translation_text_color == "#F7F3EA"
+            assert loaded.source_text_color == "#a9B8c3"
+        finally:
+            settings_module._cached_settings = None
+
+    def test_legacy_file_derives_source_size_from_translation_size(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"font_size_base": 50}), encoding="utf-8")
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.source_font_size_base == pytest.approx(50 / 0.7)
+            assert loaded.translation_text_color == ""
+            assert loaded.source_text_color == ""
+        finally:
+            settings_module._cached_settings = None
+
+    @pytest.mark.parametrize(
+        ("stored", "expected"),
+        [
+            (64.5, 64.5),
+            (5, 20.0),
+            (500, 120.0),
+            (True, 40 / 0.7),
+            (float("nan"), 40 / 0.7),
+            (float("inf"), 40 / 0.7),
+            (10**1000, 40 / 0.7),
+            ("64.5", 40 / 0.7),
+        ],
+    )
+    def test_source_size_is_finite_numeric_and_clamped(
+        self, tmp_path, monkeypatch, stored, expected
+    ):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"source_font_size_base": stored}), encoding="utf-8"
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.source_font_size_base == pytest.approx(expected)
+        finally:
+            settings_module._cached_settings = None
+
+    @pytest.mark.parametrize(
+        "invalid",
+        [None, 123456, "112233", "#FFF", "#12345678", "#GG0000", " #123456"],
+    )
+    def test_invalid_color_overrides_fall_back_to_theme_default(
+        self, tmp_path, monkeypatch, invalid
+    ):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "translation_text_color": invalid,
+                    "source_text_color": invalid,
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.translation_text_color == ""
+            assert loaded.source_text_color == ""
+        finally:
+            settings_module._cached_settings = None
 
 
 class TestSubtitleModes:
@@ -214,6 +377,30 @@ class TestPipelineMode:
             loaded = load_settings(use_cache=False)
             assert loaded.transcription_provider == provider
             assert loaded.pipeline_mode == PIPELINE_MODE_STREAMING
+        finally:
+            settings_module._cached_settings = None
+
+    def test_openai_service_profile_round_trips(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            settings_module, "_settings_path", lambda: tmp_path / "settings.json"
+        )
+        settings_module._cached_settings = None
+        save_settings(
+            Settings(
+                ai_provider="openai",
+                transcription_provider="openai_realtime",
+                use_default_translation_model=True,
+                use_default_transcription_model=True,
+            )
+        )
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.ai_provider == "openai"
+            assert loaded.transcription_provider == "openai_realtime"
+            assert loaded.pipeline_mode == PIPELINE_MODE_STREAMING
+            assert loaded.use_default_translation_model is True
+            assert loaded.use_default_transcription_model is True
         finally:
             settings_module._cached_settings = None
 

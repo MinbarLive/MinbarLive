@@ -15,6 +15,7 @@ import tkinter as tk
 
 import customtkinter as ctk
 
+from gui.control_dashboard import ICON_FONT, ICONS, provider_display_name
 from gui.scaling import centered_position
 from providers import PROVIDER_CHOICES, has_usable_key
 from utils.api_key_manager import remove_api_key
@@ -273,8 +274,8 @@ class SettingsViewMixin:
 
         api_symbol = ctk.CTkLabel(
             api_header,
-            text="⚿",
-            font=ctk.CTkFont(family="Segoe UI Symbol", size=20, weight="bold"),
+            text=ICONS["key"],
+            font=ctk.CTkFont(family=ICON_FONT, size=20),
             text_color=self._colors["accent"],
             width=44,
             height=44,
@@ -328,17 +329,43 @@ class SettingsViewMixin:
         )
         self._settings_muted_labels.append(self.api_key_status_label)
 
+        api_vault_note = ctk.CTkLabel(
+            api_card,
+            text=self.gui_texts.get(
+                "api_key_vault_note",
+                "Saving a key here only stores it for use by services; it does not "
+                "select or activate a provider. Choose the active service profile "
+                "in the control dashboard.",
+            ),
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=self._colors["muted"],
+            anchor="w",
+            justify="left",
+            wraplength=420,
+        )
+        api_vault_note.grid(
+            row=3, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 14)
+        )
+        api_vault_note._text_key = "api_key_vault_note"  # type: ignore[attr-defined]
+        self._settings_muted_labels.append(api_vault_note)
+
         self.change_key_btn = self._button(
-            api_card, "change_key", self._on_settings_change_key, symbol="⚿", height=46
+            api_card, "change_key", self._on_settings_change_key, height=46
+        )
+        self.change_key_btn.configure(
+            image=self._dashboard.icon_image("key", 16), compound="left"
         )
         self.change_key_btn.grid(
-            row=3, column=0, sticky="ew", padx=(16, 6), pady=(0, 16)
+            row=4, column=0, sticky="ew", padx=(16, 6), pady=(0, 16)
         )
         self.remove_key_btn = self._button(
-            api_card, "remove_key", self._on_settings_remove_key, symbol="✕", height=46
+            api_card, "remove_key", self._on_settings_remove_key, height=46
+        )
+        self.remove_key_btn.configure(
+            image=self._dashboard.icon_image("close", 16), compound="left"
         )
         self.remove_key_btn.grid(
-            row=3, column=1, sticky="ew", padx=(6, 16), pady=(0, 16)
+            row=4, column=1, sticky="ew", padx=(6, 16), pady=(0, 16)
         )
         self._refresh_api_key_status()
 
@@ -409,16 +436,29 @@ class SettingsViewMixin:
         if provider is None:
             label.configure(text="—")
             label._text_key = None  # type: ignore[attr-defined]
+            self.change_key_btn.configure(
+                text=self.gui_texts.get("change_key", "Change Key")
+            )
+            self.remove_key_btn.configure(
+                text=self.gui_texts.get("remove_key", "Remove Key")
+            )
             self._set_api_key_buttons_enabled(False)
             return
         saved = has_usable_key(provider)
         key = "api_key_status_saved" if saved else "api_key_status_none"
         label.configure(
             text=self.gui_texts.get(
-                key, "✓ Key saved" if saved else "✕ No key saved"
+                key, "Key saved" if saved else "Key missing"
             )
         )
         label._text_key = key  # type: ignore[attr-defined]
+        service = provider_display_name(provider)
+        self.change_key_btn.configure(
+            text=f"{service} · {self.gui_texts.get('change_key', 'Change Key')}"
+        )
+        self.remove_key_btn.configure(
+            text=f"{service} · {self.gui_texts.get('remove_key', 'Remove Key')}"
+        )
         self._set_api_key_buttons_enabled(True)
 
     def _on_islamic_mode_change(self) -> None:

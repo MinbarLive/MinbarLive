@@ -264,8 +264,7 @@ class TestResolveProviderByKeys:
     def test_session_typed_key_counts(self, monkeypatch):
         self._keys(monkeypatch, set())
         assert (
-            providers.resolve_provider_by_keys({"anthropic": "sk-ant-x"})
-            == "anthropic"
+            providers.resolve_provider_by_keys({"anthropic": "sk-ant-x"}) == "anthropic"
         )
 
     def test_session_typed_default_key_wins(self, monkeypatch):
@@ -471,6 +470,20 @@ class TestGeminiTranslationProvider:
         out = GeminiTranslationProvider().complete(model="m", user_prompt="usr")
         assert out == ""
 
+    def test_usage_is_recorded_before_text_is_returned(self, monkeypatch):
+        client = MagicMock()
+        response = SimpleNamespace(text="out", usage_metadata=SimpleNamespace())
+        client.models.generate_content.return_value = response
+        monkeypatch.setattr(gemini_translation, "get_client", lambda: client)
+        captured = []
+        monkeypatch.setattr(
+            gemini_translation,
+            "record_gemini_response",
+            lambda resp, **kwargs: captured.append((resp, kwargs)),
+        )
+        assert GeminiTranslationProvider().complete(model="m", user_prompt="u") == "out"
+        assert captured == [(response, {"model": "m", "role": "translation"})]
+
 
 class TestGeminiTranscriptionProvider:
     def _client_mock(self, monkeypatch, text="transcript"):
@@ -507,6 +520,20 @@ class TestGeminiTranscriptionProvider:
         )
         _, instruction = client.models.generate_content.call_args.kwargs["contents"]
         assert "der letzte Satz" in instruction
+
+    def test_usage_is_recorded(self, monkeypatch):
+        client = MagicMock()
+        response = SimpleNamespace(text="spoken", usage_metadata=SimpleNamespace())
+        client.models.generate_content.return_value = response
+        monkeypatch.setattr(gemini_transcription, "get_client", lambda: client)
+        captured = []
+        monkeypatch.setattr(
+            gemini_transcription,
+            "record_gemini_response",
+            lambda resp, **kwargs: captured.append((resp, kwargs)),
+        )
+        assert GeminiTranscriptionProvider().transcribe(b"wav", model="m") == "spoken"
+        assert captured == [(response, {"model": "m", "role": "transcription"})]
 
 
 class TestAnthropicTranslationProvider:
@@ -613,9 +640,13 @@ class TestProviderChoiceHelpers:
             assert provider_id in providers._TRANSLATION_PROVIDERS
 
     def test_model_choices_per_provider(self):
-        openai_ids = [m for _n, m in providers.get_model_choices("openai", "translation")]
+        openai_ids = [
+            m for _n, m in providers.get_model_choices("openai", "translation")
+        ]
         assert "gpt-5.2" in openai_ids
-        gemini_ids = [m for _n, m in providers.get_model_choices("gemini", "translation")]
+        gemini_ids = [
+            m for _n, m in providers.get_model_choices("gemini", "translation")
+        ]
         assert all(m.startswith("gemini") for m in gemini_ids)
 
     def test_unknown_provider_falls_back_to_gemini_choices(self):
@@ -658,9 +689,7 @@ class TestKeyHelpers:
         assert providers.get_stored_api_key("openai") == "sk-env"
 
     def test_stored_key_gemini(self, monkeypatch):
-        monkeypatch.setattr(
-            "providers.gemini.client._load_stored_key", lambda: "g-key"
-        )
+        monkeypatch.setattr("providers.gemini.client._load_stored_key", lambda: "g-key")
         assert providers.get_stored_api_key("gemini") == "g-key"
 
     def test_stored_key_unknown_provider(self):
@@ -677,9 +706,7 @@ class TestKeyHelpers:
             calls["delete"] = provider
             return True
 
-        monkeypatch.setattr(
-            "utils.keyring_storage.set_api_key_in_keyring", fake_set
-        )
+        monkeypatch.setattr("utils.keyring_storage.set_api_key_in_keyring", fake_set)
         monkeypatch.setattr(
             "utils.keyring_storage.delete_api_key_from_keyring", fake_delete
         )
@@ -708,9 +735,7 @@ class TestKeyHelpers:
             calls["delete"] = provider
             return True
 
-        monkeypatch.setattr(
-            "utils.keyring_storage.set_api_key_in_keyring", fake_set
-        )
+        monkeypatch.setattr("utils.keyring_storage.set_api_key_in_keyring", fake_set)
         monkeypatch.setattr(
             "utils.keyring_storage.delete_api_key_from_keyring", fake_delete
         )
@@ -745,9 +770,7 @@ class TestKeyHelpers:
             calls["delete"] = provider
             return True
 
-        monkeypatch.setattr(
-            "utils.keyring_storage.set_api_key_in_keyring", fake_set
-        )
+        monkeypatch.setattr("utils.keyring_storage.set_api_key_in_keyring", fake_set)
         monkeypatch.setattr(
             "utils.keyring_storage.delete_api_key_from_keyring", fake_delete
         )
@@ -859,6 +882,23 @@ class TestOpenAITranslationProvider:
         assert out == "cut off"
         assert "WARNING" in logged
 
+    def test_usage_response_is_forwarded_to_meter(self, monkeypatch):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="out"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+        )
+        monkeypatch.setattr(
+            openai_translation, "create_chat_completion", lambda **_kwargs: response
+        )
+        captured = []
+        monkeypatch.setattr(
+            openai_translation,
+            "record_openai_chat_response",
+            lambda resp, **kwargs: captured.append((resp, kwargs)),
+        )
+        assert OpenAITranslationProvider().complete(model="m", user_prompt="u") == "out"
+        assert captured == [(response, {"model": "m"})]
+
 
 class TestOpenAITranscriptionProvider:
     """Request construction for the transcription API."""
@@ -878,7 +918,7 @@ class TestOpenAITranscriptionProvider:
         assert kwargs["model"] == "m"
         assert kwargs["language"] == "ar"
         assert kwargs["file"] == ("audio.wav", b"wav-bytes")
-        assert kwargs["response_format"] == "text"
+        assert kwargs["response_format"] == "json"
         assert out == "text"
 
     def test_auto_detect_omits_language(self, monkeypatch):
@@ -898,6 +938,19 @@ class TestOpenAITranscriptionProvider:
         client = self._client_mock(monkeypatch)
         OpenAITranscriptionProvider().transcribe(b"wav-bytes", model="m")
         assert "prompt" not in client.audio.transcriptions.create.call_args.kwargs
+
+    def test_json_response_returns_text_and_records_usage(self, monkeypatch):
+        usage = SimpleNamespace(type="tokens", input_tokens=10, output_tokens=2)
+        result = SimpleNamespace(text="spoken", usage=usage)
+        self._client_mock(monkeypatch, result=result)
+        captured = []
+        monkeypatch.setattr(
+            openai_transcription,
+            "record_openai_transcription_usage",
+            lambda value, **kwargs: captured.append((value, kwargs)),
+        )
+        assert OpenAITranscriptionProvider().transcribe(b"wav", model="m") == "spoken"
+        assert captured == [(usage, {"model": "m"})]
 
 
 class TestOpenAIEmbeddingProvider:
@@ -1227,9 +1280,7 @@ class TestStreamingEngineHelpers:
             == "gpt-4o-mini-transcribe"
         )
         assert (
-            providers.resolve_streaming_transcription_model(
-                "openai_realtime", "nova-3"
-            )
+            providers.resolve_streaming_transcription_model("openai_realtime", "nova-3")
             == "gpt-4o-transcribe"
         )
 
@@ -1271,9 +1322,7 @@ class TestStreamingEngineHelpers:
         assert providers.get_streaming_capture_sample_rate("deepgram") == FS
         assert providers.get_streaming_capture_sample_rate("gemini_realtime") == FS
         # The OpenAI Realtime API only accepts 24 kHz PCM.
-        assert (
-            providers.get_streaming_capture_sample_rate("openai_realtime") == 24000
-        )
+        assert providers.get_streaming_capture_sample_rate("openai_realtime") == 24000
         assert providers.get_streaming_capture_sample_rate("bogus") == FS
 
     def test_default_model_and_choices(self):
@@ -1322,6 +1371,7 @@ class _BlockingRealtimeConnection(_FakeRealtimeConnection):
     lets tests exercise the deliberate-shutdown path deterministically."""
 
     def __iter__(self):
+        yield from self._events
         while not self.closed:
             time.sleep(0.005)
         raise RuntimeError("socket torn down")
@@ -1340,13 +1390,29 @@ class TestOpenAIRealtimeTranscriptionProvider:
     COMPLETED = "conversation.item.input_audio_transcription.completed"
     FAILED = "conversation.item.input_audio_transcription.failed"
 
-    def _fake_client(self, monkeypatch, events, connect_error=None, conn=None):
-        conn = conn if conn is not None else _FakeRealtimeConnection(events)
+    def _fake_client(
+        self,
+        monkeypatch,
+        events,
+        connect_error=None,
+        conn=None,
+        confirmation="session.updated",
+        connect_delay=0.0,
+    ):
+        scripted_events = list(events)
+        if confirmation:
+            scripted_events.insert(0, _rt_event(confirmation))
+        if conn is None:
+            conn = _FakeRealtimeConnection(scripted_events)
+        else:
+            conn._events = scripted_events
         captured = {}
 
         @contextmanager
         def fake_connect(**kwargs):
             captured["kwargs"] = kwargs
+            if connect_delay:
+                time.sleep(connect_delay)
             if connect_error is not None:
                 raise connect_error
             yield conn
@@ -1380,6 +1446,29 @@ class TestOpenAIRealtimeTranscriptionProvider:
         self._fake_client(monkeypatch, [])
         handle = self._open()
         assert isinstance(handle, StreamHandle)
+        assert handle._ready.is_set()
+
+    def test_session_created_also_confirms_startup(self, monkeypatch):
+        self._fake_client(monkeypatch, [], confirmation="session.created")
+        handle = self._open()
+        assert handle._ready.is_set()
+
+    @pytest.mark.parametrize(
+        "confirmation",
+        ("transcription_session.created", "transcription_session.updated"),
+    )
+    def test_legacy_transcription_session_events_confirm_startup(
+        self, monkeypatch, confirmation
+    ):
+        """Accept the lifecycle names emitted by legacy/Beta sessions.
+
+        The GA API uses the unified ``session.*`` names, while the legacy/Beta
+        transcription-only path used ``transcription_session.*``. Either is a
+        positive server-side confirmation, not a startup timeout.
+        """
+        self._fake_client(monkeypatch, [], confirmation=confirmation)
+        handle = self._open()
+        assert handle._ready.is_set()
 
     def test_deltas_accumulate_and_completed_flushes(self, monkeypatch):
         """Deltas are append-only fragments (unlike Deepgram's replace-the-
@@ -1400,6 +1489,31 @@ class TestOpenAIRealtimeTranscriptionProvider:
             ("Assalamu alaikum", True),
         ]
 
+    def test_completed_event_records_usage_once(self, monkeypatch):
+        usage = SimpleNamespace(type="tokens", input_tokens=10, output_tokens=2)
+        events = [
+            _rt_event(
+                self.COMPLETED,
+                item_id="i1",
+                event_id="evt-1",
+                transcript="hello",
+                usage=usage,
+            )
+        ]
+        self._fake_client(monkeypatch, events)
+        captured = []
+        monkeypatch.setattr(
+            openai_realtime,
+            "record_openai_transcription_usage",
+            lambda value, **kwargs: captured.append((value, kwargs)),
+        )
+        ends = []
+        self._open(utterance_ends=ends)
+        assert _wait_until(lambda: len(ends) == 1)
+        assert captured == [
+            (usage, {"model": "gpt-4o-transcribe", "event_id": "evt-1"})
+        ]
+
     def test_failed_transcription_still_flushes(self, monkeypatch):
         """A failed utterance must clear the pending interim (empty flush)
         instead of leaving it on screen forever."""
@@ -1414,9 +1528,7 @@ class TestOpenAIRealtimeTranscriptionProvider:
         assert transcripts == [("doomed", False)]  # no final for the failure
 
     def test_error_event_calls_on_error(self, monkeypatch):
-        events = [
-            _rt_event("error", error=SimpleNamespace(message="rate limited"))
-        ]
+        events = [_rt_event("error", error=SimpleNamespace(message="rate limited"))]
         self._fake_client(monkeypatch, events)
         errors = []
         self._open(errors=errors)
@@ -1432,15 +1544,26 @@ class TestOpenAIRealtimeTranscriptionProvider:
         handle = self._open()
         handle.feed(b"pcm-bytes")
         assert _wait_until(lambda: len(conn.appended_audio) == 1)
-        assert conn.appended_audio[0]["audio"] == base64.b64encode(
-            b"pcm-bytes"
-        ).decode("ascii")
+        assert conn.appended_audio[0]["audio"] == base64.b64encode(b"pcm-bytes").decode(
+            "ascii"
+        )
 
     def test_session_configured_for_transcription(self, monkeypatch):
         conn, captured = self._fake_client(monkeypatch, [])
         self._open()
         assert _wait_until(lambda: len(conn.session_updates) == 1)
         assert captured["kwargs"]["extra_query"] == {"intent": "transcription"}
+        transport_options = captured["kwargs"]["websocket_connection_options"]
+        assert transport_options["open_timeout"] == (
+            openai_realtime.WEBSOCKET_OPEN_TIMEOUT_SECONDS
+        )
+        assert transport_options["close_timeout"] == (
+            openai_realtime.WEBSOCKET_CLOSE_TIMEOUT_SECONDS
+        )
+        assert (
+            openai_realtime.STARTUP_TIMEOUT_SECONDS
+            > transport_options["open_timeout"]
+        )
         session = conn.session_updates[0]["session"]
         assert session["type"] == "transcription"
         audio_input = session["audio"]["input"]
@@ -1466,12 +1589,42 @@ class TestOpenAIRealtimeTranscriptionProvider:
         ]
         assert transcription == {"model": "gpt-4o-transcribe"}
 
-    def test_connect_error_calls_on_error(self, monkeypatch):
+    def test_connect_error_raises_synchronously(self, monkeypatch):
         self._fake_client(monkeypatch, [], connect_error=RuntimeError("boom"))
         errors = []
-        self._open(errors=errors)
-        assert _wait_until(lambda: len(errors) == 1)
-        assert isinstance(errors[0], RuntimeError)
+        with pytest.raises(RuntimeError, match="boom"):
+            self._open(errors=errors)
+        assert errors == []
+
+    def test_error_before_session_confirmation_raises_synchronously(self, monkeypatch):
+        self._fake_client(
+            monkeypatch,
+            [_rt_event("error", error=SimpleNamespace(message="invalid_api_key"))],
+            confirmation=None,
+        )
+        errors = []
+        with pytest.raises(RuntimeError, match="invalid_api_key"):
+            self._open(errors=errors)
+        assert errors == []
+
+    def test_startup_confirmation_wait_is_bounded(self, monkeypatch):
+        conn = _BlockingRealtimeConnection([])
+        self._fake_client(monkeypatch, [], conn=conn, confirmation=None)
+        monkeypatch.setattr(openai_realtime, "STARTUP_TIMEOUT_SECONDS", 0.03)
+
+        with pytest.raises(TimeoutError, match="session confirmation"):
+            self._open(errors=[])
+
+        assert conn.closed is True
+
+    def test_slow_websocket_handshake_can_still_confirm(self, monkeypatch):
+        """A connection that is merely slow must not lose a timeout race."""
+        self._fake_client(monkeypatch, [], connect_delay=0.04)
+        monkeypatch.setattr(openai_realtime, "STARTUP_TIMEOUT_SECONDS", 0.1)
+
+        handle = self._open(errors=[])
+
+        assert handle._ready.is_set()
 
     def test_deliberate_close_suppresses_on_error(self, monkeypatch):
         """close() tears the socket down mid-recv; that expected shutdown
@@ -1660,6 +1813,41 @@ class TestGeminiLiveTranscriptionProvider:
         self._open(transcripts=transcripts, utterance_ends=utterance_ends)
         assert _wait_until(lambda: len(utterance_ends) == 1)
         assert transcripts == []
+
+    def test_usage_only_messages_forward_cumulative_snapshot(self, monkeypatch):
+        def metadata(total):
+            return SimpleNamespace(
+                prompt_token_count=total,
+                prompt_tokens_details=[
+                    SimpleNamespace(modality="AUDIO", token_count=total)
+                ],
+                cached_content_token_count=0,
+                cache_tokens_details=None,
+                response_token_count=0,
+                response_tokens_details=None,
+                thoughts_token_count=0,
+                tool_use_prompt_token_count=0,
+            )
+
+        session = _FakeLiveSession(
+            [[
+                SimpleNamespace(server_content=None, usage_metadata=metadata(100)),
+                SimpleNamespace(server_content=None, usage_metadata=metadata(150)),
+                _live_msg(turn_complete=True),
+            ]]
+        )
+        self._fake_client(monkeypatch, session)
+        captured = []
+        monkeypatch.setattr(
+            gemini_realtime,
+            "record_live_usage_snapshot",
+            lambda **kwargs: captured.append(kwargs),
+        )
+        ends = []
+        self._open(utterance_ends=ends)
+        assert _wait_until(lambda: len(ends) == 1)
+        assert [row["usage"]["input_audio_tokens"] for row in captured] == [100, 150]
+        assert len({row["stream_id"] for row in captured}) == 1
 
     def test_feed_sends_pcm_with_mime(self, monkeypatch):
         from config import FS

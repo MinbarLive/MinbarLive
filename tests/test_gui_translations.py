@@ -82,8 +82,20 @@ WIZARD_KEYS = [
     "history_tab_sessions",
     "history_tab_logs",
     "history_tab_batch",
+    "history_tab_costs",
     "history_empty",
     "history_batch_empty",
+    "history_cost_empty",
+    "history_cost_estimate",
+    "history_cost_date",
+    "history_cost_duration",
+    "history_cost_total",
+    "history_cost_embedding",
+    "history_cost_tokens",
+    "history_cost_partial",
+    "history_cost_notice",
+    "history_cost_pricing_date",
+    "history_cost_delete_confirm",
     "history_entries",
     "history_minutes",
     "history_seconds",
@@ -116,11 +128,41 @@ WIZARD_KEYS = [
     "strategy_realtime",
     "strategy_chunk",
     "strategy_semantic",
+    "strategy_help_realtime",
+    "strategy_help_semantic",
+    "strategy_help_chunk",
+    "subtitle_help_realtime",
+    "subtitle_help_continuous",
+    "subtitle_help_static",
+    "subtitle_screen_none",
+    "subtitle_screen_none_help",
+    "v3_output_disabled",
+    "v3_ready_summary_no_screen",
+    "announce_no_screen_title",
+    "announce_no_screen_message",
     "api_key_status_saved",
     "api_key_status_none",
     "api_key_select_provider",
     "update_available",
     "check_updates_on_launch",
+    "v3_cost_current",
+    "v3_cost_last",
+    "v3_cost_note",
+    "v3_cost_history",
+    "v3_cost_unpriced",
+    "v3_microphone_open_failed",
+    # Independent original/translation typography controls
+    "subtitle_typography",
+    "subtitle_original_text",
+    "subtitle_original_text_plain",
+    "subtitle_translation_text",
+    "subtitle_text_color",
+    "subtitle_theme_default",
+    "subtitle_choose_color",
+    "log_translation_font_size_changed",
+    "log_source_font_size_changed",
+    "log_translation_text_color_changed",
+    "log_source_text_color_changed",
     # Announcement (megaphone) window
     "announce_title",
     "announce_sub",
@@ -169,8 +211,17 @@ class TestWizardTranslationCoverage:
         assert "{count}" in data["history_entries"]
         assert "{minutes}" in data["history_minutes"]
         assert "{seconds}" in data["history_seconds"]
+        assert "{input}" in data["history_cost_tokens"]
+        assert "{output}" in data["history_cost_tokens"]
         assert "{error}" in data["summary_failed"]
         assert "{version}" in data["update_available"]
+        assert "{language}" in data["subtitle_original_text"]
+        assert "{language}" in data["subtitle_translation_text"]
+        assert "{target}" in data["v3_ready_summary_no_screen"]
+        assert "{size}" in data["log_translation_font_size_changed"]
+        assert "{size}" in data["log_source_font_size_changed"]
+        assert "{color}" in data["log_translation_text_color_changed"]
+        assert "{color}" in data["log_source_text_color_changed"]
 
 
 if __name__ == "__main__":

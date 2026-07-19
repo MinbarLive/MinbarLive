@@ -4,15 +4,29 @@ from __future__ import annotations
 
 import sounddevice as sd
 
+from audio.device_support import input_extra_settings
 from audio.loopback import clear as _loopback_clear
 from audio.loopback import register as _loopback_register
 from config import FS
 
 
-def _is_usable_input(device_idx: int) -> bool:
+def _is_usable_input(device_idx: int, hostapi_name: str = "") -> bool:
     """Return True if the device can be opened as a mono input at FS."""
     try:
-        sd.check_input_settings(device=device_idx, channels=1, samplerate=FS)
+        kwargs = {}
+        extra_settings = input_extra_settings(
+            sd,
+            device_index=device_idx,
+            hostapi_name=hostapi_name,
+        )
+        if extra_settings is not None:
+            kwargs["extra_settings"] = extra_settings
+        sd.check_input_settings(
+            device=device_idx,
+            channels=1,
+            samplerate=FS,
+            **kwargs,
+        )
         return True
     except Exception:
         return False
@@ -23,8 +37,11 @@ def _is_usable_input(device_idx: int) -> bool:
 # hardware.  Filtered out by name prefix (case-insensitive).
 _SKIP_NAME_PREFIXES = (
     "microsoft sound mapper",
+    "microsoft soundmapper",
     "primary sound capture driver",
     "primary sound driver",
+    "primärer soundaufnahmetreiber",
+    "primärer soundtreiber",
 )
 
 # Host API quality priority — lower value = better quality.
@@ -38,6 +55,28 @@ _HOSTAPI_PRIORITY = {
     "MME": 2,
 }
 _SKIP_HOSTAPIS = {"Windows WDM-KS"}
+
+
+def find_input_device_position(
+    saved_name: str | None,
+    base_names: list[str],
+) -> int | None:
+    """Resolve a persisted physical-device name after PortAudio reindexing."""
+
+    if not saved_name:
+        return None
+    try:
+        return base_names.index(saved_name)
+    except ValueError:
+        pass
+
+    saved = " ".join(saved_name.casefold().split())
+    for index, name in enumerate(base_names):
+        candidate = " ".join(name.casefold().split())
+        shorter = min(len(saved), len(candidate))
+        if shorter >= 20 and saved[:shorter] == candidate[:shorter]:
+            return index
+    return None
 
 
 def get_input_devices() -> tuple[list[str], list[str], list[int], list[bool]]:
@@ -58,6 +97,9 @@ def get_input_devices() -> tuple[list[str], list[str], list[int], list[bool]]:
     base_names: list[str] = []
     indices: list[int] = []
     loopback_flags: list[bool] = []
+    # Never leave stale synthetic loopback indices behind when PortAudio
+    # enumeration itself fails.
+    _loopback_clear()
     try:
         devices = sd.query_devices()
         try:
@@ -66,7 +108,8 @@ def get_input_devices() -> tuple[list[str], list[str], list[int], list[bool]]:
             hostapis = []
 
         # Collect all input-capable devices with quality metadata
-        candidates: list[tuple[int, int, int, str]] = []  # (priority, idx, ch, name)
+        candidates: list[tuple[int, int, int, str, str]] = []
+        # (priority, idx, channels, device name, host API name)
         for idx, device in enumerate(devices):
             ch = device.get("max_input_channels", 0)
             if ch <= 0:
@@ -80,7 +123,7 @@ def get_input_devices() -> tuple[list[str], list[str], list[int], list[bool]]:
             if hostapi_name in _SKIP_HOSTAPIS:
                 continue
             priority = _HOSTAPI_PRIORITY.get(hostapi_name, 99)
-            candidates.append((priority, idx, ch, name))
+            candidates.append((priority, idx, ch, name, hostapi_name))
 
         # Sort: best API first, then most channels
         candidates.sort(key=lambda c: (c[0], -c[2]))
@@ -90,7 +133,7 @@ def get_input_devices() -> tuple[list[str], list[str], list[int], list[bool]]:
         # different name lengths.  Match by the shorter of the two name prefixes
         # when both are at least 20 characters.
         seen: list[str] = []
-        for _priority, idx, _ch, name in candidates:
+        for _priority, idx, _ch, name, hostapi_name in candidates:
             name_lower = name.lower()
             if any(name_lower.startswith(p) for p in _SKIP_NAME_PREFIXES):
                 continue  # fake Windows audio mapper entry
@@ -101,7 +144,7 @@ def get_input_devices() -> tuple[list[str], list[str], list[int], list[bool]]:
                     is_dup = True
                     break
             if not is_dup:
-                if not _is_usable_input(idx):
+                if not _is_usable_input(idx, hostapi_name):
                     continue
                 seen.append(name)
                 num = len(seen)
@@ -116,7 +159,6 @@ def get_input_devices() -> tuple[list[str], list[str], list[int], list[bool]]:
         # Known soundcard limitation: recording a single channel on Windows
         # WASAPI produces garbage — the capture loops always use channels=2
         # and mix to mono.
-        _loopback_clear()
         try:
             import soundcard as sc  # noqa: PLC0415 (lazy import is intentional)
 

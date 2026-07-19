@@ -20,6 +20,7 @@ import tkinter as tk
 
 import customtkinter as ctk
 
+from gui.control_dashboard import ICON_FONT, ICONS
 from gui.scaling import centered_position
 from providers import (
     PROVIDER_CHOICES,
@@ -169,8 +170,8 @@ class BatchViewMixin:
         header.grid_columnconfigure(1, weight=1)
         symbol = ctk.CTkLabel(
             header,
-            text="▦",
-            font=ctk.CTkFont(family="Segoe UI Symbol", size=20, weight="bold"),
+            text=ICONS["file"],
+            font=ctk.CTkFont(family=ICON_FONT, size=20),
             text_color=self._colors["accent"],
             width=44,
             height=44,
@@ -223,12 +224,12 @@ class BatchViewMixin:
         self.batch_pick_btn.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self.batch_clear_btn = ctk.CTkButton(
             file_row,
-            text="✕",
+            text="",
+            image=self._dashboard.icon_image("close", 16),
             command=self._on_batch_clear_file,
             width=40,
             height=40,
             corner_radius=14,
-            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
             fg_color=self._colors["button"],
             hover_color=self._colors["danger"],
             text_color=self._colors["text"],
@@ -450,6 +451,10 @@ class BatchViewMixin:
         self.batch_more_btn = ctk.CTkButton(
             box,
             text=self._batch_more_button_text(),
+            image=self._dashboard.icon_image(
+                "chevron_up" if self._batch_more_open else "chevron_down", 15
+            ),
+            compound="left",
             command=self._on_batch_toggle_more,
             width=0,
             height=32,
@@ -559,8 +564,7 @@ class BatchViewMixin:
         )
 
     def _batch_more_button_text(self) -> str:
-        arrow = "▾" if self._batch_more_open else "▸"
-        return f"{arrow}  {self.gui_texts.get('batch_more_settings', 'More settings')}"
+        return self.gui_texts.get("batch_more_settings", "More settings")
 
     def _on_batch_toggle_more(self) -> None:
         self._batch_more_open = not self._batch_more_open
@@ -570,7 +574,12 @@ class BatchViewMixin:
             self._batch_more_frame.grid()
         else:
             self._batch_more_frame.grid_remove()
-        self.batch_more_btn.configure(text=self._batch_more_button_text())
+        self.batch_more_btn.configure(
+            text=self._batch_more_button_text(),
+            image=self._dashboard.icon_image(
+                "chevron_up" if self._batch_more_open else "chevron_down", 15
+            ),
+        )
         self._resize_batch_window(recenter=False)
 
     def _on_batch_defaults(self) -> None:

@@ -132,7 +132,9 @@ class AnnounceViewMixin:
 
         header = ctk.CTkLabel(
             card,
-            text="📣  " + self.gui_texts.get("announce_title", "Announcement"),
+            text=self.gui_texts.get("announce_title", "Announcement"),
+            image=self._dashboard.icon_image("announcement", 19),
+            compound="left",
             font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
             text_color=self._colors["text"],
             anchor="w",
@@ -301,12 +303,12 @@ class AnnounceViewMixin:
             # Filled star, always visible — click to unfavorite.
             star_btn = ctk.CTkButton(
                 row_frame,
-                text="★",
+                text="",
+                image=self._dashboard.icon_image("favorite_filled", 16),
                 width=36,
                 height=36,
                 corner_radius=12,
                 command=lambda t=text: self._unfavorite_announcement(t),
-                font=ctk.CTkFont(family="Segoe UI Symbol", size=15),
                 fg_color=self._colors["button"],
                 hover_color=self._colors["button_hover"],
                 text_color=self._colors["accent"],
@@ -362,24 +364,24 @@ class AnnounceViewMixin:
             # Star + delete — both revealed only while the row is hovered.
             star_btn = ctk.CTkButton(
                 row_frame,
-                text="☆",
+                text="",
+                image=self._dashboard.icon_image("favorite", 16),
                 width=36,
                 height=36,
                 corner_radius=12,
                 command=lambda t=text: self._favorite_announcement(t),
-                font=ctk.CTkFont(family="Segoe UI Symbol", size=15),
                 fg_color=self._colors["button"],
                 hover_color=self._colors["button_hover"],
                 text_color=self._colors["muted"],
             )
             del_btn = ctk.CTkButton(
                 row_frame,
-                text="✕",
+                text="",
+                image=self._dashboard.icon_image("close", 15),
                 width=36,
                 height=36,
                 corner_radius=12,
                 command=lambda t=text: self._delete_recent_announcement(t),
-                font=ctk.CTkFont(family="Segoe UI Symbol", size=13, weight="bold"),
                 fg_color=self._colors["button"],
                 hover_color=self._colors["button_hover"],
                 text_color=self._colors["muted"],
@@ -496,6 +498,22 @@ class AnnounceViewMixin:
         text = self._announce_textbox.get("1.0", "end").strip()
         if not text:
             return
+        # "Kein Bildschirm" is an authoritative output choice.  Abort before
+        # touching history, active state or timers so enabling a screen later
+        # cannot resurrect a message that was never shown.
+        if not self._subtitle_output_is_enabled():
+            self._alert(
+                self.gui_texts.get(
+                    "announce_no_screen_title", "Kein Bildschirm ausgewählt"
+                ),
+                self.gui_texts.get(
+                    "announce_no_screen_message",
+                    "Wähle im Ausgabefenster einen Bildschirm aus, um die "
+                    "Durchsage anzuzeigen.",
+                ),
+                parent=self._announce_win,
+            )
+            return
 
         idx = self._announce_duration_combo.current()
         if idx is None or not (0 <= idx < len(ANNOUNCEMENT_DURATIONS_SECONDS)):
@@ -593,6 +611,8 @@ class AnnounceViewMixin:
         """The announcement needs a surface. With hide-on-stop and the pipeline
         stopped there is no overlay — create one so the message can show
         (torn down again by _stop_announcement)."""
+        if not self._subtitle_output_is_enabled():
+            return
         if not (self.subtitle_window and self.subtitle_window.winfo_exists()):
             self._create_subtitle_window()
 

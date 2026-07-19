@@ -7,7 +7,26 @@ import re
 import sys
 import tkinter as tk
 from dataclasses import dataclass
+
 from screeninfo import get_monitors
+
+from config import (
+    FOOTER_TRANSLATIONS_PATH,
+    ICON_PATH,
+    ICON_PATH_PNG,
+    LINE_SPACING,
+    MARGIN_BOTTOM,
+    REALTIME_BLOCK_SPACING,
+    REALTIME_LIVE_MAX_ROWS,
+    REALTIME_MAX_BLOCK_CHARS,
+)
+from utils.icons import ICO_SUPPORTED, scaled_icon_photo
+from utils.json_helpers import load_json
+from utils.settings import (
+    SUBTITLE_MODE_CONTINUOUS,
+    SUBTITLE_MODE_REALTIME,
+    SUBTITLE_MODE_STATIC,
+)
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -68,24 +87,6 @@ if _ARABIC_SUPPORT:
     # surfaces here, once, instead of on live subtitles).
     _reshape_rtl("تهيئة")
 
-
-from config import (
-    FOOTER_TRANSLATIONS_PATH,
-    ICON_PATH,
-    ICON_PATH_PNG,
-    LINE_SPACING,
-    MARGIN_BOTTOM,
-    REALTIME_BLOCK_SPACING,
-    REALTIME_LIVE_MAX_ROWS,
-    REALTIME_MAX_BLOCK_CHARS,
-)
-from utils.icons import ICO_SUPPORTED, scaled_icon_photo
-from utils.json_helpers import load_json
-from utils.settings import (
-    SUBTITLE_MODE_CONTINUOUS,
-    SUBTITLE_MODE_REALTIME,
-    SUBTITLE_MODE_STATIC,
-)
 
 # Sentence boundaries for splitting oversized Realtime blocks: terminal
 # punctuation (Latin + Arabic), optionally followed by closing quotes.
@@ -160,6 +161,86 @@ LIVE_FEED_ANIM_EASE = 0.3  # fraction of the remaining gap closed per frame
 LIVE_FEED_ANIM_MIN_STEP = 2.0  # px/frame floor so the tail doesn't crawl
 LIVE_FEED_ANIM_SNAP_PX = 1.0  # within this, snap to target and stop
 
+# Static mode also supports very shallow output windows (down to 5% of the
+# monitor height). Below this surface height its normal card padding would use
+# more room than the text itself, so spacing contracts proportionally while
+# the ordinary layout remains byte-for-byte unchanged at common heights.
+STATIC_COMPACT_LAYOUT_HEIGHT = 160
+STATIC_MIN_FIT_FONT_SIZE = 6
+STATIC_CARD_OUTLINE_ALLOWANCE = 2
+# A visible disclaimer pill plus one bilingual subtitle pair cannot remain
+# legible in a 54 px-tall 1080p surface. Keep the requested percentage in the
+# settings, but protect the actual audience window with a small physical floor
+# whenever the footer is present. Footer-free overlays still honour true 5%.
+MIN_FOOTER_SURFACE_HEIGHT = 96
+
+
+# V3 audience-surface tokens.  The subtitle window deliberately uses a much
+# quieter version of the control deck's palette: the opaque canvas is deep
+# navy, translated text is warm ivory, supporting copy is cool and muted,
+# brass is reserved for outlines/disclaimers, and emerald only communicates
+# the real stopped/live state.  Keeping these as data also makes theme changes
+# deterministic and easy to regression-test without creating a Tk window.
+_SUBTITLE_THEME_PALETTES = {
+    "dark": {
+        "bg_color": "#020A13",
+        "primary_text": "#F7F3EA",
+        "secondary_text": "#A9B8C3",
+        "card_fill": "#071521",
+        "card_outline": "#29414D",
+        "accent_outline": "#9A7441",
+        "footer_bg": "#0B1823",
+        "footer_fg": "#D8B474",
+        "footer_outline": "#765A35",
+        "stopped_bg": "#082820",
+        "stopped_fg": "#7DE2B5",
+        "stopped_outline": "#2A9B72",
+    },
+    "light": {
+        "bg_color": "#F3F0E8",
+        "primary_text": "#0A1823",
+        "secondary_text": "#586A73",
+        "card_fill": "#FFFDF8",
+        "card_outline": "#C8B997",
+        "accent_outline": "#9A6C32",
+        "footer_bg": "#FFF8EC",
+        "footer_fg": "#75501F",
+        "footer_outline": "#C3A06A",
+        "stopped_bg": "#E1F2EA",
+        "stopped_fg": "#0D6046",
+        "stopped_outline": "#4A9E7A",
+    },
+}
+
+
+def _prefers_reduced_motion() -> bool:
+    """Return the operating-system animation preference when available.
+
+    The environment override is intentionally undocumented UI plumbing: it
+    keeps render harnesses/tests deterministic without adding another public
+    setting.  On Windows the value follows "Show animations in Windows".
+    Unsupported platforms retain the existing gentle feed movement.
+    """
+    override = os.environ.get("MINBARLIVE_REDUCED_MOTION", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        SPI_GETCLIENTAREAANIMATION = 0x1042
+        enabled = wintypes.BOOL()
+        ok = ctypes.windll.user32.SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION, 0, ctypes.byref(enabled), 0
+        )
+        return bool(ok) and not bool(enabled.value)
+    except Exception:
+        return False
+
 
 @dataclass
 class _SubtitleBlock:
@@ -175,6 +256,11 @@ class _SubtitleBlock:
     height: int  # total pixel height of the block incl. source lines
     line_items: list[tuple[int, int | None]] | None = None  # static per-line cards
     source_items: list[tuple[int, int | None]] | None = None  # bilingual source
+    # Keep the logical, unshaped strings. Canvas text is already wrapped and
+    # RTL-shaped, so reconstructing from itemcget() during a live font change
+    # would either preserve stale line breaks or shape Arabic a second time.
+    logical_text: str = ""
+    logical_source: str | None = None
 
 
 class SubtitleWindow(tk.Toplevel):
@@ -197,6 +283,9 @@ class SubtitleWindow(tk.Toplevel):
         bilingual_mode: bool = False,
         always_on_top: bool = True,
         on_stop=None,
+        source_font_size_base: float = 40 / 0.7,
+        translation_text_color: str = "",
+        source_text_color: str = "",
     ):
         super().__init__(master)
         # Build fully transparent: a fresh Toplevel paints white with a
@@ -229,43 +318,36 @@ class SubtitleWindow(tk.Toplevel):
         self._always_on_top = always_on_top
         self._effective_scroll_speed = scroll_speed
         self._theme_mode = theme_mode
-        self._theme_palettes = {
-            "dark": {
-                "bg_color": "#040914",
-                "primary_text": "#ffffff",
-                "secondary_text": "#c7d2e3",
-                "card_fill": "#0a0a0a",
-                "card_outline": "",
-                "footer_bg": "#0e1828",
-                "footer_fg": "#f4d18a",
-                "footer_outline": "#8f6a29",
-            },
-            "light": {
-                "bg_color": "#eef3fb",
-                "primary_text": "#000000",
-                "secondary_text": "#54657d",
-                "card_fill": "#ffffff",
-                "card_outline": "",
-                "footer_bg": "#f6f9ff",
-                "footer_fg": "#3b4f67",
-                "footer_outline": "#d8e1ee",
-            },
-        }
-        self._box_padding_x = 18
-        self._box_padding_y = 6
-        self._box_radius = 8
-        self._line_gap = 8
+        self._theme_palettes = _SUBTITLE_THEME_PALETTES
+        # Empty overrides deliberately mean "follow the active theme". Keep
+        # those raw values separate from the effective colours so switching
+        # light/dark mode can update defaults without discarding a custom
+        # operator choice.
+        self._translation_text_color_override = (
+            translation_text_color or ""
+        ).strip()
+        self._source_text_color_override = (source_text_color or "").strip()
+        self._box_padding_x = 22
+        self._box_padding_y = 8
+        self._box_radius = 12
+        self._line_gap = 10
         # Bounding-box gap between a source line and its translation in
         # static mode, where each line has its own background card (cards
         # must not overlap). The text-only modes use _stack_overlap instead
         # so source/translation and wrapped rows sit visibly tighter.
-        self._pair_gap = 2
+        self._pair_gap = 5
         self._transparent_key_color = "#00fe00"
-        self._font_family = "Segoe UI Semibold" if is_windows else "Helvetica"
-        # Regular-weight family for the italic source/live styling (the main
-        # family bakes Semibold into its name, so "not bold" needs its own).
+        self._font_family = "Segoe UI" if is_windows else "Helvetica"
+        # Regular-weight family for the italic source/live styling; translated
+        # subtitles use the same broad-script family with an explicit bold
+        # weight so Arabic and Latin fallbacks remain predictable.
         self._slant_font_family = "Segoe UI" if is_windows else "Helvetica"
         self._footer_font_family = "Segoe UI" if is_windows else "Helvetica"
+        self._destroying = False
+        self._is_hidden = False
+        self._reduced_motion = _prefers_reduced_motion()
+        self._delayed_font_job: str | None = None
+        self._continuous_start_job: str | None = None
         self._apply_theme_palette(self._theme_mode)
 
         self.configure(bg=self._bg_color)
@@ -289,6 +371,11 @@ class SubtitleWindow(tk.Toplevel):
 
         # Font size base (divisor for calculating font size)
         self._font_size_base = font_size_base
+        try:
+            source_base = float(source_font_size_base)
+        except (TypeError, ValueError):
+            source_base = 40 / 0.7
+        self._source_font_size_base = max(20.0, min(120.0, source_base))
 
         footer_text = FOOTER_TRANSLATIONS.get(target_language, DEFAULT_FOOTER)
         self.footer = tk.Label(
@@ -311,8 +398,8 @@ class SubtitleWindow(tk.Toplevel):
         self._stopped_hint = False  # "translation stopped" pill while idle
         self._stopped_hint_items: list[int] = []
         # Live (in-progress) transcript line — Realtime mode only, never part
-        # of the stack. "Settled" = utterance finished, translation in flight
-        # (rendered in the primary color instead of the muted one).
+        # of the stack. "Settled" = utterance finished, translation in flight;
+        # it remains a source-role line until the translation replaces it.
         self._live_text = ""
         self._live_settled = False
         self._live_items: list[tuple[int, int | None]] = []
@@ -347,10 +434,12 @@ class SubtitleWindow(tk.Toplevel):
         if self._transparent_static and self._subtitle_mode == SUBTITLE_MODE_STATIC:
             self._apply_transparent_mode()
 
-        self.after(100, self._delayed_font_update)
+        self._delayed_font_job = self.after(100, self._delayed_font_update)
 
         if self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
-            self.after(150, self._start_continuous_scroll)
+            self._continuous_start_job = self.after(
+                150, self._start_continuous_scroll
+            )
 
     def _setup_borderless_window(self):
         """Configure a borderless window that remains visible to OBS/screen capture.
@@ -398,6 +487,7 @@ class SubtitleWindow(tk.Toplevel):
                 # Use Windows API via ctypes to remove window decorations
                 # while keeping the window visible to capture software
                 import ctypes
+                from ctypes import wintypes
 
                 # Window style constants
                 GWL_STYLE = -16
@@ -410,24 +500,39 @@ class SubtitleWindow(tk.Toplevel):
                 WS_EX_APPWINDOW = 0x00040000
                 WS_EX_TOOLWINDOW = 0x00000080
 
+                user32 = ctypes.windll.user32
+                # HWND is pointer-sized.  Without explicit signatures ctypes
+                # assumes a 32-bit int return value and can truncate handles in
+                # a 64-bit process.
+                user32.GetParent.argtypes = [wintypes.HWND]
+                user32.GetParent.restype = wintypes.HWND
+                user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+                user32.GetWindowLongW.restype = ctypes.c_long
+                user32.SetWindowLongW.argtypes = [
+                    wintypes.HWND,
+                    ctypes.c_int,
+                    ctypes.c_long,
+                ]
+                user32.SetWindowLongW.restype = ctypes.c_long
+
                 # Get window handle
-                self._hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+                self._hwnd = user32.GetParent(self.winfo_id())
 
                 # Get current style
-                style = ctypes.windll.user32.GetWindowLongW(self._hwnd, GWL_STYLE)
+                style = user32.GetWindowLongW(self._hwnd, GWL_STYLE)
 
                 # Remove title bar and borders but keep it a normal window
                 style = style & ~WS_CAPTION & ~WS_THICKFRAME
                 style = style & ~WS_MINIMIZEBOX & ~WS_MAXIMIZEBOX & ~WS_SYSMENU
 
                 # Apply new style
-                ctypes.windll.user32.SetWindowLongW(self._hwnd, GWL_STYLE, style)
+                user32.SetWindowLongW(self._hwnd, GWL_STYLE, style)
 
                 # Get and modify extended style to ensure it shows in window lists
-                ex_style = ctypes.windll.user32.GetWindowLongW(self._hwnd, GWL_EXSTYLE)
+                ex_style = user32.GetWindowLongW(self._hwnd, GWL_EXSTYLE)
                 # Remove toolwindow style, add APPWINDOW to ensure it appears in capture lists
                 ex_style = (ex_style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
-                ctypes.windll.user32.SetWindowLongW(self._hwnd, GWL_EXSTYLE, ex_style)
+                user32.SetWindowLongW(self._hwnd, GWL_EXSTYLE, ex_style)
 
                 # Note: We don't call SetWindowPos here - _set_screen_position will
                 # handle positioning with _apply_window_position()
@@ -471,6 +576,9 @@ class SubtitleWindow(tk.Toplevel):
 
     def _delayed_font_update(self):
         """Update font after window is fully rendered."""
+        self._delayed_font_job = None
+        if self._destroying or self._is_hidden:
+            return
         self.update_idletasks()
         self.canvas_width = self.canvas.winfo_width()
         self.canvas_height = self.canvas.winfo_height()
@@ -487,15 +595,23 @@ class SubtitleWindow(tk.Toplevel):
         self._bg_color = palette["bg_color"]
         self._primary_text = palette["primary_text"]
         self._secondary_text = palette["secondary_text"]
+        self._translation_text = (
+            getattr(self, "_translation_text_color_override", "")
+            or self._primary_text
+        )
+        self._source_text = (
+            getattr(self, "_source_text_color_override", "")
+            or self._secondary_text
+        )
         self._card_fill = palette["card_fill"]
         self._card_outline = palette["card_outline"]
+        self._accent_outline = palette["accent_outline"]
         self._footer_bg = palette["footer_bg"]
         self._footer_fg = palette["footer_fg"]
         self._footer_outline = palette["footer_outline"]
-        # Footer is always app orange with black text, regardless of theme
-        self._footer_bg = "#F5820D"
-        self._footer_fg = "#000000"
-        self._footer_outline = "#c06308"
+        self._stopped_bg = palette["stopped_bg"]
+        self._stopped_fg = palette["stopped_fg"]
+        self._stopped_outline = palette["stopped_outline"]
 
     def set_theme(self, theme_mode: str):
         """Apply a new theme and repaint the current subtitle content."""
@@ -541,14 +657,19 @@ class SubtitleWindow(tk.Toplevel):
             return
 
         footer_text = FOOTER_TRANSLATIONS.get(self._target_language, DEFAULT_FOOTER)
-        font_spec = (self._footer_font_family, 13, "bold")
-        font_obj = tkfont.Font(family=self._footer_font_family, size=13, weight="bold")
-        text_w = font_obj.measure(footer_text)
-        text_h = font_obj.metrics("linespace")
+        font_spec = (self._footer_font_family, 12, "bold")
+        font_obj = tkfont.Font(family=self._footer_font_family, size=12, weight="bold")
 
-        pad_x, pad_y = 22, 9
+        pad_x, pad_y = 24, 8
         margin_h = 20  # min horizontal margin from canvas edge
         max_pill_w = self.canvas_width - margin_h * 2
+        max_text_w = max(1, int(max_pill_w - pad_x * 2))
+        # Footer translations can be longer than a compact/partial output
+        # window. Wrap deliberately and size the pill to the actual rows so
+        # the warning is never clipped or silently elided.
+        lines = self._wrap_text_to_lines(footer_text, max_text_w, font_spec)
+        text_w = max((font_obj.measure(line) for line in lines), default=0)
+        text_h = font_obj.metrics("linespace") * max(1, len(lines))
         pill_w = min(text_w + pad_x * 2, max_pill_w)
         pill_h = text_h + pad_y * 2
         radius = pill_h / 2  # fully rounded ends (capsule shape)
@@ -571,7 +692,8 @@ class SubtitleWindow(tk.Toplevel):
         text_id = self.canvas.create_text(
             cx,
             (y1 + y2) / 2,
-            text=_reshape_rtl(footer_text),
+            # Lines have already been shaped by _wrap_text_to_lines.
+            text="\n".join(lines),
             fill=self._footer_fg,
             font=font_spec,
             anchor="center",
@@ -603,6 +725,41 @@ class SubtitleWindow(tk.Toplevel):
         for item_id in self._canvas_footer_items:
             self.canvas.tag_raise(item_id)
 
+    def _cancel_after_job(self, attribute: str) -> None:
+        """Cancel one tracked Tk callback without leaking Tcl errors.
+
+        Window destruction, monitor changes and stop actions can race a
+        callback that has just fired.  Clearing the attribute first makes
+        cancellation idempotent and prevents a later cleanup path from
+        cancelling a recycled Tcl callback id.
+        """
+        job = getattr(self, attribute, None)
+        setattr(self, attribute, None)
+        if job is None:
+            return
+        try:
+            self.after_cancel(job)
+        except (tk.TclError, TypeError):
+            pass
+
+    def _cancel_animation_jobs(self) -> None:
+        """Cancel every delayed/animated callback owned by this window."""
+        for attribute in (
+            "_delayed_font_job",
+            "_continuous_start_job",
+            "_scroll_animation_id",
+            "_feed_anim_job",
+        ):
+            self._cancel_after_job(attribute)
+
+    def destroy(self):
+        """Destroy the OBS surface after cancelling all of its Tk jobs."""
+        if getattr(self, "_destroying", False):
+            return
+        self._destroying = True
+        self._cancel_animation_jobs()
+        super().destroy()
+
     def set_stopped_hint(self, visible: bool):
         """Show or remove the "translation stopped" pill.
 
@@ -613,6 +770,16 @@ class SubtitleWindow(tk.Toplevel):
         language and theme changes pick up the current wording.
         """
         self._stopped_hint = visible
+        if visible:
+            # A stopped audience surface must be visually still, and must not
+            # leave Tk callbacks alive after the operator tears it down.
+            self._cancel_after_job("_continuous_start_job")
+            self._cancel_after_job("_scroll_animation_id")
+            self._cancel_after_job("_feed_anim_job")
+        elif self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
+            self._start_continuous_scroll()
+        elif self._subtitle_mode == SUBTITLE_MODE_REALTIME:
+            self._ensure_feed_anim()
         self._refresh_stopped_hint()
 
     def _refresh_stopped_hint(self):
@@ -635,17 +802,20 @@ class SubtitleWindow(tk.Toplevel):
         from utils.user_messages import get_user_message
 
         text = get_user_message("app_stopped")
-        font_spec = (self._footer_font_family, 13, "bold")
-        font_obj = tkfont.Font(family=self._footer_font_family, size=13, weight="bold")
-        pad_x, pad_y = 22, 9
+        font_spec = (self._footer_font_family, 12, "bold")
+        font_obj = tkfont.Font(family=self._footer_font_family, size=12, weight="bold")
+        pad_x, pad_y = 22, 8
         pill_w = min(font_obj.measure(text) + pad_x * 2, self.canvas_width - 40)
         pill_h = font_obj.metrics("linespace") + pad_y * 2
         cx = self.canvas_width / 2
-        # Directly above the disclaimer pill when it is shown (both pills use
-        # the same font, so their heights match), else in its bottom spot.
+        # Directly above the disclaimer pill when it is shown. Footer copy may
+        # wrap in compact output windows, so anchor to its actual canvas box
+        # instead of assuming both pills have the same height.
         y2 = self.canvas_height - 10
         if self._canvas_footer_items:
-            y2 -= pill_h + 8
+            footer_bbox = self.canvas.bbox(self._canvas_footer_items[0])
+            if footer_bbox:
+                y2 = footer_bbox[1] - 8
         y1 = y2 - pill_h
         bg_id = self.canvas.create_polygon(
             self._rounded_rect_points(
@@ -653,15 +823,15 @@ class SubtitleWindow(tk.Toplevel):
             ),
             smooth=True,
             splinesteps=18,
-            fill=self._card_fill,
-            outline=self._card_outline,
+            fill=self._stopped_bg,
+            outline=self._stopped_outline,
             width=1,
         )
         text_id = self.canvas.create_text(
             cx,
             (y1 + y2) / 2,
             text=_reshape_rtl(text),
-            fill=self._secondary_text,
+            fill=self._stopped_fg,
             font=font_spec,
             anchor="center",
             justify="center",
@@ -730,8 +900,8 @@ class SubtitleWindow(tk.Toplevel):
             smooth=True,
             splinesteps=18,
             fill=self._card_fill,
-            outline=self._card_outline,
-            width=1,
+            outline=self._accent_outline,
+            width=2,
         )
         # lines are already shaped by _wrap_text_to_lines — do NOT reshape.
         text_id = self.canvas.create_text(
@@ -748,39 +918,102 @@ class SubtitleWindow(tk.Toplevel):
         self._raise_footer()
 
     def _update_font(self):
-        """Recalculate font based on canvas width and font size base (divisor)."""
+        """Recalculate independent translation and source/live fonts."""
         font_size = (
             int(self.canvas_width / self._font_size_base) if self.canvas_width else 24
         )
         font_size = max(12, min(font_size, 120))  # Clamp between 12 and 120
         self._current_font_size = font_size
         self.font = (self._font_family, font_size, "bold")
-        # Bilingual mode renders the original text smaller above the translation
-        source_size = max(12, int(font_size * 0.7))
+        # Legacy/synthetic render harnesses may not have the new field yet;
+        # derive their old 70% source size exactly. Real windows always carry
+        # the independent persisted divisor set by the constructor.
+        source_base = getattr(
+            self, "_source_font_size_base", self._font_size_base / 0.7
+        )
+        source_size = (
+            int(self.canvas_width / source_base) if self.canvas_width else 17
+        )
+        source_size = max(12, min(source_size, 120))
+        self._current_source_font_size = source_size
         self.source_font = (self._font_family, source_size, "bold")
         # Latin-script source/live text: italic + regular weight, so it reads
         # apart from the bold upright translation even in the same script.
         # Arabic keeps the upright fonts — it has no italic tradition (Tk
         # would fake a slant) and the script itself already differs.
         self.source_font_latin = (self._slant_font_family, source_size, "italic")
-        self.live_font_latin = (self._slant_font_family, font_size, "italic")
+        self.live_font_latin = self.source_font_latin
 
     def _source_font_for(self, text: str):
         return self.source_font if _ARABIC_ANY_RE.search(text) else self.source_font_latin
 
     def _live_font_for(self, text: str):
-        return self.font if _ARABIC_ANY_RE.search(text) else self.live_font_latin
+        return self.source_font if _ARABIC_ANY_RE.search(text) else self.live_font_latin
+
+    def _translation_fill(self) -> str:
+        """Effective translation colour, with legacy harness fallback."""
+        return getattr(self, "_translation_text", self._primary_text)
+
+    def _source_fill(self) -> str:
+        """Effective original/live colour, with legacy harness fallback."""
+        return getattr(self, "_source_text", self._secondary_text)
 
     def increase_font(self):
         """Increase subtitle font size."""
-        self._font_size_base = max(20, self._font_size_base - 5)
+        new_base = max(20, self._font_size_base - 5)
+        if new_base == self._font_size_base:
+            return
+        self._font_size_base = new_base
         self._update_font()
-        self._refresh_subtitles()
+        self._refresh_subtitles(reflow=True)
 
     def decrease_font(self):
         """Decrease subtitle font size."""
-        self._font_size_base = min(80, self._font_size_base + 5)
+        new_base = min(80, self._font_size_base + 5)
+        if new_base == self._font_size_base:
+            return
+        self._font_size_base = new_base
         self._update_font()
+        self._refresh_subtitles(reflow=True)
+
+    def set_source_font_size_base(self, value: float) -> None:
+        """Set the source/live font divisor and reflow the active surface."""
+        try:
+            new_base = max(20.0, min(120.0, float(value)))
+        except (TypeError, ValueError):
+            return
+        if new_base == getattr(self, "_source_font_size_base", None):
+            return
+        self._source_font_size_base = new_base
+        self._update_font()
+        self._refresh_subtitles(reflow=True)
+
+    def increase_source_font(self) -> None:
+        """Increase original-text and live-transcript font size."""
+        current = getattr(
+            self, "_source_font_size_base", self._font_size_base / 0.7
+        )
+        self.set_source_font_size_base(current - 5.0)
+
+    def decrease_source_font(self) -> None:
+        """Decrease original-text and live-transcript font size."""
+        current = getattr(
+            self, "_source_font_size_base", self._font_size_base / 0.7
+        )
+        self.set_source_font_size_base(current + 5.0)
+
+    def set_translation_text_color(self, color: str | None) -> None:
+        """Apply a translation colour live; empty restores the theme default."""
+        self._translation_text_color_override = (color or "").strip()
+        self._translation_text = (
+            self._translation_text_color_override or self._primary_text
+        )
+        self._refresh_subtitles()
+
+    def set_source_text_color(self, color: str | None) -> None:
+        """Apply an original/live colour live; empty restores the theme default."""
+        self._source_text_color_override = (color or "").strip()
+        self._source_text = self._source_text_color_override or self._secondary_text
         self._refresh_subtitles()
 
     def set_language(self, language: str):
@@ -805,6 +1038,24 @@ class SubtitleWindow(tk.Toplevel):
     def get_current_font_size(self) -> int:
         """Get the actual rendered font pixel size."""
         return getattr(self, "_current_font_size", 24)
+
+    def get_source_font_size_base(self) -> float:
+        """Get the independent source/live divisor for persistence."""
+        return getattr(
+            self, "_source_font_size_base", self._font_size_base / 0.7
+        )
+
+    def get_current_source_font_size(self) -> int:
+        """Get the actual rendered original/live font pixel size."""
+        return getattr(self, "_current_source_font_size", 17)
+
+    def get_translation_text_color(self) -> str:
+        """Return the saved override; empty means use the theme colour."""
+        return getattr(self, "_translation_text_color_override", "")
+
+    def get_source_text_color(self) -> str:
+        """Return the saved override; empty means use the theme colour."""
+        return getattr(self, "_source_text_color_override", "")
 
     def increase_scroll_speed(self) -> float:
         """Increase continuous scroll speed."""
@@ -839,9 +1090,9 @@ class SubtitleWindow(tk.Toplevel):
     def set_live_text(self, text: str | None, settled: bool = False):
         """Update or remove the live (in-progress) transcript line.
 
-        ``settled`` marks a finished utterance whose translation is still
-        in flight — the line turns to the primary text color in place
-        ("finished") until the translation subtitle replaces it.
+        ``settled`` marks a finished utterance whose translation is still in
+        flight. It remains in the source/live visual role until the translated
+        subtitle replaces it.
 
         Called on every GUI poll tick in streaming mode; no-ops when
         nothing changed, so the frequent calls are cheap.
@@ -869,10 +1120,8 @@ class SubtitleWindow(tk.Toplevel):
         """(Re)draw the live line — Realtime mode only.
 
         A text block at the feed's writing cursor, below the last settled
-        translation (see _layout_live_feed): full subtitle size, muted
-        while the speaker is still talking, primary ("finished") once the
-        utterance settled and its translation is in flight. The other
-        modes never show the live line.
+        translation (see _layout_live_feed), using the independent source/live
+        size and colour. The other modes never show the live line.
         """
         self._remove_live_items()
         if self._subtitle_mode != SUBTITLE_MODE_REALTIME:
@@ -904,7 +1153,7 @@ class SubtitleWindow(tk.Toplevel):
             self.canvas_width / 2,
             self.canvas_height,
             text="\n".join(lines),
-            fill=self._primary_text if self._live_settled else self._secondary_text,
+            fill=self._source_fill(),
             font=live_font,
             anchor="s",
             justify="center",
@@ -942,8 +1191,12 @@ class SubtitleWindow(tk.Toplevel):
         if self._live_feed_scroll_target - self._live_feed_scroll > max(limit, 1):
             self._live_feed_scroll = self._live_feed_scroll_target
 
+        if self._reduced_motion:
+            self._live_feed_scroll = self._live_feed_scroll_target
+
         self._render_feed_positions()
-        self._ensure_feed_anim()
+        if not self._reduced_motion:
+            self._ensure_feed_anim()
 
     def _feed_natural_layout(self):
         """Bottoms of each settled block and the overall content bottom at
@@ -977,11 +1230,10 @@ class SubtitleWindow(tk.Toplevel):
         cx = self.canvas_width / 2
         scroll = self._live_feed_scroll
 
-        last = len(self.subtitle_stack) - 1
-        for i, (block, natural_bottom) in enumerate(
-            zip(self.subtitle_stack, bottoms, strict=True)
+        for block, natural_bottom in zip(
+            self.subtitle_stack, bottoms, strict=True
         ):
-            fill = self._primary_text if i == last else self._secondary_text
+            fill = self._translation_fill()
             if block.line_items:
                 # Multi-row block: bottom row anchors the block, the rows
                 # above re-chain at the tight ink-aware distance.
@@ -1015,7 +1267,13 @@ class SubtitleWindow(tk.Toplevel):
         running and there's a gap left to close."""
         if self._feed_anim_job is not None:
             return
-        if self._subtitle_mode != SUBTITLE_MODE_REALTIME:
+        if (
+            self._destroying
+            or self._is_hidden
+            or self._stopped_hint
+            or self._reduced_motion
+            or self._subtitle_mode != SUBTITLE_MODE_REALTIME
+        ):
             return
         if self._live_feed_scroll_target - self._live_feed_scroll < LIVE_FEED_ANIM_SNAP_PX:
             return
@@ -1026,7 +1284,13 @@ class SubtitleWindow(tk.Toplevel):
     def _step_feed_anim(self):
         """One eased frame of the top-down feed scroll toward its target."""
         self._feed_anim_job = None
-        if self._subtitle_mode != SUBTITLE_MODE_REALTIME:
+        if (
+            self._destroying
+            or self._is_hidden
+            or self._stopped_hint
+            or self._reduced_motion
+            or self._subtitle_mode != SUBTITLE_MODE_REALTIME
+        ):
             return
         gap = self._live_feed_scroll_target - self._live_feed_scroll
         if gap <= LIVE_FEED_ANIM_SNAP_PX:
@@ -1155,9 +1419,8 @@ class SubtitleWindow(tk.Toplevel):
     def set_subtitle_mode(self, mode: str):
         """Set subtitle display mode: realtime, continuous or static."""
         # Stop any running animation
-        if self._scroll_animation_id:
-            self.after_cancel(self._scroll_animation_id)
-            self._scroll_animation_id = None
+        self._cancel_after_job("_continuous_start_job")
+        self._cancel_after_job("_scroll_animation_id")
 
         old_mode = self._subtitle_mode
         self._subtitle_mode = mode
@@ -1173,7 +1436,7 @@ class SubtitleWindow(tk.Toplevel):
             self._apply_opaque_mode()
 
         # Start continuous scroll animation if needed
-        if mode == SUBTITLE_MODE_CONTINUOUS:
+        if mode == SUBTITLE_MODE_CONTINUOUS and not self._stopped_hint:
             self._start_continuous_scroll()
 
         # Recalculate margin since static mode uses a tighter footer gap
@@ -1199,6 +1462,52 @@ class SubtitleWindow(tk.Toplevel):
                         self.canvas.delete(group_text_id)
                     if box_id:
                         self.canvas.delete(box_id)
+
+    @staticmethod
+    def _block_text_ids(block: _SubtitleBlock) -> list[int]:
+        """Return each text item in a block exactly once."""
+        ids: list[int] = []
+        seen: set[int] = set()
+        for item_id, _box_id in block.line_items or [(block.text_id, None)]:
+            if item_id and item_id not in seen:
+                ids.append(item_id)
+                seen.add(item_id)
+        for item_id, _box_id in block.source_items or []:
+            if item_id and item_id not in seen:
+                ids.append(item_id)
+                seen.add(item_id)
+        return ids
+
+    def _block_bbox(self, block: _SubtitleBlock) -> tuple[int, int, int, int] | None:
+        """Bounding box of all source and translation text in one block."""
+        boxes = [
+            bbox
+            for item_id in self._block_text_ids(block)
+            if (bbox := self.canvas.bbox(item_id)) is not None
+        ]
+        if not boxes:
+            return None
+        return (
+            min(box[0] for box in boxes),
+            min(box[1] for box in boxes),
+            max(box[2] for box in boxes),
+            max(box[3] for box in boxes),
+        )
+
+    def _move_block(self, block: _SubtitleBlock, dy: float) -> None:
+        """Move every text/background item belonging to a block vertically."""
+        moved: set[int] = set()
+        for group in (block.line_items or [(block.text_id, None)], block.source_items or []):
+            for text_id, box_id in group:
+                for item_id in (text_id, box_id):
+                    if item_id and item_id not in moved:
+                        self.canvas.move(item_id, 0, dy)
+                        moved.add(item_id)
+
+    def _move_block_to_top(self, block: _SubtitleBlock, top: float) -> None:
+        bbox = self._block_bbox(block)
+        if bbox is not None:
+            self._move_block(block, top - bbox[1])
 
     def _measure_block_height(self, text_id, line_items, source_items) -> int:
         """Total pixel height of a subtitle block (source + translation)."""
@@ -1282,9 +1591,7 @@ class SubtitleWindow(tk.Toplevel):
         for block in self.subtitle_stack:
             self._delete_item(block)
         self.subtitle_stack.clear()
-        if self._feed_anim_job is not None:
-            self.after_cancel(self._feed_anim_job)
-            self._feed_anim_job = None
+        self._cancel_after_job("_feed_anim_job")
         self._live_feed_scroll = 0.0
         self._live_feed_scroll_target = 0.0
 
@@ -1301,6 +1608,9 @@ class SubtitleWindow(tk.Toplevel):
         (which uses Windows Graphics Capture) also sees a fully transparent
         window instead of a frozen last frame.
         """
+        self._is_hidden = True
+        self._cancel_animation_jobs()
+
         # 1. Remove all subtitle text from the canvas (incl. the live line)
         self._clear_all_subtitles()
         self._live_text = ""
@@ -1328,6 +1638,7 @@ class SubtitleWindow(tk.Toplevel):
 
     def show(self):
         """Restore the window to full visibility (reverses hide())."""
+        self._is_hidden = False
         if sys.platform == "win32":
             try:
                 self.wm_attributes("-transparentcolor", "")
@@ -1345,6 +1656,8 @@ class SubtitleWindow(tk.Toplevel):
         else:
             self._refresh_stopped_hint()
         self._render_announcement()
+        if self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS and not self._stopped_hint:
+            self._start_continuous_scroll()
 
     def _rounded_rect_points(
         self, x1: float, y1: float, x2: float, y2: float, radius: float
@@ -1396,33 +1709,57 @@ class SubtitleWindow(tk.Toplevel):
 
     def _create_line_background(self, bbox: tuple[int, int, int, int]) -> int:
         """Create a tight dark background strip behind one rendered line."""
+        padding_y = self._static_card_padding_y()
         x1 = bbox[0] - self._box_padding_x
-        y1 = bbox[1] - self._box_padding_y
+        y1 = bbox[1] - padding_y
         x2 = bbox[2] + self._box_padding_x
-        y2 = bbox[3] + self._box_padding_y
+        y2 = bbox[3] + padding_y
         return self.canvas.create_polygon(
             self._rounded_rect_points(x1, y1, x2, y2, self._box_radius),
             smooth=True,
             splinesteps=18,
             fill=self._card_fill,
-            outline="",
+            outline=self._card_outline,
+            width=1,
         )
 
     def _update_line_background(self, box_id: int, bbox: tuple[int, int, int, int]):
         """Resize a rounded line background after font or position changes."""
+        padding_y = self._static_card_padding_y()
         x1 = bbox[0] - self._box_padding_x
-        y1 = bbox[1] - self._box_padding_y
+        y1 = bbox[1] - padding_y
         x2 = bbox[2] + self._box_padding_x
-        y2 = bbox[3] + self._box_padding_y
+        y2 = bbox[3] + padding_y
         self.canvas.itemconfig(
             box_id,
             fill=self._card_fill,
-            outline="",
+            outline=self._card_outline,
+            width=1,
         )
         self.canvas.coords(
             box_id,
             *self._rounded_rect_points(x1, y1, x2, y2, self._box_radius),
         )
+
+    def _static_spacing_token(self, normal: int, minimum: int) -> int:
+        """Scale one vertical token only for unusually shallow static surfaces."""
+        if getattr(self, "_subtitle_mode", None) != SUBTITLE_MODE_STATIC:
+            return normal
+        height = max(1, int(getattr(self, "canvas_height", STATIC_COMPACT_LAYOUT_HEIGHT)))
+        scale = min(1.0, height / STATIC_COMPACT_LAYOUT_HEIGHT)
+        return max(minimum, min(normal, round(normal * scale)))
+
+    def _static_card_padding_y(self) -> int:
+        return self._static_spacing_token(self._box_padding_y, 2)
+
+    def _static_line_spacing(self) -> int:
+        return self._static_spacing_token(self._line_gap, 2)
+
+    def _static_pair_spacing(self) -> int:
+        return self._static_spacing_token(self._pair_gap, 1)
+
+    def _static_top_margin(self) -> int:
+        return self._static_spacing_token(16, 2)
 
     def _wrap_text_to_lines(self, text: str, max_width: int, font=None) -> list[str]:
         """Split text into rendered lines that fit within max_width pixels.
@@ -1469,19 +1806,104 @@ class SubtitleWindow(tk.Toplevel):
 
         return lines if lines else [shaped_text]
 
+    def _static_pair_height(
+        self,
+        text: str,
+        source: str,
+        translation_font,
+        source_font,
+    ) -> int:
+        """Estimate the vertical ink/card extent of one static subtitle pair."""
+        import tkinter.font as tkfont
+
+        max_width = max(1, self.canvas_width - 140)
+        line_gap = self._static_line_spacing()
+        pair_gap = self._static_pair_spacing()
+        translation_lines = self._wrap_text_to_lines(
+            text, max_width, translation_font
+        )
+        translation_line_height = tkfont.Font(font=translation_font).metrics(
+            "linespace"
+        )
+        height = (
+            len(translation_lines) * translation_line_height
+            + max(0, len(translation_lines) - 1) * line_gap
+        )
+        if source:
+            source_lines = self._wrap_text_to_lines(source, max_width, source_font)
+            source_line_height = tkfont.Font(font=source_font).metrics("linespace")
+            height += (
+                pair_gap
+                + len(source_lines) * source_line_height
+                + max(0, len(source_lines) - 1) * line_gap
+            )
+        # Only the outermost card padding expands the pair's total extent;
+        # neighbouring line cards deliberately sit close together.
+        return height + (2 * self._static_card_padding_y()) + (
+            2 * STATIC_CARD_OUTLINE_ALLOWANCE
+        )
+
+    def _static_fonts_for_content(self, text: str, source: str):
+        """Preserve the configured size ratio while fitting a static pair.
+
+        Static mode cannot scroll. Exceptionally long bilingual utterances are
+        therefore reduced only as much as needed to keep every line readable
+        between the top margin and footer. The operator's configured sizes are
+        untouched and apply again to the next shorter block.
+        """
+        translation_size = self._current_font_size
+        source_size = self._current_source_font_size
+        available_height = max(
+            1,
+            self.canvas_height - self.margin_bottom - self._static_top_margin(),
+        )
+
+        while True:
+            translation_font = (self._font_family, translation_size, "bold")
+            source_font = (
+                (self._font_family, source_size, "bold")
+                if _ARABIC_ANY_RE.search(source)
+                else (self._slant_font_family, source_size, "italic")
+            )
+            required_height = self._static_pair_height(
+                text, source, translation_font, source_font
+            )
+            if required_height <= available_height or (
+                translation_size <= STATIC_MIN_FIT_FONT_SIZE
+                and source_size <= STATIC_MIN_FIT_FONT_SIZE
+            ):
+                return translation_font, source_font
+
+            scale = max(0.5, min(0.92, available_height / required_height))
+            next_translation = max(
+                STATIC_MIN_FIT_FONT_SIZE, int(translation_size * scale)
+            )
+            next_source = max(STATIC_MIN_FIT_FONT_SIZE, int(source_size * scale))
+            if (
+                next_translation == translation_size
+                and translation_size > STATIC_MIN_FIT_FONT_SIZE
+            ):
+                next_translation -= 1
+            if next_source == source_size and source_size > STATIC_MIN_FIT_FONT_SIZE:
+                next_source -= 1
+            translation_size, source_size = next_translation, next_source
+
     def _create_outlined_text(
         self, x: float, y: float, text: str, font=None, fill=None
     ) -> tuple:
         """Create per-line subtitle cards for the static display mode."""
         font = font or self.font
-        fill = fill or self._primary_text
-        max_width = self.canvas.winfo_width() - 140
+        fill = fill or self._translation_fill()
+        # Use the maintained size rather than winfo_width(): immediately after
+        # a native monitor/height resize Tk can still report the old surface.
+        max_width = self.canvas_width - 140
         lines = self._wrap_text_to_lines(text, max_width, font)
 
         import tkinter.font as tkfont
 
         font_obj = tkfont.Font(font=font)
         line_height = font_obj.metrics("linespace")
+        line_gap = self._static_line_spacing()
         line_items = []
         current_y = y
 
@@ -1505,38 +1927,58 @@ class SubtitleWindow(tk.Toplevel):
                 box_id = None
 
             line_items.append((text_id, box_id))
-            current_y -= line_height + self._line_gap
+            current_y -= line_height + line_gap
 
         line_items.reverse()
         main_text_id = line_items[-1][0]
 
         return main_text_id, line_items
 
-    def _refresh_subtitles(self):
-        """Update font for all existing subtitles."""
-        for block in self.subtitle_stack:
+    def _refresh_subtitles(self, *, reflow: bool = False):
+        """Refresh existing subtitles after a visual change.
+
+        A font-size change must rebuild every block from its logical source so
+        wrapping is recalculated. Merely applying a larger font to the old
+        canvas rows makes a formerly fitting line extend beyond both screen
+        edges. Theme-only refreshes retain the cheaper in-place repaint.
+        """
+        # A few lifecycle paths are deliberately exercised with a minimal
+        # object harness before the canvas stack has been initialised. Treat
+        # that state like an empty surface while still refreshing its layout.
+        blocks = getattr(self, "subtitle_stack", ())
+        if reflow and blocks:
+            self._reflow_subtitle_blocks()
+            return
+
+        for block in blocks:
             if block.line_items:
                 for line_text_id, box_id in block.line_items:
                     if line_text_id:
-                        self.canvas.itemconfig(line_text_id, font=self.font)
+                        self.canvas.itemconfig(
+                            line_text_id,
+                            fill=self._translation_fill(),
+                        )
                     if box_id:
                         bbox = self.canvas.bbox(line_text_id)
                         if bbox:
                             self._update_line_background(box_id, bbox)
             else:
-                self.canvas.itemconfig(block.text_id, font=self.font)
+                self.canvas.itemconfig(
+                    block.text_id,
+                    fill=self._translation_fill(),
+                )
             if block.source_items:
                 for source_id, box_id in block.source_items:
-                    rendered = self.canvas.itemcget(source_id, "text")
                     self.canvas.itemconfig(
-                        source_id, font=self._source_font_for(rendered)
+                        source_id,
+                        fill=self._source_fill(),
                     )
                     if box_id:
                         bbox = self.canvas.bbox(source_id)
                         if bbox:
                             self._update_line_background(box_id, bbox)
 
-        for block in self.subtitle_stack:
+        for block in blocks:
             if block.line_items and self._subtitle_mode == SUBTITLE_MODE_REALTIME:
                 # Multi-row Realtime blocks: re-chain the rows with the new
                 # font BEFORE measuring — their height is position-dependent.
@@ -1547,6 +1989,98 @@ class SubtitleWindow(tk.Toplevel):
         self._reposition_subtitles()
         # Redraw the live line with the new font/theme colors
         self._render_live_line()
+
+    def _reflow_subtitle_blocks(self):
+        """Rebuild visible blocks for the current font and settle their layout.
+
+        Realtime scrolling is intentionally snapped after this explicit user
+        action. Easing from the old geometry would leave the newly enlarged
+        live/newest text below the footer limit for several frames.
+        """
+        continuous_anchor_top = None
+        if self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS and self.subtitle_stack:
+            anchor_bbox = self._block_bbox(self.subtitle_stack[0])
+            if anchor_bbox is not None:
+                continuous_anchor_top = float(anchor_bbox[1])
+        entries = [
+            (block.logical_text, block.logical_source)
+            for block in self.subtitle_stack
+            if block.logical_text
+        ]
+        if not entries or len(entries) != len(self.subtitle_stack):
+            # Compatibility guard for synthetic/legacy blocks that predate the
+            # logical fields: keep the old in-place behavior instead of erasing
+            # content we cannot safely reconstruct (especially shaped RTL).
+            self._refresh_subtitles(reflow=False)
+            return
+
+        self._cancel_after_job("_feed_anim_job")
+        for block in self.subtitle_stack:
+            self._delete_item(block)
+        self.subtitle_stack.clear()
+        self._live_feed_scroll = 0.0
+        self._live_feed_scroll_target = 0.0
+
+        for text, source in entries:
+            self._add_subtitle_block(
+                text,
+                source,
+                defer_layout=True,
+                refresh_geometry=False,
+            )
+
+        if self._subtitle_mode == SUBTITLE_MODE_REALTIME:
+            # Recreate/re-wrap the interim line first so it participates in the
+            # final content height, then place everything at the visible limit.
+            self._render_live_line()
+            self._settle_live_feed_after_reflow()
+        elif self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
+            self._layout_continuous_after_reflow(continuous_anchor_top)
+            self._render_live_line()
+        else:
+            self._reposition_subtitles()
+            self._render_live_line()
+        self._raise_footer()
+
+    def _layout_continuous_after_reflow(self, anchor_top: float | None) -> None:
+        """Rebuild the ticker downward without consuming its queued backlog.
+
+        The first block keeps the same top edge/read progress. Recomputed block
+        heights then push every not-yet-seen block farther down in queue order,
+        instead of anchoring the newest block and throwing older rows above the
+        viewport.
+        """
+        if not self.subtitle_stack:
+            return
+        first_bbox = self._block_bbox(self.subtitle_stack[0])
+        if first_bbox is None:
+            return
+        if anchor_top is None:
+            visible_bottom = self.canvas_height - self.margin_bottom
+            anchor_top = max(16.0, visible_bottom - (first_bbox[3] - first_bbox[1]))
+
+        next_top = anchor_top
+        for block in self.subtitle_stack:
+            self._move_block_to_top(block, next_top)
+            bbox = self._block_bbox(block)
+            if bbox is None:
+                continue
+            block.height = bbox[3] - bbox[1]
+            next_top = bbox[3] + self.line_spacing
+
+    def _settle_live_feed_after_reflow(self):
+        """Bottom-clamp Realtime content immediately after a font reflow."""
+        self._cancel_after_job("_feed_anim_job")
+        _bottoms, content_bottom = self._feed_natural_layout()
+        if content_bottom is None:
+            self._live_feed_scroll = 0.0
+            self._live_feed_scroll_target = 0.0
+            return
+        limit = self.canvas_height - self.margin_bottom
+        settled_scroll = max(0.0, content_bottom - limit)
+        self._live_feed_scroll = settled_scroll
+        self._live_feed_scroll_target = settled_scroll
+        self._render_feed_positions()
 
     def _monitor_work_area(self, mon) -> tuple[int, int, int, int]:
         """Physical (x, y, w, h) work area — the monitor minus the taskbar —
@@ -1580,6 +2114,11 @@ class SubtitleWindow(tk.Toplevel):
             # truncated and GetMonitorInfo then fails.
             user32.MonitorFromPoint.restype = ctypes.c_void_p
             user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+            user32.GetMonitorInfoW.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(_MONITORINFO),
+            ]
+            user32.GetMonitorInfoW.restype = wintypes.BOOL
             MONITOR_DEFAULTTONEAREST = 2
             pt = wintypes.POINT(mon.x + mon.width // 2, mon.y + mon.height // 2)
             hmon = user32.MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST)
@@ -1618,6 +2157,8 @@ class SubtitleWindow(tk.Toplevel):
         else:
             # Partial height - anchor at the bottom of the base rect
             height = int(base_h * self._window_height_percent / 100)
+            if getattr(self, "_show_footer", False):
+                height = max(height, min(base_h, MIN_FOOTER_SURFACE_HEIGHT))
             y = base_y + (base_h - height)
             x, width = base_x, base_w
         # Size just applied to the window. winfo_width/height lag the native
@@ -1629,6 +2170,7 @@ class SubtitleWindow(tk.Toplevel):
         if sys.platform == "win32" and self._hwnd:
             try:
                 import ctypes
+                from ctypes import wintypes
 
                 SWP_NOZORDER = 0x0004
                 SWP_FRAMECHANGED = 0x0020
@@ -1639,7 +2181,18 @@ class SubtitleWindow(tk.Toplevel):
                     self.update()
 
                 # Use SetWindowPos for exact positioning (bypasses frame adjustments)
-                ctypes.windll.user32.SetWindowPos(
+                user32 = ctypes.windll.user32
+                user32.SetWindowPos.argtypes = [
+                    wintypes.HWND,
+                    wintypes.HWND,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    wintypes.UINT,
+                ]
+                user32.SetWindowPos.restype = wintypes.BOOL
+                positioned = user32.SetWindowPos(
                     self._hwnd,
                     None,
                     x,
@@ -1648,6 +2201,8 @@ class SubtitleWindow(tk.Toplevel):
                     height,
                     SWP_NOZORDER | SWP_FRAMECHANGED,
                 )
+                if not positioned:
+                    raise ctypes.WinError()
 
                 if force_redraw:
                     self.deiconify()
@@ -1697,17 +2252,26 @@ class SubtitleWindow(tk.Toplevel):
         which stays topmost, never covers it); on = full monitor, above the
         taskbar. _set_screen_position re-applies -topmost at the end, so it
         covers both. (The control panel's own topmost is handled in AppGUI.)"""
+        self._cancel_animation_jobs()
         self._always_on_top = enabled
         self._set_screen_position(force_redraw=True)
         self.canvas_width, self.canvas_height = self._applied_size
         self._update_font()
         self._update_footer_visibility()
-        self._reposition_subtitles()
-        self._render_live_line()
+        self._refresh_subtitles(reflow=True)
         self._render_announcement()
+        if not self._stopped_hint:
+            if self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
+                self._start_continuous_scroll()
+            elif self._subtitle_mode == SUBTITLE_MODE_REALTIME:
+                self._ensure_feed_anim()
 
     def set_monitor(self, monitor_index: int):
         """Change the monitor where the subtitle window is displayed."""
+        # A monitor switch can cross DPI domains and rebuild the native window
+        # surface.  Never let callbacks created for the old surface fire into
+        # the new one; the active mode is resumed after the redraw below.
+        self._cancel_animation_jobs()
         self._monitor_index = monitor_index
 
         # Reposition window to the new monitor (winfo lags the native
@@ -1717,14 +2281,19 @@ class SubtitleWindow(tk.Toplevel):
         self.canvas_width, self.canvas_height = self._applied_size
         self._update_font()
         self._update_footer_visibility()  # pill is drawn in canvas coords
-        self._reposition_subtitles()
-        self._render_live_line()
+        self._refresh_subtitles(reflow=True)
         self._render_announcement()
+        if not self._stopped_hint:
+            if self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
+                self._start_continuous_scroll()
+            elif self._subtitle_mode == SUBTITLE_MODE_REALTIME:
+                self._ensure_feed_anim()
 
     def set_window_height_percent(self, percent: int):
         """Set window height as percentage of screen height (5-100)."""
         self._window_height_percent = max(5, min(100, percent))
         # Use force_redraw to prevent visual glitches during resize
+        old_width = self.canvas_width
         old_height = self.canvas_height
         self._set_screen_position(force_redraw=True)
         # The canvas fills the window (relwidth/relheight=1), so take the
@@ -1746,14 +2315,25 @@ class SubtitleWindow(tk.Toplevel):
             if delta:
                 self._live_feed_scroll -= delta
                 self._live_feed_scroll_target -= delta
+        elif self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
+            # The window is bottom-anchored: growing it moves the canvas top
+            # upward. Shift ticker items by the same delta so their physical
+            # screen position/read progress does not jump.
+            delta = self.canvas_height - old_height
+            if delta:
+                for block in self.subtitle_stack:
+                    self._move_block(block, delta)
         self._update_font()
         # The pill is drawn at fixed canvas coordinates near the bottom; the
         # canvas origin (window top-left) just moved, so redraw it at the new
         # canvas_height — otherwise it rides up on grow and sinks below the
         # screen on shrink.
         self._update_footer_visibility()
-        self._reposition_subtitles()
-        self._render_live_line()
+        if self.canvas_width != old_width or self._subtitle_mode == SUBTITLE_MODE_STATIC:
+            self._refresh_subtitles(reflow=True)
+        elif self._subtitle_mode == SUBTITLE_MODE_REALTIME:
+            self._reposition_subtitles()
+            self._render_live_line()
         self._render_announcement()
         # Bring window to front after resize
         self.lift()
@@ -1779,13 +2359,21 @@ class SubtitleWindow(tk.Toplevel):
             return
         self._add_subtitle_block(text, source_text)
 
-    def _add_subtitle_block(self, text: str, source_text: str | None = None):
+    def _add_subtitle_block(
+        self,
+        text: str,
+        source_text: str | None = None,
+        *,
+        defer_layout: bool = False,
+        refresh_geometry: bool = True,
+    ):
         if not (text or "").strip():
             return
 
-        self.update_idletasks()
-        self.canvas_width = self.canvas.winfo_width()
-        self.canvas_height = self.canvas.winfo_height()
+        if refresh_geometry:
+            self.update_idletasks()
+            self.canvas_width = self.canvas.winfo_width()
+            self.canvas_height = self.canvas.winfo_height()
 
         if self._subtitle_mode == SUBTITLE_MODE_STATIC:
             self._clear_all_subtitles()
@@ -1801,27 +2389,38 @@ class SubtitleWindow(tk.Toplevel):
         use_outline = self._subtitle_mode == SUBTITLE_MODE_STATIC
 
         if use_outline:
+            translation_font, fitted_source_font = self._static_fonts_for_content(
+                text, source
+            )
             text_id, line_items = self._create_outlined_text(
                 self.canvas_width / 2,
                 self.canvas_height - 4,
                 text=text,
+                font=translation_font,
             )
             source_items = None
             if source:
                 top_bbox = self.canvas.bbox(line_items[0][0])
                 source_y = (
                     top_bbox[1] if top_bbox else self.canvas_height - 80
-                ) - self._pair_gap
+                ) - self._static_pair_spacing()
                 _, source_items = self._create_outlined_text(
                     self.canvas_width / 2,
                     source_y,
                     text=source,
-                    font=self._source_font_for(source),
-                    fill=self._secondary_text,
+                    font=fitted_source_font,
+                    fill=self._source_fill(),
                 )
             text_height = self._measure_block_height(text_id, line_items, source_items)
             self.subtitle_stack.append(
-                _SubtitleBlock(text_id, text_height, line_items, source_items)
+                _SubtitleBlock(
+                    text_id=text_id,
+                    height=text_height,
+                    line_items=line_items,
+                    source_items=source_items,
+                    logical_text=text,
+                    logical_source=source or None,
+                )
             )
         else:
             # Use the same manual wrapping so Arabic is reshaped correctly
@@ -1840,7 +2439,7 @@ class SubtitleWindow(tk.Toplevel):
                             self.canvas_width / 2,
                             self.canvas_height,
                             text=line_text,
-                            fill=self._primary_text,
+                            fill=self._translation_fill(),
                             font=self.font,
                             anchor="s",
                             justify="center",
@@ -1856,7 +2455,7 @@ class SubtitleWindow(tk.Toplevel):
                     self.canvas_width / 2,
                     self.canvas_height,
                     text="\n".join(lines),
-                    fill=self._primary_text,
+                    fill=self._translation_fill(),
                     font=self.font,
                     anchor="s",
                     justify="center",
@@ -1871,7 +2470,7 @@ class SubtitleWindow(tk.Toplevel):
                     self.canvas_width / 2,
                     self.canvas_height,
                     text="\n".join(source_lines),
-                    fill=self._secondary_text,
+                    fill=self._source_fill(),
                     font=source_font,
                     anchor="s",
                     justify="center",
@@ -1882,8 +2481,18 @@ class SubtitleWindow(tk.Toplevel):
                 )
             text_height = self._measure_block_height(text_id, line_items, source_items)
             self.subtitle_stack.append(
-                _SubtitleBlock(text_id, text_height, line_items, source_items)
+                _SubtitleBlock(
+                    text_id=text_id,
+                    height=text_height,
+                    line_items=line_items,
+                    source_items=source_items,
+                    logical_text=text,
+                    logical_source=source or None,
+                )
             )
+
+        if defer_layout:
+            return
 
         if self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
             lowest_y = self.canvas_height - self.margin_bottom
@@ -1897,6 +2506,14 @@ class SubtitleWindow(tk.Toplevel):
 
             self.canvas.coords(text_id, self.canvas_width / 2, lowest_y)
             self._position_source_above(text_id, source_items)
+            if len(self.subtitle_stack) == 1:
+                # A block taller than the available viewport must start with
+                # its first line visible. Its lower rows can then enter in
+                # normal reading order as the ticker scrolls upward.
+                block = self.subtitle_stack[-1]
+                bbox = self._block_bbox(block)
+                if bbox is not None and bbox[1] < 16:
+                    self._move_block(block, 16 - bbox[1])
         else:
             self._reposition_subtitles()
 
@@ -1912,11 +2529,27 @@ class SubtitleWindow(tk.Toplevel):
 
     def _start_continuous_scroll(self):
         """Start the continuous upward scroll animation."""
+        self._continuous_start_job = None
+        if (
+            self._destroying
+            or self._is_hidden
+            or self._stopped_hint
+            or self._subtitle_mode != SUBTITLE_MODE_CONTINUOUS
+            or self._scroll_animation_id is not None
+        ):
+            return
         self._animate_continuous_scroll()
 
     def _animate_continuous_scroll(self):
         """Animation frame for continuous scroll mode."""
-        if self._subtitle_mode != SUBTITLE_MODE_CONTINUOUS:
+        # The callback currently executing is no longer cancellable.
+        self._scroll_animation_id = None
+        if (
+            self._destroying
+            or self._is_hidden
+            or self._stopped_hint
+            or self._subtitle_mode != SUBTITLE_MODE_CONTINUOUS
+        ):
             return
 
         current_speed = self._current_scroll_speed()
@@ -1958,12 +2591,17 @@ class SubtitleWindow(tk.Toplevel):
         import tkinter.font as tkfont
 
         current_y = self.canvas_height - self.margin_bottom
+        line_gap = self._static_line_spacing()
+        pair_gap = self._static_pair_spacing()
 
         for i in range(len(self.subtitle_stack) - 1, -1, -1):
             block = self.subtitle_stack[i]
 
             if block.line_items:
-                font_obj = tkfont.Font(font=self.font)
+                translation_font = self.canvas.itemcget(
+                    block.line_items[-1][0], "font"
+                )
+                font_obj = tkfont.Font(font=translation_font)
                 line_height = font_obj.metrics("linespace")
                 line_y = current_y
 
@@ -1975,32 +2613,43 @@ class SubtitleWindow(tk.Toplevel):
                         if bbox:
                             self._update_line_background(box_id, bbox)
 
-                    if i == len(self.subtitle_stack) - 1:
-                        self.canvas.itemconfig(line_text_id, fill=self._primary_text)
-                    else:
-                        self.canvas.itemconfig(line_text_id, fill=self._secondary_text)
+                    self.canvas.itemconfig(
+                        line_text_id, fill=self._translation_fill()
+                    )
 
-                    line_y -= line_height + self._line_gap
+                    line_y -= line_height + line_gap
 
                 if block.source_items:
-                    # Source line cards continue upward above the translation
-                    source_font_obj = tkfont.Font(font=self.source_font)
+                    # Anchor the bottom source row to the actual top ink bound
+                    # of the translation. This keeps the intended bilingual
+                    # pair gap even when compact static spacing is active.
+                    top_translation_bbox = self.canvas.bbox(block.line_items[0][0])
+                    source_y = (
+                        top_translation_bbox[1]
+                        if top_translation_bbox is not None
+                        else line_y
+                    ) - pair_gap
+                    source_font = self.canvas.itemcget(
+                        block.source_items[-1][0], "font"
+                    )
+                    source_font_obj = tkfont.Font(font=source_font)
                     source_line_height = source_font_obj.metrics("linespace")
                     for source_id, box_id in reversed(block.source_items):
-                        self.canvas.coords(source_id, self.canvas_width / 2, line_y)
+                        self.canvas.coords(
+                            source_id, self.canvas_width / 2, source_y
+                        )
                         if box_id:
                             bbox = self.canvas.bbox(source_id)
                             if bbox:
                                 self._update_line_background(box_id, bbox)
-                        self.canvas.itemconfig(source_id, fill=self._secondary_text)
-                        line_y -= source_line_height + self._line_gap
+                        self.canvas.itemconfig(source_id, fill=self._source_fill())
+                        source_y -= source_line_height + line_gap
             else:
                 self.canvas.coords(block.text_id, self.canvas_width / 2, current_y)
                 self._position_source_above(block.text_id, block.source_items)
 
-                if i == len(self.subtitle_stack) - 1:
-                    self.canvas.itemconfig(block.text_id, fill=self._primary_text)
-                else:
-                    self.canvas.itemconfig(block.text_id, fill=self._secondary_text)
+                self.canvas.itemconfig(
+                    block.text_id, fill=self._translation_fill()
+                )
 
             current_y -= block.height + self.line_spacing

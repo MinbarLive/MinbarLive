@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from providers.gemini.client import get_client
+from utils.cost_tracking import record_gemini_response
 
 
 class GeminiTranslationProvider:
@@ -38,4 +39,5 @@ class GeminiTranslationProvider:
             contents=user_prompt,
             config=types.GenerateContentConfig(**config_kwargs),
         )
+        record_gemini_response(resp, model=model, role="translation")
         return (resp.text or "").strip()

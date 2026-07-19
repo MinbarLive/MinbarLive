@@ -27,10 +27,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import uuid
 from collections.abc import Callable
 
 from config import FS, STREAMING_GEMINI_SILENCE_MS
 from providers.gemini.client import get_live_client
+from utils.cost_tracking import gemini_usage_values, record_live_usage_snapshot
 from utils.logging import log
 
 DEFAULT_REALTIME_MODEL = "gemini-2.5-flash-native-audio-latest"
@@ -123,6 +125,10 @@ class GeminiLiveTranscriptionProvider:
         on_error: Callable[[Exception], None],
     ) -> GeminiLiveStreamHandle:
         handle = GeminiLiveStreamHandle()
+        # UsageMetadata is cumulative for one physical Live connection.  A
+        # reconnect gets a new id and is still aggregated into the same logical
+        # MinbarLive Start -> Stop cost session by the global tracker.
+        usage_stream_id = uuid.uuid4().hex
         if language:
             log(
                 f"Gemini Live auto-detects the spoken language — the '{language}' "
@@ -158,7 +164,18 @@ class GeminiLiveTranscriptionProvider:
                         got_any = False
                         async for message in session.receive():
                             got_any = True
-                            content = message.server_content
+                            metadata = getattr(message, "usage_metadata", None)
+                            if metadata is not None:
+                                record_live_usage_snapshot(
+                                    stream_id=usage_stream_id,
+                                    provider="gemini",
+                                    role="transcription",
+                                    model=model,
+                                    usage=gemini_usage_values(
+                                        metadata, role="transcription", live=True
+                                    ),
+                                )
+                            content = getattr(message, "server_content", None)
                             if content is None:
                                 continue
                             tx = content.input_transcription

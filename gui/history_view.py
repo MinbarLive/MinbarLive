@@ -12,11 +12,17 @@ close them (see AppGUI._apply_theme / _update_all_ui_texts).
 import os
 import queue
 import threading
+from datetime import datetime
 
 import customtkinter as ctk
 
 from gui.scaling import centered_position
 from providers import PROVIDER_CHOICES, has_usable_key
+from utils.cost_tracking import (
+    delete_cost_session,
+    format_usd,
+    list_cost_sessions,
+)
 from utils.history import (
     BatchRun,
     HistorySession,
@@ -59,7 +65,10 @@ class HistoryViewMixin:
         if self._history_win_exists():
             self._history_win.lift()
             self._history_win.focus()
-            self._switch_history_tab(initial_tab)
+            if initial_tab == self._history_active_tab:
+                self._render_history_tab()
+            else:
+                self._switch_history_tab(initial_tab)
             return
 
         win = ctk.CTkToplevel(self)
@@ -76,6 +85,7 @@ class HistoryViewMixin:
         self._history_selected_session = None
         self._history_selected_log = None
         self._history_selected_batch = None
+        self._history_selected_cost = None
         # Which format the batch preview currently shows ("srt"/"txt").
         self._history_batch_format: str | None = None
 
@@ -92,6 +102,7 @@ class HistoryViewMixin:
         tabs = (
             ("history", "history_tab_sessions", "History"),
             ("batch", "history_tab_batch", "Batch"),
+            ("costs", "history_tab_costs", "Costs"),
             ("logs", "history_tab_logs", "Log"),
         )
         for i, (tab, key, default) in enumerate(tabs):
@@ -250,6 +261,10 @@ class HistoryViewMixin:
         elif self._history_active_tab == "batch":
             self._history_summary_btn.pack(side="left", padx=(16, 6), pady=9)
             self._render_batch_list()
+        elif self._history_active_tab == "costs":
+            self._history_summary_btn.pack_forget()
+            self._close_summary_window()
+            self._render_cost_list()
         else:
             self._history_summary_btn.pack_forget()
             self._close_summary_window()
@@ -424,6 +439,52 @@ class HistoryViewMixin:
 
         self._show_batch_run(runs[0])
 
+    @staticmethod
+    def _local_datetime(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone()
+        except (TypeError, ValueError):
+            return None
+
+    def _cost_duration_seconds(self, session: dict) -> int:
+        start = self._local_datetime(session.get("started_at"))
+        end = self._local_datetime(session.get("ended_at")) or datetime.now().astimezone()
+        if start is None:
+            return 0
+        return max(0, int((end - start).total_seconds()))
+
+    def _render_cost_list(self) -> None:
+        sessions = list_cost_sessions()
+        self._history_cost_buttons = []
+        if not sessions:
+            self._history_selected_cost = None
+            self._show_history_empty()
+            return
+        for row, session in enumerate(sessions):
+            started = self._local_datetime(session.get("started_at"))
+            date_text = started.strftime("%d.%m.%Y · %H:%M") if started else "–"
+            provider_names = [
+                "OpenAI" if provider == "openai" else "Gemini" if provider == "gemini" else provider
+                for provider in session.get("providers", {})
+            ]
+            subtitle = (
+                f"{', '.join(provider_names) or '–'} · "
+                f"{self._format_duration(self._cost_duration_seconds(session))}"
+            )
+            amount = format_usd(session.get("total_cost_usd", "0"))
+            tag = f"≈ {amount}{'+' if not session.get('fully_priced', True) else ''}"
+            frame = self._add_history_row(
+                row,
+                title=date_text,
+                subtitle=subtitle,
+                on_click=lambda s=session: self._show_cost_session(s),
+                tag=tag,
+            )
+            self._history_cost_buttons.append((frame, session))
+        self._show_cost_session(sessions[0])
+
     def _set_history_text(self, text: str) -> None:
         tb = self._history_textbox
         tb.configure(state="normal")
@@ -434,6 +495,8 @@ class HistoryViewMixin:
     def _show_history_empty(self) -> None:
         if self._history_active_tab == "batch":
             msg = self.gui_texts.get("history_batch_empty", "No processed files yet")
+        elif self._history_active_tab == "costs":
+            msg = self.gui_texts.get("history_cost_empty", "No cost sessions yet")
         else:
             msg = self.gui_texts.get("history_empty", "No sessions recorded yet")
         self._set_history_text(msg)
@@ -454,6 +517,8 @@ class HistoryViewMixin:
         if self._history_active_tab == "batch":
             run = getattr(self, "_history_selected_batch", None)
             return (run.path, run.date) if run else None
+        if self._history_active_tab == "costs":
+            return None
         logf = getattr(self, "_history_selected_log", None)
         return (logf.path, logf.date) if logf else None
 
@@ -502,6 +567,97 @@ class HistoryViewMixin:
         self._render_batch_format_bar(available)
         self._set_history_text(self._batch_preview_text(run))
         self._set_history_actions_enabled(True)
+
+    def _show_cost_session(self, session: dict) -> None:
+        self._history_selected_cost = session
+        for frame, item in self._history_cost_buttons:
+            self._select_history_row(frame, item.get("id") == session.get("id"))
+
+        started = self._local_datetime(session.get("started_at"))
+        ended = self._local_datetime(session.get("ended_at"))
+        date_text = started.strftime("%d.%m.%Y · %H:%M:%S") if started else "–"
+        end_text = ended.strftime("%H:%M:%S") if ended else self.gui_texts.get(
+            "v3_live", "Live"
+        )
+        total = format_usd(session.get("total_cost_usd", "0"))
+        lines = [
+            self.gui_texts.get("history_cost_estimate", "Estimated provider costs"),
+            "",
+            f"{self.gui_texts.get('history_cost_date', 'Date')}: {date_text} – {end_text}",
+            f"{self.gui_texts.get('history_cost_duration', 'Duration')}: "
+            f"{self._format_duration(self._cost_duration_seconds(session))}",
+            f"{self.gui_texts.get('history_cost_total', 'Total')}: ≈ {total} USD"
+            f"{' +' if not session.get('fully_priced', True) else ''}",
+            "",
+        ]
+        role_names = {
+            "translation": self.gui_texts.get("section_translation", "Translation"),
+            "transcription": self.gui_texts.get("section_transcription", "Transcription"),
+            "embedding": self.gui_texts.get("history_cost_embedding", "Verse matching"),
+        }
+        for provider_id, provider in session.get("providers", {}).items():
+            provider_name = (
+                "OpenAI" if provider_id == "openai" else "Gemini" if provider_id == "gemini" else provider_id
+            )
+            provider_cost = format_usd(provider.get("cost_usd", "0"))
+            partial = not provider.get("fully_priced", True)
+            lines.append(
+                f"{provider_name} · ≈ {provider_cost}{' +' if partial else ''}"
+            )
+            for model, model_data in provider.get("models", {}).items():
+                roles = ", ".join(
+                    role_names.get(role, role) for role in model_data.get("roles", [])
+                )
+                model_cost = format_usd(model_data.get("cost_usd", "0"))
+                lines.append(f"  {model} · {roles} · ≈ {model_cost}")
+                usage = model_data.get("usage", {})
+                input_tokens = sum(
+                    int(usage.get(key, 0) or 0)
+                    for key in (
+                        "input_text_tokens",
+                        "cached_input_text_tokens",
+                        "input_audio_tokens",
+                        "cached_input_audio_tokens",
+                        "input_unknown_tokens",
+                    )
+                )
+                output_tokens = sum(
+                    int(usage.get(key, 0) or 0)
+                    for key in (
+                        "output_text_tokens",
+                        "output_audio_tokens",
+                        "output_unknown_tokens",
+                    )
+                )
+                duration = float(usage.get("duration_seconds", 0) or 0)
+                usage_bits = [
+                    self.gui_texts.get(
+                        "history_cost_tokens", "{input} input · {output} output tokens"
+                    ).format(input=f"{input_tokens:,}", output=f"{output_tokens:,}")
+                ]
+                if duration:
+                    usage_bits.append(f"{duration:.1f} s Audio")
+                if not model_data.get("fully_priced", True):
+                    usage_bits.append(
+                        self.gui_texts.get("history_cost_partial", "partly unpriced")
+                    )
+                lines.append(f"    {' · '.join(usage_bits)}")
+            lines.append("")
+
+        lines.extend(
+            (
+                self.gui_texts.get(
+                    "history_cost_notice",
+                    "Paid Standard USD list price; free tier, discounts and taxes can differ.",
+                ),
+                f"{self.gui_texts.get('history_cost_pricing_date', 'Pricing as of')}: "
+                f"{session.get('pricing_version', '–')}",
+            )
+        )
+        self._set_history_text("\n".join(lines))
+        self._set_history_actions_enabled(True)
+        if session.get("status") == "active":
+            self._history_delete_btn.configure(state="disabled")
 
     def _render_batch_format_bar(self, available: list[str]) -> None:
         """Show the SRT|TXT toggle only when a run offers both formats, and
@@ -571,6 +727,9 @@ class HistoryViewMixin:
         if self._history_active_tab == "batch":
             self._export_batch_current()
             return
+        if self._history_active_tab == "costs":
+            self._export_cost_current()
+            return
 
         target_info = self._current_history_target()
         if target_info is None:
@@ -599,6 +758,39 @@ class HistoryViewMixin:
             self._alert(
                 self.gui_texts.get("history_export", "Save…"),
                 str(e),
+                parent=parent,
+                danger=True,
+            )
+
+    def _export_cost_current(self) -> None:
+        from tkinter import filedialog
+
+        session = getattr(self, "_history_selected_cost", None)
+        if session is None:
+            return
+        text = self._history_textbox.get("1.0", "end").rstrip("\n")
+        started = self._local_datetime(session.get("started_at"))
+        stamp = started.strftime("%Y-%m-%d_%H%M") if started else "session"
+        parent = self._history_win if self._history_win_exists() else self
+        target = filedialog.asksaveasfilename(
+            parent=parent,
+            title=self.gui_texts.get("history_export", "Save…"),
+            defaultextension=".txt",
+            initialfile=f"MinbarLive_Kosten_{stamp}.txt",
+            filetypes=[
+                ("Text files", "*.txt"),
+                (self.gui_texts.get("batch_all_files", "All files"), "*.*"),
+            ],
+        )
+        if not target:
+            return
+        try:
+            with open(target, "w", encoding="utf-8-sig", newline="\n") as handle:
+                handle.write(text + "\n")
+        except OSError as exc:
+            self._alert(
+                self.gui_texts.get("history_export", "Save…"),
+                str(exc),
                 parent=parent,
                 danger=True,
             )
@@ -665,6 +857,9 @@ class HistoryViewMixin:
     def _on_history_delete(self) -> None:
         """Delete the selected item (with confirmation). Deleting a session
         also removes its saved-summary sidecar."""
+        if self._history_active_tab == "costs":
+            self._delete_cost_current()
+            return
         target_info = self._current_history_target()
         if target_info is None:
             return
@@ -700,6 +895,24 @@ class HistoryViewMixin:
             )
             return
         # Rebuild the active tab in place (keeps the tab selection)
+        self._render_history_tab()
+
+    def _delete_cost_current(self) -> None:
+        session = getattr(self, "_history_selected_cost", None)
+        if session is None or session.get("status") == "active":
+            return
+        parent = self._history_win if self._history_win_exists() else self
+        if not self._confirm(
+            self.gui_texts.get("history_delete", "Delete"),
+            self.gui_texts.get(
+                "history_cost_delete_confirm",
+                "Delete this cost record? This cannot be undone.",
+            ),
+            parent=parent,
+        ):
+            return
+        if not delete_cost_session(str(session.get("id", ""))):
+            return
         self._render_history_tab()
 
     # ── Session summary ("Summarise" in the history viewer) ──────────────────

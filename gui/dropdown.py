@@ -5,12 +5,16 @@ onboarding wizard (gui/onboarding.py) so the two look and behave
 identically. Extracted from app_gui.py.
 """
 
+import sys
 import time
 import tkinter as tk
 from collections.abc import Callable
 from typing import Any
 
 import customtkinter as ctk
+
+_ICON_FONT = "Segoe Fluent Icons" if sys.platform == "win32" else "Segoe UI Symbol"
+_CHEVRON_DOWN = "\ue70d" if sys.platform == "win32" else "▾"
 
 
 class CustomDropdown(ctk.CTkFrame):
@@ -94,6 +98,9 @@ class CustomDropdown(ctk.CTkFrame):
         self._enabled: bool = True
 
         self._build()
+        # Participate in the normal Tab order. CTkFrame does not expose
+        # ``takefocus`` as a styled option, but its underlying Tk frame does.
+        tk.Frame.configure(self, takefocus=True)
 
     # ── Internal layout ───────────────────────────────────────────────────
 
@@ -122,8 +129,8 @@ class CustomDropdown(ctk.CTkFrame):
 
         self._arrow = ctk.CTkLabel(
             self,
-            text="▾",
-            font=ctk.CTkFont(family="Segoe UI Symbol", size=16),
+            text=_CHEVRON_DOWN,
+            font=ctk.CTkFont(family=_ICON_FONT, size=16),
             text_color=self._text_color,
             fg_color="transparent",
             width=40,
@@ -132,6 +139,15 @@ class CustomDropdown(ctk.CTkFrame):
 
         for w in (self, self._value_label, self._sep, self._arrow):
             w.bind("<Button-1>", self._on_click, add="+")
+        for sequence in ("<Return>", "<space>", "<Alt-Down>"):
+            self.bind(sequence, self._on_key_toggle, add="+")
+        self.bind("<Down>", lambda event: self._on_key_step(event, 1), add="+")
+        self.bind("<Up>", lambda event: self._on_key_step(event, -1), add="+")
+        self.bind("<Home>", lambda event: self._on_key_edge(event, 0), add="+")
+        self.bind("<End>", lambda event: self._on_key_edge(event, -1), add="+")
+        self.bind("<Escape>", self._on_key_escape, add="+")
+        self.bind("<FocusIn>", self._on_keyboard_focus, add="+")
+        self.bind("<FocusOut>", self._on_keyboard_blur, add="+")
 
     # ── Global outside-click detection (installed once per app) ──────────
 
@@ -217,6 +233,7 @@ class CustomDropdown(ctk.CTkFrame):
     def _on_click(self, _event: "tk.Event[Any]") -> str:
         if not self._enabled:
             return "break"
+        self.focus_set()
         # If the window just gained OS focus, this click is the focus-restore
         # click.  Accept the focus but don't open/close the dropdown; the user
         # can click a second time to interact with it.
@@ -232,6 +249,49 @@ class CustomDropdown(ctk.CTkFrame):
         else:
             self._open()
         return "break"  # stop event propagation to parent widgets
+
+    def _on_key_toggle(self, _event: "tk.Event[Any] | None" = None) -> str:
+        """Open/close from Return, Space, or Alt+Down."""
+        if not self._enabled:
+            return "break"
+        if self._is_open:
+            self._close()
+        else:
+            self._open()
+        return "break"
+
+    def _on_key_step(self, _event: "tk.Event[Any] | None", delta: int) -> str:
+        """Choose the adjacent value with the arrow keys."""
+        if not self._enabled or not self._values:
+            return "break"
+        try:
+            index = self._values.index(self._current)
+        except ValueError:
+            index = 0
+        index = max(0, min(len(self._values) - 1, index + delta))
+        self._select(self._values[index])
+        self.focus_set()
+        return "break"
+
+    def _on_key_edge(self, _event: "tk.Event[Any] | None", index: int) -> str:
+        """Choose the first/last value with Home/End."""
+        if not self._enabled or not self._values:
+            return "break"
+        self._select(self._values[index])
+        self.focus_set()
+        return "break"
+
+    def _on_key_escape(self, _event: "tk.Event[Any] | None" = None) -> str:
+        self._close()
+        self.focus_set()
+        return "break"
+
+    def _on_keyboard_focus(self, _event: "tk.Event[Any]") -> None:
+        if self._enabled:
+            super().configure(border_color=self._drop_hover)
+
+    def _on_keyboard_blur(self, _event: "tk.Event[Any]") -> None:
+        super().configure(border_color=self._border_color)
 
     # ── Open popup ────────────────────────────────────────────────────────
 
@@ -310,17 +370,20 @@ class CustomDropdown(ctk.CTkFrame):
             ilbl.pack(fill="both", expand=True)
 
             def _enter(
-                e: "tk.Event[Any]", f: tk.Frame = ifrm, l: tk.Label = ilbl
+                e: "tk.Event[Any]", f: tk.Frame = ifrm, label: tk.Label = ilbl
             ) -> None:
                 f.configure(bg=self._drop_hover)
-                l.configure(bg=self._drop_hover)
+                label.configure(bg=self._drop_hover)
 
             def _leave(
-                e: "tk.Event[Any]", f: tk.Frame = ifrm, l: tk.Label = ilbl, v: str = val
+                e: "tk.Event[Any]",
+                f: tk.Frame = ifrm,
+                label: tk.Label = ilbl,
+                v: str = val,
             ) -> None:
                 _bg = self._drop_hover if v == self._current else self._drop_bg
                 f.configure(bg=_bg)
-                l.configure(bg=_bg)
+                label.configure(bg=_bg)
 
             def _click(e: "tk.Event[Any]", v: str = val) -> None:
                 self._select(v)

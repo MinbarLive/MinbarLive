@@ -18,6 +18,11 @@ from audio.capture import (
     reset_ring_buffer,
     write_samples_to_ring,
 )
+from audio.device_support import (
+    AudioInputError,
+    input_device_candidates,
+    input_stream_kwargs,
+)
 from audio.loopback import get_speaker as get_loopback_speaker
 from audio.vad import StreamNoiseGate, has_speech
 from audio.writer import async_write_audio, clear_write_queue, segment_writer
@@ -65,6 +70,11 @@ from utils.settings import (
     load_settings,
 )
 from utils.user_messages import classify_error, get_user_message
+
+
+INPUT_STREAM_START_TIMEOUT_SECONDS = 6.0
+INPUT_STREAM_OPEN_ATTEMPTS = 2
+INPUT_STREAM_RETRY_DELAY_SECONDS = 0.18
 
 
 class _StreamingUtteranceSession:
@@ -182,7 +192,9 @@ class AppController:
         self._input_stop_event = threading.Event()  # Separate stop for input stream
         self._input_thread: threading.Thread | None = None
         self._current_device: int | None = None
-        self._streaming_capture_rate: int = FS  # rate used by the current streaming input thread
+        self._streaming_capture_rate: int = (
+            FS  # rate used by the current streaming input thread
+        )
         self.threads: list[threading.Thread] = []
         # Items are (display_text, source_text): source_text is the original
         # transcription for bilingual display, None when there is no separate
@@ -208,6 +220,7 @@ class AppController:
         self._streaming_reconnect_event = threading.Event()
         self._streaming_backoff = STREAMING_RECONNECT_BASE_SECONDS
         self._streaming_outage = False
+        self._streaming_fatal_error: str | None = None
         # Last time a transcription arrived (either pipeline mode) — the GUI
         # polls this for the inactivity auto-stop.
         self._last_pipeline_activity = time.time()
@@ -233,6 +246,7 @@ class AppController:
             for file in files:
                 file_path = os.path.join(AUDIO_DIR, file)
                 start_time = time.time()
+                active_error_role = "transcription"
                 log(f"AUDIO-PROCESSOR File found: {file}", level="INFO")
 
                 try:
@@ -326,6 +340,7 @@ class AppController:
 
                     transcriptions_to_translate = self.strategy.add_segment(segment)
                     log_transcriptions = []  # To store transcription-translation pairs
+                    active_error_role = "translation"
 
                     for trans_text in transcriptions_to_translate:
                         # History is logged after the loop with the measured
@@ -362,6 +377,7 @@ class AppController:
 
                 except Exception as e:
                     log(f"AUDIO-PROCESSOR Error for {file}: {e}", level="ERROR")
+                    self.error_queue.put(f"{active_error_role}_error:{e}")
                     prev_transcription = ""
                     # Delete file anyway to prevent buildup during network outages
                     try:
@@ -449,43 +465,204 @@ class AppController:
             self._translate_and_queue(context_mgr, trans_text)
         except Exception as e:
             log(f"AUDIO-PROCESSOR Buffer flush error: {e}", level="ERROR")
+            self.error_queue.put(f"translation_error:{e}")
             self.translation_queue.put((get_user_message(classify_error(e)), None))
 
-    def _input_stream_thread(self, device: int):
-        stop_event = self.stop_event  # session-local: see _process_audio
-        input_stop = self._input_stop_event
-        speaker = get_loopback_speaker(device)
-        if speaker is not None:
-            self._loopback_segmented_loop(device, speaker)
+    @staticmethod
+    def _report_input_start(
+        startup_result: queue.Queue[BaseException | None] | None,
+        result: BaseException | None,
+    ) -> None:
+        if startup_result is None:
             return
         try:
-            with sd.InputStream(
-                samplerate=FS, channels=1, callback=audio_callback, device=device
-            ):
-                log(f"InputStream started on device {device}", level="INFO")
-                # Check both stop events - main stop or input-specific stop
-                while not stop_event.is_set() and not input_stop.is_set():
-                    time.sleep(0.1)
-                log(f"InputStream stopping on device {device}", level="DEBUG")
-        except OSError as e:
-            log(f"Audio device error (device {device}): {e}", level="ERROR")
-            self.error_queue.put(f"audio_device_lost:{device}")
-        except Exception as e:
-            log(f"InputStream error: {e}", level="ERROR")
-            self.error_queue.put(f"input_stream_error:{e}")
+            startup_result.put_nowait(result)
+        except queue.Full:
+            pass
 
-    def _loopback_segmented_loop(self, device: int, speaker) -> None:
+    def _start_confirmed_input_thread(
+        self,
+        target,
+        args: tuple,
+        *,
+        timeout: float = INPUT_STREAM_START_TIMEOUT_SECONDS,
+    ) -> None:
+        """Start capture and wait until the OS has actually opened the device.
+
+        Previously ``start()`` returned as soon as the background thread was
+        created.  A later PortAudio failure therefore left the GUI displaying
+        a live session with no microphone.  The thread now reports either a
+        successful context-manager entry or its opening exception first.
+        """
+
+        startup_result: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
+        self._input_thread = threading.Thread(
+            target=target,
+            args=(*args, startup_result),
+            daemon=True,
+            name="input-stream",
+        )
+        self._input_thread.start()
+        try:
+            result = startup_result.get(timeout=timeout)
+        except queue.Empty as exc:
+            self._input_stop_event.set()
+            self._input_thread.join(timeout=0.5)
+            self._input_thread = None
+            raise AudioInputError(
+                "Audio input did not open within the startup timeout."
+            ) from exc
+
+        if result is not None:
+            self._input_thread.join(timeout=0.5)
+            self._input_thread = None
+            raise AudioInputError(str(result)) from result
+
+    def _sounddevice_input_loop(
+        self,
+        device: int,
+        samplerate: int,
+        stream_kwargs: dict,
+        startup_result: queue.Queue[BaseException | None] | None,
+        *,
+        label: str,
+    ) -> None:
+        """Open a microphone with bounded retry and same-device fallbacks."""
+
+        stop_event = self.stop_event
+        input_stop = self._input_stop_event
+        candidates = input_device_candidates(
+            sd,
+            device_index=device,
+            samplerate=samplerate,
+            channels=int(stream_kwargs.get("channels", 1)),
+            dtype=stream_kwargs.get("dtype"),
+        )
+        last_error: BaseException | None = None
+
+        for candidate in candidates:
+            for attempt in range(1, INPUT_STREAM_OPEN_ATTEMPTS + 1):
+                opened = False
+                stream = None
+                try:
+                    kwargs = dict(stream_kwargs)
+                    kwargs.update(input_stream_kwargs(sd, device_index=candidate))
+                    stream = sd.InputStream(
+                        samplerate=samplerate,
+                        device=candidate,
+                        **kwargs,
+                    )
+                    # Do not use ``with InputStream`` here: sounddevice's
+                    # __enter__ calls start(), and Python never invokes
+                    # __exit__ when that start raises. Explicit close avoids
+                    # leaking the already-open PortAudio handle before retry.
+                    stream.start()
+                    if stop_event.is_set() or input_stop.is_set():
+                        return
+                    opened = True
+                    self._current_device = candidate
+                    if candidate != device:
+                        log(
+                            f"{label} using equivalent audio backend "
+                            f"{candidate} after device {device} failed",
+                            level="WARNING",
+                        )
+                    self._report_input_start(startup_result, None)
+                    log(f"{label} started on device {candidate}", level="INFO")
+                    while not stop_event.is_set() and not input_stop.is_set():
+                        time.sleep(0.1)
+                    log(f"{label} stopping on device {candidate}", level="DEBUG")
+                    return
+                except Exception as exc:
+                    last_error = exc
+                    if opened:
+                        self._current_device = None
+                        log(
+                            f"Audio device error (device {candidate}): {exc}",
+                            level="ERROR",
+                        )
+                        if not stop_event.is_set() and not input_stop.is_set():
+                            self.error_queue.put(f"audio_device_lost:{candidate}")
+                        return
+
+                    log(
+                        f"{label} open attempt {attempt}/"
+                        f"{INPUT_STREAM_OPEN_ATTEMPTS} failed on device "
+                        f"{candidate}: {exc}",
+                        level="WARNING",
+                    )
+                    if attempt < INPUT_STREAM_OPEN_ATTEMPTS:
+                        if input_stop.wait(INPUT_STREAM_RETRY_DELAY_SECONDS * attempt):
+                            break
+                finally:
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception as close_exc:
+                            log(
+                                f"Error closing audio stream {candidate}: "
+                                f"{close_exc}",
+                                level="DEBUG",
+                            )
+                if stop_event.is_set() or input_stop.is_set():
+                    break
+            if stop_event.is_set() or input_stop.is_set():
+                break
+
+        error = last_error or RuntimeError("Audio input startup was cancelled.")
+        self._current_device = None
+        log(f"Audio device error (device {device}): {error}", level="ERROR")
+        if startup_result is not None:
+            self._report_input_start(startup_result, error)
+        elif not stop_event.is_set() and not input_stop.is_set():
+            self.error_queue.put(f"audio_device_lost:{device}")
+
+    def _input_stream_thread(
+        self,
+        device: int,
+        startup_result: queue.Queue[BaseException | None] | None = None,
+    ):
+        speaker = get_loopback_speaker(device)
+        if speaker is not None:
+            self._loopback_segmented_loop(
+                device,
+                speaker,
+                startup_result=startup_result,
+            )
+            return
+        self._sounddevice_input_loop(
+            device,
+            FS,
+            {
+                "channels": 1,
+                "callback": audio_callback,
+            },
+            startup_result,
+            label="InputStream",
+        )
+
+    def _loopback_segmented_loop(
+        self,
+        device: int,
+        speaker,
+        *,
+        startup_result: queue.Queue[BaseException | None] | None = None,
+    ) -> None:
         """Capture loopback audio from an output device into the ring buffer."""
         stop_event = self.stop_event  # session-local: see _process_audio
         input_stop = self._input_stop_event
+        started = False
         try:
             import soundcard as sc  # noqa: PLC0415
 
             block_frames = int(FS * 0.1)  # 100 ms
             mic = sc.get_microphone(id=str(speaker.id), include_loopback=True)
             # channels=2: avoids the soundcard/WASAPI single-channel-garbage bug
-            with mic.recorder(samplerate=FS, channels=2,
-                               blocksize=block_frames * 4) as recorder:
+            with mic.recorder(
+                samplerate=FS, channels=2, blocksize=block_frames * 4
+            ) as recorder:
+                started = True
+                self._report_input_start(startup_result, None)
                 log(f"Loopback recorder started for '{speaker.name}'", level="INFO")
                 while not stop_event.is_set() and not input_stop.is_set():
                     data = recorder.record(numframes=block_frames)
@@ -493,12 +670,12 @@ class AppController:
                     chunk = data.mean(axis=1).astype(np.float32)
                     write_samples_to_ring(chunk)
                 log("Loopback recorder stopping", level="DEBUG")
-        except OSError as e:
-            log(f"Loopback device error (device {device}): {e}", level="ERROR")
-            self.error_queue.put(f"audio_device_lost:{device}")
         except Exception as e:
-            log(f"Loopback capture error: {e}", level="ERROR")
-            self.error_queue.put(f"input_stream_error:{e}")
+            log(f"Loopback device error (device {device}): {e}", level="ERROR")
+            if not started and startup_result is not None:
+                self._report_input_start(startup_result, e)
+            elif not stop_event.is_set() and not input_stop.is_set():
+                self.error_queue.put(f"audio_device_lost:{device}")
 
     def _streaming_audio_callback(self, indata, frames, time_info, status):
         if status:
@@ -509,43 +686,48 @@ class AppController:
             pass  # unbounded by default; defensive only
 
     def _streaming_input_stream_thread(
-        self, device: int, samplerate: int = FS
+        self,
+        device: int,
+        samplerate: int = FS,
+        startup_result: queue.Queue[BaseException | None] | None = None,
     ):
-        stop_event = self.stop_event  # session-local: see _process_audio
-        input_stop = self._input_stop_event
         speaker = get_loopback_speaker(device)
         if speaker is not None:
-            self._loopback_streaming_loop(device, speaker, samplerate)
+            self._loopback_streaming_loop(
+                device,
+                speaker,
+                samplerate,
+                startup_result=startup_result,
+            )
             return
         # The capture rate is engine-specific (Deepgram is told FS at connect;
         # OpenAI Realtime only accepts 24 kHz PCM).
         chunk_frames = max(1, int(samplerate * STREAMING_CHUNK_MS / 1000))
-        try:
-            with sd.InputStream(
-                samplerate=samplerate,
-                channels=1,
-                dtype="int16",
-                blocksize=chunk_frames,
-                callback=self._streaming_audio_callback,
-                device=device,
-            ):
-                log(f"Streaming InputStream started on device {device}", level="INFO")
-                while not stop_event.is_set() and not input_stop.is_set():
-                    time.sleep(0.1)
-                log("Streaming InputStream stopping", level="DEBUG")
-        except OSError as e:
-            log(f"Audio device error (device {device}): {e}", level="ERROR")
-            self.error_queue.put(f"audio_device_lost:{device}")
-        except Exception as e:
-            log(f"Streaming InputStream error: {e}", level="ERROR")
-            self.error_queue.put(f"input_stream_error:{e}")
+        self._sounddevice_input_loop(
+            device,
+            samplerate,
+            {
+                "channels": 1,
+                "dtype": "int16",
+                "blocksize": chunk_frames,
+                "callback": self._streaming_audio_callback,
+            },
+            startup_result,
+            label="Streaming InputStream",
+        )
 
     def _loopback_streaming_loop(
-        self, device: int, speaker, samplerate: int
+        self,
+        device: int,
+        speaker,
+        samplerate: int,
+        *,
+        startup_result: queue.Queue[BaseException | None] | None = None,
     ) -> None:
         """Feed loopback audio from an output device into the streaming pipeline."""
         stop_event = self.stop_event  # session-local: see _process_audio
         input_stop = self._input_stop_event
+        started = False
         try:
             import soundcard as sc  # noqa: PLC0415
 
@@ -554,8 +736,11 @@ class AppController:
                 chunk_frames, int(samplerate * LOOPBACK_CAPTURE_BUFFER_SECONDS)
             )
             mic = sc.get_microphone(id=str(speaker.id), include_loopback=True)
-            with mic.recorder(samplerate=samplerate, channels=2,
-                               blocksize=buffer_frames) as recorder:
+            with mic.recorder(
+                samplerate=samplerate, channels=2, blocksize=buffer_frames
+            ) as recorder:
+                started = True
+                self._report_input_start(startup_result, None)
                 log(
                     f"Loopback streaming recorder started for '{speaker.name}' "
                     f"at {samplerate} Hz",
@@ -571,12 +756,15 @@ class AppController:
                     except Exception:
                         pass
                 log("Loopback streaming recorder stopping", level="DEBUG")
-        except OSError as e:
-            log(f"Loopback streaming device error (device {device}): {e}", level="ERROR")
-            self.error_queue.put(f"audio_device_lost:{device}")
         except Exception as e:
-            log(f"Loopback streaming capture error: {e}", level="ERROR")
-            self.error_queue.put(f"input_stream_error:{e}")
+            log(
+                f"Loopback streaming device error (device {device}): {e}",
+                level="ERROR",
+            )
+            if not started and startup_result is not None:
+                self._report_input_start(startup_result, e)
+            elif not stop_event.is_set() and not input_stop.is_set():
+                self.error_queue.put(f"audio_device_lost:{device}")
 
     def _streaming_feeder_thread(self):
         stop_event = self.stop_event  # session-local: see _process_audio
@@ -600,6 +788,51 @@ class AppController:
                     chunk = gate.process(chunk)
                 handle.feed(chunk)
 
+    def _handle_terminal_stream_error(
+        self,
+        exc: Exception,
+        session: _StreamingUtteranceSession | None = None,
+    ) -> bool:
+        """Stop a stream that cannot recover without operator action.
+
+        Invalid credentials do not improve with exponential backoff. Mark the
+        session for GUI-side shutdown, close the current socket and emit one
+        machine-readable error. The raw provider exception deliberately does
+        not enter either queue because it may contain a masked key fragment.
+        """
+        error_kind = classify_error(exc)
+        if error_kind != "invalid_api_key":
+            return False
+
+        if self._streaming_fatal_error is None:
+            self._streaming_fatal_error = error_kind
+            self.error_queue.put(f"fatal_transcription_error:{error_kind}")
+
+        active_session = session or self._streaming_session
+        if active_session is not None:
+            active_session.clear_live()
+
+        # Quiesce every streaming worker while the GUI consumes the fatal
+        # event and performs the normal controller.stop() cleanup. Crucially,
+        # never wake the reconnect supervisor for an authentication failure.
+        self._streaming_outage = True
+        self._streaming_connect = None
+        self._streaming_reconnect_event.clear()
+        self._input_stop_event.set()
+        self.stop_event.set()
+
+        handle = self._streaming_handle
+        self._streaming_handle = None
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception as close_exc:
+                log(
+                    f"STREAMING error closing terminally failed handle: {close_exc}",
+                    level="DEBUG",
+                )
+        return True
+
     def _streaming_reconnect_supervisor(self):
         """Reconnect-with-backoff for streaming mode.
 
@@ -622,9 +855,7 @@ class AppController:
             # Back off BEFORE reconnecting: paces retry storms and coalesces
             # the duplicate error callbacks one disconnect can produce.
             delay = self._streaming_backoff
-            self._streaming_backoff = min(
-                delay * 2, STREAMING_RECONNECT_MAX_SECONDS
-            )
+            self._streaming_backoff = min(delay * 2, STREAMING_RECONNECT_MAX_SECONDS)
             if stop_event.wait(delay):
                 break
             reconnect_event.clear()
@@ -646,6 +877,8 @@ class AppController:
                     level="INFO",
                 )
             except Exception as e:
+                if self._handle_terminal_stream_error(e):
+                    break
                 # open_stream rarely raises (connect failures arrive async
                 # via on_error) — but if it does, queue another attempt.
                 log(f"STREAMING Reconnect attempt failed: {e}", level="WARNING")
@@ -714,9 +947,8 @@ class AppController:
                 )
             except Exception as e:
                 log(f"STREAMING-PROCESSOR Error: {e}", level="ERROR")
-                self.translation_queue.put(
-                    (get_user_message(classify_error(e)), None)
-                )
+                self.error_queue.put(f"translation_error:{e}")
+                self.translation_queue.put((get_user_message(classify_error(e)), None))
             finally:
                 # The subtitle (or error message) for this utterance is out —
                 # take its live transcript off screen unless newer speech has
@@ -772,8 +1004,7 @@ class AppController:
             # utterance-end, so cap how old accumulated text can get.
             if (
                 session.has_pending()
-                and session.seconds_since_first_part()
-                > STREAMING_MAX_UTTERANCE_SECONDS
+                and session.seconds_since_first_part() > STREAMING_MAX_UTTERANCE_SECONDS
             ):
                 capped, live_rev = session.take_and_reset()
                 if capped.strip():
@@ -792,8 +1023,9 @@ class AppController:
 
         Raises ValueError for conditions the GUI's on_start() already catches
         and shows to the user (same pattern as any other start() failure).
-        All validations run before anything stateful (context manager,
-        connection, threads), so a failed start leaves nothing behind.
+        Local validation and the provider's startup handshake complete before
+        the context manager or audio workers start, so a rejected connection
+        leaves no background pipeline behind.
         """
         provider_id = settings.transcription_provider
         lang_code = get_source_language_code(settings.source_language)
@@ -819,16 +1051,11 @@ class AppController:
                 level="INFO",
             )
 
-        context_mgr = get_context_manager()
-        context_mgr.reset()
-        context_mgr.start()
-
         # Callbacks close over the session object directly (not the
         # self._streaming_session attribute) so a late provider message after
         # stop() nulls the attribute can never hit None — it just lands in an
         # abandoned session.
         session = _StreamingUtteranceSession()
-        self._streaming_session = session
 
         def _on_transcript(text: str, is_final: bool) -> None:
             if not text.strip():
@@ -857,6 +1084,9 @@ class AppController:
                 log(f"STREAMING stale connection error ignored: {exc}", level="DEBUG")
                 return
             log(f"STREAMING connection error ({provider_id}): {exc}", level="ERROR")
+            if self._handle_terminal_stream_error(exc, session):
+                return
+            self.error_queue.put(f"transcription_error:{exc}")
             # The stream is dead — no more interims will correct the live
             # line, so take it down rather than leave stale text standing.
             session.clear_live()
@@ -884,6 +1114,7 @@ class AppController:
         self._streaming_reconnect_event = threading.Event()
         self._streaming_backoff = STREAMING_RECONNECT_BASE_SECONDS
         self._streaming_outage = False
+        self._streaming_fatal_error = None
         streaming_provider = get_streaming_transcription_provider()
 
         def _connect():
@@ -900,18 +1131,55 @@ class AppController:
             )
 
         self._streaming_connect = _connect
-        self._streaming_handle = _connect()
+        try:
+            self._streaming_handle = _connect()
+        except Exception:
+            # OpenAI Realtime waits for the server's session confirmation, so
+            # an invalid key is now a synchronous startup failure. Leave no
+            # half-started state and let AppGUI show the normal Start error.
+            self._streaming_connect = None
+            self._streaming_handle = None
+            self._streaming_session = None
+            raise
+        self._streaming_session = session
 
-        self._input_thread = threading.Thread(
-            target=self._streaming_input_stream_thread,
-            args=(
-                input_device,
-                self._streaming_capture_rate,
-            ),
-            daemon=True,
-            name="streaming-input",
-        )
-        self._input_thread.start()
+        try:
+            self._start_confirmed_input_thread(
+                self._streaming_input_stream_thread,
+                (
+                    input_device,
+                    self._streaming_capture_rate,
+                ),
+            )
+
+            context_mgr = get_context_manager()
+            context_mgr.reset()
+            context_mgr.start()
+        except Exception:
+            # A provider connection may already be open, but a session is not
+            # live until the local microphone has opened too. Roll every
+            # startup side effect back before returning the error to the GUI.
+            self._input_stop_event.set()
+            if self._input_thread is not None:
+                self._input_thread.join(timeout=0.5)
+                self._input_thread = None
+            self._streaming_generation += 1
+            handle = self._streaming_handle
+            self._streaming_connect = None
+            self._streaming_handle = None
+            self._streaming_session = None
+            self._noise_gate = None
+            self._current_device = None
+            if handle is not None:
+                try:
+                    handle.close()
+                except Exception as close_exc:
+                    log(
+                        f"Error closing stream after audio startup failure: "
+                        f"{close_exc}",
+                        level="DEBUG",
+                    )
+            raise
 
         thread_defs = [
             (self._streaming_feeder_thread, (), "streaming-feeder"),
@@ -1001,19 +1269,33 @@ class AppController:
 
         self.strategy.reset()
 
-        # Start context manager (for async summarization)
         context_mgr = get_context_manager()
-        context_mgr.reset()  # Fresh context for new session
-        context_mgr.start()
+        context_started = False
+        try:
+            # Confirm that the OS really opened the microphone before the GUI
+            # is allowed to transition to its live state.
+            self._start_confirmed_input_thread(
+                self._input_stream_thread,
+                (input_device,),
+            )
 
-        # Start input stream thread (tracked separately for hot-swapping)
-        self._input_thread = threading.Thread(
-            target=self._input_stream_thread,
-            args=(input_device,),
-            daemon=True,
-            name="input-stream",
-        )
-        self._input_thread.start()
+            # Start context manager (for async summarization)
+            context_mgr.reset()  # Fresh context for new session
+            context_mgr.start()
+            context_started = True
+        except Exception:
+            self._input_stop_event.set()
+            if self._input_thread is not None:
+                self._input_thread.join(timeout=0.5)
+                self._input_thread = None
+            if context_started:
+                try:
+                    context_mgr.stop(timeout=0.5)
+                except Exception:
+                    pass
+            self.strategy = None
+            self._current_device = None
+            raise
 
         # Start other threads
         thread_defs = [
@@ -1139,21 +1421,24 @@ class AppController:
         # Reset and start new input stream
         self._input_stop_event = threading.Event()
         self._current_device = new_device
-        if self._streaming_handle is not None:
-            self._input_thread = threading.Thread(
-                target=self._streaming_input_stream_thread,
-                args=(new_device, self._streaming_capture_rate),
-                daemon=True,
-                name="streaming-input",
-            )
-        else:
-            self._input_thread = threading.Thread(
-                target=self._input_stream_thread,
-                args=(new_device,),
-                daemon=True,
-                name="input-stream",
-            )
-        self._input_thread.start()
+        try:
+            if self._streaming_handle is not None:
+                self._start_confirmed_input_thread(
+                    self._streaming_input_stream_thread,
+                    (new_device, self._streaming_capture_rate),
+                    timeout=max(timeout, 0.1),
+                )
+            else:
+                self._start_confirmed_input_thread(
+                    self._input_stream_thread,
+                    (new_device,),
+                    timeout=max(timeout, 0.1),
+                )
+        except Exception as exc:
+            self._current_device = None
+            log(f"Input device switch failed for {new_device}: {exc}", level="ERROR")
+            self.error_queue.put(f"audio_device_lost:{new_device}")
+            return False
 
         log(f"Input device switched to {new_device}", level="INFO")
         return True

@@ -10,6 +10,8 @@ see config.py instead.
 from __future__ import annotations
 
 import json
+import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -290,13 +292,61 @@ DEFAULT_GUI_LANGUAGE = "de"
 THEME_MODES = ["dark", "light"]
 DEFAULT_THEME_MODE = "light"
 
+_HEX_COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}")
+
+
+def _finite_float(value: object) -> float | None:
+    """Convert a real numeric JSON value without accepting bool/NaN/overflow."""
+
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _load_source_font_size_base(value: object, font_size_base: object) -> float:
+    """Return a safe source-text font divisor for old and new settings files.
+
+    Before source and translation typography were configurable independently,
+    source text rendered at 70% of the translation size.  Because these values
+    are *divisors*, preserving that appearance means ``font_size_base / 0.7``.
+    """
+
+    translation_base = _finite_float(font_size_base)
+    fallback = (translation_base if translation_base is not None else 40.0) / 0.7
+    source_base = _finite_float(value)
+    if source_base is None:
+        source_base = fallback
+    return max(20.0, min(120.0, source_base))
+
+
+def _load_subtitle_text_color(value: object) -> str:
+    """Accept only an exact CSS-style ``#RRGGBB`` subtitle override."""
+
+    if isinstance(value, str) and _HEX_COLOR_RE.fullmatch(value):
+        return value
+    return ""
+
 
 @dataclass
 class Settings:
     # Note: openai_api_key is stored securely via keyring, not in this dataclass
     monitor_index: int = 1
+    # False keeps transcription/translation running without ever creating the
+    # separate audience overlay. ``monitor_index`` still remembers the last
+    # real monitor so re-enabling output restores the previous destination.
+    subtitle_output_enabled: bool = True
     input_device_name: str | None = None
     font_size_base: int = 40
+    # Separate source/original-text divisor.  The default exactly preserves
+    # the historical 70%-of-translation size (larger divisor = smaller text).
+    source_font_size_base: float = 40 / 0.7
+    # Empty means use the active subtitle theme's normal text-role color.
+    translation_text_color: str = ""
+    source_text_color: str = ""
     source_language: str = "Automatic"
     target_language: str = "German"
     subtitle_mode: str = SUBTITLE_MODE_REALTIME  # realtime, continuous, or static
@@ -479,10 +529,27 @@ def load_settings(use_cache: bool = True) -> Settings:
         announcement_duration_index = data.get("announcement_duration_index", 1)
         if not isinstance(announcement_duration_index, int):
             announcement_duration_index = 1
+        font_size_base = data.get("font_size_base", 40)
+        source_font_size_base = _load_source_font_size_base(
+            data.get("source_font_size_base"), font_size_base
+        )
+        translation_text_color = _load_subtitle_text_color(
+            data.get("translation_text_color", "")
+        )
+        source_text_color = _load_subtitle_text_color(
+            data.get("source_text_color", "")
+        )
+        subtitle_output_enabled = data.get("subtitle_output_enabled", True)
+        if not isinstance(subtitle_output_enabled, bool):
+            subtitle_output_enabled = True
         _cached_settings = Settings(
             monitor_index=data.get("monitor_index", 1),
+            subtitle_output_enabled=subtitle_output_enabled,
             input_device_name=data.get("input_device_name"),
-            font_size_base=data.get("font_size_base", 40),
+            font_size_base=font_size_base,
+            source_font_size_base=source_font_size_base,
+            translation_text_color=translation_text_color,
+            source_text_color=source_text_color,
             source_language=data.get("source_language", "Automatic"),
             target_language=data.get("target_language", "German"),
             subtitle_mode=subtitle_mode,
@@ -558,8 +625,12 @@ def save_settings(settings: Settings) -> None:
     # Note: API key is stored securely via keyring, not in this file
     payload = {
         "monitor_index": settings.monitor_index,
+        "subtitle_output_enabled": settings.subtitle_output_enabled,
         "input_device_name": settings.input_device_name,
         "font_size_base": settings.font_size_base,
+        "source_font_size_base": settings.source_font_size_base,
+        "translation_text_color": settings.translation_text_color,
+        "source_text_color": settings.source_text_color,
         "source_language": settings.source_language,
         "target_language": settings.target_language,
         "subtitle_mode": settings.subtitle_mode,

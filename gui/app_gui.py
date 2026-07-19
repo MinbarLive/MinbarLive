@@ -1,12 +1,16 @@
 import os
 import queue
+import re
 import threading
 import tkinter as tk
 import webbrowser
+from tkinter import colorchooser
 
 import customtkinter as ctk
+from PIL import Image
 from screeninfo import get_monitors
 
+from audio.device_support import AudioInputError
 from config import (
     AUTO_STOP_INACTIVITY_SECONDS,
     GUI_TRANSLATIONS_DIR,
@@ -15,17 +19,33 @@ from config import (
 )
 from gui.announce_view import AnnounceViewMixin
 from gui.batch_view import BatchViewMixin
+from gui.control_dashboard import (
+    ICON_FONT,
+    ICONS,
+    LOGO_PATH,
+    DashboardChrome,
+    provider_display_name,
+)
 from gui.control_state import (
+    PROVIDER_PROFILE_CUSTOM,
+    PROVIDER_PROFILE_GEMINI,
+    PROVIDER_PROFILE_OPENAI,
+    PROVIDER_ROLE_TRANSCRIPTION,
+    PROVIDER_ROLE_TRANSLATION,
+    PROVIDER_STATUS_ERROR,
     STRATEGY_IDS,
+    apply_provider_profile,
     apply_strategy,
     current_strategy_index,
     effective_subtitle_mode,
+    infer_provider_profile,
+    provider_start_readiness,
     repair_default_provider,
     required_key_providers,
     subtitle_mode_choices,
     visible_provider_choices,
 )
-from gui.device_list import get_input_devices
+from gui.device_list import find_input_device_position, get_input_devices
 from gui.dropdown import CustomDropdown
 from gui.history_view import HistoryViewMixin
 from gui.scaling import apply_display_scaling
@@ -45,6 +65,16 @@ from providers.openai.client import set_api_key
 from utils.api_key_manager import (
     apply_dark_titlebar,
     prompt_for_api_key,
+)
+from utils.cost_tracking import (
+    active_cost_session,
+    begin_cost_session,
+    cancel_cost_session,
+    cost_revision,
+    end_cost_session,
+    flush_cost_history,
+    format_usd,
+    latest_cost_session,
 )
 from utils.icons import ICO_SUPPORTED, scaled_icon_photo
 from utils.json_helpers import load_json
@@ -70,7 +100,23 @@ from utils.settings import (
     save_settings,
 )
 from utils.update_check import UpdateInfo, check_for_update
+from utils.user_messages import classify_error
 from version import __version__
+
+_SECRET_SHAPE_RE = re.compile(
+    r"(?:sk-(?:proj-|ant-)?[A-Za-z0-9_*.-]{4,}|AIza[A-Za-z0-9_-]{20,})"
+)
+
+
+def _sanitize_error_text(value: object, known_secrets: tuple[str, ...] = ()) -> str:
+    """Return a short operator-safe error string with credentials removed."""
+
+    text = _SECRET_SHAPE_RE.sub("[REDACTED]", str(value)).replace("\r", " ")
+    text = text.replace("\n", " ").strip()
+    for secret in known_secrets:
+        if secret and len(secret) >= 8:
+            text = text.replace(secret, "[REDACTED]")
+    return text[:240]
 
 
 def load_gui_translations(language: str) -> dict:
@@ -123,6 +169,19 @@ def _clear_stale_scaling_windows(force: bool = False) -> None:
                 except Exception:
                     pass
             registry.pop(window, None)
+    # Pillow/CustomTkinter images use tkinter's process-global default root.
+    # Tk does not clear that reference reliably after a root is destroyed, so
+    # the next AppGUI could create an image owned by the dead Tcl interpreter
+    # ("image pyimage… doesn't exist"). Drop only a dead default root; the next
+    # CTk constructor will register its own live interpreter.
+    default_root = getattr(tk, "_default_root", None)
+    if default_root is not None:
+        try:
+            root_is_live = bool(default_root.winfo_exists())
+        except Exception:
+            root_is_live = False
+        if force or not root_is_live:
+            tk._default_root = None  # type: ignore[attr-defined]
 
 
 class AppGUI(
@@ -138,7 +197,11 @@ class AppGUI(
     # larger size after a log toggle).
     _MIN_W = 880
     _MIN_H = 536
-    # Widest the collapsed 2-column card grid may grow (logical units, ≈1.4×
+    _DEFAULT_W = 1180
+    _DEFAULT_H = 720
+    _CARD_DEPTH_X = 4
+    _CARD_DEPTH_Y = 5
+    # Widest the collapsed three-card dashboard may grow (logical units, ≈1.4×
     # the design width) before extra window width becomes centered margin
     # instead of stretching the cards. See _collapsed_margin.
     _MAX_CARD_AREA_W = 1200
@@ -180,13 +243,28 @@ class AppGUI(
         self.translation_queue = self.controller.translation_queue
         self.error_queue = self.controller.error_queue
 
-        self.selected_screen_index = self._saved_settings.monitor_index
+        saved_monitor_index = self._saved_settings.monitor_index
+        self.selected_screen_index = (
+            saved_monitor_index
+            if isinstance(saved_monitor_index, int)
+            and not isinstance(saved_monitor_index, bool)
+            and saved_monitor_index >= 0
+            else 0
+        )
+        # UI positions and physical monitor indices intentionally differ: the
+        # first dropdown entry is the virtual "no screen" target.  Keeping the
+        # mapping explicit prevents that entry from ever reaching
+        # SubtitleWindow as monitor index -1 (which Python would interpret as
+        # the last monitor).
+        self._screen_names: list[str] = []
+        self._screen_monitor_indices: list[int | None] = []
         self.subtitle_window: SubtitleWindow | None = None
         self.translation_poll_job: str | None = None
         self.error_poll_job: str | None = None
         self.log_poll_job: str | None = None
         self.height_apply_job: str | None = None
         self.inactivity_check_job: str | None = None
+        self.cost_poll_job: str | None = None
 
         # Startup update check (worker thread writes, after-poll reads).
         self._update_check_result: UpdateInfo | None = None
@@ -196,8 +274,14 @@ class AppGUI(
         self._update_available: UpdateInfo | None = None
 
         self._running = False
+        self._runtime_errors: dict[str, str] = {}
+        self._runtime_error_message: str | None = None
+        self._rejected_key_provider: str | None = None
+        self._fatal_stop_job: str | None = None
         self._log_polling = False
-        self._surface_restore_job: str | None = None
+        self._last_cost_revision = -1
+        self._control_topmost_state: bool | None = None
+        self._sidebar_resize_job: str | None = None
         self.speed_value = max(0.5, min(5.0, self._saved_settings.scroll_speed))
         self.advanced_visible = False
         self._log_collapsed = self._saved_settings.log_panel_collapsed
@@ -209,12 +293,18 @@ class AppGUI(
         self._muted_labels: list[ctk.CTkLabel] = []
         self._section_titles: list[ctk.CTkLabel] = []
         self._symbol_labels: list[ctk.CTkLabel] = []
+        self._section_card_styles: list[dict[str, object]] = []
+        self._recessed_panel_styles: list[dict[str, object]] = []
         self._buttons: list[ctk.CTkButton] = []
         self._combos: list[CustomDropdown] = []
         self._checkboxes: list[ctk.CTkCheckBox] = []
 
+        self._dashboard = DashboardChrome(self)
+        self._v3_layout_mode: str | None = None
+
         self._setup_window()
         self._create_layout()
+        self._refresh_cost_ui(force=True)
         if not self._saved_settings.hide_subtitle_on_stop:
             self._create_subtitle_window()
         self._finalize_setup()
@@ -237,12 +327,12 @@ class AppGUI(
 
     def _setup_window(self) -> None:
         self.title(f"MinbarLive v{__version__}")
-        # Collapsed (log hidden) is a wide 2-column card grid; expanded (log
+        # Collapsed (log hidden) is a wide three-card grid; expanded (log
         # shown) is the classic single-column sidebar + log panel.
         # CTk geometry is in DPI-logical units (physical = logical x window
         # scaling, e.g. x1.25). 880x576 logical renders ~1100x720 px, which is
         # the compact first-run size the 2-column card layout fits snugly.
-        default_geo = f"{self._MIN_W}x{self._MIN_H}"
+        default_geo = f"{self._DEFAULT_W}x{self._DEFAULT_H}"
         _min_w, _min_h = self._MIN_W, self._MIN_H
 
         saved_geo = self._saved_settings.window_geometry or ""
@@ -281,9 +371,6 @@ class AppGUI(
         self.minsize(_min_w, _min_h)
         self.configure(fg_color=self._colors["app_bg"])
         self.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.after_idle(self._restore_control_window_surface)
-        self.bind("<FocusIn>", self._schedule_control_window_surface_restore)
-        self.bind("<Map>", self._schedule_control_window_surface_restore)
 
         if ICO_SUPPORTED and os.path.exists(ICON_PATH):
             try:
@@ -304,32 +391,6 @@ class AppGUI(
             self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-    def _schedule_control_window_surface_restore(
-        self, _event: object | None = None
-    ) -> None:
-        if self._surface_restore_job is not None:
-            return
-        self._surface_restore_job = self.after(
-            120, self._restore_control_window_surface
-        )
-
-    def _restore_control_window_surface(self, _event: object | None = None) -> None:
-        """Keep the control panel opaque and above the subtitle overlay."""
-        self._surface_restore_job = None
-        try:
-            self.wm_attributes("-transparentcolor", "")
-        except tk.TclError:
-            pass
-        try:
-            self.attributes("-alpha", 1.0)
-        except tk.TclError:
-            pass
-        try:
-            self.attributes("-topmost", self._control_window_should_be_topmost())
-            self.lift()
-        except tk.TclError:
-            pass
-
     def _control_window_should_be_topmost(self) -> bool:
         """The control panel only needs to float above the subtitle overlay
         while that overlay is open — and only if the user hasn't turned
@@ -339,35 +400,90 @@ class AppGUI(
         return bool(self.subtitle_window and self.subtitle_window.winfo_exists())
 
     def _apply_control_window_topmost(self) -> None:
-        """Re-apply the control panel's topmost attribute after the subtitle
-        overlay opens/closes or the always-on-top setting changes."""
+        """Synchronize topmost only when the overlay lifecycle changes.
+
+        Writing ``-alpha``/``-transparentcolor`` turns the large CTk control
+        surface into a Windows layered window, while ``lift()`` interrupts an
+        active native title-bar drag.  The control panel needs neither: only
+        its factual topmost bit changes when the subtitle overlay opens,
+        closes, or the setting is toggled.
+        """
+        desired = self._control_window_should_be_topmost()
+        if desired == self._control_topmost_state:
+            return
         try:
-            self.attributes("-topmost", self._control_window_should_be_topmost())
+            self.attributes("-topmost", desired)
+            self._control_topmost_state = desired
         except tk.TclError:
             pass
 
     def _create_layout(self) -> None:
-        # Fixed container for the left column (header + scrollable cards)
+        """Build the V3 operator surface.
+
+        The control window contains configuration and factual readiness only.
+        Live transcript and translated text continue to render exclusively in
+        ``SubtitleWindow``.
+        """
         self.sidebar_container = ctk.CTkFrame(
             self, fg_color=self._colors["sidebar"], corner_radius=0
         )
         self.sidebar_container.grid(row=0, column=0, sticky="nsew")
         self.sidebar_container.grid_columnconfigure(0, weight=1)
-        self.sidebar_container.grid_rowconfigure(2, weight=1)
+        self.sidebar_container.grid_rowconfigure(3, weight=1)
 
         self._create_sidebar_header()
         self._create_update_banner()
+
+        self.signal_band = self._dashboard.build_signal_path(self.sidebar_container)
+        self.signal_band.grid(row=2, column=0, sticky="ew", padx=18, pady=(8, 10))
 
         self.sidebar = ctk.CTkScrollableFrame(
             self.sidebar_container,
             fg_color=self._colors["sidebar"],
             corner_radius=0,
         )
-        self.sidebar.grid(row=2, column=0, sticky="nsew")
+        self.sidebar.grid(row=3, column=0, sticky="nsew")
         self.sidebar.grid_columnconfigure(0, weight=1)
-        # Cap + center the collapsed card grid whenever the window resizes.
-        self._applied_collapsed_margin: int | None = None
         self.sidebar.bind("<Configure>", self._on_sidebar_resize, add="+")
+        self._setup_autohide_scrollbar(self.sidebar)
+
+        # The operator dock remains visible while the configuration cards
+        # scroll, matching the selected command-deck direction.
+        self._operator_dock_shadow = ctk.CTkFrame(
+            self.sidebar_container,
+            fg_color=self._colors["shadow"],
+            corner_radius=22,
+        )
+        self._operator_dock_shadow.grid(
+            row=4, column=0, sticky="ew", padx=18, pady=(8, 16)
+        )
+        self._operator_dock_shadow.grid_columnconfigure(0, weight=1)
+        self._shadow_frames.append(self._operator_dock_shadow)
+
+        self._operator_dock = ctk.CTkFrame(
+            self._operator_dock_shadow,
+            fg_color=self._colors["panel"],
+            border_color=self._colors["brass_soft"],
+            border_width=2,
+            corner_radius=20,
+        )
+        self._operator_dock.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, self._CARD_DEPTH_X),
+            pady=(0, self._CARD_DEPTH_Y),
+        )
+        self._operator_dock_highlight = ctk.CTkFrame(
+            self._operator_dock,
+            height=1,
+            corner_radius=1,
+            fg_color=self._colors["surface_highlight"],
+        )
+        self._operator_dock_highlight.place(
+            relx=0.5, y=4, relwidth=0.84, anchor="n"
+        )
+        self._cards.append(self._operator_dock)
 
         self.content = ctk.CTkFrame(
             self, fg_color=self._colors["app_bg"], corner_radius=0
@@ -375,218 +491,298 @@ class AppGUI(
         self.content.grid(row=0, column=1, sticky="nsew", padx=(18, 22), pady=20)
         self.content.grid_columnconfigure(0, weight=1)
         self.content.grid_rowconfigure(1, weight=1)
+        # ``grid_columnconfigure(weight=0)`` does not hide a widget with a
+        # non-zero requested width.  Apply the persisted drawer state as soon
+        # as the drawer exists so a collapsed startup cannot steal width from
+        # the dashboard and make the three card columns overlap.
+        if self._log_collapsed:
+            self.content.grid_forget()
 
-        # Two independent card columns. A single shared-row grid couples the
-        # two columns' row heights, so a short card (Controls) next to a tall
-        # one (Translation flow) gets padded out with dead space — the empty
-        # bottom-right the old 2×2 grid showed. Give each column its own frame
-        # so it packs top-down on its own. Left = Controls + Display; right =
-        # Translation flow + Advanced, chosen so the columns end level.
-        self._col_left = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self._col_right = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self._col_left.grid_columnconfigure(0, weight=1)
-        self._col_right.grid_columnconfigure(0, weight=1)
+        self._session_col = ctk.CTkFrame(
+            self.sidebar, fg_color=self._colors["shadow"], corner_radius=24
+        )
+        self._output_col = ctk.CTkFrame(
+            self.sidebar, fg_color=self._colors["shadow"], corner_radius=24
+        )
+        self._services_col = ctk.CTkFrame(
+            self.sidebar, fg_color=self._colors["shadow"], corner_radius=24
+        )
+        for column in (self._session_col, self._output_col, self._services_col):
+            column.grid_columnconfigure(0, weight=1)
+            self._shadow_frames.append(column)
+        # Compatibility aliases for child views that still refer to the old
+        # two-column names.
+        self._col_left = self._session_col
+        self._col_right = self._output_col
 
         self._init_batch_state()
         self._init_announce_state()
-        self._create_control_card()
         self._create_language_card()
         self._create_display_card()
         self._create_advanced_card()
+        self._create_control_card()
         self._create_log_panel()
-        # Batch/File is reached from the header icon (a Toplevel), not a card.
         self._batch_win: ctk.CTkToplevel | None = None
 
-        # Each column reserves a weighted spacer row (row 1) between its top and
-        # bottom card. When the columns are placed side by side (sticky "nsew"),
-        # grid stretches the shorter column up to the taller one's height and the
-        # extra height lands in this spacer row, pushing that column's bottom card
-        # down so both bottom cards always end level — no matter which column is
-        # taller (Display when stopped, Advanced + running hint when running).
-        # See _layout_sidebar_cards.
-        self._col_left.grid_rowconfigure(1, weight=1)
-        self._col_right.grid_rowconfigure(1, weight=1)
+        # Capture natural card requests before their parent columns are mapped.
+        # Once a stacked card stretches to the viewport, the column's later
+        # requested width reflects that allocation and is no longer a useful
+        # three-column minimum.
+        self.update_idletasks()
+        self._wide_cards_required_width = sum(
+            max(1, card.winfo_reqwidth())
+            for card in (self.language_card, self.display_card, self.advanced_card)
+        )
 
-        self.control_card.grid(row=0, column=0, sticky="new")
-        self.display_card.grid(row=2, column=0, sticky="sew", pady=(18, 0))
-        self.language_card.grid(row=0, column=0, sticky="new")
-        self.advanced_card.grid(row=2, column=0, sticky="sew", pady=(18, 0))
+        card_depth_padding = {
+            "padx": (0, self._CARD_DEPTH_X),
+            "pady": (0, self._CARD_DEPTH_Y),
+        }
+        self.language_card.grid(
+            row=0, column=0, sticky="new", **card_depth_padding
+        )
+        self.display_card.grid(
+            row=0, column=0, sticky="new", **card_depth_padding
+        )
+        self.advanced_card.grid(
+            row=0, column=0, sticky="new", **card_depth_padding
+        )
         self._layout_sidebar_cards()
 
         if self._log_collapsed:
-            self.content.grid_remove()
+            self.content.grid_forget()
 
     def _layout_sidebar_cards(self) -> None:
-        """Position the two card columns: side by side (2-column masonry) while
-        the log panel is collapsed, stacked into one column (classic look) when
-        it is open. In the side-by-side layout both columns are stretched to the
-        same (taller) height via sticky "nsew"; each column's weighted spacer row
-        then drops its bottom card so the two columns always end level. Stacked,
-        the columns keep their natural heights (sticky "new")."""
-        two_col = self._log_collapsed
-        if two_col:
-            self.sidebar.grid_columnconfigure(0, weight=1, uniform="sbcols")
-            self.sidebar.grid_columnconfigure(1, weight=1, uniform="sbcols")
-            # Equal-height / bottom-aligned columns ("nsew") only while the
-            # Advanced card is collapsed — then the two columns are close in
-            # height and level bottoms look clean. When Advanced is expanded the
-            # right column is far taller; stretching the left column to match
-            # would strand "Anzeige & Audio" floating in the middle, so
-            # top-anchor both columns instead ("new" — natural masonry stacking).
-            col_sticky = "new" if getattr(self, "advanced_visible", False) else "nsew"
-            # columnspan is stated explicitly: grid() retains prior options, and
-            # the single-column branch below leaves columnspan=2 behind — without
-            # resetting it the two columns would overlap after a log toggle.
-            margin = self._collapsed_margin()
-            self._applied_collapsed_margin = margin
-            self._col_left.grid(
+        """Use three command cards when wide and one scroll stack when narrow."""
+        try:
+            available_width = self.sidebar.winfo_width()
+        except Exception:
+            available_width = self._DEFAULT_W
+        breakpoint = self._wide_layout_breakpoint()
+        try:
+            dead_band = round(20 * self._get_window_scaling())
+        except Exception:
+            dead_band = 20
+        # Keep a small dead band around the responsive breakpoint.  During a
+        # mixed-DPI monitor transition Windows can briefly report an in-between
+        # logical width; without hysteresis the three cards flip wide/stacked
+        # several times while the user is still dragging the window.
+        if self._v3_layout_mode == "wide":
+            wide_enough = available_width >= breakpoint - dead_band
+        elif self._v3_layout_mode == "stacked":
+            wide_enough = available_width >= breakpoint + dead_band
+        else:
+            wide_enough = available_width >= breakpoint
+        mode = "wide" if self._log_collapsed and wide_enough else "stacked"
+        if mode == self._v3_layout_mode:
+            return
+        self._v3_layout_mode = mode
+
+        for index in range(3):
+            self.sidebar.grid_columnconfigure(
+                index,
+                weight=1 if mode == "wide" else (1 if index == 0 else 0),
+                uniform="v3cards" if mode == "wide" else "",
+                minsize=0,
+            )
+
+        if mode == "wide":
+            self._session_col.grid(
                 row=0,
                 column=0,
                 columnspan=1,
-                sticky=col_sticky,
-                padx=(18 + margin, 9),
-                pady=18,
+                sticky="new",
+                padx=(18, 7),
+                pady=(8, 12),
             )
-            self._col_right.grid(
+            self._output_col.grid(
                 row=0,
                 column=1,
                 columnspan=1,
-                sticky=col_sticky,
-                padx=(9, 18 + margin),
-                pady=18,
+                sticky="new",
+                padx=7,
+                pady=(8, 12),
+            )
+            self._services_col.grid(
+                row=0,
+                column=2,
+                columnspan=1,
+                sticky="new",
+                padx=(7, 18),
+                pady=(8, 12),
             )
         else:
-            self._applied_collapsed_margin = None
-            self.sidebar.grid_columnconfigure(0, weight=1, uniform="")
-            self.sidebar.grid_columnconfigure(1, weight=0, uniform="")
-            self._col_left.grid(
-                row=0, column=0, columnspan=2, sticky="new", padx=18, pady=(18, 0)
+            self._session_col.grid(
+                row=0, column=0, columnspan=1, sticky="new", padx=18, pady=(8, 8)
             )
-            self._col_right.grid(
-                row=1, column=0, columnspan=2, sticky="new", padx=18, pady=(18, 18)
+            self._output_col.grid(
+                row=1, column=0, columnspan=1, sticky="new", padx=18, pady=8
             )
+            self._services_col.grid(
+                row=2, column=0, columnspan=1, sticky="new", padx=18, pady=(8, 14)
+            )
+        self._dashboard.animate_card_reflow(
+            [self._session_col, self._output_col, self._services_col],
+            wide=mode == "wide",
+        )
 
-    def _collapsed_margin(self) -> int:
-        """Extra outer padding (raw px) that caps the 2-column card grid at a
-        comfortable width and centers it, so maximizing the collapsed window
-        doesn't stretch the cards across the whole screen. 0 until the sidebar
-        is mapped; a <Configure> binding re-applies the layout on resize."""
+    def _wide_layout_breakpoint(self) -> int:
+        """Physical width required by the three cards at the current DPI.
+
+        A fixed 1100-unit breakpoint clipped the provider card in German: the
+        session/output controls have a larger natural minimum width than the
+        nominal three equal columns.  Tk reports both available and requested
+        sizes in physical pixels, so use the cards' real request and retain the
+        1100-logical design minimum as a floor.
+        """
+
         try:
-            avail = self.sidebar.winfo_width()
             scaling = self._get_window_scaling()
         except Exception:
-            return 0
-        if avail <= 1:  # not yet mapped
-            return 0
-        max_px = int(self._MAX_CARD_AREA_W * scaling)
-        return max(0, (avail - max_px) // 2)
+            scaling = 1.0
+        natural_width = getattr(self, "_wide_cards_required_width", 0)
+        if not natural_width:
+            natural_width = sum(
+                max(1, card.winfo_reqwidth())
+                for card in (self.language_card, self.display_card, self.advanced_card)
+            )
+        # 36 px outer padding + 28 px inter-column padding from the wide grid.
+        depth_width = round(3 * self._CARD_DEPTH_X * scaling)
+        return max(
+            round(1100 * scaling),
+            natural_width + round(64 * scaling) + depth_width,
+        )
+
+    def _collapsed_margin(self) -> int:
+        return 0
 
     def _on_sidebar_resize(self, _event: object | None = None) -> None:
-        """Re-center the collapsed card grid when the window is resized."""
-        if not self._log_collapsed:
-            return
-        margin = self._collapsed_margin()
-        if margin == getattr(self, "_applied_collapsed_margin", None):
-            return
-        self._applied_collapsed_margin = margin
-        self._col_left.grid_configure(padx=(18 + margin, 9))
-        self._col_right.grid_configure(padx=(9, 18 + margin))
+        # Coalesce the configure burst produced by a native resize/DPI move.
+        # Re-laying all three cards for every intermediate frame is both
+        # wasteful and visibly jerky.
+        if self._sidebar_resize_job is not None:
+            try:
+                self.after_cancel(self._sidebar_resize_job)
+            except tk.TclError:
+                pass
+        self._sidebar_resize_job = self.after(80, self._finish_sidebar_resize)
+
+    def _finish_sidebar_resize(self) -> None:
+        self._sidebar_resize_job = None
+        self._layout_sidebar_cards()
 
     def _create_sidebar_header(self) -> None:
         header = ctk.CTkFrame(
             self.sidebar_container,
             fg_color=self._colors["sidebar"],
-            height=68,
+            height=78,
             corner_radius=0,
         )
         header.grid(row=0, column=0, sticky="ew")
-        header.grid_columnconfigure(0, weight=1)
+        header.grid_columnconfigure(1, weight=1)
         header.grid_propagate(False)
         self._sidebar_header = header
 
+        brand = ctk.CTkFrame(header, fg_color="transparent")
+        brand.grid(row=0, column=0, sticky="w", padx=(20, 10), pady=8)
+        self._v3_logo_image = None
+        if os.path.exists(LOGO_PATH):
+            try:
+                with Image.open(LOGO_PATH) as source:
+                    logo_source = source.convert("RGBA").copy()
+                self._v3_logo_image = ctk.CTkImage(
+                    light_image=logo_source,
+                    dark_image=logo_source,
+                    size=(54, 54),
+                )
+                logo = ctk.CTkLabel(
+                    brand,
+                    text="",
+                    image=self._v3_logo_image,
+                    width=54,
+                    height=54,
+                )
+                logo.grid(row=0, column=0, rowspan=2, padx=(0, 10))
+            except Exception:
+                pass
         title_label = ctk.CTkLabel(
-            header,
+            brand,
             text="MinbarLive",
-            font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
+            font=ctk.CTkFont(
+                family="Segoe UI Variable Display", size=19, weight="bold"
+            ),
             text_color=self._colors["text"],
+            anchor="w",
         )
-        title_label.grid(row=0, column=0, sticky="w", padx=22, pady=16)
+        title_label.grid(row=0, column=1, sticky="sw")
         self._labels.append(title_label)
 
-        self._history_btn = ctk.CTkButton(
+        brand_subtitle = ctk.CTkLabel(
+            brand,
+            text="ISLAMIC LIVE TRANSLATION",
+            font=ctk.CTkFont(family="Segoe UI Variable Text", size=8),
+            text_color=self._colors["brass"],
+            anchor="w",
+        )
+        brand_subtitle.grid(row=1, column=1, sticky="nw")
+        self._brand_subtitle = brand_subtitle
+        self._muted_labels.append(brand_subtitle)
+
+        self.language_summary_label = ctk.CTkLabel(
             header,
-            text="⟲",
+            text="",
+            font=ctk.CTkFont(
+                family="Segoe UI Variable Display", size=15, weight="bold"
+            ),
+            text_color=self._colors["text"],
+        )
+        self.language_summary_label.grid(row=0, column=1, sticky="nsew", padx=8)
+        self._labels.append(self.language_summary_label)
+
+        self._history_btn = self._dashboard.nav_button(
+            header,
+            icon="history",
+            text_key="history_tab_sessions",
+            fallback="Verlauf",
             command=self._open_history_window,
-            width=44,
-            height=44,
-            corner_radius=14,
-            font=ctk.CTkFont(family="Segoe UI Symbol", size=20),
-            fg_color=self._colors["button"],
-            hover_color=self._colors["button_hover"],
-            text_color=self._colors["text"],
         )
-        self._history_btn.grid(row=0, column=1, sticky="e", padx=(0, 8), pady=12)
-        self._buttons.append(self._history_btn)
+        self._history_btn.grid(row=0, column=2, padx=(0, 2), pady=18)
 
-        self._batch_btn = ctk.CTkButton(
+        self._batch_btn = self._dashboard.nav_button(
             header,
-            text="▦",
+            icon="file",
+            text_key="batch_file",
+            fallback="Datei",
             command=self._open_batch_window,
-            width=44,
-            height=44,
-            corner_radius=14,
-            font=ctk.CTkFont(family="Segoe UI Symbol", size=20),
-            fg_color=self._colors["button"],
-            hover_color=self._colors["button_hover"],
-            text_color=self._colors["text"],
         )
-        self._batch_btn.grid(row=0, column=2, sticky="e", padx=(0, 8), pady=12)
-        self._buttons.append(self._batch_btn)
+        self._batch_btn.grid(row=0, column=3, padx=2, pady=18)
 
-        self._announce_btn = ctk.CTkButton(
+        self._announce_btn = self._dashboard.nav_button(
             header,
-            text="📣",
+            icon="announcement",
+            text_key="announce_title",
+            fallback="Durchsage",
             command=self._open_announce_window,
-            width=44,
-            height=44,
-            corner_radius=14,
-            font=ctk.CTkFont(family="Segoe UI Symbol", size=20),
-            fg_color=self._colors["button"],
-            hover_color=self._colors["button_hover"],
-            text_color=self._colors["text"],
         )
-        self._announce_btn.grid(row=0, column=3, sticky="e", padx=(0, 8), pady=12)
-        self._buttons.append(self._announce_btn)
+        self._announce_btn.grid(row=0, column=4, padx=2, pady=18)
 
-        self._settings_btn = ctk.CTkButton(
+        self._settings_btn = self._dashboard.nav_button(
             header,
-            text="⚙",
+            icon="settings",
+            text_key="settings_title",
+            fallback="Einstellungen",
             command=self._open_settings_window,
-            width=44,
-            height=44,
-            corner_radius=14,
-            font=ctk.CTkFont(family="Segoe UI Symbol", size=20),
-            fg_color=self._colors["button"],
-            hover_color=self._colors["button_hover"],
-            text_color=self._colors["text"],
         )
-        self._settings_btn.grid(row=0, column=4, sticky="e", padx=(0, 8), pady=12)
-        self._buttons.append(self._settings_btn)
+        self._settings_btn.grid(row=0, column=5, padx=2, pady=18)
 
-        self._log_toggle_btn = ctk.CTkButton(
+        self._log_toggle_btn = self._dashboard.nav_button(
             header,
-            text="◀" if not self._log_collapsed else "▶",
+            icon="diagnostics",
+            text_key="v3_diagnostics",
+            fallback="Diagnose",
             command=self._toggle_log_panel,
-            width=44,
-            height=44,
-            corner_radius=14,
-            font=ctk.CTkFont(family="Segoe UI Symbol", size=16),
-            fg_color=self._colors["button"],
-            hover_color=self._colors["button_hover"],
-            text_color=self._colors["text"],
         )
-        self._log_toggle_btn.grid(row=0, column=5, sticky="e", padx=(0, 16), pady=12)
-        self._buttons.append(self._log_toggle_btn)
+        self._log_toggle_btn.grid(row=0, column=6, padx=(2, 16), pady=18)
 
     # ── Update notice ───────────────────────────────────────────────────────
     # Dismissible banner between the header and the cards, shown when the
@@ -616,12 +812,12 @@ class AppGUI(
 
         close_btn = ctk.CTkButton(
             banner,
-            text="✕",
+            text=ICONS["close"],
             command=self._dismiss_update_banner,
             width=28,
             height=28,
             corner_radius=14,
-            font=ctk.CTkFont(family="Segoe UI Symbol", size=13),
+            font=ctk.CTkFont(family=ICON_FONT, size=13),
             fg_color="transparent",
             hover=False,
             text_color=self._colors["accent"],
@@ -631,7 +827,10 @@ class AppGUI(
         banner.bind("<Button-1>", self._open_release_page)
         label.bind("<Button-1>", self._open_release_page)
         banner.configure(cursor="hand2")
-        banner.grid_remove()  # hidden until a newer release is confirmed
+        # ``grid_remove`` is unsafe for CTk widgets across a per-monitor DPI
+        # change: CustomTkinter can replay the remembered geometry call and
+        # remap the widget.  Forget the geometry until a real update exists.
+        banner.grid_forget()  # hidden until a newer release is confirmed
 
         self._update_banner = banner
         self._update_banner_label = label
@@ -665,7 +864,7 @@ class AppGUI(
     def _show_update_banner(self, info: UpdateInfo) -> None:
         self._update_available = info
         self._update_banner_label.configure(text=self._update_banner_text())
-        self._update_banner.grid()
+        self._update_banner.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 4))
 
     def _update_banner_text(self) -> str:
         template = self.gui_texts.get(
@@ -677,125 +876,314 @@ class AppGUI(
             return template
 
     def _dismiss_update_banner(self) -> None:
-        self._update_banner.grid_remove()
+        self._update_banner.grid_forget()
 
     def _open_release_page(self, _event: object | None = None) -> None:
         if self._update_available is not None:
             webbrowser.open(self._update_available.url)
 
     def _create_control_card(self) -> None:
-        card = self._section_card(self._col_left, "▶", "control_center")
+        card = self._operator_dock
         self.control_card = card
-        card.grid_columnconfigure(0, weight=1, uniform="control_actions")
-        card.grid_columnconfigure(1, weight=1, uniform="control_actions")
+        card.grid_columnconfigure(1, weight=1)
 
         self.status_badge = ctk.CTkFrame(
-            card, fg_color=self._colors["danger_soft"], corner_radius=999
+            card,
+            fg_color=self._colors["danger_soft"],
+            border_color=self._colors["danger"],
+            border_width=1,
+            corner_radius=999,
         )
-        self.status_badge.grid(
-            row=2, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 10)
-        )
+        self.status_badge.grid(row=0, column=0, sticky="w", padx=(16, 14), pady=14)
         self.status_label = ctk.CTkLabel(
             self.status_badge,
             text=self.gui_texts.get("stopped", "Stopped"),
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(family="Segoe UI Variable Text", size=12, weight="bold"),
             text_color=self._colors["danger"],
         )
-        self.status_label.pack(fill="x", padx=12, pady=6)
+        self.status_label.pack(padx=14, pady=7)
+
+        summary_frame = ctk.CTkFrame(card, fg_color="transparent")
+        summary_frame.grid(row=0, column=1, sticky="ew", pady=10)
+        self.action_title_label = ctk.CTkLabel(
+            summary_frame,
+            text=self.gui_texts.get("v3_operator_ready", "Operator bereit"),
+            font=ctk.CTkFont(
+                family="Segoe UI Variable Display", size=14, weight="bold"
+            ),
+            text_color=self._colors["text"],
+            anchor="w",
+        )
+        self.action_title_label.pack(fill="x", anchor="w")
+        self.action_summary_label = ctk.CTkLabel(
+            summary_frame,
+            text="",
+            font=ctk.CTkFont(family="Segoe UI Variable Text", size=11),
+            text_color=self._colors["muted"],
+            anchor="w",
+        )
+        self.action_summary_label.pack(fill="x", anchor="w", pady=(1, 0))
+        self._labels.append(self.action_title_label)
+        self._muted_labels.append(self.action_summary_label)
 
         self.start_btn = ctk.CTkButton(
             card,
-            text=f"▶  {self._clean_action_label('start')}",
+            text=self.gui_texts.get("v3_start_live", "Live starten"),
             command=self.on_start,
-            width=0,
-            height=56,
-            corner_radius=18,
-            font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
+            width=220,
+            height=58,
+            corner_radius=16,
+            border_width=1,
+            border_color=self._colors["accent_glow"],
+            font=ctk.CTkFont(
+                family="Segoe UI Variable Display", size=17, weight="bold"
+            ),
             fg_color=self._colors["accent"],
             hover_color=self._colors["accent_hover"],
-            text_color="#ffffff",
+            text_color=self._colors["on_accent"],
             text_color_disabled=self._colors["muted"],
         )
-        self.start_btn.grid(row=3, column=0, sticky="ew", padx=(16, 6), pady=(0, 14))
 
         self.stop_btn = ctk.CTkButton(
             card,
-            text=f"■  {self._clean_action_label('stop')}",
+            text=self.gui_texts.get("v3_stop_live", "Live stoppen"),
             command=self.on_stop,
-            width=0,
-            height=56,
-            corner_radius=18,
-            font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
-            fg_color=self._colors["button"],
-            hover_color=self._colors["button_hover"],
+            width=220,
+            height=58,
+            corner_radius=16,
+            border_width=1,
+            border_color=self._colors["danger"],
+            font=ctk.CTkFont(
+                family="Segoe UI Variable Display", size=17, weight="bold"
+            ),
+            fg_color=self._colors["danger"],
+            hover_color=self._colors["danger_hover"],
             text_color="#ffffff",
-            text_color_disabled=self._colors["muted"],
-            state="disabled",
         )
-        self.stop_btn.grid(row=3, column=1, sticky="ew", padx=(6, 16), pady=(0, 14))
+        # One visible contextual action avoids competing Start/Stop chrome;
+        # the two legacy buttons above remain as callback-compatible adapters.
+        self.primary_action_btn = ctk.CTkButton(
+            card,
+            text=self.gui_texts.get("v3_start_live", "Live starten"),
+            command=self.on_start,
+            width=220,
+            height=58,
+            corner_radius=16,
+            border_width=1,
+            border_color=self._colors["accent_glow"],
+            font=ctk.CTkFont(
+                family="Segoe UI Variable Display", size=17, weight="bold"
+            ),
+            fg_color=self._colors["accent"],
+            hover_color=self._colors["accent_hover"],
+            text_color=self._colors["on_accent"],
+        )
+        self.primary_action_btn.grid(row=0, column=2, padx=(14, 16), pady=10)
+        self._buttons.extend((self.start_btn, self.stop_btn, self.primary_action_btn))
+        self._dashboard.refresh(animate=False)
+
+    def _create_dropdown_help_label(self, parent) -> ctk.CTkLabel:
+        """Create compact, persistent help for a choice with non-obvious effects.
+
+        This deliberately lives outside ``CustomDropdown``: its options stay
+        short and keyboard-friendly while newcomers can understand the active
+        choice without discovering a hover-only tooltip.
+        """
+        rtl = self.gui_lang_code == "ar"
+        label = ctk.CTkLabel(
+            parent,
+            text="",
+            width=0,
+            wraplength=310,
+            justify="right" if rtl else "left",
+            anchor="e" if rtl else "w",
+            font=ctk.CTkFont(family="Segoe UI Variable Text", size=11),
+            text_color=self._colors["muted"],
+        )
+        self._muted_labels.append(label)
+        return label
+
+    def _configure_dropdown_help(
+        self, label: ctk.CTkLabel, text_key: str, fallback: str
+    ) -> None:
+        rtl = self.gui_lang_code == "ar"
+        label.configure(
+            text=self.gui_texts.get(text_key, fallback),
+            justify="right" if rtl else "left",
+            anchor="e" if rtl else "w",
+        )
 
     def _create_display_card(self) -> None:
-        card = self._section_card(self._col_left, "▤", "display_routing")
+        card = self._section_card(
+            self._output_col,
+            ICONS["display"],
+            "v3_output_window",
+            role="output",
+        )
         self.display_card = card
         card.grid_columnconfigure(0, weight=1, uniform="display_cols")
         card.grid_columnconfigure(1, weight=1, uniform="display_cols")
 
-        # ── Subtitle Screen (left) and Input Device (right) side-by-side ─────
+        # Output monitor belongs to the audience window; no subtitle preview is
+        # rendered in this control card.
         screen_frame = self._field(
-            card, "subtitle_screen", "▣", row=2, column=0, columnspan=1, padx=(18, 8)
+            card,
+            "subtitle_screen",
+            ICONS["screen"],
+            row=2,
+            column=0,
+            columnspan=2,
+            padx=18,
         )
-        screen_names = self._get_screen_names()
+        self._screen_names = self._get_screen_names()
+        self._screen_monitor_indices = [None, *range(len(self._screen_names))]
+        screen_values = [
+            self.gui_texts.get("subtitle_screen_none", "Kein Bildschirm"),
+            *self._screen_names,
+        ]
         self.screen_combo = self._combo(
             screen_frame,
-            values=screen_names,
+            values=screen_values,
             command=lambda _value: self._on_screen_change(),
         )
-        if screen_names:
-            self.screen_combo.current(
-                min(self.selected_screen_index, len(screen_names) - 1)
+        if self._saved_settings.subtitle_output_enabled and self._screen_names:
+            self.selected_screen_index = min(
+                self.selected_screen_index, len(self._screen_names) - 1
             )
+            self.screen_combo.current(self.selected_screen_index + 1)
+        else:
+            self.screen_combo.current(0)
         self.screen_combo.pack(fill="x", pady=(8, 0))
+        self.screen_help_label = self._create_dropdown_help_label(screen_frame)
+        self._refresh_subtitle_screen_help()
 
-        device_frame = self._field(
-            card, "input_device", "◉", row=2, column=1, columnspan=1, padx=(8, 18)
+        # Subtitle presentation belongs to the audience output window, not to
+        # the operator's language/session setup.
+        mode_outer = ctk.CTkFrame(card, fg_color="transparent")
+        mode_outer.grid(
+            row=3, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 12)
         )
-        self.device_names, self.device_base_names, self.device_indices, self.device_loopback_flags = (
-            self._get_input_devices()
-        )
-        self.device_combo = self._combo(
-            device_frame,
-            values=self.device_names,
-            command=lambda _value: self._on_device_change(),
-        )
-        if self.device_names:
-            selected_device = 0
-            saved_name = self._saved_settings.input_device_name
-            if saved_name in self.device_base_names:
-                selected_device = self.device_base_names.index(saved_name)
-            elif saved_name in self.device_names:
-                selected_device = self.device_names.index(saved_name)
-            self.device_combo.current(selected_device)
-        self.device_combo.pack(fill="x", pady=(8, 0))
+        mode_outer.grid_columnconfigure(0, weight=1)
+        mode_outer.grid_columnconfigure(1, weight=0, minsize=160)
 
+        mode_sub = ctk.CTkFrame(mode_outer, fg_color="transparent")
+        mode_sub.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        mode_sub.grid_columnconfigure(0, weight=1)
+        mode_combo_label = self._label(
+            mode_sub,
+            "subtitles",
+            symbol=ICONS["display"],
+            size=14,
+            weight="bold",
+        )
+        mode_combo_label.grid(row=0, column=0, sticky="w")
+        self._subtitle_mode_values = self._subtitle_mode_choices()
+        mode_values = [self._mode_label(mode) for mode in self._subtitle_mode_values]
+        self.subtitle_mode_combo = self._combo(
+            mode_sub,
+            values=mode_values,
+            command=lambda _value: self._on_subtitle_mode_change(),
+        )
+        saved_mode = self._effective_subtitle_mode()
+        if saved_mode in self._subtitle_mode_values:
+            self.subtitle_mode_combo.current(
+                self._subtitle_mode_values.index(saved_mode)
+            )
+        else:
+            self.subtitle_mode_combo.current(0)
+        self.subtitle_mode_combo.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+
+        self.mode_controls = ctk.CTkFrame(mode_outer, fg_color="transparent")
+        self.mode_controls.grid(row=0, column=1, sticky="s")
+        self.speed_row = ctk.CTkFrame(self.mode_controls, fg_color="transparent")
+        self.speed_row.grid_columnconfigure(1, weight=0)
+        self.speed_decrease_btn = self._plain_button(
+            self.speed_row,
+            ICONS["remove"],
+            self._decrease_scroll_speed,
+            height=46,
+            width=46,
+        )
+        self.speed_decrease_btn.configure(font=self._dashboard.icon_font(16))
+        self.speed_decrease_btn.grid(row=0, column=0)
+        self.speed_label = ctk.CTkLabel(
+            self.speed_row,
+            text=f"{self.speed_value:.1f}x",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=self._colors["text"],
+            width=52,
+        )
+        self.speed_label.grid(row=0, column=1, padx=2)
+        self.speed_increase_btn = self._plain_button(
+            self.speed_row,
+            ICONS["add"],
+            self._increase_scroll_speed,
+            height=46,
+            width=46,
+        )
+        self.speed_increase_btn.configure(font=self._dashboard.icon_font(16))
+        self.speed_increase_btn.grid(row=0, column=2)
+        self.transparent_var = tk.BooleanVar(
+            value=self._saved_settings.transparent_static
+        )
+        self.transparent_checkbox = self._checkbox(
+            self.mode_controls,
+            "transparent",
+            self.transparent_var,
+            self._on_transparent_change,
+        )
+
+        self.subtitle_mode_help_label = self._create_dropdown_help_label(mode_outer)
+        self.subtitle_mode_help_label.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=2,
+            pady=(8, 0),
+        )
+        self._refresh_subtitle_mode_help()
+
+        # Original and translated text are two distinct visual roles in the
+        # audience window.  Keep their controls distinct as well: changing the
+        # smaller original must never silently resize the translation (or vice
+        # versa), and colours can independently follow or override the active
+        # subtitle theme.
         font_frame = self._mini_panel(card)
-        font_frame.grid(row=3, column=0, sticky="nsew", padx=(16, 6), pady=(0, 12))
-        self.font_label = self._label(font_frame, "font", size=14, weight="bold")
-        self.font_label.pack(anchor="w", padx=12, pady=(10, 4))
-        font_buttons = ctk.CTkFrame(font_frame, fg_color="transparent")
-        font_buttons.pack(fill="x", padx=12, pady=(0, 10))
-        font_buttons.grid_columnconfigure(0, weight=1)
-        font_buttons.grid_columnconfigure(1, weight=1)
-        self.font_decrease_btn = self._plain_button(
-            font_buttons, "−", self._decrease_subtitle_font, height=44
+        font_frame.grid(
+            row=4, column=0, columnspan=2, sticky="nsew", padx=16, pady=(0, 12)
         )
-        self.font_decrease_btn.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        self.font_increase_btn = self._plain_button(
-            font_buttons, "+", self._increase_subtitle_font, height=44
+        self.font_label = self._label(
+            font_frame, "subtitle_typography", size=14, weight="bold"
         )
-        self.font_increase_btn.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        self.font_label.pack(anchor="w", padx=12, pady=(10, 2))
+
+        self.translation_typography_row = self._create_typography_row(
+            font_frame,
+            role="translation",
+            label_key="subtitle_translation_text",
+            decrease_command=self._decrease_subtitle_font,
+            increase_command=self._increase_subtitle_font,
+        )
+        self.translation_typography_row.pack(fill="x", padx=12, pady=(2, 4))
+        self.source_typography_row = self._create_typography_row(
+            font_frame,
+            role="source",
+            label_key="subtitle_original_text",
+            decrease_command=self._decrease_source_subtitle_font,
+            increase_command=self._increase_source_subtitle_font,
+        )
+        self.source_typography_row.pack(fill="x", padx=12, pady=(4, 10))
+
+        # Compatibility adapters retained for older tests/integrations that
+        # treated the single font row as the translated subtitle controls.
+        self.font_decrease_btn = self.translation_font_decrease_btn
+        self.font_increase_btn = self.translation_font_increase_btn
 
         height_frame = self._mini_panel(card)
-        height_frame.grid(row=3, column=1, sticky="nsew", padx=(6, 16), pady=(0, 12))
+        height_frame.grid(
+            row=5, column=0, columnspan=2, sticky="nsew", padx=16, pady=(0, 12)
+        )
         self.height_label = self._label(height_frame, "height", size=14, weight="bold")
         self.height_label.pack(anchor="w", padx=12, pady=(10, 4))
         self.height_value_label = ctk.CTkLabel(
@@ -819,10 +1207,196 @@ class AppGUI(
         self.height_slider.set(self._saved_settings.window_height_percent)
         self.height_slider.pack(fill="x", padx=12, pady=(6, 12))
 
+        # Mode-dependent options stay with the output surface they affect.
+        cb_row = ctk.CTkFrame(card, fg_color="transparent")
+        cb_row.grid(row=6, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 14))
+        cb_row.grid_columnconfigure(0, weight=1, uniform="cbcols")
+        cb_row.grid_columnconfigure(1, weight=1, uniform="cbcols")
+        self.bilingual_var = tk.BooleanVar(value=self._saved_settings.bilingual_mode)
+        self.bilingual_cb = self._checkbox(
+            cb_row,
+            "bilingual_mode",
+            self.bilingual_var,
+            self._on_bilingual_change,
+        )
+        self.bilingual_cb.grid(row=0, column=0, sticky="w")
+        self.adaptive_catchup_var = tk.BooleanVar(
+            value=self._saved_settings.adaptive_subtitle_catchup
+        )
+        self.adaptive_catchup_cb = self._checkbox(
+            cb_row,
+            "adaptive_subtitle_catchup",
+            self.adaptive_catchup_var,
+            self._on_adaptive_catchup_change,
+        )
+        self.adaptive_catchup_cb.grid(row=0, column=1, sticky="w")
+        self.show_interim_var = tk.BooleanVar(
+            value=self._saved_settings.show_interim_transcript
+        )
+        self.show_interim_cb = self._checkbox(
+            cb_row,
+            "show_interim_transcript",
+            self.show_interim_var,
+            self._on_show_interim_change,
+        )
+        self.show_interim_cb.grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(8, 0)
+        )
+        self._refresh_typography_controls()
+
+    def _create_typography_row(
+        self,
+        parent,
+        *,
+        role: str,
+        label_key: str,
+        decrease_command,
+        increase_command,
+    ):
+        """Build one independent subtitle typography role.
+
+        The label sits above a compact, single-line control strip so the row
+        remains usable both in the narrow three-column dashboard and in the
+        responsive stacked layout.
+        """
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.grid_columnconfigure(0, weight=1)
+
+        role_label = self._label(row, label_key, size=13, weight="bold")
+        role_label.grid(row=0, column=0, sticky="w")
+        setattr(self, f"{role}_typography_label", role_label)
+
+        controls = ctk.CTkFrame(row, fg_color="transparent")
+        controls.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        controls.grid_columnconfigure(4, weight=1)
+
+        decrease_btn = self._plain_button(
+            controls,
+            ICONS["remove"],
+            decrease_command,
+            height=40,
+            width=40,
+        )
+        decrease_btn.configure(font=self._dashboard.icon_font(15))
+        decrease_btn.grid(row=0, column=0, padx=(0, 2))
+
+        size_label = ctk.CTkLabel(
+            controls,
+            text="100%",
+            width=52,
+            height=40,
+            font=ctk.CTkFont(
+                family="Segoe UI Variable Text", size=13, weight="bold"
+            ),
+            text_color=self._colors["muted"],
+        )
+        size_label.grid(row=0, column=1, padx=2)
+        self._muted_labels.append(size_label)
+
+        increase_btn = self._plain_button(
+            controls,
+            ICONS["add"],
+            increase_command,
+            height=40,
+            width=40,
+        )
+        increase_btn.configure(font=self._dashboard.icon_font(15))
+        increase_btn.grid(row=0, column=2, padx=(2, 6))
+
+        color_btn = ctk.CTkButton(
+            controls,
+            text=self.gui_texts.get("subtitle_text_color", "Farbe"),
+            command=lambda selected_role=role: self._choose_subtitle_text_color(
+                selected_role
+            ),
+            width=72,
+            height=40,
+            corner_radius=13,
+            border_width=3,
+            border_color=self._colors["text"],
+            font=ctk.CTkFont(
+                family="Segoe UI Variable Text", size=12, weight="bold"
+            ),
+            fg_color=self._colors["button"],
+            hover_color=self._colors["button_hover"],
+            text_color=self._colors["text"],
+        )
+        color_btn._text_key = "subtitle_text_color"  # type: ignore[attr-defined]
+        color_btn._symbol = None  # type: ignore[attr-defined]
+        color_btn.grid(row=0, column=3, padx=(0, 4))
+        self._buttons.append(color_btn)
+
+        reset_btn = ctk.CTkButton(
+            controls,
+            text=self.gui_texts.get("subtitle_theme_default", "Standard"),
+            command=lambda selected_role=role: self._reset_subtitle_text_color(
+                selected_role
+            ),
+            width=80,
+            height=40,
+            corner_radius=13,
+            border_width=0,
+            font=ctk.CTkFont(
+                family="Segoe UI Variable Text", size=12, weight="bold"
+            ),
+            fg_color=self._colors["button"],
+            hover_color=self._colors["button_hover"],
+            text_color=self._colors["text"],
+            text_color_disabled=self._colors["muted"],
+        )
+        reset_btn._text_key = "subtitle_theme_default"  # type: ignore[attr-defined]
+        reset_btn._symbol = None  # type: ignore[attr-defined]
+        reset_btn.grid(row=0, column=4, sticky="e")
+        self._buttons.append(reset_btn)
+
+        setattr(self, f"{role}_font_decrease_btn", decrease_btn)
+        setattr(self, f"{role}_font_size_label", size_label)
+        setattr(self, f"{role}_font_increase_btn", increase_btn)
+        setattr(self, f"{role}_color_btn", color_btn)
+        setattr(self, f"{role}_color_reset_btn", reset_btn)
+        return row
+
     def _create_language_card(self) -> None:
-        card = self._section_card(self._col_right, "⇄", "translation_flow")
+        card = self._section_card(
+            self._session_col,
+            ICONS["speech"],
+            "v3_session",
+            role="session",
+        )
         self.language_card = card
         card.grid_columnconfigure(0, weight=1)
+
+        device_frame = self._field(
+            card,
+            "input_device",
+            ICONS["microphone"],
+            row=1,
+            column=0,
+            padx=18,
+        )
+        (
+            self.device_names,
+            self.device_base_names,
+            self.device_indices,
+            self.device_loopback_flags,
+        ) = self._get_input_devices()
+        self.device_combo = self._combo(
+            device_frame,
+            values=self.device_names,
+            command=lambda _value: self._on_device_change(),
+        )
+        if self.device_names:
+            saved_name = self._saved_settings.input_device_name
+            selected_device = find_input_device_position(
+                saved_name,
+                self.device_base_names,
+            )
+            if selected_device is None and saved_name in self.device_names:
+                selected_device = self.device_names.index(saved_name)
+            if selected_device is None:
+                selected_device = 0
+            self.device_combo.current(selected_device)
+        self.device_combo.pack(fill="x", pady=(8, 0))
 
         # ── Source + Swap + Target — all on one row ─────────────────────────
         lang_pair_frame = ctk.CTkFrame(card, fg_color="transparent")
@@ -836,7 +1410,11 @@ class AppGUI(
         source_sub.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         source_sub.grid_columnconfigure(0, weight=1)
         source_label = self._label(
-            source_sub, "source", symbol="⌁", size=14, weight="bold"
+            source_sub,
+            "source",
+            symbol=ICONS["speech"],
+            size=14,
+            weight="bold",
         )
         source_label.grid(row=0, column=0, sticky="w")
         # Canonical (English) names drive storage/lookups; the dropdown shows
@@ -856,8 +1434,13 @@ class AppGUI(
 
         # Swap button (vertically aligned with combos)
         self.swap_btn = self._plain_button(
-            lang_pair_frame, "⇄", self._on_swap_languages, height=46, width=50
+            lang_pair_frame,
+            ICONS["swap"],
+            self._on_swap_languages,
+            height=46,
+            width=50,
         )
+        self.swap_btn.configure(font=self._dashboard.icon_font(18))
         self.swap_btn.grid(row=0, column=1, padx=6, pady=(22, 0))
 
         # Target sub-frame
@@ -865,7 +1448,11 @@ class AppGUI(
         target_sub.grid(row=0, column=2, sticky="ew", padx=(4, 0))
         target_sub.grid_columnconfigure(0, weight=1)
         target_label = self._label(
-            target_sub, "target", symbol="→", size=14, weight="bold"
+            target_sub,
+            "target",
+            symbol=ICONS["translate"],
+            size=14,
+            weight="bold",
         )
         target_label.grid(row=0, column=0, sticky="w")
         self.language_combo = self._combo(
@@ -878,85 +1465,22 @@ class AppGUI(
         )
         self.language_combo.grid(row=1, column=0, sticky="ew", pady=(4, 0))
 
-        # ── Subtitle Mode + Mode Controls — side by side ─────────────────────
-        mode_outer = ctk.CTkFrame(card, fg_color="transparent")
-        mode_outer.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 12))
-        mode_outer.grid_columnconfigure(0, weight=1)
-        mode_outer.grid_columnconfigure(1, weight=0, minsize=160)
-
-        # Mode combo (left)
-        mode_sub = ctk.CTkFrame(mode_outer, fg_color="transparent")
-        mode_sub.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        mode_sub.grid_columnconfigure(0, weight=1)
-        mode_combo_label = self._label(
-            mode_sub, "subtitles", symbol="≋", size=14, weight="bold"
-        )
-        mode_combo_label.grid(row=0, column=0, sticky="w")
-        # Realtime is streaming-only, so the value list depends on the
-        # Processing Strategy — _refresh_subtitle_mode_combo keeps it synced.
-        self._subtitle_mode_values = self._subtitle_mode_choices()
-        mode_values = [self._mode_label(mode) for mode in self._subtitle_mode_values]
-        self.subtitle_mode_combo = self._combo(
-            mode_sub,
-            values=mode_values,
-            command=lambda _value: self._on_subtitle_mode_change(),
-        )
-        saved_mode = self._effective_subtitle_mode()
-        if saved_mode in self._subtitle_mode_values:
-            self.subtitle_mode_combo.current(
-                self._subtitle_mode_values.index(saved_mode)
-            )
-        else:
-            self.subtitle_mode_combo.current(0)
-        self.subtitle_mode_combo.grid(row=1, column=0, sticky="ew", pady=(4, 0))
-
-        # Mode controls (right — vertically anchored to bottom of mode_sub, aligning with combo)
-        self.mode_controls = ctk.CTkFrame(mode_outer, fg_color="transparent")
-        self.mode_controls.grid(row=0, column=1, sticky="s")
-
-        # Speed compact row (shown for Continuous mode)
-        self.speed_row = ctk.CTkFrame(self.mode_controls, fg_color="transparent")
-        self.speed_row.grid_columnconfigure(1, weight=0)
-        self.speed_decrease_btn = self._plain_button(
-            self.speed_row, "−", self._decrease_scroll_speed, height=46, width=46
-        )
-        self.speed_decrease_btn.grid(row=0, column=0)
-        self.speed_label = ctk.CTkLabel(
-            self.speed_row,
-            text=f"{self.speed_value:.1f}x",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color=self._colors["text"],
-            width=52,
-        )
-        self.speed_label.grid(row=0, column=1, padx=2)
-        self.speed_increase_btn = self._plain_button(
-            self.speed_row, "+", self._increase_scroll_speed, height=46, width=46
-        )
-        self.speed_increase_btn.grid(row=0, column=2)
-
-        # Transparent checkbox (shown for Static mode)
-        self.transparent_var = tk.BooleanVar(
-            value=self._saved_settings.transparent_static
-        )
-        self.transparent_checkbox = self._checkbox(
-            self.mode_controls,
-            "transparent",
-            self.transparent_var,
-            self._on_transparent_change,
-        )
-
         # ── Processing Strategy (master switch: real-time / chunk / semantic) ─
-        # Sits below the Subtitles selector.
+        # The session card controls how the selected languages are processed.
         strat_label_frame = ctk.CTkFrame(card, fg_color="transparent")
-        strat_label_frame.grid(row=5, column=0, sticky="ew", padx=18, pady=(4, 2))
+        strat_label_frame.grid(row=3, column=0, sticky="ew", padx=18, pady=(4, 2))
         strat_label_frame.grid_columnconfigure(0, weight=1)
         strat_lbl = self._label(
-            strat_label_frame, "processing_strategy", symbol="⇶", size=14, weight="bold"
+            strat_label_frame,
+            "processing_strategy",
+            symbol=ICONS["speech"],
+            size=14,
+            weight="bold",
         )
         strat_lbl.pack(anchor="w")
 
         strat_combo_row = ctk.CTkFrame(card, fg_color="transparent")
-        strat_combo_row.grid(row=6, column=0, sticky="ew", padx=18, pady=(0, 14))
+        strat_combo_row.grid(row=4, column=0, sticky="ew", padx=18, pady=(0, 14))
         strat_combo_row.grid_columnconfigure(0, weight=1)
         # Master switch. "realtime" => streaming (pipeline_mode streaming);
         # "semantic"/"chunk" => segmented buffering. Real-time is first and the
@@ -981,62 +1505,208 @@ class AppGUI(
         self.strategy_running_hint.grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(2, 0)
         )
-        self.strategy_running_hint.grid_remove()
+        self.strategy_running_hint.grid_forget()
 
-        # Display toggles side by side: "Show original text" (bilingual, all
-        # modes, default on) on the left; adaptive catch-up (continuous-only,
-        # _update_speed_button_states() grid()/grid_remove()s it) on the
-        # right. The old "Show live transcript" checkbox is gone — the live
-        # line is now intrinsic to the Realtime subtitle mode.
-        cb_row = ctk.CTkFrame(card, fg_color="transparent")
-        cb_row.grid(row=7, column=0, sticky="ew", padx=18, pady=(0, 14))
-        cb_row.grid_columnconfigure(0, weight=1, uniform="cbcols")
-        cb_row.grid_columnconfigure(1, weight=1, uniform="cbcols")
-
-        self.bilingual_var = tk.BooleanVar(value=self._saved_settings.bilingual_mode)
-        self.bilingual_cb = self._checkbox(
-            cb_row,
-            "bilingual_mode",
-            self.bilingual_var,
-            self._on_bilingual_change,
+        self.strategy_help_label = self._create_dropdown_help_label(strat_combo_row)
+        self.strategy_help_label.grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
         )
-        self.bilingual_cb.grid(row=0, column=0, sticky="w")
-
-        self.adaptive_catchup_var = tk.BooleanVar(
-            value=self._saved_settings.adaptive_subtitle_catchup
-        )
-        self.adaptive_catchup_cb = self._checkbox(
-            cb_row,
-            "adaptive_subtitle_catchup",
-            self.adaptive_catchup_var,
-            self._on_adaptive_catchup_change,
-        )
-        self.adaptive_catchup_cb.grid(row=0, column=1, sticky="w")
-
-        # Realtime-only: toggle the in-progress "live line" (transcript shown
-        # while the speaker is still talking). Shares column 1 with adaptive
-        # catch-up — the two are mutually exclusive by mode, so
-        # _update_speed_button_states() shows at most one of them.
-        self.show_interim_var = tk.BooleanVar(
-            value=self._saved_settings.show_interim_transcript
-        )
-        self.show_interim_cb = self._checkbox(
-            cb_row,
-            "show_interim_transcript",
-            self.show_interim_var,
-            self._on_show_interim_change,
-        )
-        self.show_interim_cb.grid(row=0, column=1, sticky="w")
+        self._refresh_strategy_help()
 
     def _create_advanced_card(self) -> None:
         card = self._section_card(
-            self._col_right,
-            "⚙",
-            "advanced_settings",
+            self._services_col,
+            ICONS["translate"],
+            "v3_ai_services",
             toggle_command=self._toggle_advanced_settings,
+            role="services",
         )
         card.grid_columnconfigure(0, weight=1)
         self.advanced_card = card
+
+        quick = ctk.CTkFrame(card, fg_color="transparent")
+        quick.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 14))
+        quick.grid_columnconfigure(0, weight=1)
+
+        profile_header = ctk.CTkFrame(quick, fg_color="transparent")
+        profile_header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        profile_header.grid_columnconfigure(1, weight=1)
+        profile_label = ctk.CTkLabel(
+            profile_header,
+            text=self.gui_texts.get("v3_service_profile", "Dienstprofil"),
+            font=ctk.CTkFont(family="Segoe UI Variable Text", size=12, weight="bold"),
+            text_color=self._colors["muted"],
+            anchor="w",
+        )
+        profile_label.grid(row=0, column=0, sticky="w", padx=(2, 10))
+        profile_label._text_key = "v3_service_profile"  # type: ignore[attr-defined]
+        self._muted_labels.append(profile_label)
+        self._provider_profile_ids = [
+            PROVIDER_PROFILE_GEMINI,
+            PROVIDER_PROFILE_OPENAI,
+            PROVIDER_PROFILE_CUSTOM,
+        ]
+        self.provider_profile_combo = self._combo(
+            profile_header,
+            values=self._provider_profile_labels(),
+            command=lambda _value: self._on_provider_profile_change(),
+        )
+        self.provider_profile_combo.grid(row=0, column=1, sticky="ew")
+
+        self._v3_service_rows: dict[str, dict[str, object]] = {}
+        for row_index, (role, title_key, fallback) in enumerate(
+            (
+                ("translation", "section_translation", "Übersetzung"),
+                ("transcription", "section_transcription", "Spracherkennung"),
+            ),
+            start=1,
+        ):
+            row = self._mini_panel(quick, corner_radius=14)
+            row.grid(row=row_index, column=0, sticky="ew", pady=(0, 8))
+            row.grid_columnconfigure(0, weight=1)
+            provider_label = ctk.CTkLabel(
+                row,
+                text="",
+                font=ctk.CTkFont(
+                    family="Segoe UI Variable Text", size=13, weight="bold"
+                ),
+                text_color=self._colors["text"],
+                anchor="w",
+            )
+            provider_label.grid(row=0, column=0, sticky="ew", padx=12, pady=(9, 0))
+            status_label = ctk.CTkLabel(
+                row,
+                text="",
+                font=ctk.CTkFont(family="Segoe UI Variable Text", size=11),
+                text_color=self._colors["muted"],
+                anchor="w",
+            )
+            status_label.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 9))
+            key_button = ctk.CTkButton(
+                row,
+                text="",
+                width=122,
+                height=34,
+                corner_radius=11,
+                font=ctk.CTkFont(
+                    family="Segoe UI Variable Text", size=11, weight="bold"
+                ),
+                fg_color=self._colors["button"],
+                hover_color=self._colors["button_hover"],
+                text_color=self._colors["text"],
+                border_width=1,
+                border_color=self._colors["button_border"],
+            )
+            key_button._uses_depth_border = True  # type: ignore[attr-defined]
+            key_button.grid(row=0, column=1, rowspan=2, padx=10, pady=9)
+            self._buttons.append(key_button)
+            self._v3_service_rows[role] = {
+                "provider": provider_label,
+                "status": status_label,
+                "button": key_button,
+                "title_key": title_key,
+                "fallback": fallback,
+            }
+            self._labels.append(provider_label)
+            self._muted_labels.append(status_label)
+
+        # Cost estimates belong to the provider card, not the signal path or
+        # translation output.  Fixed-size labels prevent layout movement while
+        # a live amount changes.
+        cost_panel = self._mini_panel(quick, corner_radius=14)
+        cost_panel.grid(row=3, column=0, sticky="ew", pady=(2, 0))
+        cost_panel.grid_columnconfigure((0, 1), weight=1)
+
+        self._cost_title_label = ctk.CTkLabel(
+            cost_panel,
+            text="",
+            font=ctk.CTkFont(
+                family="Segoe UI Variable Text", size=12, weight="bold"
+            ),
+            text_color=self._colors["text"],
+            anchor="w",
+        )
+        self._cost_title_label.grid(
+            row=0, column=0, sticky="ew", padx=(12, 6), pady=(9, 2)
+        )
+        self._labels.append(self._cost_title_label)
+        self._cost_total_label = ctk.CTkLabel(
+            cost_panel,
+            text="–",
+            width=100,
+            font=ctk.CTkFont(
+                family="Segoe UI Variable Text", size=13, weight="bold"
+            ),
+            text_color=self._colors["brass"],
+            anchor="e",
+        )
+        self._cost_total_label.grid(
+            row=0, column=1, sticky="e", padx=(6, 12), pady=(9, 2)
+        )
+
+        self._cost_provider_labels: dict[str, ctk.CTkLabel] = {}
+        for column, (provider_id, provider_name) in enumerate(
+            (("openai", "OpenAI"), ("gemini", "Gemini"))
+        ):
+            label = ctk.CTkLabel(
+                cost_panel,
+                text=f"{provider_name}  –",
+                height=30,
+                font=ctk.CTkFont(family="Segoe UI Variable Text", size=11),
+                text_color=self._colors["text"],
+                fg_color=self._colors["button"],
+                corner_radius=10,
+                anchor="w",
+            )
+            label.grid(
+                row=1,
+                column=column,
+                sticky="ew",
+                padx=(12 if column == 0 else 4, 4 if column == 0 else 12),
+                pady=(2, 7),
+            )
+            self._cost_provider_labels[provider_id] = label
+
+        self._cost_note_label = ctk.CTkLabel(
+            cost_panel,
+            text=self.gui_texts.get(
+                "v3_cost_note", "USD-Standardtarif · Rechnung kann abweichen"
+            ),
+            font=ctk.CTkFont(family="Segoe UI Variable Text", size=10),
+            text_color=self._colors["muted"],
+            anchor="w",
+        )
+        self._cost_note_label.grid(
+            row=2, column=0, sticky="ew", padx=(12, 4), pady=(0, 9)
+        )
+        self._cost_note_label._text_key = "v3_cost_note"  # type: ignore[attr-defined]
+        self._muted_labels.append(self._cost_note_label)
+        self._cost_history_btn = ctk.CTkButton(
+            cost_panel,
+            text=self.gui_texts.get("v3_cost_history", "Kostenverlauf"),
+            command=lambda: self._open_history_window("costs"),
+            width=108,
+            height=28,
+            corner_radius=9,
+            font=ctk.CTkFont(
+                family="Segoe UI Variable Text", size=10, weight="bold"
+            ),
+            fg_color=self._colors["button"],
+            hover_color=self._colors["button_hover"],
+            text_color=self._colors["text"],
+            border_width=1,
+            border_color=self._colors["button_border"],
+        )
+        self._cost_history_btn._uses_depth_border = True  # type: ignore[attr-defined]
+        self._cost_history_btn.grid(
+            row=2, column=1, sticky="e", padx=(4, 12), pady=(0, 9)
+        )
+        self._cost_history_btn._text_key = "v3_cost_history"  # type: ignore[attr-defined]
+        self._buttons.append(self._cost_history_btn)
 
         self.advanced_frame = ctk.CTkFrame(card, fg_color="transparent")
         self.advanced_frame.grid_columnconfigure(0, weight=1)
@@ -1270,22 +1940,19 @@ class AppGUI(
             row=13, column=0, sticky="ew", padx=16, pady=(0, 8)
         )
 
-        self.always_on_top_var = tk.BooleanVar(
-            value=self._saved_settings.always_on_top
-        )
+        self.always_on_top_var = tk.BooleanVar(value=self._saved_settings.always_on_top)
         self.always_on_top_cb = self._checkbox(
             self.advanced_frame,
             "always_on_top",
             self.always_on_top_var,
             self._on_always_on_top_change,
         )
-        self.always_on_top_cb.grid(
-            row=14, column=0, sticky="ew", padx=16, pady=(0, 12)
-        )
+        self.always_on_top_cb.grid(row=14, column=0, sticky="ew", padx=16, pady=(0, 12))
 
         self._sync_advanced_enabled_states()
         self._update_speed_button_states()
         self._align_provider_combo_widths()
+        self._refresh_provider_profile_ui()
 
     def _align_provider_combo_widths(self) -> None:
         """Match each provider dropdown's width to the model dropdown below it.
@@ -1299,15 +1966,221 @@ class AppGUI(
         ):
             combo.grid_configure(padx=(0, checkbox.winfo_reqwidth() + 10))
 
+    def _provider_profile_labels(self) -> list[str]:
+        return [
+            self.gui_texts.get("v3_profile_gemini", "Gemini"),
+            self.gui_texts.get("v3_profile_openai", "OpenAI"),
+            self.gui_texts.get("v3_profile_custom", "Benutzerdefiniert"),
+        ]
+
+    def _on_provider_profile_change(self) -> None:
+        index = self.provider_profile_combo.current()
+        if index is None or not (0 <= index < len(self._provider_profile_ids)):
+            return
+        profile_id = self._provider_profile_ids[index]
+        if profile_id == PROVIDER_PROFILE_CUSTOM:
+            if not self.advanced_visible:
+                self._toggle_advanced_settings()
+            self._refresh_provider_profile_ui()
+            return
+        if profile_id == infer_provider_profile(self._saved_settings):
+            self._refresh_provider_profile_ui()
+            return
+
+        if self._running and not has_usable_key(profile_id):
+            self._prompt_provider_key(profile_id)
+            if not has_usable_key(profile_id):
+                self._refresh_provider_profile_ui()
+                return
+
+        if apply_provider_profile(self._saved_settings, profile_id) is None:
+            return
+        self.use_default_translation_var.set(True)
+        self.use_default_transcription_var.set(True)
+        self._rebuild_provider_model_controls()
+        self._sync_advanced_enabled_states()
+        self._save_current_settings()
+        log(f"Provider profile: {profile_id}", level="INFO")
+        if self._running:
+            self._restart_pipeline_for_live_change()
+
+    def _rebuild_provider_model_controls(self) -> None:
+        """Mirror profile changes into the existing expert widget contracts."""
+        self._refresh_translation_provider_combo()
+        translation_provider = self._saved_settings.ai_provider
+        translation_choices = get_model_choices(translation_provider, "translation")
+        self._model_display_names = [name for name, _mid in translation_choices]
+        self._model_ids = [mid for _name, mid in translation_choices]
+        self.model_combo.configure(values=self._model_display_names)
+        if self._saved_settings.translation_model in self._model_ids:
+            self.model_combo.current(
+                self._model_ids.index(self._saved_settings.translation_model)
+            )
+        elif self._model_ids:
+            self.model_combo.current(0)
+
+        self._refresh_transcription_provider_combo()
+        transcription_provider = self._saved_settings.transcription_provider
+        transcription_choices = get_model_choices(
+            transcription_provider, "transcription"
+        )
+        self._transcription_display_names = [
+            name for name, _mid in transcription_choices
+        ]
+        self._transcription_ids = [mid for _name, mid in transcription_choices]
+        self.transcription_combo.configure(values=self._transcription_display_names)
+        if self._saved_settings.transcription_model in self._transcription_ids:
+            self.transcription_combo.current(
+                self._transcription_ids.index(self._saved_settings.transcription_model)
+            )
+        elif self._transcription_ids:
+            self.transcription_combo.current(0)
+
+    def _refresh_provider_profile_ui(self) -> None:
+        if not hasattr(self, "provider_profile_combo"):
+            return
+        labels = self._provider_profile_labels()
+        self.provider_profile_combo.configure(values=labels)
+        profile_id = infer_provider_profile(self._saved_settings)
+        try:
+            self.provider_profile_combo.current(
+                self._provider_profile_ids.index(profile_id)
+            )
+        except ValueError:
+            self.provider_profile_combo.current(
+                self._provider_profile_ids.index(PROVIDER_PROFILE_CUSTOM)
+            )
+
+        readiness = provider_start_readiness(
+            self._saved_settings,
+            running=self._running,
+            error_roles=self._runtime_errors,
+            key_lookup=self._key_available,
+        )
+        role_by_id = {role.role: role for role in readiness.roles}
+        for role_id, widgets in self._v3_service_rows.items():
+            role = role_by_id[role_id]
+            role_name = self.gui_texts.get(widgets["title_key"], widgets["fallback"])
+            provider_name = provider_display_name(role.provider_id)
+            widgets["provider"].configure(text=f"{role_name} · {provider_name}")
+            if role.status == PROVIDER_STATUS_ERROR:
+                state_text = self.gui_texts.get("v3_error", "Fehler")
+                state_color = self._colors["danger"]
+            elif self._running and role.key_present:
+                state_text = self.gui_texts.get("v3_live", "Live")
+                state_color = self._colors["accent"]
+            elif role.key_present:
+                state_text = self.gui_texts.get("v3_key_saved", "Schlüssel gespeichert")
+                state_color = self._colors["accent"]
+            else:
+                state_text = self.gui_texts.get("v3_key_missing", "Schlüssel fehlt")
+                state_color = self._colors["danger"]
+            widgets["status"].configure(text=state_text, text_color=state_color)
+            button_text = self.gui_texts.get(
+                "change_key" if role.key_present else "v3_add_key",
+                "Schlüssel ändern" if role.key_present else "Schlüssel hinterlegen",
+            )
+            button_text = (
+                f"{provider_display_name(role.key_provider_id)} · {button_text}"
+            )
+            widgets["button"].configure(
+                text=button_text,
+                command=lambda provider=role.key_provider_id: self.on_change_key(
+                    provider
+                ),
+            )
+
+    @staticmethod
+    def _cost_value_text(provider: dict | None, *, has_session: bool) -> str:
+        if provider is None:
+            return "≈ $0.0000" if has_session else "–"
+        amount = format_usd(provider.get("cost_usd", "0"))
+        if not provider.get("fully_priced", True):
+            if amount == "$0.0000":
+                return "Preis offen"
+            return f"≈ {amount}+"
+        return f"≈ {amount}"
+
+    def _refresh_cost_ui(self, *, force: bool = False) -> None:
+        if not hasattr(self, "_cost_total_label"):
+            return
+        revision = cost_revision()
+        if not force and revision == self._last_cost_revision:
+            return
+        self._last_cost_revision = revision
+
+        active = active_cost_session()
+        record = active if active is not None else latest_cost_session()
+        is_active = active is not None
+        title_key = "v3_cost_current" if is_active else "v3_cost_last"
+        title_default = "Aktuelle Sitzung · geschätzt" if is_active else "Letzte Sitzung · geschätzt"
+        self._cost_title_label.configure(
+            text=self.gui_texts.get(title_key, title_default)
+        )
+        if record is None:
+            self._cost_total_label.configure(text="–")
+            providers = {}
+        else:
+            total = format_usd(record.get("total_cost_usd", "0"))
+            if not record.get("fully_priced", True):
+                total_text = (
+                    self.gui_texts.get("v3_cost_unpriced", "Preis offen")
+                    if total == "$0.0000"
+                    else f"≈ {total}+"
+                )
+            else:
+                total_text = f"≈ {total}"
+            self._cost_total_label.configure(text=total_text)
+            providers = record.get("providers", {})
+
+        for provider_id, provider_name in (("openai", "OpenAI"), ("gemini", "Gemini")):
+            value = self._cost_value_text(
+                providers.get(provider_id), has_session=record is not None
+            )
+            if value == "Preis offen":
+                value = self.gui_texts.get("v3_cost_unpriced", "Preis offen")
+            self._cost_provider_labels[provider_id].configure(
+                text=f"{provider_name}  {value}"
+            )
+
+    def _schedule_cost_polling(self) -> None:
+        self._cancel_cost_polling()
+        self.cost_poll_job = self.after(750, self._poll_cost_usage)
+
+    def _cancel_cost_polling(self) -> None:
+        if self.cost_poll_job is None:
+            return
+        try:
+            self.after_cancel(self.cost_poll_job)
+        except Exception:
+            pass
+        self.cost_poll_job = None
+
+    def _poll_cost_usage(self) -> None:
+        self.cost_poll_job = None
+        flush_cost_history()
+        self._refresh_cost_ui()
+        if self._running:
+            self._schedule_cost_polling()
+
+    def _refresh_v3_dashboard(self, *, animate: bool = False) -> None:
+        if hasattr(self, "language_summary_label"):
+            source = language_display_name(self._saved_settings.source_language)
+            target = language_display_name(self._saved_settings.target_language)
+            self.language_summary_label.configure(text=f"{source}  →  {target}")
+        self._refresh_provider_profile_ui()
+        self._dashboard.refresh(animate=animate)
+
     def _create_log_panel(self) -> None:
         top_bar = ctk.CTkFrame(self.content, fg_color="transparent")
         top_bar.grid(row=0, column=0, sticky="ew", pady=(0, 18))
         top_bar.grid_columnconfigure(0, weight=1)
         top_bar.grid_columnconfigure(1, weight=0)
+        top_bar.grid_columnconfigure(2, weight=0)
 
         self.logs_label = ctk.CTkLabel(
             top_bar,
-            text=f"▤  {self.gui_texts.get('logs', 'Logs')}",
+            text=self.gui_texts.get("logs", "Logs"),
             font=ctk.CTkFont(size=28, weight="bold"),
             text_color=self._colors["text"],
         )
@@ -1325,6 +2198,27 @@ class AppGUI(
             height=42,
         )
         self.right_status.grid(row=0, column=1, sticky="e")
+
+        # Keep the drawer closable from inside its own visible area.  When the
+        # log is open at the minimum window width, the sidebar becomes 500 px
+        # wide and its far-right header action is clipped by the layout; relying
+        # on that same action to close the drawer traps the operator in it.
+        self._log_close_btn = ctk.CTkButton(
+            top_bar,
+            text=ICONS["close"],
+            command=self._close_log_panel,
+            width=42,
+            height=42,
+            corner_radius=14,
+            border_width=1,
+            border_color=self._colors["border"],
+            font=ctk.CTkFont(family=ICON_FONT, size=16),
+            fg_color=self._colors["button"],
+            hover_color=self._colors["button_hover"],
+            text_color=self._colors["text"],
+        )
+        self._log_close_btn.grid(row=0, column=2, sticky="e", padx=(10, 0))
+        self._buttons.append(self._log_close_btn)
 
         self.log_panel = ctk.CTkFrame(
             self.content,
@@ -1351,17 +2245,95 @@ class AppGUI(
         self.log_text.grid(row=0, column=0, sticky="nsew", padx=18, pady=18)
         self.log_text.configure(state="disabled")
 
+    def _subtitle_output_is_enabled(self) -> bool:
+        """Return whether a real audience monitor is intentionally selected."""
+
+        return bool(
+            getattr(self._saved_settings, "subtitle_output_enabled", True)
+            and 0 <= self.selected_screen_index < len(self._screen_names)
+        )
+
+    def _should_have_subtitle_window(self) -> bool:
+        """Central policy for every subtitle-window creation path."""
+
+        return self._subtitle_output_is_enabled() and (
+            self._running
+            or not self._saved_settings.hide_subtitle_on_stop
+            or self._has_active_announcement()
+        )
+
+    def _sync_subtitle_window_lifecycle(self) -> None:
+        """Make the audience window match output, run and announcement state."""
+
+        exists = bool(self.subtitle_window and self.subtitle_window.winfo_exists())
+        if not self._should_have_subtitle_window():
+            if exists:
+                self._destroy_subtitle_window()
+            return
+        if not exists:
+            self._create_subtitle_window()
+        if self.subtitle_window and self.subtitle_window.winfo_exists():
+            self.subtitle_window.set_stopped_hint(not self._running)
+
+    def _refresh_subtitle_screen_help(self) -> None:
+        if not hasattr(self, "screen_help_label"):
+            return
+        self._configure_dropdown_help(
+            self.screen_help_label,
+            "subtitle_screen_none_help",
+            "Es wird kein Untertitelfenster geöffnet; die Sitzung kann trotzdem laufen.",
+        )
+        if self._subtitle_output_is_enabled():
+            self.screen_help_label.pack_forget()
+        else:
+            self.screen_help_label.pack(fill="x", pady=(6, 0))
+
+    def _refresh_screen_combo(self) -> None:
+        """Retranslate the virtual target without losing the real monitor."""
+
+        if not hasattr(self, "screen_combo"):
+            return
+        self._screen_names = self._get_screen_names()
+        self._screen_monitor_indices = [None, *range(len(self._screen_names))]
+        self.screen_combo.configure(
+            values=[
+                self.gui_texts.get("subtitle_screen_none", "Kein Bildschirm"),
+                *self._screen_names,
+            ]
+        )
+        if self._saved_settings.subtitle_output_enabled and self._screen_names:
+            self.selected_screen_index = min(
+                max(0, self.selected_screen_index), len(self._screen_names) - 1
+            )
+            self.screen_combo.current(self.selected_screen_index + 1)
+        else:
+            self.screen_combo.current(0)
+        self._refresh_subtitle_screen_help()
+
     def _create_subtitle_window(self) -> None:
-        current_screen_idx = self.screen_combo.current()
-        if current_screen_idx is None or current_screen_idx < 0:
-            current_screen_idx = self.selected_screen_index
-        self.selected_screen_index = current_screen_idx
+        # This guard is deliberately authoritative.  Startup, Start,
+        # hide-on-stop and announcements all call this method, and none may
+        # override an explicit "Kein Bildschirm" choice.
+        if not self._subtitle_output_is_enabled():
+            return
+        if self.subtitle_window and self.subtitle_window.winfo_exists():
+            return
+        current_screen_idx = self.selected_screen_index
 
         self.subtitle_window = SubtitleWindow(
             self,
             on_close=self.on_close,
             monitor_index=current_screen_idx,
             font_size_base=self._saved_settings.font_size_base,
+            source_font_size_base=getattr(
+                self._saved_settings, "source_font_size_base", 40 / 0.7
+            ),
+            translation_text_color=getattr(
+                self._saved_settings, "translation_text_color", ""
+            ),
+            source_text_color=getattr(
+                self._saved_settings, "source_text_color", ""
+            ),
             target_language=self._saved_settings.target_language,
             subtitle_mode=self._effective_subtitle_mode(),
             scroll_speed=self.speed_value,
@@ -1386,6 +2358,8 @@ class AppGUI(
         self._apply_active_announcement()
         # The control panel now has an overlay to float above.
         self._apply_control_window_topmost()
+        if hasattr(self, "provider_profile_combo"):
+            self._refresh_v3_dashboard()
 
     def _destroy_subtitle_window(self) -> None:
         try:
@@ -1396,9 +2370,19 @@ class AppGUI(
         self.subtitle_window = None
         # No overlay left to float above → drop the control panel's topmost.
         self._apply_control_window_topmost()
+        if hasattr(self, "provider_profile_combo"):
+            self._refresh_v3_dashboard()
 
     def _finalize_setup(self) -> None:
         self._set_status(False)
+        # Keep the optional update notice truly absent until the worker has a
+        # real release to announce.  A late geometry/theme pass must not leave
+        # an empty coloured banner in the command deck.
+        self.after_idle(
+            lambda: self._update_banner.grid_forget()
+            if self._update_available is None
+            else None
+        )
         # Track window focus from startup so the very first dropdown click
         # after the window regains focus only restores focus (opens on the
         # second click). Otherwise this is installed lazily on the first
@@ -1498,19 +2482,98 @@ class AppGUI(
             self.subtitle_window.set_live_text(text, settled)
 
     def _poll_errors(self) -> None:
+        fatal_transcription_error = False
         while True:
             try:
                 error = self.error_queue.get_nowait()
             except queue.Empty:
                 break
             try:
-                if str(error).startswith("audio_device_lost:"):
+                raw_error = str(error)
+                if raw_error.startswith("audio_device_lost:"):
+                    self._record_runtime_error(
+                        "microphone",
+                        self.gui_texts.get("audio_device_lost", "Audio device lost"),
+                    )
                     self._handle_audio_device_lost()
+                elif raw_error.startswith("input_stream_error:"):
+                    detail = raw_error.partition(":")[2].strip()
+                    label = self.gui_texts.get(
+                        "v3_input_stream_error", "Input stream error"
+                    )
+                    safe_error = self._safe_controller_error(detail)
+                    message = f"{label}: {safe_error}" if safe_error else label
+                    self._record_runtime_error("microphone", message)
+                    log(f"Controller error: {message}", level="ERROR")
+                elif raw_error.startswith("fatal_transcription_error:"):
+                    code = raw_error.partition(":")[2].strip()
+                    key_provider = get_streaming_key_provider(
+                        self._saved_settings.transcription_provider
+                    )
+                    provider_name = provider_display_name(key_provider)
+                    if code == "invalid_api_key":
+                        detail = self.gui_texts.get(
+                            "v3_key_rejected_detail",
+                            "Key rejected by {provider}. Replace the {provider} key.",
+                        ).format(provider=provider_name)
+                        self._rejected_key_provider = key_provider
+                    else:
+                        detail = self.gui_texts.get(
+                            "v3_fatal_recognition_error",
+                            "Speech recognition stopped because the service rejected "
+                            "the connection.",
+                        )
+                    self._record_runtime_error(PROVIDER_ROLE_TRANSCRIPTION, detail)
+                    log(
+                        "Controller transcription stopped: "
+                        f"{self._safe_controller_error(code)}",
+                        level="ERROR",
+                    )
+                    fatal_transcription_error = True
+                elif raw_error.startswith("transcription_error:"):
+                    detail = raw_error.partition(":")[2].strip()
+                    self._record_runtime_error(
+                        PROVIDER_ROLE_TRANSCRIPTION,
+                        detail or self.gui_texts["v3_error"],
+                    )
+                    log(
+                        "Controller transcription error: "
+                        f"{self._safe_controller_error(detail)}",
+                        level="ERROR",
+                    )
+                elif raw_error.startswith("translation_error:"):
+                    detail = raw_error.partition(":")[2].strip()
+                    self._record_runtime_error(
+                        PROVIDER_ROLE_TRANSLATION, detail or self.gui_texts["v3_error"]
+                    )
+                    log(
+                        "Controller translation error: "
+                        f"{self._safe_controller_error(detail)}",
+                        level="ERROR",
+                    )
                 else:
-                    log(f"Controller error: {error}", level="ERROR")
+                    log(
+                        f"Controller error: {self._safe_controller_error(error)}",
+                        level="ERROR",
+                    )
             except Exception as exc:
-                log(f"Error handling controller error: {exc}", level="ERROR")
+                log(
+                    "Error handling controller error: "
+                    f"{self._safe_controller_error(exc)}",
+                    level="ERROR",
+                )
+        if fatal_transcription_error and self._fatal_stop_job is None:
+            # stop() joins worker threads, so it must run on Tk's thread and
+            # never inside the provider's WebSocket receive callback.
+            self._fatal_stop_job = self.after_idle(
+                self._stop_after_fatal_transcription_error
+            )
         self.error_poll_job = self.after(1000, self._poll_errors)
+
+    def _stop_after_fatal_transcription_error(self) -> None:
+        self._fatal_stop_job = None
+        if self._running:
+            self.on_stop()
 
     def _handle_audio_device_lost(self) -> None:
         if self._running:
@@ -1554,48 +2617,139 @@ class AppGUI(
         return batch_size, next_poll_ms
 
     def on_change_key(self, provider: str | None = None) -> None:
-        prompt_for_api_key(
+        provider_id = provider or self._saved_settings.ai_provider
+        saved = prompt_for_api_key(
             root=self,
             startup=False,
-            on_close=lambda: None,
+            on_close=lambda: self.after_idle(self._refresh_v3_dashboard),
             colors=self._colors,
             texts=self.gui_texts,
-            provider=provider or self._saved_settings.ai_provider,
+            provider=provider_id,
         )
+        if saved is not None:
+            self._after_provider_key_saved(provider_id)
 
     def _required_key_providers(self) -> list[str]:
         return required_key_providers(self._saved_settings)
 
+    def _key_available(self, provider: str) -> bool:
+        """One injectable key-presence boundary shared by tests and V3 views."""
+        return has_usable_key(provider)
+
+    def _safe_controller_error(self, error: object) -> str:
+        secrets: list[str] = []
+        for provider in ("gemini", "openai", "anthropic", "deepgram"):
+            try:
+                value = get_stored_api_key(provider)
+            except Exception:
+                value = None
+            if value:
+                secrets.append(value)
+        return _sanitize_error_text(error, tuple(secrets))
+
+    def _operator_transcription_error(self, error: object) -> str:
+        """Turn provider startup failures into concise, actionable copy."""
+
+        if classify_error(error) == "invalid_api_key":
+            key_provider = get_streaming_key_provider(
+                self._saved_settings.transcription_provider
+            )
+            provider_name = provider_display_name(key_provider)
+            self._rejected_key_provider = key_provider
+            return self.gui_texts.get(
+                "v3_key_rejected_detail",
+                "Key rejected by {provider}. Replace the {provider} key.",
+            ).format(provider=provider_name)
+        return self._safe_controller_error(error)
+
+    def _clear_runtime_errors(self) -> None:
+        self._runtime_errors.clear()
+        self._runtime_error_message = None
+        self._rejected_key_provider = None
+
+    def _after_provider_key_saved(self, provider: str) -> None:
+        """Refresh readiness after a modal key replacement has completed."""
+
+        if self._rejected_key_provider == provider:
+            self._clear_runtime_errors()
+        if self._settings_win_exists():
+            self._refresh_api_key_status()
+        self._refresh_v3_dashboard()
+
+    def _record_runtime_error(self, role: str, error: object) -> None:
+        """Expose an actual provider-role failure without leaking credentials."""
+
+        safe_error = self._safe_controller_error(error)
+        if role == "microphone":
+            role_name = self.gui_texts.get("v3_stage_microphone", "Mikrofon")
+            provider_name = None
+        elif role == PROVIDER_ROLE_TRANSLATION:
+            role_name = self.gui_texts.get("v3_stage_translation", "Übersetzung")
+            provider_id = self._saved_settings.ai_provider
+            provider_name = provider_display_name(provider_id)
+        else:
+            role_name = self.gui_texts.get("v3_stage_recognition", "Spracherkennung")
+            provider_id = self._saved_settings.transcription_provider
+            provider_name = provider_display_name(provider_id)
+        self._runtime_errors[role] = safe_error
+        if provider_name is None:
+            self._runtime_error_message = f"{role_name}: {safe_error}"
+        else:
+            self._runtime_error_message = f"{role_name} · {provider_name}: {safe_error}"
+        self._refresh_v3_dashboard()
+
     def on_start(self) -> None:
         # Prompt for any missing key; if the user dismisses the dialog the app
         # stays stopped (the dialog re-opens on the next Start attempt).
-        for provider in self._required_key_providers():
-            if not has_usable_key(provider):
+        self._clear_runtime_errors()
+        readiness = provider_start_readiness(
+            self._saved_settings, key_lookup=self._key_available
+        )
+        for provider in readiness.missing_key_providers:
+            if not self._key_available(provider):
                 self._prompt_provider_key(provider)
-                if not has_usable_key(provider):
+                if not self._key_available(provider):
+                    self._refresh_v3_dashboard()
                     return
+        begin_cost_session()
         try:
-            self.controller.start(input_device=self.get_selected_device_index())
+            input_device = self._refresh_selected_device_for_start()
+            if input_device is None:
+                raise AudioInputError("The selected input device is unavailable.")
+            self.controller.start(input_device=input_device)
         except Exception as exc:
+            cancel_cost_session()
+            if isinstance(exc, AudioInputError):
+                log(
+                    "Microphone startup failed: "
+                    f"{self._safe_controller_error(exc)}",
+                    level="ERROR",
+                )
+                safe_error = self.gui_texts.get(
+                    "v3_microphone_open_failed",
+                    "The microphone could not be opened. Reconnect it or choose "
+                    "another input device.",
+                )
+                self._record_runtime_error("microphone", safe_error)
+            else:
+                safe_error = self._operator_transcription_error(exc)
+                self._record_runtime_error(PROVIDER_ROLE_TRANSCRIPTION, safe_error)
             self._alert(
                 self.gui_texts.get("error_start_failed", "Start failed"),
-                str(exc),
+                safe_error,
                 parent=self,
                 danger=True,
             )
             return
         self._running = True
+        self._refresh_cost_ui(force=True)
+        self._schedule_cost_polling()
         self._refresh_provider_combos()  # hide keyless providers while running
         self._set_status(True)
         self._sync_advanced_enabled_states()
         self._start_log_polling()
         self._schedule_inactivity_check()
-        if self._saved_settings.hide_subtitle_on_stop and (
-            not self.subtitle_window or not self.subtitle_window.winfo_exists()
-        ):
-            self._create_subtitle_window()
-        if self.subtitle_window and self.subtitle_window.winfo_exists():
-            self.subtitle_window.set_stopped_hint(False)
+        self._sync_subtitle_window_lifecycle()
         log(self.gui_texts.get("log_started", "Started."), level="INFO")
 
     def _request_stop_from_subtitle(self) -> None:
@@ -1611,12 +2765,15 @@ class AppGUI(
         except Exception as exc:
             self._alert(
                 self.gui_texts.get("error_stop_failed", "Stop failed"),
-                str(exc),
+                self._safe_controller_error(exc),
                 parent=self,
                 danger=True,
             )
             return
         self._running = False
+        end_cost_session()
+        self._cancel_cost_polling()
+        self._refresh_cost_ui(force=True)
         self._refresh_provider_combos()  # restore the full provider list
         self._set_status(False)
         self._sync_advanced_enabled_states()
@@ -1624,13 +2781,7 @@ class AppGUI(
         # Keep the overlay alive if an 'until stopped' announcement is showing —
         # it must survive a translation stop (user decision). Stopping the
         # announcement itself then closes the overlay if hide-on-stop is set.
-        if (
-            self._saved_settings.hide_subtitle_on_stop
-            and not self._has_active_announcement()
-        ):
-            self._destroy_subtitle_window()
-        elif self.subtitle_window and self.subtitle_window.winfo_exists():
-            self.subtitle_window.set_stopped_hint(True)
+        self._sync_subtitle_window_lifecycle()
         log(self.gui_texts.get("log_stopped", "Stopped."), level="INFO")
 
     # ── Inactivity auto-stop ────────────────────────────────────────────────
@@ -1640,9 +2791,7 @@ class AppGUI(
 
     def _schedule_inactivity_check(self) -> None:
         self._cancel_inactivity_check()
-        self.inactivity_check_job = self.after(
-            15_000, self._check_inactivity_auto_stop
-        )
+        self.inactivity_check_job = self.after(15_000, self._check_inactivity_auto_stop)
 
     def _cancel_inactivity_check(self) -> None:
         if self.inactivity_check_job is not None:
@@ -1684,16 +2833,32 @@ class AppGUI(
                 hover_color=self._colors["danger_hover"],
                 text_color="#ffffff",
             )
+            self.primary_action_btn.configure(
+                text=self.gui_texts.get("v3_stop_live", "Live stoppen"),
+                command=self.on_stop,
+                fg_color=self._colors["danger"],
+                hover_color=self._colors["danger_hover"],
+                border_color=self._colors["danger"],
+                text_color="#ffffff",
+            )
             running_text = self._clean_action_label("running")
             self.status_label.configure(text=running_text, text_color="#ffffff")
-            self.status_badge.configure(fg_color=self._colors["accent"])
+            self.status_badge.configure(
+                fg_color=self._colors["accent"],
+                border_color=self._colors["accent_glow"],
+            )
+            self.action_title_label.configure(
+                text=self.gui_texts.get("v3_session_running", "Sitzung läuft")
+            )
             self.right_status.configure(
                 text=running_text,
                 fg_color=self._colors["accent"],
                 text_color="#ffffff",
             )
             self.strategy_running_hint.configure(text_color=self._colors["warning"])
-            self.strategy_running_hint.grid()
+            self.strategy_running_hint.grid(
+                row=1, column=0, columnspan=2, sticky="w", pady=(2, 0)
+            )
         else:
             self.start_btn.configure(
                 state="normal",
@@ -1707,17 +2872,31 @@ class AppGUI(
                 hover_color=self._colors["button_hover"],
                 text_color_disabled=self._colors["muted"],
             )
+            self.primary_action_btn.configure(
+                command=self.on_start,
+                fg_color=self._colors["accent"],
+                hover_color=self._colors["accent_hover"],
+                border_color=self._colors["accent_glow"],
+                text_color=self._colors["on_accent"],
+            )
             stopped_text = self.gui_texts.get("stopped", "Stopped")
             self.status_label.configure(
                 text=stopped_text, text_color=self._colors["danger"]
             )
-            self.status_badge.configure(fg_color=self._colors["danger_soft"])
+            self.status_badge.configure(
+                fg_color=self._colors["danger_soft"],
+                border_color=self._colors["danger"],
+            )
+            self.action_title_label.configure(
+                text=self.gui_texts.get("v3_operator_ready", "Operator bereit")
+            )
             self.right_status.configure(
                 text=stopped_text,
                 fg_color=self._colors["danger_soft"],
                 text_color=self._colors["danger"],
             )
-            self.strategy_running_hint.grid_remove()
+            self.strategy_running_hint.grid_forget()
+        self._refresh_v3_dashboard(animate=running)
 
     def _get_input_devices(self) -> tuple[list[str], list[str], list[int], list[bool]]:
         return get_input_devices()
@@ -1727,6 +2906,45 @@ class AppGUI(
         if idx is None or idx < 0 or idx >= len(self.device_indices):
             return None
         return self.device_indices[idx]
+
+    def _refresh_selected_device_for_start(self) -> int | None:
+        """Re-resolve the saved device immediately before opening audio.
+
+        PortAudio indices can move after a USB headset is unplugged or wakes
+        from standby. Persisted names are stable enough to map the selection
+        back onto the freshly enumerated WASAPI/MME aliases; an absent device
+        is never silently replaced by a different microphone.
+        """
+
+        current = self.device_combo.current()
+        preferred_name = self._saved_settings.input_device_name
+        if (
+            not preferred_name
+            and current is not None
+            and 0 <= current < len(self.device_base_names)
+        ):
+            preferred_name = self.device_base_names[current]
+
+        (
+            device_names,
+            base_names,
+            device_indices,
+            loopback_flags,
+        ) = self._get_input_devices()
+        self.device_names = device_names
+        self.device_base_names = base_names
+        self.device_indices = device_indices
+        self.device_loopback_flags = loopback_flags
+        self.device_combo.configure(values=device_names)
+
+        position = find_input_device_position(preferred_name, base_names)
+        if position is None:
+            self.device_combo.set(preferred_name or "")
+            return None
+
+        self.device_combo.current(position)
+        self._saved_settings.input_device_name = base_names[position]
+        return device_indices[position]
 
     def _selected_device_loopback(self) -> bool:
         idx = self.device_combo.current()
@@ -1744,13 +2962,30 @@ class AppGUI(
         self._save_current_settings()
 
     def _on_screen_change(self) -> None:
-        idx = self.screen_combo.current()
-        if idx is None or idx < 0:
+        position = self.screen_combo.current()
+        if (
+            position is None
+            or position < 0
+            or position >= len(self._screen_monitor_indices)
+        ):
             return
-        self.selected_screen_index = idx
-        if self.subtitle_window and self.subtitle_window.winfo_exists():
-            self.subtitle_window.set_monitor(idx)
-        self._saved_settings.monitor_index = idx
+        monitor_index = self._screen_monitor_indices[position]
+        if monitor_index is None:
+            self._saved_settings.subtitle_output_enabled = False
+            # Do not leave an invisible timed/until-stopped announcement that
+            # could unexpectedly reappear when output is enabled later.
+            if self._has_active_announcement():
+                self._stop_announcement()
+            self._destroy_subtitle_window()
+        else:
+            self.selected_screen_index = monitor_index
+            self._saved_settings.monitor_index = monitor_index
+            self._saved_settings.subtitle_output_enabled = True
+            if self.subtitle_window and self.subtitle_window.winfo_exists():
+                self.subtitle_window.set_monitor(monitor_index)
+            else:
+                self._sync_subtitle_window_lifecycle()
+        self._refresh_subtitle_screen_help()
         log(f"Subtitle screen: {self.screen_combo.get()}", level="INFO")
         self._save_current_settings()
 
@@ -1759,12 +2994,14 @@ class AppGUI(
         self._saved_settings.target_language = canonical
         if self.subtitle_window and self.subtitle_window.winfo_exists():
             self.subtitle_window.set_language(canonical)
+        self._refresh_typography_controls()
         log(f"Target language: {canonical}", level="INFO")
         self._save_current_settings()
 
     def _on_source_language_change(self) -> None:
         canonical = language_canonical_name(self.source_lang_combo.get())
         self._saved_settings.source_language = canonical
+        self._refresh_typography_controls()
         log(f"Source language: {canonical}", level="INFO")
         self._save_current_settings()
         # Segmented mode re-reads the source language per audio segment; the
@@ -1785,14 +3022,20 @@ class AppGUI(
         try:
             self.controller.restart(input_device=self.get_selected_device_index())
         except Exception as exc:
+            safe_error = self._operator_transcription_error(exc)
             # start() may fail after stop() already ran → reflect stopped state.
             self._running = False
+            end_cost_session("error")
+            self._cancel_cost_polling()
+            self._refresh_cost_ui(force=True)
             self._refresh_provider_combos()  # restore the full provider list
             self._set_status(False)
             self._sync_advanced_enabled_states()
+            self._sync_subtitle_window_lifecycle()
+            self._record_runtime_error(PROVIDER_ROLE_TRANSCRIPTION, safe_error)
             self._alert(
                 self.gui_texts.get("error_start_failed", "Start failed"),
-                str(exc),
+                safe_error,
                 parent=self,
                 danger=True,
             )
@@ -1827,6 +3070,11 @@ class AppGUI(
             self.source_lang_combo.set(
                 language_display_name(self._saved_settings.source_language)
             )
+        # A strategy switch may replace "Automatic" with Arabic for a
+        # realtime engine. Keep the typography role label in sync with that
+        # actual source selection immediately, not only after a later theme or
+        # language refresh.
+        self._refresh_typography_controls()
 
     def _on_swap_languages(self) -> None:
         source = language_canonical_name(self.source_lang_combo.get())
@@ -1837,6 +3085,7 @@ class AppGUI(
         self.language_combo.set(language_display_name(source))
         self._on_source_language_change()
         self._on_language_change()
+        self._refresh_typography_controls()
 
     def _subtitle_mode_choices(self) -> list[str]:
         return subtitle_mode_choices(self._saved_settings)
@@ -1858,6 +3107,37 @@ class AppGUI(
             )
         else:
             self.subtitle_mode_combo.current(0)
+        self._refresh_subtitle_mode_help(effective)
+
+    def _refresh_subtitle_mode_help(self, mode: str | None = None) -> None:
+        """Explain the active audience-window layout in everyday language."""
+        if not hasattr(self, "subtitle_mode_help_label"):
+            return
+        mode = mode or self._effective_subtitle_mode()
+        fallbacks = {
+            SUBTITLE_MODE_REALTIME: (
+                "Finished translations build from top to bottom; the currently "
+                "recognised original text can appear below them. Best for "
+                "following a live sermon directly. Available only with "
+                "Real-time streaming."
+            ),
+            SUBTITLE_MODE_CONTINUOUS: (
+                "Finished subtitles move through the window from bottom to top, "
+                "so older lines remain visible briefly. Best for longer sermons "
+                "and talks."
+            ),
+            SUBTITLE_MODE_STATIC: (
+                "Only the latest finished subtitle remains visible; the previous "
+                "one is replaced. Best for a calm projector or OBS overlay "
+                "without a moving text trail."
+            ),
+        }
+        safe_mode = mode if mode in fallbacks else SUBTITLE_MODE_CONTINUOUS
+        self._configure_dropdown_help(
+            self.subtitle_mode_help_label,
+            f"subtitle_help_{safe_mode}",
+            fallbacks[safe_mode],
+        )
 
     def _apply_effective_subtitle_mode(self) -> None:
         """Sync the window and the Subtitles dropdown to the effective mode
@@ -1878,33 +3158,189 @@ class AppGUI(
         self._saved_settings.subtitle_mode = mode
         if self.subtitle_window and self.subtitle_window.winfo_exists():
             self.subtitle_window.set_subtitle_mode(mode)
+        self._refresh_subtitle_mode_help(mode)
         self._update_speed_button_states()
         log(f"Subtitle mode: {self._mode_label(mode)}", level="INFO")
         self._save_current_settings()
 
     def _increase_subtitle_font(self) -> None:
-        if self.subtitle_window and self.subtitle_window.winfo_exists():
-            self.subtitle_window.increase_font()
-            self._saved_settings.font_size_base = (
-                self.subtitle_window.get_font_size_base()
-            )
-            log(
-                f"Font size changed to: {self.subtitle_window.get_current_font_size()}",
-                level="INFO",
-            )
-            self._save_current_settings()
+        self._adjust_subtitle_font("translation", increase=True)
 
     def _decrease_subtitle_font(self) -> None:
-        if self.subtitle_window and self.subtitle_window.winfo_exists():
-            self.subtitle_window.decrease_font()
-            self._saved_settings.font_size_base = (
-                self.subtitle_window.get_font_size_base()
+        self._adjust_subtitle_font("translation", increase=False)
+
+    def _increase_source_subtitle_font(self) -> None:
+        self._adjust_subtitle_font("source", increase=True)
+
+    def _decrease_source_subtitle_font(self) -> None:
+        self._adjust_subtitle_font("source", increase=False)
+
+    @staticmethod
+    def _font_scale_percent(font_size_base: float) -> int:
+        """Translate the renderer's inverse divisor into an operator-friendly scale."""
+        try:
+            base = max(float(font_size_base), 1.0)
+        except (TypeError, ValueError):
+            base = 40.0
+        return max(25, min(200, round(4000 / base)))
+
+    def _adjust_subtitle_font(self, role: str, *, increase: bool) -> None:
+        """Resize one text role, live when possible and persisted in all cases."""
+        window = self.subtitle_window
+        window_open = bool(window and window.winfo_exists())
+
+        if role == "source":
+            setting_name = "source_font_size_base"
+            current = float(getattr(self._saved_settings, setting_name, 40 / 0.7))
+            if window_open:
+                method_name = "increase_source_font" if increase else "decrease_source_font"
+                getattr(window, method_name)()
+                current = float(window.get_source_font_size_base())
+            else:
+                current = (
+                    max(20.0, current - 5.0)
+                    if increase
+                    else min(120.0, current + 5.0)
+                )
+            setattr(self._saved_settings, setting_name, current)
+            log_key = "log_source_font_size_changed"
+            fallback = "Original text size changed to: {size}"
+        else:
+            setting_name = "font_size_base"
+            current = float(getattr(self._saved_settings, setting_name, 40))
+            if window_open:
+                (window.increase_font if increase else window.decrease_font)()
+                current = float(window.get_font_size_base())
+            else:
+                current = max(20.0, current - 5.0) if increase else min(80.0, current + 5.0)
+            # Keep the long-standing integer setting type for compatibility.
+            setattr(self._saved_settings, setting_name, int(round(current)))
+            current = float(getattr(self._saved_settings, setting_name))
+            log_key = "log_translation_font_size_changed"
+            fallback = "Translation size changed to: {size}"
+
+        self._refresh_typography_controls()
+        self._save_current_settings()
+        log(
+            self.gui_texts.get(log_key, fallback).format(
+                size=f"{self._font_scale_percent(current)}%"
+            ),
+            level="INFO",
+        )
+
+    @staticmethod
+    def _normalize_subtitle_color(value: object) -> str:
+        color = str(value or "").strip()
+        return color.lower() if re.fullmatch(r"#[0-9a-fA-F]{6}", color) else ""
+
+    def _subtitle_theme_default_color(self, role: str) -> str:
+        mode = getattr(self._saved_settings, "subtitle_theme_mode", "dark")
+        defaults = {
+            "dark": {"translation": "#F7F3EA", "source": "#A9B8C3"},
+            "light": {"translation": "#0A1823", "source": "#586A73"},
+        }
+        return defaults.get(mode, defaults["dark"])[role]
+
+    def _typography_role_label(self, role: str) -> str:
+        if role == "source":
+            language = getattr(self._saved_settings, "source_language", "")
+            if not language or language == "Automatic":
+                return self.gui_texts.get("subtitle_original_text_plain", "Originaltext")
+            key = "subtitle_original_text"
+            fallback = "Originaltext · {language}"
+        else:
+            language = getattr(self._saved_settings, "target_language", "")
+            key = "subtitle_translation_text"
+            fallback = "Übersetzung · {language}"
+        try:
+            display_language = language_display_name(language) if language else ""
+            return self.gui_texts.get(key, fallback).format(language=display_language)
+        except (KeyError, ValueError):
+            return self.gui_texts.get(key, fallback).replace("{language}", str(language))
+
+    def _refresh_typography_controls(self) -> None:
+        if not hasattr(self, "translation_font_size_label"):
+            return
+        roles = (
+            ("translation", "font_size_base", 40.0),
+            ("source", "source_font_size_base", 40 / 0.7),
+        )
+        for role, setting_name, default_base in roles:
+            base = float(getattr(self._saved_settings, setting_name, default_base))
+            getattr(self, f"{role}_font_size_label").configure(
+                text=f"{self._font_scale_percent(base)}%"
             )
-            log(
-                f"Font size changed to: {self.subtitle_window.get_current_font_size()}",
-                level="INFO",
+            max_base = 120.0 if role == "source" else 80.0
+            getattr(self, f"{role}_font_increase_btn").configure(
+                state="disabled" if base <= 20.0 else "normal"
             )
-            self._save_current_settings()
+            getattr(self, f"{role}_font_decrease_btn").configure(
+                state="disabled" if base >= max_base else "normal"
+            )
+            getattr(self, f"{role}_typography_label").configure(
+                text=self._typography_role_label(role)
+            )
+            color = self._normalize_subtitle_color(
+                getattr(self._saved_settings, f"{role}_text_color", "")
+            )
+            preview = color or self._subtitle_theme_default_color(role)
+            getattr(self, f"{role}_color_btn").configure(
+                text=self.gui_texts.get("subtitle_text_color", "Farbe"),
+                border_color=preview,
+            )
+            reset_btn = getattr(self, f"{role}_color_reset_btn")
+            reset_btn.configure(
+                text=self.gui_texts.get("subtitle_theme_default", "Standard"),
+                state="normal" if color else "disabled",
+            )
+
+    def _choose_subtitle_text_color(self, role: str) -> None:
+        if role not in {"translation", "source"}:
+            return
+        current = self._normalize_subtitle_color(
+            getattr(self._saved_settings, f"{role}_text_color", "")
+        )
+        initial = current or self._subtitle_theme_default_color(role)
+        try:
+            _rgb, selected = colorchooser.askcolor(
+                color=initial,
+                parent=self,
+                title=self.gui_texts.get("subtitle_choose_color", "Textfarbe auswählen"),
+            )
+        except tk.TclError:
+            return
+        selected = self._normalize_subtitle_color(selected)
+        if not selected:
+            return
+        self._set_subtitle_text_color(role, selected)
+
+    def _reset_subtitle_text_color(self, role: str) -> None:
+        if role in {"translation", "source"}:
+            self._set_subtitle_text_color(role, "")
+
+    def _set_subtitle_text_color(self, role: str, color: str) -> None:
+        setting_name = f"{role}_text_color"
+        setattr(self._saved_settings, setting_name, color)
+        window = self.subtitle_window
+        if window and window.winfo_exists():
+            setter = (
+                window.set_translation_text_color
+                if role == "translation"
+                else window.set_source_text_color
+            )
+            setter(color)
+        self._refresh_typography_controls()
+        self._save_current_settings()
+        log_key = f"log_{role}_text_color_changed"
+        fallback = "{role} text color changed to: {color}"
+        log(
+            self.gui_texts.get(log_key, fallback).format(
+                role=role,
+                color=color
+                or self.gui_texts.get("subtitle_theme_default", "Theme default"),
+            ),
+            level="INFO",
+        )
 
     def _on_height_slider_change(self, value: float) -> None:
         percent = int(round(value))
@@ -2106,20 +3542,24 @@ class AppGUI(
         # auto-restretches the left column to match (equal-height columns), so
         # no manual re-levelling is needed.
         if running:
-            self.strategy_running_hint.grid()
+            self.strategy_running_hint.grid(
+                row=1, column=0, columnspan=2, sticky="w", pady=(2, 0)
+            )
         else:
-            self.strategy_running_hint.grid_remove()
+            self.strategy_running_hint.grid_forget()
 
     def _prompt_provider_key(self, provider: str) -> None:
         """Open the API-key dialog for a specific provider."""
-        prompt_for_api_key(
+        saved = prompt_for_api_key(
             root=self,
             startup=False,
-            on_close=lambda: None,
+            on_close=lambda: self.after_idle(self._refresh_v3_dashboard),
             colors=self._colors,
             texts=self.gui_texts,
             provider=provider,
         )
+        if saved is not None:
+            self._after_provider_key_saved(provider)
 
     def _strategy_labels(self) -> list[str]:
         """Localized display names for the Processing Strategy dropdown, in
@@ -2130,13 +3570,46 @@ class AppGUI(
             self.gui_texts.get("strategy_chunk", "Chunk-based"),
         ]
 
+    def _refresh_strategy_help(self) -> None:
+        """Explain the selected audio/translation strategy with a use case."""
+        if not hasattr(self, "strategy_help_label"):
+            return
+        selection = self.strategy_combo.current()
+        if selection is None or not (0 <= selection < len(self._strategy_ids)):
+            selection = self._current_strategy_index()
+        strategy_id = self._strategy_ids[selection]
+        fallbacks = {
+            "realtime": (
+                "Speech is recognised continuously; the original text can appear "
+                "while someone is speaking and the translation follows after each "
+                "utterance. Best for live sermons with the earliest possible display."
+            ),
+            "semantic": (
+                "Several audio sections are collected and translated together, "
+                "preferably at the end of a sentence. Best when complete sentences "
+                "matter more than the fastest display."
+            ),
+            "chunk": (
+                "Audio is split into fixed sections and translated one section at "
+                "a time. Best for calm talks where a few seconds of delay are "
+                "acceptable."
+            ),
+        }
+        self._configure_dropdown_help(
+            self.strategy_help_label,
+            f"strategy_help_{strategy_id}",
+            fallbacks[strategy_id],
+        )
+
     def _current_strategy_index(self) -> int:
         return current_strategy_index(self._saved_settings)
 
     def _visible_provider_choices(
         self, choices: list[tuple[str, str]]
     ) -> list[tuple[str, str]]:
-        return visible_provider_choices(choices, self._running)
+        return visible_provider_choices(
+            choices, self._running, key_lookup=self._key_available
+        )
 
     def _refresh_provider_combos(self) -> None:
         """Re-filter BOTH provider dropdowns for the current running state
@@ -2233,6 +3706,7 @@ class AppGUI(
         self._refresh_source_language_combo()
         self._sync_advanced_enabled_states()
         self._apply_effective_subtitle_mode()
+        self._refresh_strategy_help()
         self._save_current_settings()
         if prompt_key and sel == "realtime":
             key_provider = get_streaming_key_provider(
@@ -2278,14 +3752,7 @@ class AppGUI(
         self._saved_settings.hide_subtitle_on_stop = enabled
         log(f"Hide subtitle on stop: {'on' if enabled else 'off'}", level="INFO")
         self._save_current_settings()
-        if enabled and not self._running:
-            self._destroy_subtitle_window()
-        elif (
-            not enabled
-            and not self._running
-            and (not self.subtitle_window or not self.subtitle_window.winfo_exists())
-        ):
-            self._create_subtitle_window()
+        self._sync_subtitle_window_lifecycle()
 
     def _on_always_on_top_change(self) -> None:
         enabled = self.always_on_top_var.get()
@@ -2302,16 +3769,17 @@ class AppGUI(
     def _toggle_advanced_settings(self) -> None:
         self.advanced_visible = not self.advanced_visible
         if self.advanced_visible:
-            self._advanced_toggle_arrow.configure(text="▴")
-            self.advanced_frame.grid(row=1, column=0, sticky="ew", padx=2, pady=(0, 14))
+            self._advanced_toggle_arrow.configure(text=ICONS["chevron_up"])
+            self.advanced_frame.grid(row=2, column=0, sticky="ew", padx=2, pady=(0, 14))
             self.after(80, lambda: self.advanced_frame.focus_set())
         else:
-            self._advanced_toggle_arrow.configure(text="▾")
+            self._advanced_toggle_arrow.configure(text=ICONS["chevron_down"])
             self.advanced_frame.grid_forget()
-        # Expanding the Advanced card makes the right column much taller — switch
-        # the columns between bottom-aligned (collapsed) and top-anchored
-        # (expanded). See _layout_sidebar_cards.
-        self._layout_sidebar_cards()
+
+    def _close_log_panel(self) -> None:
+        """Close the diagnostic drawer without a second click reopening it."""
+        if not self._log_collapsed:
+            self._toggle_log_panel()
 
     def _toggle_log_panel(self) -> None:
         self._log_collapsed = not self._log_collapsed
@@ -2330,22 +3798,28 @@ class AppGUI(
         # 500px) instead of snapping the window to a fixed per-mode width.
         current_width = max(current_width, self._MIN_W)
         if self._log_collapsed:
-            # Collapsed: hide the log, reflow into the 2-column card grid.
-            self.content.grid_remove()
+            # Collapsed: hide the log, reflow into the three-card dashboard.
+            self.content.grid_forget()
             self.grid_columnconfigure(0, weight=1, minsize=self._MIN_W)
             self.grid_columnconfigure(1, weight=0, minsize=0)
             self.minsize(self._MIN_W, self._MIN_H)
             self.geometry(f"{current_width}x{current_height}")
-            self._log_toggle_btn.configure(text="▶")
+            self._log_toggle_btn.configure(
+                text=self.gui_texts.get("v3_diagnostics", "Diagnose")
+            )
         else:
             # Expanded: single-column sidebar + log panel (classic look).
             self.grid_columnconfigure(0, weight=0, minsize=500)
             self.grid_columnconfigure(1, weight=1)
-            self.content.grid()
+            self.content.grid(row=0, column=1, sticky="nsew", padx=(18, 22), pady=20)
             self.minsize(self._MIN_W, self._MIN_H)
             self.geometry(f"{current_width}x{current_height}")
-            self._log_toggle_btn.configure(text="◀")
+            self._log_toggle_btn.configure(
+                text=self.gui_texts.get("v3_close_diagnostics", "Diagnose schließen")
+            )
         self._layout_sidebar_cards()
+        if not self._log_collapsed:
+            self._dashboard.animate_drawer_open(self.content)
         self._save_current_settings()
 
     def _on_provider_change(self) -> None:
@@ -2493,29 +3967,29 @@ class AppGUI(
     def _update_speed_button_states(self) -> None:
         mode = self._effective_subtitle_mode()
         if mode == SUBTITLE_MODE_CONTINUOUS:
-            self.mode_controls.grid()
+            self.mode_controls.grid(row=0, column=1, sticky="s")
             self.speed_row.grid(row=0, column=0)
             self.transparent_checkbox.grid_forget()
             # Catch-up only applies to the continuous ticker.
-            self.adaptive_catchup_cb.grid()
-            self.show_interim_cb.grid_remove()
+            self.adaptive_catchup_cb.grid(row=0, column=1, sticky="w")
+            self.show_interim_cb.grid_forget()
         elif mode == SUBTITLE_MODE_STATIC:
-            self.mode_controls.grid()
+            self.mode_controls.grid(row=0, column=1, sticky="s")
             self.speed_row.grid_forget()
             self.transparent_checkbox.grid(row=0, column=0, pady=4)
-            self.adaptive_catchup_cb.grid_remove()
-            self.show_interim_cb.grid_remove()
+            self.adaptive_catchup_cb.grid_forget()
+            self.show_interim_cb.grid_forget()
         else:  # realtime feed: no ticker speed, no transparent-static option
             # Hide the whole controls frame, not just its children: an EMPTY
             # CTkFrame falls back to its default 200x200 size request and
             # blows up the row (the startup-gap bug when Realtime is the
             # saved subtitle mode).
-            self.mode_controls.grid_remove()
+            self.mode_controls.grid_forget()
             self.speed_row.grid_forget()
             self.transparent_checkbox.grid_forget()
-            self.adaptive_catchup_cb.grid_remove()
+            self.adaptive_catchup_cb.grid_forget()
             # Live line is a Realtime-mode concept — offer its toggle here only.
-            self.show_interim_cb.grid()
+            self.show_interim_cb.grid(row=0, column=1, sticky="w")
 
     def _save_current_settings(self) -> None:
         try:
@@ -2524,6 +3998,8 @@ class AppGUI(
             save_settings(self._saved_settings)
         except Exception as exc:
             log(f"Failed to save settings: {exc}", level="ERROR")
+        if hasattr(self, "provider_profile_combo"):
+            self._refresh_v3_dashboard()
 
     def _on_gui_language_change(self) -> None:
         selection = self.gui_lang_combo.current()
@@ -2560,6 +4036,9 @@ class AppGUI(
         self._saved_settings.subtitle_theme_mode = subtitle_theme_mode
         if self.subtitle_window and self.subtitle_window.winfo_exists():
             self.subtitle_window.set_theme(subtitle_theme_mode)
+        # Theme-following colour roles change their effective preview colour;
+        # explicit overrides remain untouched.
+        self._refresh_typography_controls()
 
     def _apply_theme(self, theme_mode: str) -> None:
         self._theme_mode = theme_mode
@@ -2573,7 +4052,6 @@ class AppGUI(
         self._update_banner_close.configure(text_color=self._colors["accent"])
         self.sidebar.configure(fg_color=self._colors["sidebar"])
         self.content.configure(fg_color=self._colors["app_bg"])
-        self._restore_control_window_surface()
         # The OS titlebar is set once at startup and doesn't follow a runtime
         # switch — repaint it (main window here, settings window below).
         apply_dark_titlebar(self, dark=theme_mode == "dark")
@@ -2582,7 +4060,8 @@ class AppGUI(
             frame.configure(fg_color=self._colors["shadow"])
         for card in self._cards:
             card.configure(
-                fg_color=self._colors["card"], border_color=self._colors["border"]
+                fg_color=self._colors["card"],
+                border_color=self._colors["card_border"],
             )
         for panel in self._main_panels:
             panel.configure(
@@ -2600,9 +4079,15 @@ class AppGUI(
             label.configure(text_color=self._colors["text"])
         for label in self._muted_labels:
             label.configure(text_color=self._colors["muted"])
+        if hasattr(self, "_cost_total_label"):
+            self._cost_total_label.configure(text_color=self._colors["brass"])
+            for label in self._cost_provider_labels.values():
+                label.configure(
+                    fg_color=self._colors["button"], text_color=self._colors["text"]
+                )
         for symbol in self._symbol_labels:
             symbol.configure(
-                text_color=self._colors["accent"], fg_color=self._colors["panel_soft"]
+                text_color=self._colors["brass"], fg_color=self._colors["panel_soft"]
             )
         for button in self._buttons:
             button.configure(
@@ -2610,6 +4095,8 @@ class AppGUI(
                 hover_color=self._colors["button_hover"],
                 text_color=self._colors["text"],
             )
+            if getattr(button, "_uses_depth_border", False):
+                button.configure(border_color=self._colors["button_border"])
         for combo in self._combos:
             combo.configure(
                 fg_color=self._colors["entry"],
@@ -2728,6 +4215,17 @@ class AppGUI(
         )
         self.height_value_label.configure(text_color=self._colors["text"])
         self.speed_label.configure(text_color=self._colors["text"])
+        self._brand_subtitle.configure(text_color=self._colors["brass"])
+        self._refresh_main_card_chrome()
+        self._refresh_recessed_panel_chrome()
+        self._dashboard.apply_theme()
+        self._operator_dock.configure(
+            fg_color=self._colors["panel"],
+            border_color=self._colors["brass_soft"],
+        )
+        self._operator_dock_highlight.configure(
+            fg_color=self._colors["surface_highlight"]
+        )
         # Control panel theme does NOT touch subtitle window — see _apply_subtitle_theme()
         if self._settings_win_exists():
             try:
@@ -2742,10 +4240,11 @@ class AppGUI(
             except Exception:
                 pass
         self._set_status(self._running)
+        self._dashboard.refresh(animate=False)
         # Re-apply disabled states: after colour update, the new border_color must
         # be used as the "greyed out" text colour for disabled combos.
         self._sync_advanced_enabled_states()
-        self.after(50, self._restore_control_window_surface)
+        self._refresh_typography_controls()
 
     def _update_all_ui_texts(self) -> None:
         # The history/batch windows are rebuilt from scratch on open; close a
@@ -2782,11 +4281,21 @@ class AppGUI(
         )
         if self._update_available is not None:
             self._update_banner_label.configure(text=self._update_banner_text())
-        self.start_btn.configure(text=f"▶  {self._clean_action_label('start')}")
-        self.stop_btn.configure(text=f"■  {self._clean_action_label('stop')}")
-        self.logs_label.configure(text=f"▤  {self.gui_texts.get('logs', 'Logs')}")
+        self.start_btn.configure(
+            text=self.gui_texts.get("v3_start_live", "Live starten")
+        )
+        self.stop_btn.configure(text=self.gui_texts.get("v3_stop_live", "Live stoppen"))
+        self._log_toggle_btn.configure(
+            text=self.gui_texts.get(
+                "v3_diagnostics" if self._log_collapsed else "v3_close_diagnostics",
+                "Diagnose" if self._log_collapsed else "Diagnose schließen",
+            ),
+        )
+        self.logs_label.configure(text=self.gui_texts.get("logs", "Logs"))
 
         self._refresh_subtitle_mode_combo()
+        self._refresh_typography_controls()
+        self._refresh_screen_combo()
 
         # Update settings window widgets if the window is open
         if self._settings_win_exists():
@@ -2843,6 +4352,7 @@ class AppGUI(
                 key = getattr(sw, "_text_key", None)
                 if key:
                     sw.configure(text=self.gui_texts.get(key, key))
+            self._refresh_api_key_status()
 
         self._strategy_display_names = self._strategy_labels()
         current_strategy = self.strategy_combo.current()
@@ -2854,13 +4364,17 @@ class AppGUI(
         self.strategy_running_hint.configure(
             text=self.gui_texts.get("hint_stop_to_change", "⚠ Stop program to change")
         )
+        self._refresh_strategy_help()
+        self._refresh_subtitle_mode_help()
 
         if self.advanced_visible:
-            self._advanced_toggle_arrow.configure(text="▴")
+            self._advanced_toggle_arrow.configure(text=ICONS["chevron_up"])
         else:
-            self._advanced_toggle_arrow.configure(text="▾")
+            self._advanced_toggle_arrow.configure(text=ICONS["chevron_down"])
         self._set_status(self._running)
         self._update_speed_button_states()
+        self._refresh_v3_dashboard()
+        self._refresh_cost_ui(force=True)
 
     def on_close(self) -> None:
         # Silence callback-exception reporting for the rest of this deliberate
@@ -2881,13 +4395,9 @@ class AppGUI(
             self.controller.stop()
         except Exception:
             pass
-        # Stop the focus/map handlers from scheduling new surface-restore jobs
-        # while the window is being torn down.
-        for seq in ("<FocusIn>", "<Map>"):
-            try:
-                self.unbind(seq)
-            except Exception:
-                pass
+        end_cost_session("closed")
+        self._cancel_cost_polling()
+        self._dashboard.cancel_motion()
         # Cancel EVERY pending after() callback, not just the tracked poll jobs.
         # An untracked scheduled callback (e.g. a startup lambda) that fires
         # mid-destroy raises Tcl's 'invalid command name ...<lambda>' and can
