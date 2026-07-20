@@ -780,10 +780,13 @@ class AppGUI(
                 selected_device = self.device_names.index(saved_name)
             self.device_combo.current(selected_device)
         self.device_combo.pack(fill="x", pady=(8, 0))
-        self._build_input_level_meter(device_frame)
+
+        # Full-width input-level row below both dropdowns (keeps the monitor and
+        # input dropdowns the same height; the meter is one level, not stacked).
+        self._build_input_level_meter(card)
 
         font_frame = self._mini_panel(card)
-        font_frame.grid(row=3, column=0, sticky="nsew", padx=(16, 6), pady=(0, 12))
+        font_frame.grid(row=4, column=0, sticky="nsew", padx=(16, 6), pady=(0, 12))
         self.font_label = self._label(font_frame, "font", size=14, weight="bold")
         self.font_label.pack(anchor="w", padx=12, pady=(10, 4))
         font_buttons = ctk.CTkFrame(font_frame, fg_color="transparent")
@@ -800,7 +803,7 @@ class AppGUI(
         self.font_increase_btn.grid(row=0, column=1, sticky="ew", padx=(5, 0))
 
         height_frame = self._mini_panel(card)
-        height_frame.grid(row=3, column=1, sticky="nsew", padx=(6, 16), pady=(0, 12))
+        height_frame.grid(row=4, column=1, sticky="nsew", padx=(6, 16), pady=(0, 12))
         self.height_label = self._label(height_frame, "height", size=14, weight="bold")
         self.height_label.pack(anchor="w", padx=12, pady=(10, 4))
         self.height_value_label = ctk.CTkLabel(
@@ -829,50 +832,52 @@ class AppGUI(
     _INPUT_LEVEL_WARNING = "#F08C00"
     _INPUT_LEVEL_DANGER = "#E03131"
 
-    def _build_input_level_meter(self, parent: ctk.CTkFrame) -> None:
-        """Compact live input-level meter under the input-device dropdown.
+    def _build_input_level_meter(self, card: ctk.CTkFrame) -> None:
+        """Full-width live input-level row below the monitor/input dropdowns.
 
+        One level line: dBFS readout · segmented bar (stretches) · Test button.
         Reads controller.get_input_level() (fed by the live capture or a
         meter-only preview) — see the reliability/meter backend unit.
         """
-        container = ctk.CTkFrame(parent, fg_color="transparent")
-        container.pack(fill="x", pady=(8, 0))
-        container.grid_columnconfigure(0, weight=1)
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.grid(row=3, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 14))
+        row.grid_columnconfigure(1, weight=1)  # bar stretches; label/button fixed
+
+        self.input_level_value_label = ctk.CTkLabel(
+            row,
+            text=self.gui_texts.get("input_level_no_signal", "No signal"),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=self._colors["muted"],
+            width=84,
+            anchor="w",
+        )
+        self.input_level_value_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        self._muted_labels.append(self.input_level_value_label)
 
         self.input_level_bar = AudioLevelBar(
-            container,
+            row,
             track_color=self._colors["panel_soft"],
             border_color=self._colors["border"],
             green_color=self._INPUT_LEVEL_GREEN,
             warning_color=self._INPUT_LEVEL_WARNING,
             danger_color=self._INPUT_LEVEL_DANGER,
-            height=11,
+            height=12,
         )
-        self.input_level_bar.grid(row=0, column=0, columnspan=2, sticky="ew")
-
-        self.input_level_value_label = ctk.CTkLabel(
-            container,
-            text=self.gui_texts.get("input_level_no_signal", "No signal"),
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            text_color=self._colors["muted"],
-            anchor="w",
-        )
-        self.input_level_value_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self._muted_labels.append(self.input_level_value_label)
+        self.input_level_bar.grid(row=0, column=1, sticky="ew", padx=(0, 12))
 
         self.input_level_test_btn = ctk.CTkButton(
-            container,
+            row,
             text=self.gui_texts.get("input_level_test", "Test mic"),
             command=self._toggle_input_level_test,
-            width=96,
-            height=26,
-            corner_radius=13,
+            width=110,
+            height=28,
+            corner_radius=14,
             font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
             fg_color=self._colors["button"],
             hover_color=self._colors["button_hover"],
             text_color=self._colors["text"],
         )
-        self.input_level_test_btn.grid(row=1, column=1, sticky="e", pady=(4, 0))
+        self.input_level_test_btn.grid(row=0, column=2, sticky="e")
 
         self._input_level_ui_state = None
         self.input_level_poll_job = self.after(200, self._poll_input_level)
