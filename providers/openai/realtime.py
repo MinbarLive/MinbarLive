@@ -27,6 +27,7 @@ import time
 from collections.abc import Callable
 
 from providers.openai.client import get_client
+from utils.cost_tracking import record_openai_transcription_usage
 from utils.logging import log
 
 # Fixed by the API: Realtime transcription sessions accept mono PCM16 at a
@@ -208,6 +209,11 @@ class OpenAIRealtimeTranscriptionProvider:
                                     on_transcript(text, False)
                         elif etype == _COMPLETED_EVENT:
                             deltas.pop(event.item_id, None)
+                            record_openai_transcription_usage(
+                                getattr(event, "usage", None),
+                                model=model,
+                                event_id=getattr(event, "event_id", None),
+                            )
                             text = (event.transcript or "").strip()
                             if text:
                                 on_transcript(text, True)

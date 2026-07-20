@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from providers.openai.client import get_client
+from utils.cost_tracking import record_openai_transcription_usage
 
 
 class OpenAITranscriptionProvider:
@@ -19,7 +20,9 @@ class OpenAITranscriptionProvider:
         kwargs = {
             "model": model,
             "file": ("audio.wav", audio_wav),
-            "response_format": "text",
+            # JSON returns the same transcript text as "text" but also exposes
+            # the provider's token/duration usage, which the cost counter reads.
+            "response_format": "json",
         }
         if language:  # None/empty means auto-detect
             kwargs["language"] = language
@@ -27,5 +30,8 @@ class OpenAITranscriptionProvider:
             kwargs["prompt"] = prompt
 
         result = get_client().audio.transcriptions.create(**kwargs)
-        # response_format="text" yields a plain string
-        return result if isinstance(result, str) else str(result)
+        # Older SDKs and test doubles may still hand back a plain string.
+        if isinstance(result, str):
+            return result
+        record_openai_transcription_usage(getattr(result, "usage", None), model=model)
+        return str(getattr(result, "text", result))

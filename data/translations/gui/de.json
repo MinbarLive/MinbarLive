@@ -214,5 +214,11 @@
   "settings_general": "Allgemein",
   "settings_appearance": "Erscheinungsbild",
   "updates_section": "Updates",
-  "color_choose": "Wählen…"
+  "color_choose": "Wählen…",
+  "history_tab_cost": "Kosten",
+  "cost_empty": "Noch keine Kostendaten",
+  "cost_estimate_note": "Schätzung – öffentliche Listenpreise",
+  "cost_unpriced": "ohne Preis",
+  "cost_requests": "Anfragen",
+  "cost_last_30_days": "Letzte 30 Tage: {total} · {count} Sitzungen"
 }

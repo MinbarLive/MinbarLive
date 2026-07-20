@@ -203,5 +203,11 @@
   "settings_general": "Genel",
   "settings_appearance": "Görünüm",
   "updates_section": "Güncellemeler",
-  "color_choose": "Seç…"
+  "color_choose": "Seç…",
+  "history_tab_cost": "Maliyet",
+  "cost_empty": "Henüz maliyet verisi yok",
+  "cost_estimate_note": "Tahmin — genel liste fiyatları",
+  "cost_unpriced": "fiyatsız",
+  "cost_requests": "istek",
+  "cost_last_30_days": "Son 30 gün: {total} · {count} oturum"
 }

@@ -203,5 +203,11 @@
   "settings_general": "عام",
   "settings_appearance": "المظهر",
   "updates_section": "التحديثات",
-  "color_choose": "اختيار…"
+  "color_choose": "اختيار…",
+  "history_tab_cost": "التكلفة",
+  "cost_empty": "لا توجد بيانات تكلفة بعد",
+  "cost_estimate_note": "تقدير — أسعار القائمة العامة",
+  "cost_unpriced": "بدون سعر",
+  "cost_requests": "طلبات",
+  "cost_last_30_days": "آخر 30 يومًا: {total} · {count} جلسات"
 }

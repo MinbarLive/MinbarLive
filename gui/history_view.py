@@ -12,11 +12,21 @@ close them (see AppGUI._apply_theme / _update_all_ui_texts).
 import os
 import queue
 import threading
+import tkinter as tk
 
 import customtkinter as ctk
 
 from gui.scaling import centered_position
 from providers import PROVIDER_CHOICES, has_usable_key
+from utils.cost_display import (
+    cost_bars,
+    cost_breakdown_lines,
+    cost_rows,
+    cost_window_by_provider,
+    cost_window_total,
+    provider_label,
+)
+from utils.cost_tracking import delete_cost_session, list_cost_sessions
 from utils.history import (
     BatchRun,
     HistorySession,
@@ -76,6 +86,7 @@ class HistoryViewMixin:
         self._history_selected_session = None
         self._history_selected_log = None
         self._history_selected_batch = None
+        self._history_selected_cost = None
         # Which format the batch preview currently shows ("srt"/"txt").
         self._history_batch_format: str | None = None
 
@@ -92,6 +103,7 @@ class HistoryViewMixin:
         tabs = (
             ("history", "history_tab_sessions", "History"),
             ("batch", "history_tab_batch", "Batch"),
+            ("kosten", "history_tab_cost", "Cost"),
             ("logs", "history_tab_logs", "Log"),
         )
         for i, (tab, key, default) in enumerate(tabs):
@@ -146,6 +158,25 @@ class HistoryViewMixin:
             b.pack(side="left", padx=(12 if i == 0 else 6, 0), pady=6)
             self._history_format_buttons[fmt] = b
         self._history_format_bar.grid_remove()  # shown per tab/selection
+
+        # Spend chart (Kosten tab only) — shares content row 0 with the batch
+        # format bar; only one is ever mapped at a time. A raw tk.Canvas, since
+        # CTk has no chart widget.
+        self._cost_chart = tk.Canvas(
+            content,
+            height=248,
+            highlightthickness=0,
+            bd=0,
+            bg=self._colors["log_bg"],
+        )
+        # Breathing room above (below the tab bar) and below (before the
+        # breakdown). grid_remove/grid preserves these options.
+        self._cost_chart.grid(row=0, column=0, sticky="ew", pady=(34, 6))
+        self._cost_chart.grid_remove()
+        self._cost_selected_id = ""
+        # The canvas width is unknown until Tk lays the window out, so redraw
+        # whenever it changes size — the first real width arrives this way too.
+        self._cost_chart.bind("<Configure>", lambda _e: self._draw_cost_chart())
 
         self._history_textbox = ctk.CTkTextbox(
             content,
@@ -241,15 +272,22 @@ class HistoryViewMixin:
         # The SRT|TXT toggle is a batch-only affordance; hide it here and let
         # _show_batch_run bring it back when a multi-format run is selected.
         self._history_format_bar.grid_remove()
+        # The spend chart is a Kosten-only affordance; the cost renderer shows
+        # it when there is data.
+        self._cost_chart.grid_remove()
 
         # History and Batch both hold transcripts → the Summarise button
-        # applies to both; the raw Log tab has nothing to summarise.
+        # applies to both; the raw Log and Kosten tabs have nothing to summarise.
         if self._history_active_tab == "history":
             self._history_summary_btn.pack(side="left", padx=(16, 6), pady=9)
             self._render_session_list()
         elif self._history_active_tab == "batch":
             self._history_summary_btn.pack(side="left", padx=(16, 6), pady=9)
             self._render_batch_list()
+        elif self._history_active_tab == "kosten":
+            self._history_summary_btn.pack_forget()
+            self._close_summary_window()
+            self._render_cost_list()
         else:
             self._history_summary_btn.pack_forget()
             self._close_summary_window()
@@ -391,6 +429,138 @@ class HistoryViewMixin:
 
         self._show_log_file(logs[0])
 
+    # ── Kosten (cost) tab ───────────────────────────────────────────────────
+
+    def _render_cost_list(self) -> None:
+        # Newest-first, as list_cost_sessions returns them. Keep the raw dicts
+        # for the breakdown/chart alongside the display rows.
+        self._cost_sessions = list_cost_sessions()
+        self._history_cost_buttons = []
+        if not self._cost_sessions:
+            self._history_selected_cost = None
+            self._cost_chart.grid_remove()
+            self._show_history_empty()
+            return
+
+        rows = cost_rows(
+            self._cost_sessions,
+            duration_fmt=self.gui_texts.get("history_minutes", "{minutes} min"),
+            seconds_fmt=self.gui_texts.get("history_seconds", "{seconds} s"),
+        )
+        for index, (row, session) in enumerate(
+            zip(rows, self._cost_sessions, strict=True)
+        ):
+            frame = self._add_history_row(
+                index,
+                title=row.title,
+                subtitle=row.subtitle,
+                on_click=lambda s=session: self._show_cost_session(s),
+                tag="~" if row.estimated else None,
+            )
+            self._history_cost_buttons.append((frame, session))
+
+        self._show_cost_session(self._cost_sessions[0])
+
+    def _show_cost_session(self, session) -> None:
+        self._history_selected_cost = session
+        for frame, s in self._history_cost_buttons:
+            self._select_history_row(frame, s is session)
+        self._cost_selected_id = str(session.get("id", ""))
+        self._cost_chart.grid()
+        self._draw_cost_chart()
+        self._set_history_text(
+            cost_breakdown_lines(
+                session,
+                estimate_note=self.gui_texts.get(
+                    "cost_estimate_note", "Estimate — public list prices"
+                ),
+                unpriced_note=self.gui_texts.get("cost_unpriced", "unpriced"),
+                requests_label=self.gui_texts.get("cost_requests", "requests"),
+            )
+        )
+        self._set_history_actions_enabled(True)
+
+    def _draw_cost_chart(self) -> None:
+        """Bar chart of spend across recent sessions; the selected bar is
+        highlighted. Driven by the canvas <Configure> event and each selection
+        (cheap; ≤12 bars). Uses the live canvas width, which is only known once
+        Tk has laid the window out."""
+        canvas = getattr(self, "_cost_chart", None)
+        if canvas is None or not canvas.winfo_exists():
+            return
+        canvas.delete("all")
+        bars = cost_bars(getattr(self, "_cost_sessions", []))
+        if not bars:
+            return
+        selected_id = getattr(self, "_cost_selected_id", "")
+        width = canvas.winfo_width()
+        if width <= 1:  # not laid out yet — the <Configure> redraw will follow
+            return
+        height = int(canvas.cget("height"))
+
+        # Trailing 30-day total, drawn as a header above the bars, with a
+        # per-provider split line beneath it.
+        sessions = getattr(self, "_cost_sessions", [])
+        window = cost_window_total(sessions, days=30)
+        header = self.gui_texts.get(
+            "cost_last_30_days", "Last 30 days: {total} · {count} sessions"
+        ).format(total=window.total, count=window.sessions)
+        canvas.create_text(
+            16, 18, text=header, anchor="w",
+            fill=self._colors["text"],
+            font=("Segoe UI", 12, "bold"),
+        )
+        by_provider = cost_window_by_provider(sessions, days=30)
+        if by_provider:
+            subline = "   ·   ".join(
+                f"{provider_label(p.provider)} {p.total}" for p in by_provider
+            )
+            canvas.create_text(
+                16, 44, text=subline, anchor="w",
+                fill=self._colors["muted"],
+                font=("Segoe UI", 10),
+            )
+
+        # pad_bottom must hold the two-line x-axis labels; the "less space below
+        # the chart" the user wants comes from the small outer grid pady, not
+        # from squeezing this (that clips the date labels).
+        pad_x, pad_top, pad_bottom = 16, 82, 46
+        plot_h = height - pad_top - pad_bottom
+        peak = max((b.value for b in bars), default=0.0)
+        n = len(bars)
+        slot = (width - 2 * pad_x) / n
+        bar_w = min(46.0, slot * 0.6)
+        for i, bar in enumerate(bars):
+            cx = pad_x + slot * (i + 0.5)
+            frac = (bar.value / peak) if peak > 0 else 0.0
+            bar_h = max(2.0, frac * plot_h)
+            x0, x1 = cx - bar_w / 2, cx + bar_w / 2
+            y1 = pad_top + plot_h
+            y0 = y1 - bar_h
+            selected = bar.session_id == selected_id
+            canvas.create_rectangle(
+                x0, y0, x1, y1,
+                fill=self._colors["accent"] if selected else self._colors["button"],
+                outline="",
+            )
+            canvas.create_text(
+                cx, y0 - 8, text=self._cost_bar_amount(bar.value),
+                fill=self._colors["text"] if selected else self._colors["muted"],
+                font=("Segoe UI", 8),
+            )
+            canvas.create_text(
+                cx, y1 + 4, text=bar.label, anchor="n",
+                fill=self._colors["muted"], font=("Segoe UI", 8), justify="center",
+            )
+
+    @staticmethod
+    def _cost_bar_amount(value: float) -> str:
+        if value <= 0:
+            return "$0"
+        if value < 0.01:
+            return "<¢1"
+        return f"${value:.2f}"
+
     def _render_batch_list(self) -> None:
         runs = list_batch_runs()
         self._history_batch_buttons = []
@@ -434,6 +604,8 @@ class HistoryViewMixin:
     def _show_history_empty(self) -> None:
         if self._history_active_tab == "batch":
             msg = self.gui_texts.get("history_batch_empty", "No processed files yet")
+        elif self._history_active_tab == "kosten":
+            msg = self.gui_texts.get("cost_empty", "No cost data yet")
         else:
             msg = self.gui_texts.get("history_empty", "No sessions recorded yet")
         self._set_history_text(msg)
@@ -571,6 +743,10 @@ class HistoryViewMixin:
         if self._history_active_tab == "batch":
             self._export_batch_current()
             return
+        # The cost tab exports the shown breakdown text, not a source file.
+        if self._history_active_tab == "kosten":
+            self._export_cost_current()
+            return
 
         target_info = self._current_history_target()
         if target_info is None:
@@ -644,6 +820,39 @@ class HistoryViewMixin:
                 danger=True,
             )
 
+    def _export_cost_current(self) -> None:
+        """Write the shown cost breakdown to a .txt file."""
+        from tkinter import filedialog
+
+        text = self._history_textbox.get("1.0", "end").rstrip("\n")
+        if not text.strip():
+            return
+        parent = self._history_win if self._history_win_exists() else self
+        target = filedialog.asksaveasfilename(
+            parent=parent,
+            title=self.gui_texts.get("history_export", "Save…"),
+            defaultextension=".txt",
+            initialfile="MinbarLive_cost.txt",
+            filetypes=[
+                ("Text files", "*.txt"),
+                (self.gui_texts.get("batch_all_files", "All files"), "*.*"),
+            ],
+        )
+        if not target:
+            return
+        try:
+            with open(target, "w", encoding="utf-8-sig", newline="\n") as f:
+                f.write(text + "\n")
+            log(f"Exported to {target}", level="INFO")
+        except OSError as e:
+            log(f"Export failed: {e}", level="ERROR")
+            self._alert(
+                self.gui_texts.get("history_export", "Save…"),
+                str(e),
+                parent=parent,
+                danger=True,
+            )
+
     def _on_history_copy(self) -> None:
         """Copy the current preview text to the clipboard (any tab)."""
         text = self._history_textbox.get("1.0", "end").strip()
@@ -665,6 +874,10 @@ class HistoryViewMixin:
     def _on_history_delete(self) -> None:
         """Delete the selected item (with confirmation). Deleting a session
         also removes its saved-summary sidecar."""
+        # Cost sessions live in their own store, keyed by id, not a file path.
+        if self._history_active_tab == "kosten":
+            self._delete_cost_current()
+            return
         target_info = self._current_history_target()
         if target_info is None:
             return
@@ -700,6 +913,26 @@ class HistoryViewMixin:
             )
             return
         # Rebuild the active tab in place (keeps the tab selection)
+        self._render_history_tab()
+
+    def _delete_cost_current(self) -> None:
+        session = getattr(self, "_history_selected_cost", None)
+        if session is None:
+            return
+        parent = self._history_win if self._history_win_exists() else self
+        if not self._confirm(
+            self.gui_texts.get("history_delete", "Delete"),
+            self.gui_texts.get(
+                "history_delete_confirm",
+                "Delete this history file? This cannot be undone.",
+            ),
+            parent=parent,
+        ):
+            return
+        # An active session has no file on disk yet — nothing to delete.
+        if delete_cost_session(str(session.get("id", ""))):
+            log("Deleted cost session", level="INFO")
+        self._history_selected_cost = None
         self._render_history_tab()
 
     # ── Session summary ("Summarise" in the history viewer) ──────────────────

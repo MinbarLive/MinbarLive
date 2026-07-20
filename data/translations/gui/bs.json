@@ -203,5 +203,11 @@
   "settings_general": "Općenito",
   "settings_appearance": "Izgled",
   "updates_section": "Ažuriranja",
-  "color_choose": "Odaberi…"
+  "color_choose": "Odaberi…",
+  "history_tab_cost": "Troškovi",
+  "cost_empty": "Još nema podataka o troškovima",
+  "cost_estimate_note": "Procjena — javne cijene",
+  "cost_unpriced": "bez cijene",
+  "cost_requests": "zahtjeva",
+  "cost_last_30_days": "Zadnjih 30 dana: {total} · {count} sesija"
 }

@@ -203,5 +203,11 @@
   "settings_general": "Të përgjithshme",
   "settings_appearance": "Pamja",
   "updates_section": "Përditësimet",
-  "color_choose": "Zgjidh…"
+  "color_choose": "Zgjidh…",
+  "history_tab_cost": "Kostoja",
+  "cost_empty": "Ende s'ka të dhëna kostoje",
+  "cost_estimate_note": "Vlerësim — çmime publike",
+  "cost_unpriced": "pa çmim",
+  "cost_requests": "kërkesa",
+  "cost_last_30_days": "30 ditët e fundit: {total} · {count} sesione"
 }

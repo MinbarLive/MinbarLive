@@ -214,5 +214,11 @@
   "settings_general": "General",
   "settings_appearance": "Appearance",
   "updates_section": "Updates",
-  "color_choose": "Choose…"
+  "color_choose": "Choose…",
+  "history_tab_cost": "Cost",
+  "cost_empty": "No cost data yet",
+  "cost_estimate_note": "Estimate — public list prices",
+  "cost_unpriced": "unpriced",
+  "cost_requests": "requests",
+  "cost_last_30_days": "Last 30 days: {total} · {count} sessions"
 }

@@ -932,8 +932,16 @@ class TestOpenAITranscriptionProvider:
         assert kwargs["model"] == "m"
         assert kwargs["language"] == "ar"
         assert kwargs["file"] == ("audio.wav", b"wav-bytes")
-        assert kwargs["response_format"] == "text"
+        # JSON exposes usage metadata for the cost counter while returning the
+        # same transcript text; a plain-string double still passes through.
+        assert kwargs["response_format"] == "json"
         assert out == "text"
+
+    def test_json_result_returns_text_field(self, monkeypatch):
+        result = SimpleNamespace(text="hello", usage=None)
+        self._client_mock(monkeypatch, result=result)
+        out = OpenAITranscriptionProvider().transcribe(b"wav-bytes", model="m")
+        assert out == "hello"
 
     def test_auto_detect_omits_language(self, monkeypatch):
         client = self._client_mock(monkeypatch)

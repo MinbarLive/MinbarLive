@@ -48,6 +48,12 @@ from utils.api_key_manager import (
     apply_dark_titlebar,
     prompt_for_api_key,
 )
+from utils.cost_tracking import (
+    begin_cost_session,
+    cancel_cost_session,
+    end_cost_session,
+    flush_cost_history,
+)
 from utils.icons import ICO_SUPPORTED, scaled_icon_photo
 from utils.json_helpers import load_json
 from utils.logging import log, log_queue
@@ -191,6 +197,8 @@ class AppGUI(
         self.log_poll_job: str | None = None
         self.height_apply_job: str | None = None
         self.inactivity_check_job: str | None = None
+        # Periodic durability flush for the in-progress cost session (below).
+        self.cost_flush_job: str | None = None
         # Compact input-level meter (backend: controller.get_input_level()).
         self.input_level_poll_job: str | None = None
         self._input_level_ui_state: tuple[bool, bool] | None = None
@@ -1769,9 +1777,13 @@ class AppGUI(
                 self._prompt_provider_key(provider)
                 if not has_usable_key(provider):
                     return
+        begin_cost_session()
         try:
             self.controller.start(input_device=self.get_selected_device_index())
         except Exception as exc:
+            # No usage was billed for a start that never ran — drop the session
+            # so it never appears in the cost history.
+            cancel_cost_session()
             self._alert(
                 self.gui_texts.get("error_start_failed", "Start failed"),
                 str(exc),
@@ -1785,6 +1797,7 @@ class AppGUI(
         self._sync_advanced_enabled_states()
         self._start_log_polling()
         self._schedule_inactivity_check()
+        self._schedule_cost_flush()
         if self._saved_settings.hide_subtitle_on_stop and (
             not self.subtitle_window or not self.subtitle_window.winfo_exists()
         ):
@@ -1816,6 +1829,7 @@ class AppGUI(
         self._set_status(False)
         self._sync_advanced_enabled_states()
         self._cancel_inactivity_check()
+        self._end_cost_session("completed")
         # Keep the overlay alive if an 'until stopped' announcement is showing —
         # it must survive a translation stop (user decision). Stopping the
         # announcement itself then closes the overlay if hide-on-stop is set.
@@ -1864,6 +1878,39 @@ class AppGUI(
             self.on_stop()
             return
         self._schedule_inactivity_check()
+
+    # ── Cost session durability ─────────────────────────────────────────────
+    # Provider threads update the cost tracker in memory only; end_cost_session
+    # writes the final record on Stop. This low-frequency flush persists the
+    # in-progress session so a crash mid-session doesn't lose its usage.
+
+    _COST_FLUSH_INTERVAL_MS = 30_000
+
+    def _schedule_cost_flush(self) -> None:
+        self._cancel_cost_flush()
+        self.cost_flush_job = self.after(
+            self._COST_FLUSH_INTERVAL_MS, self._poll_cost_flush
+        )
+
+    def _cancel_cost_flush(self) -> None:
+        if self.cost_flush_job is not None:
+            try:
+                self.after_cancel(self.cost_flush_job)
+            except Exception:
+                pass
+            self.cost_flush_job = None
+
+    def _poll_cost_flush(self) -> None:
+        self.cost_flush_job = None
+        if not self._running:
+            return
+        flush_cost_history()
+        self._schedule_cost_flush()
+
+    def _end_cost_session(self, status: str) -> None:
+        """Finalize the cost session (writes the record) and stop flushing."""
+        self._cancel_cost_flush()
+        end_cost_session(status)
 
     def _set_status(self, running: bool) -> None:
         if running:
@@ -1985,6 +2032,7 @@ class AppGUI(
             self._refresh_provider_combos()  # restore the full provider list
             self._set_status(False)
             self._sync_advanced_enabled_states()
+            self._end_cost_session("error")
             self._alert(
                 self.gui_texts.get("error_start_failed", "Start failed"),
                 str(exc),
@@ -3096,6 +3144,8 @@ class AppGUI(
             self.controller.stop()
         except Exception:
             pass
+        # Persist any in-progress cost session before the app exits.
+        self._end_cost_session("closed")
         # Stop the focus/map handlers from scheduling new surface-restore jobs
         # while the window is being torn down.
         for seq in ("<FocusIn>", "<Map>"):
