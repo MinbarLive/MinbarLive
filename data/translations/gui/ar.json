@@ -194,5 +194,14 @@
   "input_level_test": "اختبار الميكروفون",
   "input_level_stop_test": "إيقاف",
   "input_level_clipping": "تشبّع!",
-  "subtitle_output_enabled": "عرض الترجمة على الشاشة"
+  "subtitle_output_enabled": "عرض الترجمة على الشاشة",
+  "subtitle_appearance": "مظهر الترجمة",
+  "source_text_size": "حجم النص الأصلي",
+  "translation_text_color": "لون الترجمة",
+  "source_text_color": "لون النص الأصلي",
+  "color_default": "افتراضي",
+  "settings_general": "عام",
+  "settings_appearance": "المظهر",
+  "updates_section": "التحديثات",
+  "color_choose": "اختيار…"
 }

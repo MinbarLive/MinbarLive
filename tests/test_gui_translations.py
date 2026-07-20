@@ -127,6 +127,17 @@ WIZARD_KEYS = [
     "api_key_select_provider",
     "update_available",
     "check_updates_on_launch",
+    # Settings window sections
+    "settings_general",
+    "settings_appearance",
+    "updates_section",
+    # Subtitle appearance (control-panel expander)
+    "subtitle_appearance",
+    "source_text_size",
+    "translation_text_color",
+    "source_text_color",
+    "color_default",
+    "color_choose",
     # Announcement (megaphone) window
     "announce_title",
     "announce_sub",

@@ -267,6 +267,95 @@ class TestSubtitleOutputEnabled:
             settings_module._cached_settings = None
 
 
+class TestSubtitleTypography:
+    """Independent original-text size + optional subtitle colour overrides."""
+
+    def test_defaults_preserve_the_historical_70_percent_look(self):
+        s = Settings()
+        assert s.source_font_size_base == pytest.approx(40 / 0.7)
+        assert s.translation_text_color == ""
+        assert s.source_text_color == ""
+
+    def test_round_trip(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            settings_module, "_settings_path", lambda: tmp_path / "settings.json"
+        )
+        settings_module._cached_settings = None
+        save_settings(
+            Settings(
+                source_font_size_base=45.0,
+                translation_text_color="#FF8800",
+                source_text_color="#00AAFF",
+            )
+        )
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.source_font_size_base == pytest.approx(45.0)
+            assert loaded.translation_text_color == "#FF8800"
+            assert loaded.source_text_color == "#00AAFF"
+        finally:
+            settings_module._cached_settings = None
+
+    def test_missing_key_derives_70_percent_from_stored_font_size(
+        self, tmp_path, monkeypatch
+    ):
+        """Settings files predating the setting keep their old appearance."""
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"font_size_base": 60}), encoding="utf-8")
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.source_font_size_base == pytest.approx(60 / 0.7)
+        finally:
+            settings_module._cached_settings = None
+
+    @pytest.mark.parametrize(
+        "stored,expected",
+        [
+            (5, 20.0),  # below the floor
+            (500, 120.0),  # above the ceiling
+            ("big", 40 / 0.7),  # not a number
+            (True, 40 / 0.7),  # bool is not a size
+            (float("nan"), 40 / 0.7),  # non-finite
+        ],
+    )
+    def test_font_size_is_clamped_and_type_checked(
+        self, tmp_path, monkeypatch, stored, expected
+    ):
+        path = tmp_path / "settings.json"
+        # NaN is not valid JSON per spec but json.dumps emits it — and a
+        # hand-edited file can contain anything, which is the point here.
+        path.write_text(
+            json.dumps({"source_font_size_base": stored}), encoding="utf-8"
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.source_font_size_base == pytest.approx(expected)
+        finally:
+            settings_module._cached_settings = None
+
+    @pytest.mark.parametrize(
+        "stored", ["", "red", "#FFF", "#GGGGGG", "#ff8800 ", 42, None]
+    )
+    def test_invalid_colour_falls_back_to_theme_default(
+        self, tmp_path, monkeypatch, stored
+    ):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"translation_text_color": stored}), encoding="utf-8"
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).translation_text_color == ""
+        finally:
+            settings_module._cached_settings = None
+
+
 class TestAnnouncementHistory:
     """The recent-announcement (megaphone) list persists to settings.json."""
 

@@ -194,5 +194,14 @@
   "input_level_test": "Testo mikrofonin",
   "input_level_stop_test": "Ndalo",
   "input_level_clipping": "Shumë lartë!",
-  "subtitle_output_enabled": "Shfaq titrat në monitor"
+  "subtitle_output_enabled": "Shfaq titrat në monitor",
+  "subtitle_appearance": "Pamja e titrave",
+  "source_text_size": "Madhësia e tekstit origjinal",
+  "translation_text_color": "Ngjyra e përkthimit",
+  "source_text_color": "Ngjyra e tekstit origjinal",
+  "color_default": "Parazgjedhje",
+  "settings_general": "Të përgjithshme",
+  "settings_appearance": "Pamja",
+  "updates_section": "Përditësimet",
+  "color_choose": "Zgjidh…"
 }

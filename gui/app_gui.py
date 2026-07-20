@@ -32,6 +32,7 @@ from gui.history_view import HistoryViewMixin
 from gui.scaling import apply_display_scaling
 from gui.settings_view import SettingsViewMixin
 from gui.subtitle_window import SubtitleWindow
+from gui.typography import SubtitleTypographyMixin
 from gui.widgets import WidgetFactoryMixin
 from providers import (
     PROVIDER_CHOICES,
@@ -54,6 +55,7 @@ from utils.settings import (
     DEFAULT_AI_PROVIDER,
     DEFAULT_GUI_LANGUAGE,
     DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER,
+    DEFAULT_SOURCE_FONT_SIZE_BASE,
     DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER,
     GUI_LANGUAGE_CODES,
     PIPELINE_MODE_SEGMENTED,
@@ -131,6 +133,7 @@ class AppGUI(
     BatchViewMixin,
     HistoryViewMixin,
     SettingsViewMixin,
+    SubtitleTypographyMixin,
     WidgetFactoryMixin,
     ctk.CTk,
 ):
@@ -826,6 +829,10 @@ class AppGUI(
         )
         self.height_slider.set(self._saved_settings.window_height_percent)
         self.height_slider.pack(fill="x", padx=12, pady=(6, 12))
+
+        # Collapsible subtitle-appearance controls, directly under the font and
+        # height controls they belong with (rows 5 and 6).
+        self._build_typography_section(card, row=5)
 
     def _on_subtitle_output_change(self) -> None:
         enabled = self.subtitle_output_var.get()
@@ -1541,6 +1548,15 @@ class AppGUI(
             on_close=self.on_close,
             monitor_index=current_screen_idx,
             font_size_base=self._saved_settings.font_size_base,
+            source_font_size_base=getattr(
+                self._saved_settings,
+                "source_font_size_base",
+                DEFAULT_SOURCE_FONT_SIZE_BASE,
+            ),
+            translation_text_color=getattr(
+                self._saved_settings, "translation_text_color", ""
+            ),
+            source_text_color=getattr(self._saved_settings, "source_text_color", ""),
             target_language=self._saved_settings.target_language,
             subtitle_mode=self._effective_subtitle_mode(),
             scroll_speed=self.speed_value,
@@ -2821,6 +2837,9 @@ class AppGUI(
                 text_color=self._colors["text"],
             )
             self._input_level_ui_state = None  # re-sync button state next poll
+        # Appearance swatches carry the operator's own colours — they are kept
+        # out of the generic button loop and restyle themselves.
+        self._refresh_typography_controls()
         # The history/batch windows are rebuilt from scratch on open; close a
         # stale one so it isn't left with old-theme/old-language widgets.
         self._close_history_window()
@@ -2982,6 +3001,7 @@ class AppGUI(
         self.logs_label.configure(text=f"▤  {self.gui_texts.get('logs', 'Logs')}")
 
         self._refresh_subtitle_mode_combo()
+        self._refresh_typography_controls()
 
         # Update settings window widgets if the window is open
         if self._settings_win_exists():

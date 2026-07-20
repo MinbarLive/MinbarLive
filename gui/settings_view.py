@@ -26,6 +26,58 @@ from version import __version__
 class SettingsViewMixin:
     """Settings window + API-key management UI, hosted by AppGUI."""
 
+    def _settings_card(
+        self,
+        parent: ctk.CTkBaseClass,
+        row: int,
+        symbol: str,
+        title_key: str,
+        fallback: str,
+    ) -> ctk.CTkFrame:
+        """A titled settings card (the API-key card's look, reused per section).
+
+        Row 0 is the header; callers fill from row 1 down.
+        """
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=self._colors["card"],
+            border_color=self._colors["border"],
+            border_width=2,
+            corner_radius=24,
+        )
+        card.grid(row=row, column=0, sticky="ew", padx=18, pady=(0, 16))
+        card.grid_columnconfigure(0, weight=1)
+        self._settings_cards.append(card)
+
+        header = ctk.CTkFrame(card, fg_color="transparent")
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=20, pady=(18, 10))
+        header.grid_columnconfigure(1, weight=1)
+
+        symbol_label = ctk.CTkLabel(
+            header,
+            text=symbol,
+            font=ctk.CTkFont(family="Segoe UI Symbol", size=20, weight="bold"),
+            text_color=self._colors["accent"],
+            width=44,
+            height=44,
+            fg_color=self._colors["panel_soft"],
+            corner_radius=16,
+        )
+        symbol_label.grid(row=0, column=0, sticky="w", padx=(0, 12))
+        self._settings_symbol_labels.append(symbol_label)
+
+        title = ctk.CTkLabel(
+            header,
+            text=self.gui_texts.get(title_key, fallback),
+            font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"),
+            text_color=self._colors["text"],
+            anchor="w",
+        )
+        title.grid(row=0, column=1, sticky="ew")
+        title._text_key = title_key  # type: ignore[attr-defined]
+        self._settings_labels.append(title)
+        return card
+
     def _settings_win_exists(self) -> bool:
         return (
             hasattr(self, "_settings_win")
@@ -113,12 +165,16 @@ class SettingsViewMixin:
         subtitle_label._text_key = "hero_subtitle"  # type: ignore[attr-defined]
         self._settings_muted_labels.append(subtitle_label)
 
-        # Language
-        lang_label = self._label(scroll, "language", symbol="◎", size=14, weight="bold")
-        lang_label.grid(row=2, column=0, sticky="w", padx=22, pady=(0, 4))
+        # ── Card: General (GUI language + update check) ──────────────────
+        general_card = self._settings_card(
+            scroll, 2, "◎", "settings_general", "General"
+        )
+
+        lang_label = self._label(general_card, "language", size=14, weight="bold")
+        lang_label.grid(row=1, column=0, sticky="w", padx=20, pady=(0, 4))
         self._gui_lang_names = [name for _, name in GUI_LANGUAGES]
         self.gui_lang_combo = self._combo(
-            scroll,
+            general_card,
             values=self._gui_lang_names,
             command=lambda _value: self._on_gui_language_change(),
         )
@@ -129,15 +185,34 @@ class SettingsViewMixin:
         else:
             gui_lang_name = self._gui_lang_names[0]
         self.gui_lang_combo.set(gui_lang_name)
-        self.gui_lang_combo.grid(row=3, column=0, sticky="ew", padx=22, pady=(0, 18))
+        self.gui_lang_combo.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 14))
 
-        # Theme
-        theme_label = self._label(
-            scroll, "theme_mode", symbol="☾", size=14, weight="bold"
+        updates_label = self._label(
+            general_card, "updates_section", size=14, weight="bold"
         )
-        theme_label.grid(row=4, column=0, sticky="w", padx=22, pady=(0, 4))
+        updates_label.grid(row=3, column=0, sticky="w", padx=20, pady=(0, 2))
+
+        # Update check (one anonymous GitHub API request at startup, opt-out)
+        self._check_updates_var = tk.BooleanVar(
+            value=self._saved_settings.check_for_updates
+        )
+        update_cb = self._checkbox(
+            general_card,
+            "check_updates_on_launch",
+            self._check_updates_var,
+            self._on_check_updates_change,
+        )
+        update_cb.grid(row=4, column=0, sticky="w", padx=18, pady=(0, 16))
+
+        # ── Card: Appearance (control-panel + subtitle theme) ────────────
+        appearance_card = self._settings_card(
+            scroll, 3, "☾", "settings_appearance", "Appearance"
+        )
+
+        theme_label = self._label(appearance_card, "theme_mode", size=14, weight="bold")
+        theme_label.grid(row=1, column=0, sticky="w", padx=20, pady=(0, 4))
         self.theme_segment = ctk.CTkSegmentedButton(
-            scroll,
+            appearance_card,
             values=[
                 self.gui_texts.get("theme_dark", "Dark"),
                 self.gui_texts.get("theme_light", "Light"),
@@ -158,18 +233,17 @@ class SettingsViewMixin:
                 "theme_light" if self._theme_mode == "light" else "theme_dark", "Dark"
             )
         )
-        self.theme_segment.grid(row=5, column=0, sticky="ew", padx=22, pady=(0, 12))
+        self.theme_segment.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 12))
 
-        # Subtitle Theme
         subtitle_theme_label = self._label(
-            scroll, "subtitle_theme_mode", symbol="▣", size=14, weight="bold"
+            appearance_card, "subtitle_theme_mode", size=14, weight="bold"
         )
-        subtitle_theme_label.grid(row=6, column=0, sticky="w", padx=22, pady=(0, 4))
+        subtitle_theme_label.grid(row=3, column=0, sticky="w", padx=20, pady=(0, 4))
         _sub_mode = getattr(
             self._saved_settings, "subtitle_theme_mode", self._theme_mode
         )
         self.subtitle_theme_segment = ctk.CTkSegmentedButton(
-            scroll,
+            appearance_card,
             values=[
                 self.gui_texts.get("theme_dark", "Dark"),
                 self.gui_texts.get("theme_light", "Light"),
@@ -191,21 +265,21 @@ class SettingsViewMixin:
             )
         )
         self.subtitle_theme_segment.grid(
-            row=7, column=0, sticky="ew", padx=22, pady=(0, 24)
+            row=4, column=0, sticky="ew", padx=18, pady=(0, 18)
         )
 
-        # Islamic mode — one switch. Turning it OFF asks for confirmation
-        # (so it can't be disabled by accident); turning it ON is instant.
-        islamic_label = self._label(
-            scroll, "islamic_mode", symbol="☪", size=14, weight="bold"
+        # ── Card: Islamic mode ───────────────────────────────────────────
+        # One switch. Turning it OFF asks for confirmation (so it can't be
+        # disabled by accident); turning it ON is instant.
+        islamic_card = self._settings_card(
+            scroll, 4, "☪", "islamic_mode", "Islamic mode"
         )
-        islamic_label.grid(row=8, column=0, sticky="w", padx=22, pady=(0, 4))
 
         self._islamic_mode_var = tk.BooleanVar(
             value=self._saved_settings.islamic_mode
         )
         self.islamic_mode_switch = ctk.CTkSwitch(
-            scroll,
+            islamic_card,
             text=self.gui_texts.get("islamic_mode_enabled", "Enabled"),
             variable=self._islamic_mode_var,
             command=self._on_islamic_mode_change,
@@ -220,11 +294,11 @@ class SettingsViewMixin:
         self.islamic_mode_switch._text_key = "islamic_mode_enabled"  # type: ignore[attr-defined]
         self._settings_switches.append(self.islamic_mode_switch)
         self.islamic_mode_switch.grid(
-            row=9, column=0, sticky="w", padx=22, pady=(0, 4)
+            row=1, column=0, sticky="w", padx=20, pady=(0, 4)
         )
 
         islamic_hint = ctk.CTkLabel(
-            scroll,
+            islamic_card,
             text=self.gui_texts.get(
                 "islamic_mode_hint",
                 "Quran verse & Athan recognition and Islamic translation "
@@ -236,64 +310,16 @@ class SettingsViewMixin:
             justify="left",
             wraplength=440,
         )
-        islamic_hint.grid(row=10, column=0, sticky="w", padx=22, pady=(0, 18))
+        islamic_hint.grid(row=2, column=0, sticky="w", padx=20, pady=(0, 18))
         islamic_hint._text_key = "islamic_mode_hint"  # type: ignore[attr-defined]
         self._settings_muted_labels.append(islamic_hint)
 
-        # Update check (one anonymous GitHub API request at startup, opt-out)
-        self._check_updates_var = tk.BooleanVar(
-            value=self._saved_settings.check_for_updates
+        # ── Card: API keys ───────────────────────────────────────────────
+        api_card = self._settings_card(
+            scroll, 5, "⚿", "api_key_section", "API Key"
         )
-        update_cb = self._checkbox(
-            scroll,
-            "check_updates_on_launch",
-            self._check_updates_var,
-            self._on_check_updates_change,
-        )
-        update_cb.grid(row=11, column=0, sticky="w", padx=22, pady=(0, 12))
-
-        # API Key section — styled card
-        api_card = ctk.CTkFrame(
-            scroll,
-            fg_color=self._colors["card"],
-            border_color=self._colors["border"],
-            border_width=2,
-            corner_radius=24,
-        )
-        api_card.grid(sticky="ew", padx=18, pady=(18, 16))
         api_card.grid_columnconfigure(0, weight=1, uniform="api_btns")
         api_card.grid_columnconfigure(1, weight=1, uniform="api_btns")
-        self._settings_cards.append(api_card)
-
-        api_header = ctk.CTkFrame(api_card, fg_color="transparent")
-        api_header.grid(
-            row=0, column=0, columnspan=2, sticky="ew", padx=20, pady=(18, 10)
-        )
-        api_header.grid_columnconfigure(1, weight=1)
-
-        api_symbol = ctk.CTkLabel(
-            api_header,
-            text="⚿",
-            font=ctk.CTkFont(family="Segoe UI Symbol", size=20, weight="bold"),
-            text_color=self._colors["accent"],
-            width=44,
-            height=44,
-            fg_color=self._colors["panel_soft"],
-            corner_radius=16,
-        )
-        api_symbol.grid(row=0, column=0, sticky="w", padx=(0, 12))
-        self._settings_symbol_labels.append(api_symbol)
-
-        api_title = ctk.CTkLabel(
-            api_header,
-            text=self.gui_texts.get("api_key_section", "API Key"),
-            font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"),
-            text_color=self._colors["text"],
-            anchor="w",
-        )
-        api_title.grid(row=0, column=1, sticky="ew")
-        api_title._text_key = "api_key_section"  # type: ignore[attr-defined]
-        self._settings_labels.append(api_title)
 
         # Provider selector — Change/Remove act on the chosen provider, so keys
         # for every provider (OpenAI, Gemini, Anthropic, Deepgram) can be

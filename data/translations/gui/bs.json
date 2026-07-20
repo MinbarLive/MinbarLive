@@ -194,5 +194,14 @@
   "input_level_test": "Test mikrofona",
   "input_level_stop_test": "Zaustavi",
   "input_level_clipping": "Preglasno!",
-  "subtitle_output_enabled": "Prikaži titlove na monitoru"
+  "subtitle_output_enabled": "Prikaži titlove na monitoru",
+  "subtitle_appearance": "Izgled titlova",
+  "source_text_size": "Veličina originalnog teksta",
+  "translation_text_color": "Boja prijevoda",
+  "source_text_color": "Boja originalnog teksta",
+  "color_default": "Zadano",
+  "settings_general": "Općenito",
+  "settings_appearance": "Izgled",
+  "updates_section": "Ažuriranja",
+  "color_choose": "Odaberi…"
 }

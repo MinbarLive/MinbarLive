@@ -205,5 +205,14 @@
   "input_level_test": "Mikro testen",
   "input_level_stop_test": "Stopp",
   "input_level_clipping": "Übersteuert!",
-  "subtitle_output_enabled": "Untertitel auf Monitor anzeigen"
+  "subtitle_output_enabled": "Untertitel auf Monitor anzeigen",
+  "subtitle_appearance": "Untertitel-Darstellung",
+  "source_text_size": "Größe des Originaltexts",
+  "translation_text_color": "Farbe der Übersetzung",
+  "source_text_color": "Farbe des Originaltexts",
+  "color_default": "Standard",
+  "settings_general": "Allgemein",
+  "settings_appearance": "Erscheinungsbild",
+  "updates_section": "Updates",
+  "color_choose": "Wählen…"
 }

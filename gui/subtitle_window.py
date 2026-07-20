@@ -186,6 +186,9 @@ class SubtitleWindow(tk.Toplevel):
         on_close,
         monitor_index: int = 1,
         font_size_base: int = 40,
+        source_font_size_base: float = 40 / 0.7,
+        translation_text_color: str = "",
+        source_text_color: str = "",
         target_language: str = "German",
         subtitle_mode: str = SUBTITLE_MODE_STATIC,
         scroll_speed: float = 1.0,
@@ -251,6 +254,11 @@ class SubtitleWindow(tk.Toplevel):
                 "footer_outline": "#d8e1ee",
             },
         }
+        # Empty overrides deliberately mean "follow the active theme". Keep the
+        # raw values separate from the effective colours so a light/dark switch
+        # can move the defaults without discarding a custom operator choice.
+        self._translation_text_color_override = (translation_text_color or "").strip()
+        self._source_text_color_override = (source_text_color or "").strip()
         self._box_padding_x = 18
         self._box_padding_y = 6
         self._box_radius = 8
@@ -289,6 +297,11 @@ class SubtitleWindow(tk.Toplevel):
 
         # Font size base (divisor for calculating font size)
         self._font_size_base = font_size_base
+        try:
+            source_base = float(source_font_size_base)
+        except (TypeError, ValueError):
+            source_base = 40 / 0.7
+        self._source_font_size_base = max(20.0, min(120.0, source_base))
 
         footer_text = FOOTER_TRANSLATIONS.get(target_language, DEFAULT_FOOTER)
         self.footer = tk.Label(
@@ -487,6 +500,12 @@ class SubtitleWindow(tk.Toplevel):
         self._bg_color = palette["bg_color"]
         self._primary_text = palette["primary_text"]
         self._secondary_text = palette["secondary_text"]
+        self._translation_text = (
+            getattr(self, "_translation_text_color_override", "") or self._primary_text
+        )
+        self._source_text = (
+            getattr(self, "_source_text_color_override", "") or self._secondary_text
+        )
         self._card_fill = palette["card_fill"]
         self._card_outline = palette["card_outline"]
         self._footer_bg = palette["footer_bg"]
@@ -755,8 +774,13 @@ class SubtitleWindow(tk.Toplevel):
         font_size = max(12, min(font_size, 120))  # Clamp between 12 and 120
         self._current_font_size = font_size
         self.font = (self._font_family, font_size, "bold")
-        # Bilingual mode renders the original text smaller above the translation
-        source_size = max(12, int(font_size * 0.7))
+        # Original text has its own divisor so it can be sized independently of
+        # the translation. Synthetic render harnesses may not carry the field —
+        # derive the historical 70% from the translation divisor for those.
+        source_base = getattr(self, "_source_font_size_base", self._font_size_base / 0.7)
+        source_size = int(self.canvas_width / source_base) if self.canvas_width else 17
+        source_size = max(12, min(source_size, 120))
+        self._current_source_font_size = source_size
         self.source_font = (self._font_family, source_size, "bold")
         # Latin-script source/live text: italic + regular weight, so it reads
         # apart from the bold upright translation even in the same script.
@@ -770,6 +794,14 @@ class SubtitleWindow(tk.Toplevel):
 
     def _live_font_for(self, text: str):
         return self.font if _ARABIC_ANY_RE.search(text) else self.live_font_latin
+
+    def _translation_fill(self) -> str:
+        """Effective translation colour (override or theme)."""
+        return getattr(self, "_translation_text", self._primary_text)
+
+    def _source_fill(self) -> str:
+        """Effective original/live colour (override or theme)."""
+        return getattr(self, "_source_text", self._secondary_text)
 
     def increase_font(self):
         """Increase subtitle font size."""
@@ -805,6 +837,48 @@ class SubtitleWindow(tk.Toplevel):
     def get_current_font_size(self) -> int:
         """Get the actual rendered font pixel size."""
         return getattr(self, "_current_font_size", 24)
+
+    def set_source_font_size_base(self, value: float) -> None:
+        """Set the original-text divisor and repaint."""
+        try:
+            new_base = max(20.0, min(120.0, float(value)))
+        except (TypeError, ValueError):
+            return
+        if new_base == getattr(self, "_source_font_size_base", None):
+            return
+        self._source_font_size_base = new_base
+        self._update_font()
+        self._refresh_subtitles()
+
+    def get_source_font_size_base(self) -> float:
+        """Get the original-text divisor for settings persistence."""
+        return getattr(self, "_source_font_size_base", self._font_size_base / 0.7)
+
+    def get_current_source_font_size(self) -> int:
+        """Get the actual rendered original-text pixel size."""
+        return getattr(self, "_current_source_font_size", 17)
+
+    def set_translation_text_color(self, color: str | None) -> None:
+        """Apply a translation colour live; empty restores the theme default."""
+        self._translation_text_color_override = (color or "").strip()
+        self._translation_text = (
+            self._translation_text_color_override or self._primary_text
+        )
+        self._refresh_subtitles()
+
+    def set_source_text_color(self, color: str | None) -> None:
+        """Apply an original-text colour live; empty restores the theme default."""
+        self._source_text_color_override = (color or "").strip()
+        self._source_text = self._source_text_color_override or self._secondary_text
+        self._refresh_subtitles()
+
+    def get_translation_text_color(self) -> str:
+        """Return the saved override; empty means "use the theme colour"."""
+        return getattr(self, "_translation_text_color_override", "")
+
+    def get_source_text_color(self) -> str:
+        """Return the saved override; empty means "use the theme colour"."""
+        return getattr(self, "_source_text_color_override", "")
 
     def increase_scroll_speed(self) -> float:
         """Increase continuous scroll speed."""
@@ -904,7 +978,9 @@ class SubtitleWindow(tk.Toplevel):
             self.canvas_width / 2,
             self.canvas_height,
             text="\n".join(lines),
-            fill=self._primary_text if self._live_settled else self._secondary_text,
+            fill=self._translation_fill()
+            if self._live_settled
+            else self._source_fill(),
             font=live_font,
             anchor="s",
             justify="center",
@@ -981,7 +1057,10 @@ class SubtitleWindow(tk.Toplevel):
         for i, (block, natural_bottom) in enumerate(
             zip(self.subtitle_stack, bottoms, strict=True)
         ):
-            fill = self._primary_text if i == last else self._secondary_text
+            # Newest block carries the translation colour; older ones keep the
+            # theme's muted tone — that dim is history emphasis, not the source
+            # role, so a custom source colour must not bleed into it.
+            fill = self._translation_fill() if i == last else self._secondary_text
             if block.line_items:
                 # Multi-row block: bottom row anchors the block, the rows
                 # above re-chain at the tight ink-aware distance.
@@ -1474,7 +1553,7 @@ class SubtitleWindow(tk.Toplevel):
     ) -> tuple:
         """Create per-line subtitle cards for the static display mode."""
         font = font or self.font
-        fill = fill or self._primary_text
+        fill = fill or self._translation_fill()
         max_width = self.canvas.winfo_width() - 140
         lines = self._wrap_text_to_lines(text, max_width, font)
 
@@ -1817,7 +1896,7 @@ class SubtitleWindow(tk.Toplevel):
                     source_y,
                     text=source,
                     font=self._source_font_for(source),
-                    fill=self._secondary_text,
+                    fill=self._source_fill(),
                 )
             text_height = self._measure_block_height(text_id, line_items, source_items)
             self.subtitle_stack.append(
@@ -1840,7 +1919,7 @@ class SubtitleWindow(tk.Toplevel):
                             self.canvas_width / 2,
                             self.canvas_height,
                             text=line_text,
-                            fill=self._primary_text,
+                            fill=self._translation_fill(),
                             font=self.font,
                             anchor="s",
                             justify="center",
@@ -1856,7 +1935,7 @@ class SubtitleWindow(tk.Toplevel):
                     self.canvas_width / 2,
                     self.canvas_height,
                     text="\n".join(lines),
-                    fill=self._primary_text,
+                    fill=self._translation_fill(),
                     font=self.font,
                     anchor="s",
                     justify="center",
@@ -1871,7 +1950,7 @@ class SubtitleWindow(tk.Toplevel):
                     self.canvas_width / 2,
                     self.canvas_height,
                     text="\n".join(source_lines),
-                    fill=self._secondary_text,
+                    fill=self._source_fill(),
                     font=source_font,
                     anchor="s",
                     justify="center",
@@ -1976,7 +2055,9 @@ class SubtitleWindow(tk.Toplevel):
                             self._update_line_background(box_id, bbox)
 
                     if i == len(self.subtitle_stack) - 1:
-                        self.canvas.itemconfig(line_text_id, fill=self._primary_text)
+                        self.canvas.itemconfig(
+                            line_text_id, fill=self._translation_fill()
+                        )
                     else:
                         self.canvas.itemconfig(line_text_id, fill=self._secondary_text)
 
@@ -1992,14 +2073,14 @@ class SubtitleWindow(tk.Toplevel):
                             bbox = self.canvas.bbox(source_id)
                             if bbox:
                                 self._update_line_background(box_id, bbox)
-                        self.canvas.itemconfig(source_id, fill=self._secondary_text)
+                        self.canvas.itemconfig(source_id, fill=self._source_fill())
                         line_y -= source_line_height + self._line_gap
             else:
                 self.canvas.coords(block.text_id, self.canvas_width / 2, current_y)
                 self._position_source_above(block.text_id, block.source_items)
 
                 if i == len(self.subtitle_stack) - 1:
-                    self.canvas.itemconfig(block.text_id, fill=self._primary_text)
+                    self.canvas.itemconfig(block.text_id, fill=self._translation_fill())
                 else:
                     self.canvas.itemconfig(block.text_id, fill=self._secondary_text)
 
