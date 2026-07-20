@@ -1150,8 +1150,8 @@ class AppGUI(
         cb_row.grid_columnconfigure(0, weight=1, uniform="cbcols")
         cb_row.grid_columnconfigure(1, weight=1, uniform="cbcols")
 
-        # Master toggle for the audience overlay. The two toggles below it only
-        # matter while subtitles are actually shown, so it sits above them.
+        # Master toggle for the audience overlay, placed below the two content
+        # toggles that only matter while subtitles are actually shown.
         self.subtitle_output_var = tk.BooleanVar(
             value=self._saved_settings.subtitle_output_enabled
         )
@@ -1162,7 +1162,7 @@ class AppGUI(
             self._on_subtitle_output_change,
         )
         self.subtitle_output_cb.grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 6)
+            row=1, column=0, columnspan=2, sticky="w", pady=(6, 0)
         )
 
         self.bilingual_var = tk.BooleanVar(value=self._saved_settings.bilingual_mode)
@@ -1172,7 +1172,7 @@ class AppGUI(
             self.bilingual_var,
             self._on_bilingual_change,
         )
-        self.bilingual_cb.grid(row=1, column=0, sticky="w")
+        self.bilingual_cb.grid(row=0, column=0, sticky="w")
 
         self.adaptive_catchup_var = tk.BooleanVar(
             value=self._saved_settings.adaptive_subtitle_catchup
@@ -1183,7 +1183,7 @@ class AppGUI(
             self.adaptive_catchup_var,
             self._on_adaptive_catchup_change,
         )
-        self.adaptive_catchup_cb.grid(row=1, column=1, sticky="w")
+        self.adaptive_catchup_cb.grid(row=0, column=1, sticky="w")
 
         # Realtime-only: toggle the in-progress "live line" (transcript shown
         # while the speaker is still talking). Shares column 1 with adaptive
@@ -1198,7 +1198,7 @@ class AppGUI(
             self.show_interim_var,
             self._on_show_interim_change,
         )
-        self.show_interim_cb.grid(row=1, column=1, sticky="w")
+        self.show_interim_cb.grid(row=0, column=1, sticky="w")
 
     def _create_advanced_card(self) -> None:
         card = self._section_card(
