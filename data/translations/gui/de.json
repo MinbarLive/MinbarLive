@@ -199,5 +199,10 @@
   "wizard_disclaimer_text": "MinbarLive nutzt künstliche Intelligenz, um Sprache in Echtzeit zu transkribieren und zu übersetzen. KI-Übersetzungen können falsch, unvollständig oder ungenau sein — besonders bei religiösen Inhalten. Das Audio wird zur Verarbeitung an den gewählten KI-Anbieter gesendet. Verlasse dich nicht auf die Untertitel als verbindliche religiöse Quelle.",
   "wizard_disclaimer_accept": "Ich verstehe, dass KI-Übersetzungen ungenau sein können.",
   "update_available": "Version {version} verfügbar — zum Herunterladen klicken",
-  "check_updates_on_launch": "Beim Start nach Updates suchen"
+  "check_updates_on_launch": "Beim Start nach Updates suchen",
+  "input_level": "Eingangspegel",
+  "input_level_no_signal": "Kein Signal",
+  "input_level_test": "Mikro testen",
+  "input_level_stop_test": "Stopp",
+  "input_level_clipping": "Übersteuert!"
 }

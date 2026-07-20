@@ -14,6 +14,7 @@ from config import (
     ICON_PATH_PNG,
 )
 from gui.announce_view import AnnounceViewMixin
+from gui.audio_level_bar import AudioLevelBar
 from gui.batch_view import BatchViewMixin
 from gui.control_state import (
     STRATEGY_IDS,
@@ -187,6 +188,9 @@ class AppGUI(
         self.log_poll_job: str | None = None
         self.height_apply_job: str | None = None
         self.inactivity_check_job: str | None = None
+        # Compact input-level meter (backend: controller.get_input_level()).
+        self.input_level_poll_job: str | None = None
+        self._input_level_ui_state: tuple[bool, bool] | None = None
 
         # Startup update check (worker thread writes, after-poll reads).
         self._update_check_result: UpdateInfo | None = None
@@ -776,6 +780,7 @@ class AppGUI(
                 selected_device = self.device_names.index(saved_name)
             self.device_combo.current(selected_device)
         self.device_combo.pack(fill="x", pady=(8, 0))
+        self._build_input_level_meter(device_frame)
 
         font_frame = self._mini_panel(card)
         font_frame.grid(row=3, column=0, sticky="nsew", padx=(16, 6), pady=(0, 12))
@@ -818,6 +823,134 @@ class AppGUI(
         )
         self.height_slider.set(self._saved_settings.window_height_percent)
         self.height_slider.pack(fill="x", padx=12, pady=(6, 12))
+
+    # Conventional audio-meter zone colours (green/amber/red in both themes).
+    _INPUT_LEVEL_GREEN = "#37B24D"
+    _INPUT_LEVEL_WARNING = "#F08C00"
+    _INPUT_LEVEL_DANGER = "#E03131"
+
+    def _build_input_level_meter(self, parent: ctk.CTkFrame) -> None:
+        """Compact live input-level meter under the input-device dropdown.
+
+        Reads controller.get_input_level() (fed by the live capture or a
+        meter-only preview) — see the reliability/meter backend unit.
+        """
+        container = ctk.CTkFrame(parent, fg_color="transparent")
+        container.pack(fill="x", pady=(8, 0))
+        container.grid_columnconfigure(0, weight=1)
+
+        self.input_level_bar = AudioLevelBar(
+            container,
+            track_color=self._colors["panel_soft"],
+            border_color=self._colors["border"],
+            green_color=self._INPUT_LEVEL_GREEN,
+            warning_color=self._INPUT_LEVEL_WARNING,
+            danger_color=self._INPUT_LEVEL_DANGER,
+            height=11,
+        )
+        self.input_level_bar.grid(row=0, column=0, columnspan=2, sticky="ew")
+
+        self.input_level_value_label = ctk.CTkLabel(
+            container,
+            text=self.gui_texts.get("input_level_no_signal", "No signal"),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=self._colors["muted"],
+            anchor="w",
+        )
+        self.input_level_value_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self._muted_labels.append(self.input_level_value_label)
+
+        self.input_level_test_btn = ctk.CTkButton(
+            container,
+            text=self.gui_texts.get("input_level_test", "Test mic"),
+            command=self._toggle_input_level_test,
+            width=96,
+            height=26,
+            corner_radius=13,
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            fg_color=self._colors["button"],
+            hover_color=self._colors["button_hover"],
+            text_color=self._colors["text"],
+        )
+        self.input_level_test_btn.grid(row=1, column=1, sticky="e", pady=(4, 0))
+
+        self._input_level_ui_state = None
+        self.input_level_poll_job = self.after(200, self._poll_input_level)
+
+    def _poll_input_level(self) -> None:
+        try:
+            snapshot = self.controller.get_input_level()
+        except Exception:
+            snapshot = None
+        if snapshot is not None and hasattr(self, "input_level_bar"):
+            rms_dbfs = snapshot.rms_dbfs
+            value = max(0.0, min(1.0, (rms_dbfs + 60.0) / 60.0))
+            self.input_level_bar.set(value)
+            if snapshot.clipping_ratio > 0.02:
+                text = self.gui_texts.get("input_level_clipping", "Clipping!")
+                color = self._colors["danger"]
+            elif value <= 0.001:
+                text = self.gui_texts.get("input_level_no_signal", "No signal")
+                color = self._colors["muted"]
+            else:
+                text = f"{rms_dbfs:.0f} dBFS"
+                color = self._colors["text"]
+            self.input_level_value_label.configure(text=text, text_color=color)
+            self._sync_input_level_button()
+        self.input_level_poll_job = self.after(120, self._poll_input_level)
+
+    def _sync_input_level_button(self) -> None:
+        if not hasattr(self, "input_level_test_btn"):
+            return
+        testing = False
+        checker = getattr(self.controller, "is_input_level_test_running", None)
+        if checker is not None:
+            try:
+                testing = bool(checker())
+            except Exception:
+                testing = False
+        state = (self._running, testing)
+        if state == self._input_level_ui_state:
+            return
+        self._input_level_ui_state = state
+        if self._running:
+            # A live session already feeds the meter; a preview cannot own the
+            # same device, so testing is not offered while running.
+            self.input_level_test_btn.configure(
+                text=self.gui_texts.get("input_level_test", "Test mic"),
+                state="disabled",
+            )
+            return
+        self.input_level_test_btn.configure(
+            state="normal",
+            text=(
+                self.gui_texts.get("input_level_stop_test", "Stop")
+                if testing
+                else self.gui_texts.get("input_level_test", "Test mic")
+            ),
+        )
+
+    def _toggle_input_level_test(self) -> None:
+        controller = self.controller
+        checker = getattr(controller, "is_input_level_test_running", None)
+        if checker is not None and checker():
+            try:
+                controller.stop_input_level_test()
+            except Exception:
+                pass
+            self._input_level_ui_state = None
+            return
+        if self._running:
+            return
+        try:
+            controller.start_input_level_test(self.get_selected_device_index())
+        except Exception as exc:
+            self._alert(
+                self.gui_texts.get("input_level", "Input level"),
+                str(exc),
+                danger=True,
+            )
+        self._input_level_ui_state = None
 
     def _create_language_card(self) -> None:
         card = self._section_card(self._col_right, "⇄", "translation_flow")
@@ -2628,6 +2761,20 @@ class AppGUI(
                 border_color=self._colors["entry_border"],
                 text_color=self._colors["text"],
             )
+        if hasattr(self, "input_level_bar"):
+            self.input_level_bar.set_palette(
+                track_color=self._colors["panel_soft"],
+                border_color=self._colors["border"],
+                green_color=self._INPUT_LEVEL_GREEN,
+                warning_color=self._INPUT_LEVEL_WARNING,
+                danger_color=self._INPUT_LEVEL_DANGER,
+            )
+            self.input_level_test_btn.configure(
+                fg_color=self._colors["button"],
+                hover_color=self._colors["button_hover"],
+                text_color=self._colors["text"],
+            )
+            self._input_level_ui_state = None  # re-sync button state next poll
         # The history/batch windows are rebuilt from scratch on open; close a
         # stale one so it isn't left with old-theme/old-language widgets.
         self._close_history_window()
@@ -2753,6 +2900,8 @@ class AppGUI(
         self._close_history_window()
         self._close_batch_window()
         self._close_announce_window()
+        if hasattr(self, "input_level_test_btn"):
+            self._input_level_ui_state = None  # re-sync button text next poll
         for label in self._labels + self._section_titles:
             key = getattr(label, "_text_key", None)
             if key:

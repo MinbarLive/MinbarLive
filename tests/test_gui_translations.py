@@ -44,6 +44,11 @@ WIZARD_KEYS = [
     # Control-panel keys added alongside wizard features
     "bilingual_mode",
     "show_interim_transcript",
+    "input_level",
+    "input_level_no_signal",
+    "input_level_test",
+    "input_level_stop_test",
+    "input_level_clipping",
     "batch_file",
     "batch_file_sub",
     "batch_pick_file",
