@@ -1376,6 +1376,7 @@ class _BlockingRealtimeConnection(_FakeRealtimeConnection):
     lets tests exercise the deliberate-shutdown path deterministically."""
 
     def __iter__(self):
+        yield from self._events
         while not self.closed:
             time.sleep(0.005)
         raise RuntimeError("socket torn down")
@@ -1394,13 +1395,29 @@ class TestOpenAIRealtimeTranscriptionProvider:
     COMPLETED = "conversation.item.input_audio_transcription.completed"
     FAILED = "conversation.item.input_audio_transcription.failed"
 
-    def _fake_client(self, monkeypatch, events, connect_error=None, conn=None):
-        conn = conn if conn is not None else _FakeRealtimeConnection(events)
+    def _fake_client(
+        self,
+        monkeypatch,
+        events,
+        connect_error=None,
+        conn=None,
+        confirmation="session.updated",
+        connect_delay=0.0,
+    ):
+        scripted_events = list(events)
+        if confirmation:
+            scripted_events.insert(0, _rt_event(confirmation))
+        if conn is None:
+            conn = _FakeRealtimeConnection(scripted_events)
+        else:
+            conn._events = scripted_events
         captured = {}
 
         @contextmanager
         def fake_connect(**kwargs):
             captured["kwargs"] = kwargs
+            if connect_delay:
+                time.sleep(connect_delay)
             if connect_error is not None:
                 raise connect_error
             yield conn
@@ -1434,6 +1451,29 @@ class TestOpenAIRealtimeTranscriptionProvider:
         self._fake_client(monkeypatch, [])
         handle = self._open()
         assert isinstance(handle, StreamHandle)
+        assert handle._ready.is_set()
+
+    def test_session_created_also_confirms_startup(self, monkeypatch):
+        self._fake_client(monkeypatch, [], confirmation="session.created")
+        handle = self._open()
+        assert handle._ready.is_set()
+
+    @pytest.mark.parametrize(
+        "confirmation",
+        ("transcription_session.created", "transcription_session.updated"),
+    )
+    def test_legacy_transcription_session_events_confirm_startup(
+        self, monkeypatch, confirmation
+    ):
+        """Accept the lifecycle names emitted by legacy/Beta sessions.
+
+        The GA API uses the unified ``session.*`` names, while the legacy/Beta
+        transcription-only path used ``transcription_session.*``. Either is a
+        positive server-side confirmation, not a startup timeout.
+        """
+        self._fake_client(monkeypatch, [], confirmation=confirmation)
+        handle = self._open()
+        assert handle._ready.is_set()
 
     def test_deltas_accumulate_and_completed_flushes(self, monkeypatch):
         """Deltas are append-only fragments (unlike Deepgram's replace-the-
@@ -1495,6 +1535,16 @@ class TestOpenAIRealtimeTranscriptionProvider:
         self._open()
         assert _wait_until(lambda: len(conn.session_updates) == 1)
         assert captured["kwargs"]["extra_query"] == {"intent": "transcription"}
+        transport_options = captured["kwargs"]["websocket_connection_options"]
+        assert transport_options["open_timeout"] == (
+            openai_realtime.WEBSOCKET_OPEN_TIMEOUT_SECONDS
+        )
+        assert transport_options["close_timeout"] == (
+            openai_realtime.WEBSOCKET_CLOSE_TIMEOUT_SECONDS
+        )
+        assert (
+            openai_realtime.STARTUP_TIMEOUT_SECONDS > transport_options["open_timeout"]
+        )
         session = conn.session_updates[0]["session"]
         assert session["type"] == "transcription"
         audio_input = session["audio"]["input"]
@@ -1520,12 +1570,42 @@ class TestOpenAIRealtimeTranscriptionProvider:
         ]
         assert transcription == {"model": "gpt-4o-transcribe"}
 
-    def test_connect_error_calls_on_error(self, monkeypatch):
+    def test_connect_error_raises_synchronously(self, monkeypatch):
         self._fake_client(monkeypatch, [], connect_error=RuntimeError("boom"))
         errors = []
-        self._open(errors=errors)
-        assert _wait_until(lambda: len(errors) == 1)
-        assert isinstance(errors[0], RuntimeError)
+        with pytest.raises(RuntimeError, match="boom"):
+            self._open(errors=errors)
+        assert errors == []
+
+    def test_error_before_session_confirmation_raises_synchronously(self, monkeypatch):
+        self._fake_client(
+            monkeypatch,
+            [_rt_event("error", error=SimpleNamespace(message="invalid_api_key"))],
+            confirmation=None,
+        )
+        errors = []
+        with pytest.raises(RuntimeError, match="invalid_api_key"):
+            self._open(errors=errors)
+        assert errors == []
+
+    def test_startup_confirmation_wait_is_bounded(self, monkeypatch):
+        conn = _BlockingRealtimeConnection([])
+        self._fake_client(monkeypatch, [], conn=conn, confirmation=None)
+        monkeypatch.setattr(openai_realtime, "STARTUP_TIMEOUT_SECONDS", 0.03)
+
+        with pytest.raises(TimeoutError, match="session confirmation"):
+            self._open(errors=[])
+
+        assert conn.closed is True
+
+    def test_slow_websocket_handshake_can_still_confirm(self, monkeypatch):
+        """A connection that is merely slow must not lose a timeout race."""
+        self._fake_client(monkeypatch, [], connect_delay=0.04)
+        monkeypatch.setattr(openai_realtime, "STARTUP_TIMEOUT_SECONDS", 0.1)
+
+        handle = self._open(errors=[])
+
+        assert handle._ready.is_set()
 
     def test_deliberate_close_suppresses_on_error(self, monkeypatch):
         """close() tears the socket down mid-recv; that expected shutdown
