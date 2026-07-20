@@ -194,7 +194,7 @@
   "input_level_test": "اختبار الميكروفون",
   "input_level_stop_test": "إيقاف",
   "input_level_clipping": "تشبّع!",
-  "subtitle_output_enabled": "عرض الترجمة على الشاشة",
+  "subtitle_output_enabled": "عرض الترجمة أثناء التشغيل",
   "subtitle_appearance": "مظهر الترجمة",
   "source_text_size": "حجم النص الأصلي",
   "translation_text_color": "لون الترجمة",

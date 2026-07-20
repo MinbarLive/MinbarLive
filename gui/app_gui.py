@@ -1162,11 +1162,12 @@ class AppGUI(
         # line is now intrinsic to the Realtime subtitle mode.
         cb_row = ctk.CTkFrame(card, fg_color="transparent")
         cb_row.grid(row=7, column=0, sticky="ew", padx=18, pady=(0, 14))
-        cb_row.grid_columnconfigure(0, weight=1, uniform="cbcols")
-        cb_row.grid_columnconfigure(1, weight=1, uniform="cbcols")
+        # All toggles share a single left column now, so give it the full width
+        # (no half-width uniform split) to keep the longest label from clipping.
+        cb_row.grid_columnconfigure(0, weight=1)
 
-        # Master toggle for the audience overlay, placed below the two content
-        # toggles that only matter while subtitles are actually shown.
+        # All three toggles stack in the left column: Live-Transkript on top,
+        # Originaltext below it, the master overlay toggle at the bottom.
         self.subtitle_output_var = tk.BooleanVar(
             value=self._saved_settings.subtitle_output_enabled
         )
@@ -1176,9 +1177,7 @@ class AppGUI(
             self.subtitle_output_var,
             self._on_subtitle_output_change,
         )
-        self.subtitle_output_cb.grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(6, 0)
-        )
+        self.subtitle_output_cb.grid(row=2, column=0, sticky="w", pady=(6, 0))
 
         self.bilingual_var = tk.BooleanVar(value=self._saved_settings.bilingual_mode)
         self.bilingual_cb = self._checkbox(
@@ -1187,7 +1186,7 @@ class AppGUI(
             self.bilingual_var,
             self._on_bilingual_change,
         )
-        self.bilingual_cb.grid(row=0, column=0, sticky="w")
+        self.bilingual_cb.grid(row=1, column=0, sticky="w", pady=(6, 0))
 
         self.adaptive_catchup_var = tk.BooleanVar(
             value=self._saved_settings.adaptive_subtitle_catchup
@@ -1198,11 +1197,11 @@ class AppGUI(
             self.adaptive_catchup_var,
             self._on_adaptive_catchup_change,
         )
-        self.adaptive_catchup_cb.grid(row=0, column=1, sticky="w")
+        self.adaptive_catchup_cb.grid(row=0, column=0, sticky="w")
 
         # Realtime-only: toggle the in-progress "live line" (transcript shown
-        # while the speaker is still talking). Shares column 1 with adaptive
-        # catch-up — the two are mutually exclusive by mode, so
+        # while the speaker is still talking). Shares column 0 (top-left) with
+        # adaptive catch-up — the two are mutually exclusive by mode, so
         # _update_speed_button_states() shows at most one of them.
         self.show_interim_var = tk.BooleanVar(
             value=self._saved_settings.show_interim_transcript
@@ -1213,7 +1212,7 @@ class AppGUI(
             self.show_interim_var,
             self._on_show_interim_change,
         )
-        self.show_interim_cb.grid(row=0, column=1, sticky="w")
+        self.show_interim_cb.grid(row=0, column=0, sticky="w")
 
     def _create_advanced_card(self) -> None:
         card = self._section_card(
@@ -2127,9 +2126,14 @@ class AppGUI(
 
     def _increase_subtitle_font(self) -> None:
         if self.subtitle_window and self.subtitle_window.winfo_exists():
+            old_base = self._saved_settings.font_size_base
             self.subtitle_window.increase_font()
             self._saved_settings.font_size_base = (
                 self.subtitle_window.get_font_size_base()
+            )
+            # Keep the original text in proportion with the translation.
+            self._scale_source_font_with_translation(
+                old_base, self._saved_settings.font_size_base
             )
             log(
                 f"Font size changed to: {self.subtitle_window.get_current_font_size()}",
@@ -2139,9 +2143,14 @@ class AppGUI(
 
     def _decrease_subtitle_font(self) -> None:
         if self.subtitle_window and self.subtitle_window.winfo_exists():
+            old_base = self._saved_settings.font_size_base
             self.subtitle_window.decrease_font()
             self._saved_settings.font_size_base = (
                 self.subtitle_window.get_font_size_base()
+            )
+            # Keep the original text in proportion with the translation.
+            self._scale_source_font_with_translation(
+                old_base, self._saved_settings.font_size_base
             )
             log(
                 f"Font size changed to: {self.subtitle_window.get_current_font_size()}",

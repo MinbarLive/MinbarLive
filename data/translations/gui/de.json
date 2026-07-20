@@ -205,7 +205,7 @@
   "input_level_test": "Mikro testen",
   "input_level_stop_test": "Stopp",
   "input_level_clipping": "Übersteuert!",
-  "subtitle_output_enabled": "Untertitel auf Monitor anzeigen",
+  "subtitle_output_enabled": "Untertitel anzeigen wenn gestartet",
   "subtitle_appearance": "Untertitel-Darstellung",
   "source_text_size": "Größe des Originaltexts",
   "translation_text_color": "Farbe der Übersetzung",

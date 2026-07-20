@@ -205,7 +205,7 @@
   "input_level_test": "Test mic",
   "input_level_stop_test": "Stop",
   "input_level_clipping": "Clipping!",
-  "subtitle_output_enabled": "Show subtitles on monitor",
+  "subtitle_output_enabled": "Show subtitles while running",
   "subtitle_appearance": "Subtitle appearance",
   "source_text_size": "Original text size",
   "translation_text_color": "Translation colour",

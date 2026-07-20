@@ -258,6 +258,39 @@ class SubtitleTypographyMixin:
         win.set_translation_text_color(self._saved_settings.translation_text_color)
         win.set_source_text_color(self._saved_settings.source_text_color)
 
+    def _scale_source_font_with_translation(
+        self, old_base: float, new_base: float
+    ) -> None:
+        """Scale the original-text divisor when the translation size changes.
+
+        The main "Schriftgröße −/+" moves the translation divisor; the original
+        text should follow so the pair keeps the proportion set in this expander
+        (the % shown here). Both are divisors, so preserving the ratio means
+        multiplying the source divisor by the same factor the translation one
+        moved by. The expander still sets that ratio independently.
+        """
+        try:
+            old_base = float(old_base)
+            new_base = float(new_base)
+        except (TypeError, ValueError):
+            return
+        if not old_base or old_base == new_base:
+            return
+        source_base = getattr(
+            self._saved_settings, "source_font_size_base", DEFAULT_SOURCE_FONT_SIZE_BASE
+        )
+        scaled = max(
+            SOURCE_FONT_SIZE_BASE_MIN,
+            min(SOURCE_FONT_SIZE_BASE_MAX, float(source_base) * (new_base / old_base)),
+        )
+        if scaled == source_base:
+            return
+        self._saved_settings.source_font_size_base = scaled
+        win = getattr(self, "subtitle_window", None)
+        if win is not None and win.winfo_exists():
+            win.set_source_font_size_base(scaled)
+        self._refresh_typography_controls()
+
     def _on_source_font_step(self, delta: float) -> None:
         """Step the divisor. Positive delta = larger divisor = smaller text."""
         current = getattr(
