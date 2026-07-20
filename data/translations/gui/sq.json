@@ -193,5 +193,6 @@
   "input_level_no_signal": "Pa sinjal",
   "input_level_test": "Testo mikrofonin",
   "input_level_stop_test": "Ndalo",
-  "input_level_clipping": "Shumë lartë!"
+  "input_level_clipping": "Shumë lartë!",
+  "subtitle_output_enabled": "Shfaq titrat në monitor"
 }

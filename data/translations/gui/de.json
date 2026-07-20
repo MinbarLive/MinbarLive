@@ -204,5 +204,6 @@
   "input_level_no_signal": "Kein Signal",
   "input_level_test": "Mikro testen",
   "input_level_stop_test": "Stopp",
-  "input_level_clipping": "Übersteuert!"
+  "input_level_clipping": "Übersteuert!",
+  "subtitle_output_enabled": "Untertitel auf Monitor anzeigen"
 }

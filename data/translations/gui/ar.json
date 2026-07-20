@@ -193,5 +193,6 @@
   "input_level_no_signal": "لا توجد إشارة",
   "input_level_test": "اختبار الميكروفون",
   "input_level_stop_test": "إيقاف",
-  "input_level_clipping": "تشبّع!"
+  "input_level_clipping": "تشبّع!",
+  "subtitle_output_enabled": "عرض الترجمة على الشاشة"
 }

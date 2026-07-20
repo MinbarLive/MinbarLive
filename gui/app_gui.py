@@ -827,6 +827,34 @@ class AppGUI(
         self.height_slider.set(self._saved_settings.window_height_percent)
         self.height_slider.pack(fill="x", padx=12, pady=(6, 12))
 
+        # Run without an audience overlay (transcription/translation still run).
+        self.subtitle_output_var = tk.BooleanVar(
+            value=self._saved_settings.subtitle_output_enabled
+        )
+        self.subtitle_output_cb = self._checkbox(
+            card,
+            "subtitle_output_enabled",
+            self.subtitle_output_var,
+            self._on_subtitle_output_change,
+        )
+        self.subtitle_output_cb.grid(
+            row=5, column=0, columnspan=2, sticky="w", padx=18, pady=(0, 14)
+        )
+
+    def _on_subtitle_output_change(self) -> None:
+        enabled = self.subtitle_output_var.get()
+        self._saved_settings.subtitle_output_enabled = enabled
+        self._save_current_settings()
+        if not enabled:
+            self._destroy_subtitle_window()
+        elif self._running or not self._saved_settings.hide_subtitle_on_stop:
+            if not (self.subtitle_window and self.subtitle_window.winfo_exists()):
+                self._create_subtitle_window()
+        log(
+            f"Subtitle output on monitor: {'on' if enabled else 'off'}",
+            level="INFO",
+        )
+
     # Conventional audio-meter zone colours (green/amber/red in both themes).
     _INPUT_LEVEL_GREEN = "#37B24D"
     _INPUT_LEVEL_WARNING = "#F08C00"
@@ -887,22 +915,27 @@ class AppGUI(
             snapshot = self.controller.get_input_level()
         except Exception:
             snapshot = None
-        if snapshot is not None and hasattr(self, "input_level_bar"):
-            rms_dbfs = snapshot.rms_dbfs
-            value = max(0.0, min(1.0, (rms_dbfs + 60.0) / 60.0))
-            self.input_level_bar.set(value)
-            if snapshot.clipping_ratio > 0.02:
-                text = self.gui_texts.get("input_level_clipping", "Clipping!")
-                color = self._colors["danger"]
-            elif value <= 0.001:
-                text = self.gui_texts.get("input_level_no_signal", "No signal")
-                color = self._colors["muted"]
-            else:
-                text = f"{rms_dbfs:.0f} dBFS"
-                color = self._colors["text"]
-            self.input_level_value_label.configure(text=text, text_color=color)
-            self._sync_input_level_button()
-        self.input_level_poll_job = self.after(120, self._poll_input_level)
+        try:
+            if snapshot is not None and hasattr(self, "input_level_bar"):
+                rms_dbfs = snapshot.rms_dbfs
+                value = max(0.0, min(1.0, (rms_dbfs + 60.0) / 60.0))
+                self.input_level_bar.set(value)
+                if snapshot.clipping_ratio > 0.02:
+                    text = self.gui_texts.get("input_level_clipping", "Clipping!")
+                    color = self._colors["danger"]
+                elif value <= 0.001:
+                    text = self.gui_texts.get("input_level_no_signal", "No signal")
+                    color = self._colors["muted"]
+                else:
+                    text = f"{rms_dbfs:.0f} dBFS"
+                    color = self._colors["text"]
+                self.input_level_value_label.configure(text=text, text_color=color)
+                self._sync_input_level_button()
+            self.input_level_poll_job = self.after(120, self._poll_input_level)
+        except tk.TclError:
+            # Window/widgets torn down between ticks — stop quietly (the
+            # on_close after-sweep and this early return both end the loop).
+            pass
 
     def _sync_input_level_button(self) -> None:
         if not hasattr(self, "input_level_test_btn"):
@@ -1489,7 +1522,14 @@ class AppGUI(
         self.log_text.grid(row=0, column=0, sticky="nsew", padx=18, pady=18)
         self.log_text.configure(state="disabled")
 
+    def _subtitle_output_is_enabled(self) -> bool:
+        """Whether the audience overlay window should exist at all."""
+        return bool(getattr(self._saved_settings, "subtitle_output_enabled", True))
+
     def _create_subtitle_window(self) -> None:
+        if not self._subtitle_output_is_enabled():
+            # Run transcription/translation with no overlay window at all.
+            return
         current_screen_idx = self.screen_combo.current()
         if current_screen_idx is None or current_screen_idx < 0:
             current_screen_idx = self.selected_screen_index

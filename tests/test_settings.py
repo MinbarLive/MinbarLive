@@ -236,6 +236,37 @@ class TestPipelineMode:
             settings_module._cached_settings = None
 
 
+class TestSubtitleOutputEnabled:
+    def test_default_is_true(self):
+        assert Settings().subtitle_output_enabled is True
+
+    def test_round_trip_false(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            settings_module, "_settings_path", lambda: tmp_path / "settings.json"
+        )
+        settings_module._cached_settings = None
+        save_settings(Settings(subtitle_output_enabled=False))
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.subtitle_output_enabled is False
+        finally:
+            settings_module._cached_settings = None
+
+    def test_invalid_value_falls_back_to_true(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"subtitle_output_enabled": "nope"}), encoding="utf-8"
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.subtitle_output_enabled is True
+        finally:
+            settings_module._cached_settings = None
+
+
 class TestAnnouncementHistory:
     """The recent-announcement (megaphone) list persists to settings.json."""
 

@@ -49,6 +49,7 @@ WIZARD_KEYS = [
     "input_level_test",
     "input_level_stop_test",
     "input_level_clipping",
+    "subtitle_output_enabled",
     "batch_file",
     "batch_file_sub",
     "batch_pick_file",

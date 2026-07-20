@@ -295,6 +295,9 @@ DEFAULT_THEME_MODE = "light"
 class Settings:
     # Note: openai_api_key is stored securely via keyring, not in this dataclass
     monitor_index: int = 1
+    # False keeps transcription/translation running without ever creating the
+    # audience overlay window. monitor_index still remembers the last monitor.
+    subtitle_output_enabled: bool = True
     input_device_name: str | None = None
     font_size_base: int = 40
     source_language: str = "Automatic"
@@ -479,8 +482,12 @@ def load_settings(use_cache: bool = True) -> Settings:
         announcement_duration_index = data.get("announcement_duration_index", 1)
         if not isinstance(announcement_duration_index, int):
             announcement_duration_index = 1
+        subtitle_output_enabled = data.get("subtitle_output_enabled", True)
+        if not isinstance(subtitle_output_enabled, bool):
+            subtitle_output_enabled = True
         _cached_settings = Settings(
             monitor_index=data.get("monitor_index", 1),
+            subtitle_output_enabled=subtitle_output_enabled,
             input_device_name=data.get("input_device_name"),
             font_size_base=data.get("font_size_base", 40),
             source_language=data.get("source_language", "Automatic"),
@@ -558,6 +565,7 @@ def save_settings(settings: Settings) -> None:
     # Note: API key is stored securely via keyring, not in this file
     payload = {
         "monitor_index": settings.monitor_index,
+        "subtitle_output_enabled": settings.subtitle_output_enabled,
         "input_device_name": settings.input_device_name,
         "font_size_base": settings.font_size_base,
         "source_language": settings.source_language,

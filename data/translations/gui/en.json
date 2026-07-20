@@ -204,5 +204,6 @@
   "input_level_no_signal": "No signal",
   "input_level_test": "Test mic",
   "input_level_stop_test": "Stop",
-  "input_level_clipping": "Clipping!"
+  "input_level_clipping": "Clipping!",
+  "subtitle_output_enabled": "Show subtitles on monitor"
 }
