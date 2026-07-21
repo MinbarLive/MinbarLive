@@ -143,15 +143,30 @@ class AppGUI(
     WidgetFactoryMixin,
     ctk.CTk,
 ):
-    # Minimum window size in CTk logical units, shared by _setup_window and
-    # _toggle_log_panel (a mismatch there once locked the window at the
-    # larger size after a log toggle).
-    _MIN_W = 880
-    _MIN_H = 536
-    # Widest the collapsed 2-column card grid may grow (logical units, ≈1.4×
-    # the design width) before extra window width becomes centered margin
-    # instead of stretching the cards. See _collapsed_margin.
+    # Size the window opens at on a fresh install (CTk logical units), shared
+    # by _setup_window and _toggle_log_panel (a mismatch there once locked the
+    # window at the larger size after a log toggle). 880x536 logical renders
+    # ~1100x720 px, the compact size the 2-column card grid fits snugly.
+    _DEFAULT_W = 880
+    _DEFAULT_H = 630
+    # Floor the user may drag the window down to. Deliberately far below the
+    # default: the card grid reflows to a single column on the way down, so a
+    # small window stays usable (scrolled) instead of being blocked.
+    _MIN_W = 380
+    _MIN_H = 300
+    # Card-grid breakpoints (logical units of available sidebar width): the
+    # cards reflow into 1, 2 or 3 columns so a large window shows everything at
+    # once instead of stretching two tall columns. See _column_count.
+    _COL2_MIN_W = 720
+    _COL3_MIN_W = 1320
+    # Widest the card grid may grow before extra window width becomes centered
+    # margin instead of stretching the cards (per column count, logical units).
+    # See _collapsed_margin.
     _MAX_CARD_AREA_W = 1200
+    _MAX_CARD_AREA_W_WIDE = 1800
+    # Gap between card groups and around the grid (raw px, matches the gap
+    # between two cards inside a group).
+    _CARD_GAP = 18
 
     def __init__(self, controller):
         self._saved_settings = load_settings()
@@ -252,12 +267,13 @@ class AppGUI(
 
     def _setup_window(self) -> None:
         self.title(f"MinbarLive v{__version__}")
-        # Collapsed (log hidden) is a wide 2-column card grid; expanded (log
-        # shown) is the classic single-column sidebar + log panel.
+        # Collapsed (log hidden) is a reflowing 1/2/3-column card grid; expanded
+        # (log shown) is the classic single-column sidebar + log panel.
         # CTk geometry is in DPI-logical units (physical = logical x window
-        # scaling, e.g. x1.25). 880x576 logical renders ~1100x720 px, which is
-        # the compact first-run size the 2-column card layout fits snugly.
-        default_geo = f"{self._MIN_W}x{self._MIN_H}"
+        # scaling, e.g. x1.25), and gui/scaling.py guarantees a 900x672 logical
+        # window fits inside 85% of the work area — so the default below opens
+        # showing the whole card grid on every screen, without maximizing.
+        default_geo = f"{self._DEFAULT_W}x{self._DEFAULT_H}"
         _min_w, _min_h = self._MIN_W, self._MIN_H
 
         saved_geo = self._saved_settings.window_geometry or ""
@@ -380,8 +396,9 @@ class AppGUI(
         )
         self.sidebar.grid(row=2, column=0, sticky="nsew")
         self.sidebar.grid_columnconfigure(0, weight=1)
-        # Cap + center the collapsed card grid whenever the window resizes.
+        # Reflow + re-center the card grid whenever the window resizes.
         self._applied_collapsed_margin: int | None = None
+        self._applied_columns: int | None = None
         self.sidebar.bind("<Configure>", self._on_sidebar_resize, add="+")
 
         self.content = ctk.CTkFrame(
@@ -391,16 +408,20 @@ class AppGUI(
         self.content.grid_columnconfigure(0, weight=1)
         self.content.grid_rowconfigure(1, weight=1)
 
-        # Two independent card columns. A single shared-row grid couples the
-        # two columns' row heights, so a short card (Controls) next to a tall
-        # one (Translation flow) gets padded out with dead space — the empty
-        # bottom-right the old 2×2 grid showed. Give each column its own frame
-        # so it packs top-down on its own. Left = Controls + Display; right =
-        # Translation flow + Advanced, chosen so the columns end level.
-        self._col_left = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self._col_right = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self._col_left.grid_columnconfigure(0, weight=1)
-        self._col_right.grid_columnconfigure(0, weight=1)
+        # Three independent card columns. A single shared-row grid couples the
+        # columns' row heights, so a short card (Controls) next to a tall one
+        # (Translation flow) gets padded out with dead space — the empty
+        # bottom-right the old 2×2 grid showed. Give each group its own frame so
+        # it packs top-down on its own. A widget's master is fixed at creation,
+        # so the three groups are the reflow's atoms: _layout_sidebar_cards
+        # arranges them in 1, 2 or 3 columns depending on the window width.
+        # A = Controls + Display, B = Translation flow, C = Advanced (its own
+        # group because it is by far the tallest when expanded).
+        self._col_a = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self._col_b = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self._col_c = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        for _col in (self._col_a, self._col_b, self._col_c):
+            _col.grid_columnconfigure(0, weight=1)
 
         self._init_batch_state()
         self._init_announce_state()
@@ -412,80 +433,107 @@ class AppGUI(
         # Batch/File is reached from the header icon (a Toplevel), not a card.
         self._batch_win: ctk.CTkToplevel | None = None
 
-        # Each column reserves a weighted spacer row (row 1) between its top and
-        # bottom card. When the columns are placed side by side (sticky "nsew"),
-        # grid stretches the shorter column up to the taller one's height and the
-        # extra height lands in this spacer row, pushing that column's bottom card
-        # down so both bottom cards always end level — no matter which column is
-        # taller (Display when stopped, Advanced + running hint when running).
-        # See _layout_sidebar_cards.
-        self._col_left.grid_rowconfigure(1, weight=1)
-        self._col_right.grid_rowconfigure(1, weight=1)
-
+        # Cards stack top-down inside their group and keep their natural height
+        # ("new"): bottom-aligning the groups pushed Advanced away from
+        # Translation flow into the window's lower edge as soon as anything in
+        # group A was expanded.
         self.control_card.grid(row=0, column=0, sticky="new")
-        self.display_card.grid(row=2, column=0, sticky="sew", pady=(18, 0))
+        self.display_card.grid(row=1, column=0, sticky="new", pady=(18, 0))
         self.language_card.grid(row=0, column=0, sticky="new")
-        self.advanced_card.grid(row=2, column=0, sticky="sew", pady=(18, 0))
+        self.advanced_card.grid(row=0, column=0, sticky="new")
         self._layout_sidebar_cards()
 
         if self._log_collapsed:
             self.content.grid_remove()
 
+    def _column_count(self) -> int:
+        """How many card columns the current window width affords (1–3).
+
+        Always 1 while the log panel is open (it owns the rest of the width).
+        Before the sidebar is mapped winfo_width() is 1 — assume 2, the default
+        window's layout, so the first paint is already right; the <Configure>
+        binding corrects it if the restored geometry is wider or narrower."""
+        if not self._log_collapsed:
+            return 1
+        try:
+            avail = self.sidebar.winfo_width()
+            scaling = self._get_window_scaling()
+        except Exception:
+            return 2
+        if avail <= 1:  # not yet mapped
+            return 2
+        logical = avail / max(scaling, 0.1)
+        if logical >= self._COL3_MIN_W:
+            return 3
+        if logical >= self._COL2_MIN_W:
+            return 2
+        return 1
+
     def _layout_sidebar_cards(self) -> None:
-        """Position the two card columns: side by side (2-column masonry) while
-        the log panel is collapsed, stacked into one column (classic look) when
-        it is open. In the side-by-side layout both columns are stretched to the
-        same (taller) height via sticky "nsew"; each column's weighted spacer row
-        then drops its bottom card so the two columns always end level. Stacked,
-        the columns keep their natural heights (sticky "new")."""
-        two_col = self._log_collapsed
-        if two_col:
-            self.sidebar.grid_columnconfigure(0, weight=1, uniform="sbcols")
-            self.sidebar.grid_columnconfigure(1, weight=1, uniform="sbcols")
-            # Equal-height / bottom-aligned columns ("nsew") only while the
-            # Advanced card is collapsed — then the two columns are close in
-            # height and level bottoms look clean. When Advanced is expanded the
-            # right column is far taller; stretching the left column to match
-            # would strand "Anzeige & Audio" floating in the middle, so
-            # top-anchor both columns instead ("new" — natural masonry stacking).
-            col_sticky = "new" if getattr(self, "advanced_visible", False) else "nsew"
-            # columnspan is stated explicitly: grid() retains prior options, and
-            # the single-column branch below leaves columnspan=2 behind — without
-            # resetting it the two columns would overlap after a log toggle.
-            margin = self._collapsed_margin()
-            self._applied_collapsed_margin = margin
-            self._col_left.grid(
-                row=0,
-                column=0,
-                columnspan=1,
-                sticky=col_sticky,
-                padx=(18 + margin, 9),
-                pady=18,
+        """(Re)place the three card groups for the current column count.
+
+        Groups keep their natural height and are top-anchored ("new"), so cards
+        stay next to the card above them — a masonry layout. In the 2-column
+        case group A spans both rows so that its height does not push C away
+        from B; the weighted second row absorbs the surplus *below* C."""
+        cols = self._column_count()
+        margin = self._collapsed_margin(cols)
+        self._applied_columns = cols
+        self._applied_collapsed_margin = margin
+
+        # Grid columns: 0 and 4 are margin spacers, 1..3 hold the card groups.
+        # The centering margin lives in the spacers rather than in the groups'
+        # own padx, so every card column stays exactly the same width — folding
+        # it into padx makes a middle column wider than the outer two. Each
+        # group carries half the gap on both sides, so the spacers only need
+        # the other half to give the outer edges the same _CARD_GAP margin.
+        half_gap = self._CARD_GAP // 2
+        self.sidebar.grid_columnconfigure(0, weight=0, minsize=half_gap + margin)
+        self.sidebar.grid_columnconfigure(4, weight=0, minsize=half_gap + margin)
+        for index in range(1, 4):
+            in_use = index <= cols
+            self.sidebar.grid_columnconfigure(
+                index,
+                weight=1 if in_use else 0,
+                # Only columns in use join the uniform group: Tk still counts a
+                # weight-0 member when it divides the width, which stranded a
+                # third of the sidebar as dead space in the 2-column layout.
+                uniform="sbcols" if (in_use and cols > 1) else "",
             )
-            self._col_right.grid(
-                row=0,
-                column=1,
-                columnspan=1,
-                sticky=col_sticky,
-                padx=(9, 18 + margin),
-                pady=18,
-            )
+        # A tall spanning group A must not lengthen row 0 (that is what pushed
+        # Advanced to the window's bottom edge); the surplus goes to row 1.
+        self.sidebar.grid_rowconfigure(0, weight=0)
+        self.sidebar.grid_rowconfigure(1, weight=1 if cols == 2 else 0)
+
+        if cols == 1:
+            placements = ((0, 1, 1), (1, 1, 1), (2, 1, 1))
+        elif cols == 2:
+            placements = ((0, 1, 2), (0, 2, 1), (1, 2, 1))
         else:
-            self._applied_collapsed_margin = None
-            self.sidebar.grid_columnconfigure(0, weight=1, uniform="")
-            self.sidebar.grid_columnconfigure(1, weight=0, uniform="")
-            self._col_left.grid(
-                row=0, column=0, columnspan=2, sticky="new", padx=18, pady=(18, 0)
-            )
-            self._col_right.grid(
-                row=1, column=0, columnspan=2, sticky="new", padx=18, pady=(18, 18)
+            placements = ((0, 1, 1), (0, 2, 1), (0, 3, 1))
+
+        # row/column/rowspan are always stated: grid() retains the options of a
+        # previous placement, so a value left over from another column count
+        # would silently overlap the groups.
+        groups = (self._col_a, self._col_b, self._col_c)
+        for group, (row, column, rowspan) in zip(groups, placements, strict=True):
+            group.grid(
+                row=row,
+                column=column,
+                rowspan=rowspan,
+                columnspan=1,
+                sticky="new",
+                padx=half_gap,
+                # Only the top row pads above: a group stacked below another one
+                # would otherwise sit a double gap away from it.
+                pady=(self._CARD_GAP if row == 0 else 0, self._CARD_GAP),
             )
 
-    def _collapsed_margin(self) -> int:
-        """Extra outer padding (raw px) that caps the 2-column card grid at a
-        comfortable width and centers it, so maximizing the collapsed window
-        doesn't stretch the cards across the whole screen. 0 until the sidebar
-        is mapped; a <Configure> binding re-applies the layout on resize."""
+    def _collapsed_margin(self, cols: int) -> int:
+        """Extra outer padding (raw px) that caps the card grid at a comfortable
+        width and centers it, so maximizing the window doesn't stretch the cards
+        across the whole screen. 0 until the sidebar is mapped; a <Configure>
+        binding re-applies the layout on resize."""
         try:
             avail = self.sidebar.winfo_width()
             scaling = self._get_window_scaling()
@@ -493,19 +541,19 @@ class AppGUI(
             return 0
         if avail <= 1:  # not yet mapped
             return 0
-        max_px = int(self._MAX_CARD_AREA_W * scaling)
-        return max(0, (avail - max_px) // 2)
+        cap = self._MAX_CARD_AREA_W if cols < 3 else self._MAX_CARD_AREA_W_WIDE
+        return max(0, (avail - int(cap * scaling)) // 2)
 
     def _on_sidebar_resize(self, _event: object | None = None) -> None:
-        """Re-center the collapsed card grid when the window is resized."""
-        if not self._log_collapsed:
+        """Reflow / re-center the card grid when the window is resized."""
+        cols = self._column_count()
+        if (
+            cols == getattr(self, "_applied_columns", None)
+            and self._collapsed_margin(cols)
+            == getattr(self, "_applied_collapsed_margin", None)
+        ):
             return
-        margin = self._collapsed_margin()
-        if margin == getattr(self, "_applied_collapsed_margin", None):
-            return
-        self._applied_collapsed_margin = margin
-        self._col_left.grid_configure(padx=(18 + margin, 9))
-        self._col_right.grid_configure(padx=(9, 18 + margin))
+        self._layout_sidebar_cards()
 
     def _create_sidebar_header(self) -> None:
         header = ctk.CTkFrame(
@@ -699,7 +747,7 @@ class AppGUI(
             webbrowser.open(self._update_available.url)
 
     def _create_control_card(self) -> None:
-        card = self._section_card(self._col_left, "▶", "control_center")
+        card = self._section_card(self._col_a, "▶", "control_center")
         self.control_card = card
         card.grid_columnconfigure(0, weight=1, uniform="control_actions")
         card.grid_columnconfigure(1, weight=1, uniform="control_actions")
@@ -750,7 +798,7 @@ class AppGUI(
         self.stop_btn.grid(row=3, column=1, sticky="ew", padx=(6, 16), pady=(0, 14))
 
     def _create_display_card(self) -> None:
-        card = self._section_card(self._col_left, "▤", "display_routing")
+        card = self._section_card(self._col_a, "▤", "display_routing")
         self.display_card = card
         card.grid_columnconfigure(0, weight=1, uniform="display_cols")
         card.grid_columnconfigure(1, weight=1, uniform="display_cols")
@@ -998,7 +1046,7 @@ class AppGUI(
         self._input_level_ui_state = None
 
     def _create_language_card(self) -> None:
-        card = self._section_card(self._col_right, "⇄", "translation_flow")
+        card = self._section_card(self._col_b, "⇄", "translation_flow")
         self.language_card = card
         card.grid_columnconfigure(0, weight=1)
 
@@ -1222,7 +1270,7 @@ class AppGUI(
 
     def _create_advanced_card(self) -> None:
         card = self._section_card(
-            self._col_right,
+            self._col_c,
             "⚙",
             "advanced_settings",
             toggle_command=self._toggle_advanced_settings,
@@ -2370,9 +2418,8 @@ class AppGUI(
         else:
             self.strategy_combo.configure(state="readonly")
 
-        # Running hint under the strategy row. It grows the right column; grid
-        # auto-restretches the left column to match (equal-height columns), so
-        # no manual re-levelling is needed.
+        # Running hint under the strategy row. It grows the Translation-flow
+        # card; the card grid is masonry, so the neighbours simply stay put.
         if running:
             self.strategy_running_hint.grid()
         else:
@@ -2576,9 +2623,8 @@ class AppGUI(
         else:
             self._advanced_toggle_arrow.configure(text="▾")
             self.advanced_frame.grid_forget()
-        # Expanding the Advanced card makes the right column much taller — switch
-        # the columns between bottom-aligned (collapsed) and top-anchored
-        # (expanded). See _layout_sidebar_cards.
+        # The card grid keeps its column count, but the group heights changed —
+        # re-run the layout so grid re-measures. See _layout_sidebar_cards.
         self._layout_sidebar_cards()
 
     def _toggle_log_panel(self) -> None:
@@ -2591,14 +2637,14 @@ class AppGUI(
         import re
 
         m = re.match(r"(\d+)x(\d+)", self.geometry())
-        current_width = int(m.group(1)) if m else self._MIN_W
-        current_height = int(m.group(2)) if m else self._MIN_H
+        current_width = int(m.group(1)) if m else self._DEFAULT_W
+        current_height = int(m.group(2)) if m else self._DEFAULT_H
         # Keep the user's chosen width across the toggle (clamped to the min):
         # the log panel appears within the current width (the sidebar shrinks to
         # 500px) instead of snapping the window to a fixed per-mode width.
         current_width = max(current_width, self._MIN_W)
         if self._log_collapsed:
-            # Collapsed: hide the log, reflow into the 2-column card grid.
+            # Collapsed: hide the log, reflow into the card grid.
             self.content.grid_remove()
             self.grid_columnconfigure(0, weight=1, minsize=self._MIN_W)
             self.grid_columnconfigure(1, weight=0, minsize=0)

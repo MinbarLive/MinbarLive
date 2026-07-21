@@ -157,8 +157,8 @@ class WidgetFactoryMixin:
             border_width=2,
             corner_radius=24,
         )
-        # Placement is handled by _layout_sidebar_cards() (single column when
-        # the log panel is open, 2-column grid when it is collapsed).
+        # Placement is handled by _layout_sidebar_cards() (the card grid reflows
+        # into 1, 2 or 3 columns; single column while the log panel is open).
         card.grid_columnconfigure(0, weight=1)
         self._cards.append(card)
 

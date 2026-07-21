@@ -643,5 +643,66 @@ class TestAnnouncement:
         assert fake.destroyed is True
 
 
+class TestCardGridReflow:
+    """The card grid reflows to 1/2/3 columns so a wide window shows every
+    card at once and a small one stays usable instead of being clipped."""
+
+    def _pin_width(self, gui, monkeypatch, logical_width):
+        monkeypatch.setattr(gui, "_get_window_scaling", lambda: 1.0, raising=False)
+        monkeypatch.setattr(
+            gui.sidebar, "winfo_width", lambda: logical_width, raising=False
+        )
+
+    def test_column_count_follows_the_window_width(self, make_gui, monkeypatch):
+        gui, _c, _s = make_gui()
+        for width, expected in (
+            (gui._COL2_MIN_W - 1, 1),
+            (gui._COL2_MIN_W, 2),
+            (gui._COL3_MIN_W - 1, 2),
+            (gui._COL3_MIN_W, 3),
+        ):
+            self._pin_width(gui, monkeypatch, width)
+            assert gui._column_count() == expected, width
+
+    def test_open_log_panel_forces_a_single_column(self, make_gui, monkeypatch):
+        gui, _c, _s = make_gui()
+        self._pin_width(gui, monkeypatch, gui._COL3_MIN_W)
+        gui._log_collapsed = False
+        assert gui._column_count() == 1
+
+    def test_groups_are_placed_once_per_column_count(self, make_gui, monkeypatch):
+        gui, _c, _s = make_gui()
+        groups = (gui._col_a, gui._col_b, gui._col_c)
+        for width in (400, gui._COL2_MIN_W, gui._COL3_MIN_W):
+            self._pin_width(gui, monkeypatch, width)
+            gui._layout_sidebar_cards()
+            cells = {}
+            for group in groups:
+                info = group.grid_info()
+                for row in range(int(info["row"]), int(info["row"]) + int(info["rowspan"])):
+                    cell = (row, int(info["column"]))
+                    assert cell not in cells, f"{cell} occupied twice at {width}"
+                    cells[cell] = group
+            assert gui._applied_columns == gui._column_count()
+
+    def test_wide_window_caps_and_centres_the_grid(self, make_gui, monkeypatch):
+        """Past the cap the extra width becomes margin, not wider cards."""
+        gui, _c, _s = make_gui()
+        self._pin_width(gui, monkeypatch, gui._MAX_CARD_AREA_W_WIDE + 400)
+        assert gui._collapsed_margin(3) == 200
+        self._pin_width(gui, monkeypatch, gui._MAX_CARD_AREA_W_WIDE)
+        assert gui._collapsed_margin(3) == 0
+
+    def test_minimum_size_is_below_the_default(self, make_gui):
+        """The window may be dragged well under its opening size (item: "as
+        big and as small as the user wants")."""
+        gui, _c, _s = make_gui()
+        assert gui._MIN_W < gui._DEFAULT_W
+        assert gui._MIN_H < gui._DEFAULT_H
+        # CTk's minsize() has no query form (it would compare against None) —
+        # read back what _setup_window stored on the window instead.
+        assert (gui._min_width, gui._min_height) == (gui._MIN_W, gui._MIN_H)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
