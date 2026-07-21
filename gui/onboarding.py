@@ -105,6 +105,10 @@ _W, _H = 680, 640
 # or picking another device. "Test mic" keeps it open until it is stopped.
 _LEVEL_AUTO_SECONDS = 10
 _LEVEL_POLL_MS = 50
+# How long the window may stay hidden waiting for its final size (_reveal).
+_REVEAL_POLL_MS = 10
+_REVEAL_MAX_TRIES = 30
+
 # Opening an input is synchronous (up to a few seconds on a bad device), so
 # auto-previews start just after the step is painted. Re-scheduling cancels
 # the pending one, which also debounces flipping through the device list.
@@ -153,6 +157,17 @@ class OnboardingWizard(ctk.CTk):
     def __init__(self, controller) -> None:
         super().__init__()
 
+        # Build the window invisible and reveal it once the first step is laid
+        # out. CTk creates its root at its own default size, so the scaling
+        # clamp, the centring geometry below and _fit_height() would otherwise
+        # be visible as the window popping up small and then resizing.
+        # (-alpha rather than withdraw(): the window stays mapped, so nothing
+        # about its geometry handling changes — see gui/settings_view.)
+        try:
+            self.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+
         # Clamp the global CTk scaling before any geometry is set: this
         # wizard is the tallest window in the app, so on a small high-DPI
         # laptop it is the one that would run off the screen (gui/scaling).
@@ -196,6 +211,10 @@ class OnboardingWizard(ctk.CTk):
         scaling = ctk.ScalingTracker.get_window_scaling(self)
         x = (self.winfo_screenwidth() - int(_W * scaling)) // 2
         y = (self.winfo_screenheight() - int(_H * scaling)) // 2
+        # Authoritative window position: winfo_x/y only become truthful once
+        # the window is mapped, and _fit_height runs before that (see there).
+        self._pos = (x, y)
+        self._shown = False
         self.geometry(f"{_W}x{_H}+{x}+{y}")
         self._set_icon()
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
@@ -258,6 +277,29 @@ class OnboardingWizard(ctk.CTk):
         self._next_btn.grid(row=0, column=1, sticky="ew", padx=(8, 0))
 
         self._render()
+        self.after(0, self._reveal)
+
+    def _reveal(self, attempts: int = 0) -> None:
+        """Show the window once the window manager applied its final size.
+
+        A resize is applied asynchronously — winfo_width/height keep reporting
+        the old size for a few milliseconds after the request — so revealing
+        right away still shows a frame at CTk's default size. That lag *is*
+        the "opens small, then grows" flash. Capped, so an odd window manager
+        can never leave the wizard invisible.
+        """
+        target_w, target_h = self._target_size
+        if (
+            attempts < _REVEAL_MAX_TRIES
+            and (self.winfo_width() < target_w or self.winfo_height() < target_h)
+        ):
+            self.after(_REVEAL_POLL_MS, lambda: self._reveal(attempts + 1))
+            return
+        try:
+            self.attributes("-alpha", 1.0)
+        except Exception:
+            pass
+        self._shown = True
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -463,11 +505,32 @@ class OnboardingWizard(ctk.CTk):
         the DPI factor, so convert to the logical units it expects (same
         pattern as BatchViewMixin._resize_batch_window); +X+Y pass through
         unscaled.
+
+        The position comes from ``_pos``, not from winfo_x/y: the first call
+        runs while the window is still unmapped, where winfo_x/y report a
+        placeholder (32,32 on one run, 96,96 on the next) — passing that back
+        into geometry() moved the freshly centred wizard into the corner of
+        the screen. Once it is on screen the user may have dragged it, so the
+        real position is read back and kept.
         """
         self.update_idletasks()
         scaling = ctk.ScalingTracker.get_window_scaling(self)
         h = max(_H, int(self.winfo_reqheight() / scaling) + 1)
-        self.geometry(f"{_W}x{h}+{self.winfo_x()}+{self.winfo_y()}")
+        if self._shown:
+            self._pos = (self.winfo_x(), self.winfo_y())
+        x, y = self._pos
+        # CustomTkinter pins the window's min AND max size to whatever size it
+        # currently has whenever the global scaling is applied (see
+        # CTk._set_scaling), and only lifts that pin 1000 ms later. Any
+        # geometry request in between is clamped away by the window manager —
+        # which is why the wizard used to open at CTk's default 600x500 and
+        # visibly snap to its real size a second later. Setting min/max here
+        # replaces that pin with the size this step actually wants.
+        self.minsize(_W, h)
+        self.maxsize(_W, h)
+        self.geometry(f"{_W}x{h}+{x}+{y}")
+        # Physical size the window is expected to reach (see _reveal).
+        self._target_size = (int(_W * scaling), int(h * scaling))
 
     # ── Step 1: GUI language ───────────────────────────────────────────────
 
