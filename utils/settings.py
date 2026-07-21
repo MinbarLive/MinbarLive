@@ -428,6 +428,8 @@ class Settings:
     # Last-selected announcement duration (index into
     # ANNOUNCEMENT_DURATIONS_SECONDS); remembered across restarts. Default 30s.
     announcement_duration_index: int = 1
+    # Clear an in-progress on-screen announcement when the live session stops.
+    stop_announcement_on_live_stop: bool = True
 
 
 def _settings_path() -> Path:
@@ -532,6 +534,11 @@ def load_settings(use_cache: bool = True) -> Settings:
         announcement_duration_index = data.get("announcement_duration_index", 1)
         if not isinstance(announcement_duration_index, int):
             announcement_duration_index = 1
+        stop_announcement_on_live_stop = data.get(
+            "stop_announcement_on_live_stop", True
+        )
+        if not isinstance(stop_announcement_on_live_stop, bool):
+            stop_announcement_on_live_stop = True
         subtitle_output_enabled = data.get("subtitle_output_enabled", True)
         if not isinstance(subtitle_output_enabled, bool):
             subtitle_output_enabled = True
@@ -607,6 +614,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             announcement_history=announcement_history,
             announcement_favorites=announcement_favorites,
             announcement_duration_index=announcement_duration_index,
+            stop_announcement_on_live_stop=stop_announcement_on_live_stop,
         )
         return _cached_settings
     except Exception:
@@ -671,6 +679,7 @@ def save_settings(settings: Settings) -> None:
         "announcement_history": settings.announcement_history,
         "announcement_favorites": settings.announcement_favorites,
         "announcement_duration_index": settings.announcement_duration_index,
+        "stop_announcement_on_live_stop": settings.stop_announcement_on_live_stop,
     }
     tmp = _settings_path().with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

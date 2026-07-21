@@ -158,6 +158,7 @@
   "announce_recent_empty": "Son duyuru yok",
   "announce_send": "Gönder",
   "announce_stop": "Durdur",
+  "announce_stop_on_live_stop": "Durdurulduğunda duyuruyu gizle",
   "history_title": "Oturum Geçmişi",
   "history_tab_sessions": "Geçmiş",
   "history_tab_logs": "Günlük",

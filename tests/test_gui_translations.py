@@ -159,6 +159,7 @@ WIZARD_KEYS = [
     "announce_recent_empty",
     "announce_send",
     "announce_stop",
+    "announce_stop_on_live_stop",
 ]
 
 

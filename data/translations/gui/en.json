@@ -169,6 +169,7 @@
   "announce_recent_empty": "No recent announcements",
   "announce_send": "Send",
   "announce_stop": "Stop",
+  "announce_stop_on_live_stop": "Hide announcement when stopped",
   "history_title": "Session History",
   "history_tab_sessions": "History",
   "history_tab_logs": "Log",

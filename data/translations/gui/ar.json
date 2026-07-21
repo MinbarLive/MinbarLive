@@ -158,6 +158,7 @@
   "announce_recent_empty": "لا توجد إعلانات حديثة",
   "announce_send": "إرسال",
   "announce_stop": "إيقاف",
+  "announce_stop_on_live_stop": "إخفاء الإعلان عند التوقف",
   "history_title": "سجل الجلسات",
   "history_tab_sessions": "السجل",
   "history_tab_logs": "سجل التشغيل",

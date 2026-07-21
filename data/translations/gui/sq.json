@@ -158,6 +158,7 @@
   "announce_recent_empty": "Asnjë njoftim i fundit",
   "announce_send": "Dërgo",
   "announce_stop": "Ndalo",
+  "announce_stop_on_live_stop": "Fshih njoftimin kur ndalet",
   "history_title": "Historiku i seancave",
   "history_tab_sessions": "Historiku",
   "history_tab_logs": "Regjistri",

@@ -267,6 +267,37 @@ class TestSubtitleOutputEnabled:
             settings_module._cached_settings = None
 
 
+class TestStopAnnouncementOnLiveStop:
+    def test_default_is_true(self):
+        assert Settings().stop_announcement_on_live_stop is True
+
+    def test_round_trip_false(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            settings_module, "_settings_path", lambda: tmp_path / "settings.json"
+        )
+        settings_module._cached_settings = None
+        save_settings(Settings(stop_announcement_on_live_stop=False))
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.stop_announcement_on_live_stop is False
+        finally:
+            settings_module._cached_settings = None
+
+    def test_invalid_value_falls_back_to_true(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"stop_announcement_on_live_stop": "nope"}), encoding="utf-8"
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.stop_announcement_on_live_stop is True
+        finally:
+            settings_module._cached_settings = None
+
+
 class TestSubtitleTypography:
     """Independent original-text size + optional subtitle colour overrides."""
 

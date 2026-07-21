@@ -169,6 +169,7 @@
   "announce_recent_empty": "Keine letzten Ankündigungen",
   "announce_send": "Senden",
   "announce_stop": "Stopp",
+  "announce_stop_on_live_stop": "Ankündigung ausblenden wenn gestoppt",
   "history_title": "Sitzungsverlauf",
   "history_tab_sessions": "Verlauf",
   "history_tab_logs": "Protokoll",

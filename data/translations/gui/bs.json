@@ -158,6 +158,7 @@
   "announce_recent_empty": "Nema nedavnih objava",
   "announce_send": "Pošalji",
   "announce_stop": "Zaustavi",
+  "announce_stop_on_live_stop": "Sakrij objavu kada je zaustavljeno",
   "history_title": "Historija sesija",
   "history_tab_sessions": "Historija",
   "history_tab_logs": "Zapisnik",

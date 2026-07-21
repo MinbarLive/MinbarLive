@@ -606,8 +606,11 @@ class TestAnnouncement:
 
     def test_on_stop_keeps_overlay_when_announcement_active(self, make_gui):
         # hide_subtitle_on_stop=True normally destroys the overlay on stop, but
-        # an active "until stopped" announcement must survive the stop.
-        gui, _c, _s = make_gui(hide_subtitle_on_stop=True)
+        # an active "until stopped" announcement survives the stop when the
+        # announcement window's "hide when stopped" toggle is off.
+        gui, _c, _s = make_gui(
+            hide_subtitle_on_stop=True, stop_announcement_on_live_stop=False
+        )
         fake = _FakeSubtitleWindow()
         gui.subtitle_window = fake
         gui._running = True
@@ -615,6 +618,20 @@ class TestAnnouncement:
         gui.on_stop()
         assert gui.subtitle_window is fake
         assert fake.destroyed is False
+
+    def test_on_stop_clears_announcement_when_toggle_is_on(self, make_gui):
+        # Default: stopping the session also clears an in-progress
+        # announcement, which then lets hide-on-stop tear the overlay down.
+        gui, _c, settings = make_gui(hide_subtitle_on_stop=True)
+        assert settings.stop_announcement_on_live_stop is True
+        fake = _FakeSubtitleWindow()
+        gui.subtitle_window = fake
+        gui._running = True
+        gui._announcement_text_active = "Goes away"
+        gui.on_stop()
+        assert gui._has_active_announcement() is False
+        assert gui.subtitle_window is None
+        assert fake.destroyed is True
 
     def test_on_stop_destroys_overlay_without_announcement(self, make_gui):
         gui, _c, _s = make_gui(hide_subtitle_on_stop=True)

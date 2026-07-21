@@ -860,6 +860,10 @@ class AppGUI(
     _INPUT_LEVEL_GREEN = "#37B24D"
     _INPUT_LEVEL_WARNING = "#F08C00"
     _INPUT_LEVEL_DANGER = "#E03131"
+    # Meter refresh cadence (~20 FPS). The level itself is attack/release
+    # smoothed in the backend, so this only controls how continuous the motion
+    # reads; a cheap snapshot read, polled only while the panel is open.
+    _INPUT_LEVEL_POLL_MS = 50
 
     def _build_input_level_meter(self, card: ctk.CTkFrame) -> None:
         """Full-width live input-level row below the monitor/input dropdowns.
@@ -932,7 +936,9 @@ class AppGUI(
                     color = self._colors["text"]
                 self.input_level_value_label.configure(text=text, text_color=color)
                 self._sync_input_level_button()
-            self.input_level_poll_job = self.after(120, self._poll_input_level)
+            self.input_level_poll_job = self.after(
+                self._INPUT_LEVEL_POLL_MS, self._poll_input_level
+            )
         except tk.TclError:
             # Window/widgets torn down between ticks — stop quietly (the
             # on_close after-sweep and this early return both end the loop).
@@ -1829,9 +1835,19 @@ class AppGUI(
         self._sync_advanced_enabled_states()
         self._cancel_inactivity_check()
         self._end_cost_session("completed")
+        # Optionally clear an in-progress announcement when the session stops
+        # (checkbox in the announcement window, default on). Runs after
+        # _running is cleared so _stop_announcement tears the overlay down when
+        # hide-on-stop is set.
+        if (
+            self._saved_settings.stop_announcement_on_live_stop
+            and self._has_active_announcement()
+        ):
+            self._stop_announcement()
         # Keep the overlay alive if an 'until stopped' announcement is showing —
-        # it must survive a translation stop (user decision). Stopping the
-        # announcement itself then closes the overlay if hide-on-stop is set.
+        # it must survive a translation stop (when the toggle above is off).
+        # Stopping the announcement itself then closes the overlay if
+        # hide-on-stop is set.
         if (
             self._saved_settings.hide_subtitle_on_stop
             and not self._has_active_announcement()
