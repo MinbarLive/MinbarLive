@@ -21,6 +21,7 @@ and handlers are invoked directly, which is what a callback would do anyway.
 
 import queue
 import sys
+import time
 import tkinter as tk
 from pathlib import Path
 
@@ -39,9 +40,35 @@ from utils.settings import (
 )
 
 
+def _build_with_tk_retry(build, attempts: int = 3):
+    """Build a Tk root, retrying a failed interpreter start-up.
+
+    Creating an interpreter makes Tk source ~30 .tcl files from its library
+    directory, and those reads intermittently fail on Windows with
+    ``couldn't read file "...\\button.tcl": no such file or directory`` for a
+    file that is plainly there — real-time virus scanning of the DLLs pytest
+    has just imported is the likely culprit. Measured 2026-07-21: 0 failures
+    in 342 roots when this file runs alone, but 1 in 20 when the whole suite
+    is collected first, i.e. in the window right after that import burst.
+    That is also where every observed failure landed, since this file runs
+    first. No application code has run at that point, so the failure says
+    nothing about the code under test — but it did fail whole suite runs
+    (~1 in 3) and would do the same to CI. A second failure is re-raised.
+    """
+    for attempt in range(attempts):
+        try:
+            return build()
+        except tk.TclError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.5)
+
+
 def _display_available() -> bool:
     try:
-        root = tk.Tk()
+        # Not just a skip guard: a transient failure here would silently skip
+        # every test in this file and still report the run green.
+        root = _build_with_tk_retry(tk.Tk)
     except Exception:
         return False
     root.destroy()
@@ -141,7 +168,7 @@ def make_gui(monkeypatch):
         )
 
         controller = FakeController()
-        gui = app_gui.AppGUI(controller)
+        gui = _build_with_tk_retry(lambda: app_gui.AppGUI(controller))
         gui.update_idletasks()
         built.append(gui)
         return gui, controller, settings
@@ -183,6 +210,29 @@ class TestStartup:
     def test_no_subtitle_window_when_hidden_on_stop(self, make_gui):
         gui, _c, _s = make_gui()
         assert gui.subtitle_window is None
+
+    def test_a_failed_tk_start_up_is_retried(self):
+        """Guards the retry itself — see _build_with_tk_retry for why Tk's own
+        library sourcing intermittently fails here."""
+        attempts = []
+
+        def flaky():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise tk.TclError("Can't find a usable tk.tcl")
+            return "root"
+
+        assert _build_with_tk_retry(flaky) == "root"
+        assert len(attempts) == 2
+
+    def test_a_persistent_tk_failure_still_raises(self):
+        """Retrying must not turn a genuinely broken Tk into a green run."""
+
+        def always_fails():
+            raise tk.TclError("no display")
+
+        with pytest.raises(tk.TclError):
+            _build_with_tk_retry(always_fails, attempts=2)
 
 
 class TestProviderSelection:
