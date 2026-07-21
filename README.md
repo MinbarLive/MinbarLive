@@ -58,7 +58,7 @@ Rough guide for an OpenAI setup (segmented mode, Arabic → German); Gemini (the
 
 ## Setup
 
-🎬 **Videos:** [What MinbarLive is and how it works](https://www.youtube.com/watch?v=GWvEXOW8930) · [Setup tutorial](https://youtu.be/_VI6Y8qFDZQ)
+🎬 **Videos:** What MinbarLive is and how it works: [EN](https://www.youtube.com/watch?v=ajzSpuskEro)/[DE](https://www.youtube.com/watch?v=GWvEXOW8930) · [Setup tutorial](https://youtu.be/_VI6Y8qFDZQ)
 
 > 📧 **Need help setting up?** Write us an email at [minbar.live@outlook.com](mailto:minbar.live@outlook.com) and we'll help you with your first setup.
 

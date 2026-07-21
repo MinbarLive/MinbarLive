@@ -404,6 +404,8 @@
       <h3 data-i18n="intro_video_title">▶️ MinbarLive in Kürze: So funktioniert es</h3>
       <div class="videoframe">
         <iframe src="https://www.youtube-nocookie.com/embed/GWvEXOW8930"
+                data-src-de="https://www.youtube-nocookie.com/embed/GWvEXOW8930"
+                data-src-en="https://www.youtube-nocookie.com/embed/ajzSpuskEro"
                 title="MinbarLive Intro" loading="lazy"
                 allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                 referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
@@ -751,6 +753,12 @@ function setLang(lang) {
   });
   document.querySelectorAll("[data-href-de]").forEach(el => {
     el.href = lang === "de" ? el.dataset.hrefDe : el.dataset.hrefEn;
+  });
+  // Video embeds that exist in both languages. Assigning src reloads the
+  // iframe, so only touch it when the language actually changes the source.
+  document.querySelectorAll("[data-src-de]").forEach(el => {
+    const next = lang === "de" ? el.dataset.srcDe : el.dataset.srcEn;
+    if (el.getAttribute("src") !== next) el.setAttribute("src", next);
   });
   document.getElementById("btn-de").classList.toggle("active", lang === "de");
   document.getElementById("btn-en").classList.toggle("active", lang === "en");
