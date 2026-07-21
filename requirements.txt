@@ -38,6 +38,10 @@ webrtcvad-wheels==2.0.14
 screeninfo==0.8.1
 customtkinter==5.2.2
 
+# Header logo rendering (crop + high-quality resize). No package declares it
+# as a dependency — customtkinter imports PIL optionally — so pin it here.
+Pillow==12.3.0
+
 # Arabic text shaping and bidi rendering
 arabic-reshaper==3.0.0
 python-bidi==0.6.7

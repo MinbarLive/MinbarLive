@@ -77,7 +77,10 @@ excludes = [
     "pytest",
     "ruff",
     "matplotlib",
-    "PIL",
+    # PIL is NOT excluded: utils/icons.py crops and scales the header logo
+    # with Pillow. Excluding it left the frozen app with a wordmark-only
+    # header (CustomTkinter's own PIL import is in a try/except, so nothing
+    # else failed loudly).
     "pandas",
     "IPython",
     "notebook",
