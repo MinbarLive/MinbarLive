@@ -82,6 +82,30 @@ class FakeController:
     def change_input_device(self, idx):
         return True
 
+    # ── Input-level meter / mic test ──────────────────────────────────────
+    level_test_device = None
+    level_test_running = False
+    level_test_starts = 0
+    level_test_stops = 0
+    level_test_error = None
+
+    def get_input_level(self):
+        return None
+
+    def is_input_level_test_running(self):
+        return self.level_test_running
+
+    def start_input_level_test(self, input_device=None):
+        self.level_test_starts += 1
+        if self.level_test_error is not None:
+            raise self.level_test_error
+        self.level_test_running = True
+        self.level_test_device = input_device
+
+    def stop_input_level_test(self, timeout=1.0):
+        self.level_test_stops += 1
+        self.level_test_running = False
+
 
 @pytest.fixture
 def make_gui(monkeypatch):
@@ -641,6 +665,69 @@ class TestAnnouncement:
         gui.on_stop()
         assert gui.subtitle_window is None
         assert fake.destroyed is True
+
+
+class TestMicTestDeviceChange:
+    """Switching the input device while the mic test runs must move the test.
+
+    The preview capture thread owns the device it was opened with, so leaving
+    it alone reads to the operator as "the new mic is dead" until they restart
+    the app.
+    """
+
+    def _select_second_device(self, gui):
+        if len(gui.device_indices) < 2:
+            pytest.skip("machine has fewer than two input devices")
+        gui.device_combo.current(1)
+
+    def test_running_test_moves_to_the_new_device(self, make_gui):
+        gui, controller, _s = make_gui()
+        self._select_second_device(gui)
+        controller.level_test_running = True
+        controller.level_test_device = gui.device_indices[0]
+
+        gui._on_device_change()
+
+        assert controller.level_test_starts == 1
+        assert controller.level_test_device == gui.device_indices[1]
+        assert controller.level_test_running is True
+
+    def test_no_test_running_stays_stopped(self, make_gui):
+        gui, controller, _s = make_gui()
+        self._select_second_device(gui)
+
+        gui._on_device_change()
+
+        assert controller.level_test_starts == 0
+        assert controller.level_test_running is False
+
+    def test_unopenable_device_stops_the_test_instead_of_leaving_it_half_open(
+        self, make_gui, monkeypatch
+    ):
+        gui, controller, _s = make_gui()
+        self._select_second_device(gui)
+        controller.level_test_running = True
+        controller.level_test_error = RuntimeError("device busy")
+        alerts = []
+        monkeypatch.setattr(
+            gui, "_alert", lambda *a, **k: alerts.append(a), raising=False
+        )
+
+        gui._on_device_change()
+
+        assert controller.level_test_stops == 1
+        assert controller.level_test_running is False
+        assert alerts, "the operator must be told why the meter went quiet"
+
+    def test_live_session_still_hot_swaps_instead_of_previewing(self, make_gui):
+        gui, controller, _s = make_gui()
+        self._select_second_device(gui)
+        gui._running = True
+
+        gui._on_device_change()
+
+        # A live session feeds the meter itself; no preview may be opened.
+        assert controller.level_test_starts == 0
 
 
 class TestCardGridReflow:

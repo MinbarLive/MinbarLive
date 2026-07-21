@@ -2045,8 +2045,37 @@ class AppGUI(
             self._saved_settings.input_device_name = self.device_base_names[selection]
             if self._running:
                 self.controller.change_input_device(self.device_indices[selection])
+            else:
+                self._move_input_level_test_to_selected_device()
             log(f"Input device: {self.device_base_names[selection]}", level="INFO")
         self._save_current_settings()
+
+    def _move_input_level_test_to_selected_device(self) -> None:
+        """Re-open a running mic test on the newly selected input device.
+
+        The preview capture thread owns the device it was started with, so
+        without this the meter keeps reading the old input until the test is
+        stopped and started again — which reads as "the new mic doesn't work".
+        start_input_level_test() closes the previous capture itself.
+        """
+        checker = getattr(self.controller, "is_input_level_test_running", None)
+        try:
+            if checker is None or not checker():
+                return
+            self.controller.start_input_level_test(self.get_selected_device_index())
+        except Exception as exc:
+            # The new device could not be opened: leave no half-started
+            # preview behind, and tell the operator why the meter went quiet.
+            try:
+                self.controller.stop_input_level_test()
+            except Exception:
+                pass
+            self._alert(
+                self.gui_texts.get("input_level", "Input level"),
+                str(exc),
+                danger=True,
+            )
+        self._input_level_ui_state = None  # re-sync the Test button next poll
 
     def _on_screen_change(self) -> None:
         idx = self.screen_combo.current()
