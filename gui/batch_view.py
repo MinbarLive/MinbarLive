@@ -169,7 +169,8 @@ class BatchViewMixin:
         header.grid_columnconfigure(1, weight=1)
         symbol = ctk.CTkLabel(
             header,
-            text="▦",
+            # Same file glyph as the header button that opens this window.
+            text="📄",
             font=ctk.CTkFont(family="Segoe UI Symbol", size=20, weight="bold"),
             text_color=self._colors["accent"],
             width=44,

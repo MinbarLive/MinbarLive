@@ -593,7 +593,10 @@ class AppGUI(
 
         self._batch_btn = ctk.CTkButton(
             header,
-            text="▦",
+            # U+1F4C4 "page facing up": Segoe UI Symbol draws it solid, which
+            # is what makes it readable at 44px — the outline pages (U+1F5CB /
+            # U+1F5CE) were too faint next to the solid 📣 and ▶ glyphs.
+            text="📄",
             command=self._open_batch_window,
             width=44,
             height=44,
