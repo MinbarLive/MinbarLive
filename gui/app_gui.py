@@ -26,7 +26,7 @@ from gui.control_state import (
     subtitle_mode_choices,
     visible_provider_choices,
 )
-from gui.device_list import get_input_devices
+from gui.device_list import find_input_device_position, get_input_devices
 from gui.dropdown import CustomDropdown
 from gui.history_view import HistoryViewMixin
 from gui.scaling import apply_display_scaling
@@ -399,6 +399,15 @@ class AppGUI(
         # Reflow + re-center the card grid whenever the window resizes.
         self._applied_collapsed_margin: int | None = None
         self._applied_columns: int | None = None
+        # Padding above the Advanced card that bottom-aligns it with the
+        # display column. See _align_advanced_card.
+        self._advanced_gap = 0
+        self._advanced_align_pending = False
+        # Destroying the window fires <Configure> on every child, which would
+        # otherwise queue an idle job *after* on_close cancelled them all — the
+        # job then runs against half-destroyed widgets and corrupts the Tcl
+        # interpreter for the next root (it broke the GUI suite once before).
+        self._closing = False
         self.sidebar.bind("<Configure>", self._on_sidebar_resize, add="+")
 
         self.content = ctk.CTkFrame(
@@ -422,6 +431,8 @@ class AppGUI(
         self._col_c = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         for _col in (self._col_a, self._col_b, self._col_c):
             _col.grid_columnconfigure(0, weight=1)
+            # Any group changing height moves the bottom edges out of line.
+            _col.bind("<Configure>", self._schedule_advanced_align, add="+")
 
         self._init_batch_state()
         self._init_announce_state()
@@ -478,8 +489,14 @@ class AppGUI(
         from B; the weighted second row absorbs the surplus *below* C."""
         cols = self._column_count()
         margin = self._collapsed_margin(cols)
+        previous_cols = self._applied_columns
         self._applied_columns = cols
         self._applied_collapsed_margin = margin
+        # Before the placement below, so the column change and the height
+        # change land in one geometry pass: re-laying out afterwards leaves Tk
+        # briefly measuring the new content against the old column widths.
+        if cols != previous_cols:
+            self._sync_advanced_for_columns(cols)
 
         # Grid columns: 0 and 4 are margin spacers, 1..3 hold the card groups.
         # The centering margin lives in the spacers rather than in the groups'
@@ -515,8 +532,21 @@ class AppGUI(
         # row/column/rowspan are always stated: grid() retains the options of a
         # previous placement, so a value left over from another column count
         # would silently overlap the groups.
+        # Groups keep their natural height. *Stretching* the shorter column's
+        # last card to level the two columns' bottom edges was tried and
+        # reverted (2026-07-21): re-configuring a card's grid options from
+        # inside this <Configure>-driven pass made the real-window test suite
+        # fail intermittently with a corrupted Tcl interpreter (~6 failures in
+        # 15 full runs, 0 in 17 without it). The bottom edges are levelled by
+        # padding above Advanced instead, from an idle callback rather than
+        # from inside this pass — see _align_advanced_card.
         groups = (self._col_a, self._col_b, self._col_c)
         for group, (row, column, rowspan) in zip(groups, placements, strict=True):
+            # Only the top row pads above: a group stacked below another one
+            # would otherwise sit a double gap away from it.
+            top_pad = self._CARD_GAP if row == 0 else 0
+            if group is self._col_c and cols == 2:
+                top_pad = self._advanced_gap  # see _align_advanced_card
             group.grid(
                 row=row,
                 column=column,
@@ -524,10 +554,76 @@ class AppGUI(
                 columnspan=1,
                 sticky="new",
                 padx=half_gap,
-                # Only the top row pads above: a group stacked below another one
-                # would otherwise sit a double gap away from it.
-                pady=(self._CARD_GAP if row == 0 else 0, self._CARD_GAP),
+                pady=(top_pad, self._CARD_GAP),
             )
+        self._schedule_advanced_align()
+
+    def _schedule_advanced_align(self, _event: object | None = None) -> None:
+        """Queue one bottom-alignment pass for the next idle moment.
+
+        Deliberately deferred instead of measuring inline: re-gridding a card
+        group from inside the <Configure>-driven layout pass is what corrupted
+        the Tcl interpreter in the reverted attempt (see _layout_sidebar_cards).
+        """
+        if self._closing or self._advanced_align_pending:
+            return
+        self._advanced_align_pending = True
+        try:
+            self.after_idle(self._align_advanced_card)
+        except tk.TclError:  # window going away
+            self._advanced_align_pending = False
+
+    def _align_advanced_card(self) -> None:
+        """Pad above Advanced so its bottom edge meets the display column's.
+
+        Two-column layout only — elsewhere Advanced either sits in its own
+        column or in a single stack. The gap is only *measured* while the
+        subtitle-appearance expander is closed: opening it grows the display
+        column, and Advanced must stay where it is rather than follow it down.
+        Because Advanced is top-anchored in the weighted second row, that extra
+        height lands below Advanced and leaves it in place on its own.
+
+        The correction comes from the rendered bottom edges rather than from
+        the columns' requested heights: predicting the offset from the request
+        was consistently a few pixels out (grid rounding, the cards' borders),
+        and what has to line up is what the operator sees."""
+        self._advanced_align_pending = False
+        if self._applied_columns != 2 or getattr(self, "_typography_open", False):
+            return
+        try:
+            if not self._col_c.winfo_ismapped():
+                return  # nothing rendered yet — a later <Configure> retries
+            delta = (
+                self._col_a.winfo_rooty()
+                + self._col_a.winfo_height()
+                - self._col_c.winfo_rooty()
+                - self._col_c.winfo_height()
+            )
+        except tk.TclError:
+            return
+        if abs(delta) < 2:  # deadband, so rounding cannot make this oscillate
+            return
+        # delta is real pixels; the padding is a logical value CustomTkinter
+        # multiplies by the widget scaling on its way into grid().
+        gap = max(0, self._advanced_gap + round(delta / max(self._responsive_scale, 0.1)))
+        if gap == self._advanced_gap:
+            return
+        self._advanced_gap = gap
+        self._layout_sidebar_cards()
+
+    def _sync_advanced_for_columns(self, cols: int) -> None:
+        """Open Advanced once the grid is wide enough to give it its own
+        column, close it again below that.
+
+        In the 3-column layout group C holds nothing but the collapsed Advanced
+        header, so the width that was gained shows an empty column; in the
+        narrower layouts an expanded Advanced is most of the scroll length.
+        Only called when the column count actually changes, so a manual toggle
+        stands until the next reflow."""
+        if not hasattr(self, "advanced_frame"):
+            return  # cards not built yet
+        if (cols >= 3) != self.advanced_visible:
+            self._set_advanced_visible(cols >= 3)
 
     def _collapsed_margin(self, cols: int) -> int:
         """Extra outer padding (raw px) that caps the card grid at a comfortable
@@ -834,12 +930,14 @@ class AppGUI(
             command=lambda _value: self._on_device_change(),
         )
         if self.device_names:
-            selected_device = 0
             saved_name = self._saved_settings.input_device_name
-            if saved_name in self.device_base_names:
-                selected_device = self.device_base_names.index(saved_name)
-            elif saved_name in self.device_names:
+            selected_device = find_input_device_position(
+                saved_name, self.device_base_names
+            )
+            if selected_device is None and saved_name in self.device_names:
                 selected_device = self.device_names.index(saved_name)
+            if selected_device is None:
+                selected_device = 0
             self.device_combo.current(selected_device)
         self.device_combo.pack(fill="x", pady=(8, 0))
 
@@ -1182,7 +1280,20 @@ class AppGUI(
         strat_lbl = self._label(
             strat_label_frame, "processing_strategy", symbol="⇶", size=14, weight="bold"
         )
-        strat_lbl.pack(anchor="w")
+        strat_lbl.pack(side="left", anchor="w")
+
+        # The "stop to change" hint shares the label's line rather than adding a
+        # row under the dropdown: as its own row it grew the card by ~24px on
+        # Start, which pushed Advanced below the left column's bottom edge every
+        # time the session started. On the label line the card height is the
+        # same running and stopped, so nothing moves.
+        self.strategy_running_hint = ctk.CTkLabel(
+            strat_label_frame,
+            text=self.gui_texts.get("hint_stop_to_change", "⚠ Stop program to change"),
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=self._colors["warning"],
+            height=20,
+        )
 
         strat_combo_row = ctk.CTkFrame(card, fg_color="transparent")
         strat_combo_row.grid(row=6, column=0, sticky="ew", padx=18, pady=(0, 14))
@@ -1200,17 +1311,6 @@ class AppGUI(
         self.strategy_combo.current(self._current_strategy_index())
         self.strategy_combo.grid(row=0, column=0, columnspan=2, sticky="ew")
 
-        self.strategy_running_hint = ctk.CTkLabel(
-            strat_combo_row,
-            text=self.gui_texts.get("hint_stop_to_change", "⚠ Stop program to change"),
-            font=ctk.CTkFont(family="Segoe UI", size=12),
-            text_color=self._colors["warning"],
-            height=20,
-        )
-        self.strategy_running_hint.grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(2, 0)
-        )
-        self.strategy_running_hint.grid_remove()
 
         # Display toggles side by side: "Show original text" (bilingual, all
         # modes, default on) on the left; adaptive catch-up (continuous-only,
@@ -2001,7 +2101,7 @@ class AppGUI(
                 text_color="#ffffff",
             )
             self.strategy_running_hint.configure(text_color=self._colors["warning"])
-            self.strategy_running_hint.grid()
+            self.strategy_running_hint.pack(side="right", anchor="e")
         else:
             self.start_btn.configure(
                 state="normal",
@@ -2025,7 +2125,7 @@ class AppGUI(
                 fg_color=self._colors["danger_soft"],
                 text_color=self._colors["danger"],
             )
-            self.strategy_running_hint.grid_remove()
+            self.strategy_running_hint.pack_forget()
 
     def _get_input_devices(self) -> tuple[list[str], list[str], list[int], list[bool]]:
         return get_input_devices()
@@ -2453,9 +2553,9 @@ class AppGUI(
         # Running hint under the strategy row. It grows the Translation-flow
         # card; the card grid is masonry, so the neighbours simply stay put.
         if running:
-            self.strategy_running_hint.grid()
+            self.strategy_running_hint.pack(side="right", anchor="e")
         else:
-            self.strategy_running_hint.grid_remove()
+            self.strategy_running_hint.pack_forget()
 
     def _prompt_provider_key(self, provider: str) -> None:
         """Open the API-key dialog for a specific provider."""
@@ -2646,15 +2746,32 @@ class AppGUI(
         log(f"Always on top: {'on' if enabled else 'off'}", level="INFO")
         self._save_current_settings()
 
-    def _toggle_advanced_settings(self) -> None:
-        self.advanced_visible = not self.advanced_visible
-        if self.advanced_visible:
+    def _set_advanced_visible(self, visible: bool) -> None:
+        """Show/hide the Advanced body without re-running the card layout.
+
+        Separate from the toggle so the width-driven open
+        (_sync_advanced_for_columns) can happen inside the layout pass that
+        caused it, instead of recursing back into it."""
+        self.advanced_visible = visible
+        if visible:
             self._advanced_toggle_arrow.configure(text="▴")
             self.advanced_frame.grid(row=1, column=0, sticky="ew", padx=2, pady=(0, 14))
-            self.after(80, lambda: self.advanced_frame.focus_set())
+            # An open Advanced card is the taller column; nothing to align to.
+            # Set here rather than waiting for the idle pass so the placement
+            # below does not flash the stale gap for a frame.
+            self._advanced_gap = 0
         else:
             self._advanced_toggle_arrow.configure(text="▾")
             self.advanced_frame.grid_forget()
+        # Closed, the header IS the card, so its body gap becomes the card's
+        # bottom padding and reads lopsided against the header's top padding.
+        top_pad, body_gap = self._CARD_HEADER_PADY
+        self._advanced_header.grid(pady=(top_pad, body_gap if visible else top_pad))
+
+    def _toggle_advanced_settings(self) -> None:
+        self._set_advanced_visible(not self.advanced_visible)
+        if self.advanced_visible:
+            self.after(80, lambda: self.advanced_frame.focus_set())
         # The card grid keeps its column count, but the group heights changed —
         # re-run the layout so grid re-measures. See _layout_sidebar_cards.
         self._layout_sidebar_cards()
@@ -3238,6 +3355,9 @@ class AppGUI(
             self.report_callback_exception = lambda *a: None
         except Exception:
             pass
+        # Stops the teardown's own <Configure> storm from queueing fresh idle
+        # jobs behind the cancel-everything pass below.
+        self._closing = True
         try:
             self._saved_settings.window_geometry = self.geometry()
             self._save_current_settings()

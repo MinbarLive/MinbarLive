@@ -342,6 +342,23 @@ class TestAlwaysOnTop:
 
 
 class TestStartStop:
+    def test_starting_does_not_change_the_card_heights(self, make_gui):
+        """The "stop to change" hint shares the strategy label's line. As its
+        own row it grew the Translation-flow card by ~24px on every Start,
+        which pushed the Advanced card below the left column's bottom edge."""
+        gui, _controller, _s = make_gui()
+        gui.update_idletasks()
+        stopped = gui.language_card.winfo_reqheight()
+
+        gui.on_start()
+        gui.update_idletasks()
+        assert gui.strategy_running_hint.winfo_ismapped()
+        assert gui.language_card.winfo_reqheight() == stopped
+
+        gui.on_stop()
+        gui.update_idletasks()
+        assert gui.language_card.winfo_reqheight() == stopped
+
     def test_start_then_stop_drives_the_controller(self, make_gui):
         gui, controller, _s = make_gui()
         gui.on_start()
@@ -779,6 +796,110 @@ class TestCardGridReflow:
         assert gui._collapsed_margin(3) == 200
         self._pin_width(gui, monkeypatch, gui._MAX_CARD_AREA_W_WIDE)
         assert gui._collapsed_margin(3) == 0
+
+    def test_advanced_opens_in_three_columns_and_closes_below(
+        self, make_gui, monkeypatch
+    ):
+        """Group C is nothing but the Advanced header while collapsed, so the
+        third column would otherwise be won and then left empty."""
+        gui, _c, _s = make_gui()
+        assert gui.advanced_visible is False
+
+        self._pin_width(gui, monkeypatch, gui._COL3_MIN_W)
+        gui._layout_sidebar_cards()
+        assert gui.advanced_visible is True
+
+        self._pin_width(gui, monkeypatch, gui._COL2_MIN_W)
+        gui._layout_sidebar_cards()
+        assert gui.advanced_visible is False
+
+    def test_manual_advanced_toggle_survives_until_the_columns_change(
+        self, make_gui, monkeypatch
+    ):
+        gui, _c, _s = make_gui()
+        self._pin_width(gui, monkeypatch, gui._COL3_MIN_W)
+        gui._layout_sidebar_cards()
+        assert gui.advanced_visible is True
+
+        gui._toggle_advanced_settings()  # user closes it at this width
+        assert gui.advanced_visible is False
+        gui._layout_sidebar_cards()  # a resize that keeps 3 columns
+        assert gui.advanced_visible is False
+
+        self._pin_width(gui, monkeypatch, gui._COL2_MIN_W)
+        gui._layout_sidebar_cards()
+        self._pin_width(gui, monkeypatch, gui._COL3_MIN_W)
+        gui._layout_sidebar_cards()
+        assert gui.advanced_visible is True
+
+    def test_card_groups_keep_their_natural_height(self, make_gui, monkeypatch):
+        """Guards the 2026-07-21 revert: stretching a group/card to level the
+        columns' bottom edges corrupted the Tcl interpreter intermittently."""
+        gui, _c, _s = make_gui()
+        for width in (gui._COL2_MIN_W, gui._COL3_MIN_W):
+            self._pin_width(gui, monkeypatch, width)
+            gui._layout_sidebar_cards()
+            for group in (gui._col_a, gui._col_b, gui._col_c):
+                assert group.grid_info()["sticky"] == "new", width
+
+    def _pin_bottoms(self, gui, monkeypatch, display_bottom, advanced_bottom):
+        """Fake the two columns' rendered bottom edges (nothing is mapped in a
+        test, so _align_advanced_card would bail out before measuring)."""
+        monkeypatch.setattr(gui, "_responsive_scale", 1.0, raising=False)
+        for group, bottom in (
+            (gui._col_a, display_bottom),
+            (gui._col_c, advanced_bottom),
+        ):
+            monkeypatch.setattr(group, "winfo_ismapped", lambda: True, raising=False)
+            monkeypatch.setattr(group, "winfo_rooty", lambda: 0, raising=False)
+            monkeypatch.setattr(
+                group, "winfo_height", lambda b=bottom: b, raising=False
+            )
+
+    def test_advanced_is_padded_down_to_meet_the_display_column(
+        self, make_gui, monkeypatch
+    ):
+        gui, _c, _s = make_gui()
+        gui._applied_columns = 2
+        gui._advanced_gap = 0
+        gui._typography_open = False
+        self._pin_bottoms(gui, monkeypatch, display_bottom=500, advanced_bottom=400)
+        gui._align_advanced_card()
+        assert gui._advanced_gap == 100
+
+    def test_advanced_stays_put_when_the_subtitle_settings_open(
+        self, make_gui, monkeypatch
+    ):
+        """Opening the subtitle-appearance expander grows the display column.
+        Advanced must hold its position instead of following it down, so the
+        gap measured while the expander was closed stands."""
+        gui, _c, _s = make_gui()
+        gui._applied_columns = 2
+        gui._advanced_gap = 40
+        gui._typography_open = True
+        self._pin_bottoms(gui, monkeypatch, display_bottom=900, advanced_bottom=400)
+        gui._align_advanced_card()
+        assert gui._advanced_gap == 40
+
+    @staticmethod
+    def _pady(widget) -> tuple[int, int]:
+        """Tk reports an even pady as a single value, an uneven one as a pair."""
+        value = widget.grid_info()["pady"]
+        return tuple(value) if isinstance(value, tuple) else (value, value)
+
+    def test_closed_advanced_card_pads_evenly_above_and_below_its_header(
+        self, make_gui
+    ):
+        """Collapsed, the header is the whole card: its smaller bottom pad (the
+        gap to the body) would read as a lopsided card."""
+        gui, _c, _s = make_gui()
+        assert gui.advanced_visible is False
+        top, bottom = self._pady(gui._advanced_header)
+        assert top == bottom
+
+        gui._set_advanced_visible(True)  # body back: bottom pad is a gap again
+        top, bottom = self._pady(gui._advanced_header)
+        assert bottom < top
 
     def test_minimum_size_is_below_the_default(self, make_gui):
         """The window may be dragged well under its opening size (item: "as
