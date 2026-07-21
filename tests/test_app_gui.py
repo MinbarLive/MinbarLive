@@ -759,14 +759,45 @@ class TestMicTestDeviceChange:
         assert controller.level_test_device == gui.device_indices[1]
         assert controller.level_test_running is True
 
-    def test_no_test_running_stays_stopped(self, make_gui):
+    def test_running_test_is_not_put_on_a_timer(self, make_gui):
+        gui, controller, _s = make_gui()
+        self._select_second_device(gui)
+        controller.level_test_running = True
+
+        gui._on_device_change()
+
+        # An explicit mic test keeps running until the operator stops it.
+        assert gui._input_level_auto_job is None
+
+    def test_no_test_running_opens_a_short_auto_preview(self, make_gui):
         gui, controller, _s = make_gui()
         self._select_second_device(gui)
 
         gui._on_device_change()
 
-        assert controller.level_test_starts == 0
+        # Picking a device shows it working without pressing Test...
+        assert controller.level_test_starts == 1
+        assert controller.level_test_device == gui.device_indices[1]
+        assert controller.level_test_running is True
+        assert gui._input_level_auto_job is not None
+
+        gui._auto_stop_input_level()  # ...and releases the device again
+
         assert controller.level_test_running is False
+        assert gui._input_level_auto_job is None
+
+    def test_test_button_takes_the_preview_off_the_timer(self, make_gui):
+        gui, controller, _s = make_gui()
+        self._select_second_device(gui)
+        gui._on_device_change()  # auto-preview running, auto-stop pending
+
+        gui._toggle_input_level_test()  # stops it (it is running)
+        assert gui._input_level_auto_job is None
+        assert controller.level_test_running is False
+
+        gui._toggle_input_level_test()  # explicit test: no timer
+        assert controller.level_test_running is True
+        assert gui._input_level_auto_job is None
 
     def test_unopenable_device_stops_the_test_instead_of_leaving_it_half_open(
         self, make_gui, monkeypatch

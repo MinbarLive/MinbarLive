@@ -14,7 +14,13 @@ from config import (
     ICON_PATH_PNG,
 )
 from gui.announce_view import AnnounceViewMixin
-from gui.audio_level_bar import AudioLevelBar
+from gui.audio_level_bar import (
+    LEVEL_DANGER,
+    LEVEL_GREEN,
+    LEVEL_WARNING,
+    AudioLevelBar,
+    level_fill,
+)
 from gui.batch_view import BatchViewMixin
 from gui.control_state import (
     STRATEGY_IDS,
@@ -1005,14 +1011,20 @@ class AppGUI(
             level="INFO",
         )
 
-    # Conventional audio-meter zone colours (green/amber/red in both themes).
-    _INPUT_LEVEL_GREEN = "#37B24D"
-    _INPUT_LEVEL_WARNING = "#F08C00"
-    _INPUT_LEVEL_DANGER = "#E03131"
+    # Conventional audio-meter zone colours (green/amber/red in both themes),
+    # shared with the setup wizard's meter.
+    _INPUT_LEVEL_GREEN = LEVEL_GREEN
+    _INPUT_LEVEL_WARNING = LEVEL_WARNING
+    _INPUT_LEVEL_DANGER = LEVEL_DANGER
     # Meter refresh cadence (~20 FPS). The level itself is attack/release
     # smoothed in the backend, so this only controls how continuous the motion
     # reads; a cheap snapshot read, polled only while the panel is open.
     _INPUT_LEVEL_POLL_MS = 50
+    # How long the meter opens by itself after the input device is changed.
+    # The preview owns the OS device (and lights the system microphone
+    # indicator), so it shows the new input working and then lets go again —
+    # only an explicit "Test mic" keeps it open indefinitely.
+    _INPUT_LEVEL_AUTO_SECONDS = 10
 
     def _build_input_level_meter(self, card: ctk.CTkFrame) -> None:
         """Full-width live input-level row below the monitor/input dropdowns.
@@ -1062,6 +1074,7 @@ class AppGUI(
         self.input_level_test_btn.grid(row=0, column=2, sticky="e")
 
         self._input_level_ui_state = None
+        self._input_level_auto_job = None  # pending auto-stop of a short preview
         self.input_level_poll_job = self.after(200, self._poll_input_level)
 
     def _poll_input_level(self) -> None:
@@ -1072,7 +1085,7 @@ class AppGUI(
         try:
             if snapshot is not None and hasattr(self, "input_level_bar"):
                 rms_dbfs = snapshot.rms_dbfs
-                value = max(0.0, min(1.0, (rms_dbfs + 60.0) / 60.0))
+                value = level_fill(rms_dbfs)
                 self.input_level_bar.set(value)
                 if snapshot.clipping_ratio > 0.02:
                     text = self.gui_texts.get("input_level_clipping", "Clipping!")
@@ -1127,6 +1140,9 @@ class AppGUI(
     def _toggle_input_level_test(self) -> None:
         controller = self.controller
         checker = getattr(controller, "is_input_level_test_running", None)
+        # Pressing the button always takes the preview out of auto mode: an
+        # explicit test runs until it is stopped again.
+        self._cancel_input_level_auto_stop()
         if checker is not None and checker():
             try:
                 controller.stop_input_level_test()
@@ -1145,6 +1161,23 @@ class AppGUI(
                 danger=True,
             )
         self._input_level_ui_state = None
+
+    def _cancel_input_level_auto_stop(self) -> None:
+        job, self._input_level_auto_job = self._input_level_auto_job, None
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+
+    def _auto_stop_input_level(self) -> None:
+        """End a short auto-preview and release the input device again."""
+        self._input_level_auto_job = None
+        try:
+            self.controller.stop_input_level_test()
+        except Exception:
+            pass
+        self._input_level_ui_state = None  # re-sync the Test button next poll
 
     def _create_language_card(self) -> None:
         card = self._section_card(self._col_b, "⇄", "translation_flow")
@@ -1934,6 +1967,9 @@ class AppGUI(
                 if not has_usable_key(provider):
                     return
         begin_cost_session()
+        # controller.start() releases a running preview itself; drop the timer
+        # so it can't stop anything once the live session owns the device.
+        self._cancel_input_level_auto_stop()
         try:
             self.controller.start(input_device=self.get_selected_device_index())
         except Exception as exc:
@@ -2149,26 +2185,40 @@ class AppGUI(
             if self._running:
                 self.controller.change_input_device(self.device_indices[selection])
             else:
-                self._move_input_level_test_to_selected_device()
+                self._preview_selected_input_device()
             log(f"Input device: {self.device_base_names[selection]}", level="INFO")
         self._save_current_settings()
 
-    def _move_input_level_test_to_selected_device(self) -> None:
-        """Re-open a running mic test on the newly selected input device.
+    def _preview_selected_input_device(self) -> None:
+        """Show the level of the newly selected input for a few seconds.
 
-        The preview capture thread owns the device it was started with, so
-        without this the meter keeps reading the old input until the test is
-        stopped and started again — which reads as "the new mic doesn't work".
-        start_input_level_test() closes the previous capture itself.
+        The preview capture thread owns the device it was started with, so a
+        running mic test has to be re-opened on the new one — otherwise the
+        meter keeps reading the old input, which reads as "the new mic doesn't
+        work". start_input_level_test() closes the previous capture itself.
+
+        With no test running the meter opens by itself for
+        ``_INPUT_LEVEL_AUTO_SECONDS`` and closes again: picking a device is
+        exactly when the level matters, but the device must not stay held.
         """
         checker = getattr(self.controller, "is_input_level_test_running", None)
+        manual_test = (
+            checker is not None
+            and checker()
+            and self._input_level_auto_job is None
+        )
         try:
-            if checker is None or not checker():
-                return
             self.controller.start_input_level_test(self.get_selected_device_index())
+            if not manual_test:
+                self._cancel_input_level_auto_stop()
+                self._input_level_auto_job = self.after(
+                    self._INPUT_LEVEL_AUTO_SECONDS * 1000,
+                    self._auto_stop_input_level,
+                )
         except Exception as exc:
             # The new device could not be opened: leave no half-started
             # preview behind, and tell the operator why the meter went quiet.
+            self._cancel_input_level_auto_stop()
             try:
                 self.controller.stop_input_level_test()
             except Exception:

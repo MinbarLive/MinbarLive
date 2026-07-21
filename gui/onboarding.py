@@ -24,6 +24,13 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from config import ICON_PATH, ICON_PATH_PNG
+from gui.audio_level_bar import (
+    LEVEL_DANGER,
+    LEVEL_GREEN,
+    LEVEL_WARNING,
+    AudioLevelBar,
+    level_fill,
+)
 from gui.device_list import get_input_devices
 from gui.dropdown import CustomDropdown
 from gui.scaling import apply_display_scaling
@@ -92,6 +99,17 @@ _LIGHT = {
 
 _W, _H = 680, 640
 
+# Input-level meter on the microphone step. The preview owns the OS input
+# device (and lights the system microphone indicator), so it opens by itself
+# only briefly — long enough to see the level move after arriving on the step
+# or picking another device. "Test mic" keeps it open until it is stopped.
+_LEVEL_AUTO_SECONDS = 10
+_LEVEL_POLL_MS = 50
+# Opening an input is synchronous (up to a few seconds on a bad device), so
+# auto-previews start just after the step is painted. Re-scheduling cancels
+# the pending one, which also debounces flipping through the device list.
+_LEVEL_START_DELAY_MS = 150
+
 # The wizard runs before the control panel and keeps CTk's default widget
 # scaling (the panel picks its own); this is the base the display clamp in
 # gui/scaling.py scales down from on a small high-DPI screen.
@@ -132,7 +150,7 @@ class OnboardingWizard(ctk.CTk):
 
     TOTAL_STEPS = 5
 
-    def __init__(self) -> None:
+    def __init__(self, controller) -> None:
         super().__init__()
 
         # Clamp the global CTk scaling before any geometry is set: this
@@ -140,6 +158,9 @@ class OnboardingWizard(ctk.CTk):
         # laptop it is the one that would run off the screen (gui/scaling).
         apply_display_scaling(self, _WIZARD_WIDGET_SCALE)
 
+        # Borrowed only for the microphone step's level preview — the wizard
+        # never starts a pipeline.
+        self._controller = controller
         settings = load_settings()
         self._state = {
             "gui_language": settings.gui_language,
@@ -156,6 +177,14 @@ class OnboardingWizard(ctk.CTk):
         self._c = _DARK if self._state["theme_mode"] != "light" else _LIGHT
         self._devices = get_input_devices()
         self._disclaimer_var = tk.BooleanVar(value=False)
+        # Level-meter widgets and timers; only alive while the audio step is
+        # shown (see _stop_level_meter).
+        self._level_bar: AudioLevelBar | None = None
+        self._level_label: ctk.CTkLabel | None = None
+        self._level_btn: ctk.CTkButton | None = None
+        self._level_poll_job: str | None = None
+        self._level_auto_job: str | None = None
+        self._level_start_job: str | None = None
 
         ctk.set_appearance_mode(self._state["theme_mode"])
         self.configure(fg_color=self._c["app_bg"])
@@ -391,6 +420,9 @@ class OnboardingWizard(ctk.CTk):
     # ── Rendering ──────────────────────────────────────────────────────────
 
     def _render(self) -> None:
+        # Leaving (or re-rendering) a step destroys its widgets below, so the
+        # meter's timers and its input device are released first.
+        self._stop_level_meter()
         self._header.configure(text=self._t("wizard_title", "Welcome to MinbarLive"))
         step_fmt = self._t("wizard_step_of", "Step {current} of {total}")
         self._step_label.configure(
@@ -569,11 +601,183 @@ class OnboardingWizard(ctk.CTk):
             combo.set(display_names[0])
             self._state["device_name"] = base_names[0]
 
-        combo.configure(
-            command=lambda v: self._state.__setitem__(
-                "device_name", base_names[display_names.index(v)]
-            )
+        def _on_device(value: str) -> None:
+            self._state["device_name"] = base_names[display_names.index(value)]
+            self._schedule_level_preview()
+
+        combo.configure(command=_on_device)
+
+        self._build_level_row()
+        self._schedule_level_preview()
+
+    # ── Input-level meter (audio step only) ────────────────────────────────
+
+    def _build_level_row(self) -> None:
+        """Live level for the selected input: dBFS · bar · Test button.
+
+        The same meter as the control panel — a dead or far too quiet
+        microphone should be caught here, not during the first sermon.
+        """
+        row = ctk.CTkFrame(self._container, fg_color="transparent")
+        row.pack(fill="x", padx=26, pady=(18, 4))
+        row.grid_columnconfigure(1, weight=1)  # bar stretches
+
+        self._level_label = ctk.CTkLabel(
+            row,
+            text=self._t("input_level_no_signal", "No signal"),
+            font=ctk.CTkFont(family="Segoe UI", size=13),
+            text_color=self._c["muted"],
+            width=88,
+            anchor="w",
         )
+        self._level_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+        self._level_bar = AudioLevelBar(
+            row,
+            track_color=self._c["entry"],
+            border_color=self._c["entry_border"],
+            green_color=LEVEL_GREEN,
+            warning_color=LEVEL_WARNING,
+            danger_color=LEVEL_DANGER,
+            height=14,
+        )
+        self._level_bar.grid(row=0, column=1, sticky="ew", padx=(0, 12))
+
+        self._level_btn = ctk.CTkButton(
+            row,
+            text=self._t("input_level_test", "Test mic"),
+            command=self._toggle_level_test,
+            width=120,
+            height=34,
+            corner_radius=12,
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            fg_color=self._c["button"],
+            hover_color=self._c["button_hover"],
+            text_color=self._c["text"],
+        )
+        self._level_btn.grid(row=0, column=2, sticky="e")
+
+        self._level_poll_job = self.after(_LEVEL_POLL_MS, self._poll_level)
+
+    def _selected_device_index(self) -> int | None:
+        """Index of the chosen device, or None to use the system default."""
+        _display, base_names, indices, _loopback = self._devices
+        name = self._state["device_name"]
+        if name in base_names:
+            return indices[base_names.index(name)]
+        return None
+
+    def _poll_level(self) -> None:
+        self._level_poll_job = None
+        bar, label = self._level_bar, self._level_label
+        if bar is None or label is None:
+            return
+        try:
+            snapshot = self._controller.get_input_level()
+        except Exception:
+            snapshot = None
+        try:
+            if snapshot is not None:
+                value = level_fill(snapshot.rms_dbfs)
+                bar.set(value)
+                if snapshot.clipping_ratio > 0.02:
+                    text = self._t("input_level_clipping", "Clipping!")
+                    color = self._c["danger"]
+                elif value <= 0.001:
+                    text = self._t("input_level_no_signal", "No signal")
+                    color = self._c["muted"]
+                else:
+                    text = f"{snapshot.rms_dbfs:.0f} dBFS"
+                    color = self._c["text"]
+                label.configure(text=text, text_color=color)
+            self._sync_level_button()
+            self._level_poll_job = self.after(_LEVEL_POLL_MS, self._poll_level)
+        except tk.TclError:
+            self._level_poll_job = None  # widgets torn down between ticks
+
+    def _level_test_running(self) -> bool:
+        try:
+            return bool(self._controller.is_input_level_test_running())
+        except Exception:
+            return False
+
+    def _sync_level_button(self) -> None:
+        if self._level_btn is None:
+            return
+        self._level_btn.configure(
+            text=self._t("input_level_stop_test", "Stop")
+            if self._level_test_running()
+            else self._t("input_level_test", "Test mic")
+        )
+
+    def _toggle_level_test(self) -> None:
+        # An explicit test is never on a timer: it runs until stopped.
+        self._cancel_level_job("_level_auto_job")
+        self._cancel_level_job("_level_start_job")
+        if self._level_test_running():
+            self._stop_level_capture()
+        else:
+            self._start_level_preview(auto=False)
+        self._sync_level_button()
+
+    def _schedule_level_preview(self) -> None:
+        """Queue a short auto-preview just after the step is painted."""
+        self._cancel_level_job("_level_start_job")
+        self._level_start_job = self.after(
+            _LEVEL_START_DELAY_MS, lambda: self._start_level_preview(auto=True)
+        )
+
+    def _start_level_preview(self, *, auto: bool) -> None:
+        self._level_start_job = None
+        self._cancel_level_job("_level_auto_job")
+        try:
+            self._controller.start_input_level_test(self._selected_device_index())
+        except Exception as exc:
+            log(f"Input level preview failed: {exc}", level="WARNING")
+            # A device that cannot be opened is worth a dialog only when the
+            # user asked for the test — not while merely browsing the list.
+            if not auto:
+                messagebox.showwarning("MinbarLive", str(exc), parent=self)
+            self._sync_level_button()
+            return
+        if auto:
+            self._level_auto_job = self.after(
+                _LEVEL_AUTO_SECONDS * 1000, self._auto_stop_level
+            )
+        self._sync_level_button()
+
+    def _auto_stop_level(self) -> None:
+        self._level_auto_job = None
+        self._stop_level_capture()
+        self._sync_level_button()
+
+    def _cancel_level_job(self, attr: str) -> None:
+        job = getattr(self, attr, None)
+        setattr(self, attr, None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+
+    def _stop_level_capture(self) -> None:
+        try:
+            self._controller.stop_input_level_test()
+        except Exception:
+            pass
+
+    def _stop_level_meter(self) -> None:
+        """Drop the meter: timers cancelled, input device released.
+
+        Called when leaving the step and when the wizard closes — the device
+        must be free before the control panel starts a session on it.
+        """
+        for attr in ("_level_start_job", "_level_auto_job", "_level_poll_job"):
+            self._cancel_level_job(attr)
+        self._level_bar = None
+        self._level_label = None
+        self._level_btn = None
+        self._stop_level_capture()
 
     # ── Step 4: provider + model + API key ─────────────────────────────────
 
@@ -762,9 +966,12 @@ class OnboardingWizard(ctk.CTk):
             self._finish()
 
     def _on_cancel(self) -> None:
+        self._stop_level_meter()
         self.quit()
 
     def _finish(self) -> None:
+        # Release the microphone before the control panel opens on it.
+        self._stop_level_meter()
         self._capture_current_key()
         settings = load_settings()
         settings.gui_language = self._state["gui_language"]
@@ -850,8 +1057,11 @@ class OnboardingWizard(ctk.CTk):
         self.quit()
 
 
-def run_onboarding() -> bool:
+def run_onboarding(controller) -> bool:
     """Show the first-run wizard when it has not been completed yet.
+
+    ``controller`` is the app's AppController, borrowed for the input-level
+    preview on the microphone step (no pipeline is ever started here).
 
     Returns:
         True when the app should continue starting (wizard finished, or already
@@ -863,9 +1073,11 @@ def run_onboarding() -> bool:
     if settings.onboarding_completed:
         return True
 
-    wizard = OnboardingWizard()
+    wizard = OnboardingWizard(controller)
     wizard.mainloop()
     completed = wizard.completed
+    # Belt and braces: no exit path may leave the preview holding the device.
+    wizard._stop_level_meter()
 
     # Hide the window the instant its loop ends. On some setups the CTk root's
     # destroy() below does not fully tear the window down — it can be left as a

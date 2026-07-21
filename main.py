@@ -251,9 +251,13 @@ def main() -> None:
     # Create necessary directories at startup
     ensure_directories()
 
+    # Built before the wizard, which borrows it for the microphone step's
+    # input-level meter (constructing it starts no threads).
+    controller = AppController()
+
     # First-run setup wizard (own Tk root, before the main window so the
     # chosen GUI language/theme applies from the start)
-    if not run_onboarding():
+    if not run_onboarding(controller):
         sys.exit(0)
 
     # Purge stale files (logs and user content gated separately)
@@ -263,7 +267,6 @@ def main() -> None:
             clean_logs=_s.auto_cleanup_logs, clean_content=_s.auto_cleanup_content
         )
 
-    controller = AppController()
     gui = AppGUI(controller)
     gui.mainloop()
 
