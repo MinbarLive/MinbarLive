@@ -4,6 +4,16 @@ import argparse
 import os
 import sys
 
+# DPI awareness must be configured before the first Tk/CustomTkinter window is
+# created. CustomTkinter itself only calls SetProcessDpiAwareness when the first
+# CTk object is built, so anything that queries Win32 coordinates or opens a
+# plain Tk window before that point runs in a virtualized coordinate space.
+# Doing it here makes the awareness deterministic from process start; CTk's
+# later call is then a no-op (E_ACCESSDENIED, which ctypes ignores).
+from utils.windows_dpi import enable_windows_dpi_awareness
+
+enable_windows_dpi_awareness()
+
 # Set Windows taskbar icon (must be done before tkinter imports)
 # Note: sys.platform is always "win32" on Windows, even on 64-bit systems
 if sys.platform == "win32":

@@ -14,6 +14,7 @@ from config import (
     ICON_PATH_PNG,
 )
 from gui.announce_view import AnnounceViewMixin
+from gui.audio_level_bar import AudioLevelBar
 from gui.batch_view import BatchViewMixin
 from gui.control_state import (
     STRATEGY_IDS,
@@ -25,12 +26,13 @@ from gui.control_state import (
     subtitle_mode_choices,
     visible_provider_choices,
 )
-from gui.device_list import get_input_devices
+from gui.device_list import find_input_device_position, get_input_devices
 from gui.dropdown import CustomDropdown
 from gui.history_view import HistoryViewMixin
 from gui.scaling import apply_display_scaling
 from gui.settings_view import SettingsViewMixin
 from gui.subtitle_window import SubtitleWindow
+from gui.typography import SubtitleTypographyMixin
 from gui.widgets import WidgetFactoryMixin
 from providers import (
     PROVIDER_CHOICES,
@@ -46,6 +48,12 @@ from utils.api_key_manager import (
     apply_dark_titlebar,
     prompt_for_api_key,
 )
+from utils.cost_tracking import (
+    begin_cost_session,
+    cancel_cost_session,
+    end_cost_session,
+    flush_cost_history,
+)
 from utils.icons import ICO_SUPPORTED, scaled_icon_photo
 from utils.json_helpers import load_json
 from utils.logging import log, log_queue
@@ -53,6 +61,7 @@ from utils.settings import (
     DEFAULT_AI_PROVIDER,
     DEFAULT_GUI_LANGUAGE,
     DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER,
+    DEFAULT_SOURCE_FONT_SIZE_BASE,
     DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER,
     GUI_LANGUAGE_CODES,
     PIPELINE_MODE_SEGMENTED,
@@ -130,18 +139,34 @@ class AppGUI(
     BatchViewMixin,
     HistoryViewMixin,
     SettingsViewMixin,
+    SubtitleTypographyMixin,
     WidgetFactoryMixin,
     ctk.CTk,
 ):
-    # Minimum window size in CTk logical units, shared by _setup_window and
-    # _toggle_log_panel (a mismatch there once locked the window at the
-    # larger size after a log toggle).
-    _MIN_W = 880
-    _MIN_H = 536
-    # Widest the collapsed 2-column card grid may grow (logical units, ≈1.4×
-    # the design width) before extra window width becomes centered margin
-    # instead of stretching the cards. See _collapsed_margin.
+    # Size the window opens at on a fresh install (CTk logical units), shared
+    # by _setup_window and _toggle_log_panel (a mismatch there once locked the
+    # window at the larger size after a log toggle). 880x536 logical renders
+    # ~1100x720 px, the compact size the 2-column card grid fits snugly.
+    _DEFAULT_W = 880
+    _DEFAULT_H = 630
+    # Floor the user may drag the window down to. Deliberately far below the
+    # default: the card grid reflows to a single column on the way down, so a
+    # small window stays usable (scrolled) instead of being blocked.
+    _MIN_W = 380
+    _MIN_H = 300
+    # Card-grid breakpoints (logical units of available sidebar width): the
+    # cards reflow into 1, 2 or 3 columns so a large window shows everything at
+    # once instead of stretching two tall columns. See _column_count.
+    _COL2_MIN_W = 720
+    _COL3_MIN_W = 1320
+    # Widest the card grid may grow before extra window width becomes centered
+    # margin instead of stretching the cards (per column count, logical units).
+    # See _collapsed_margin.
     _MAX_CARD_AREA_W = 1200
+    _MAX_CARD_AREA_W_WIDE = 1800
+    # Gap between card groups and around the grid (raw px, matches the gap
+    # between two cards inside a group).
+    _CARD_GAP = 18
 
     def __init__(self, controller):
         self._saved_settings = load_settings()
@@ -187,6 +212,11 @@ class AppGUI(
         self.log_poll_job: str | None = None
         self.height_apply_job: str | None = None
         self.inactivity_check_job: str | None = None
+        # Periodic durability flush for the in-progress cost session (below).
+        self.cost_flush_job: str | None = None
+        # Compact input-level meter (backend: controller.get_input_level()).
+        self.input_level_poll_job: str | None = None
+        self._input_level_ui_state: tuple[bool, bool] | None = None
 
         # Startup update check (worker thread writes, after-poll reads).
         self._update_check_result: UpdateInfo | None = None
@@ -237,12 +267,13 @@ class AppGUI(
 
     def _setup_window(self) -> None:
         self.title(f"MinbarLive v{__version__}")
-        # Collapsed (log hidden) is a wide 2-column card grid; expanded (log
-        # shown) is the classic single-column sidebar + log panel.
+        # Collapsed (log hidden) is a reflowing 1/2/3-column card grid; expanded
+        # (log shown) is the classic single-column sidebar + log panel.
         # CTk geometry is in DPI-logical units (physical = logical x window
-        # scaling, e.g. x1.25). 880x576 logical renders ~1100x720 px, which is
-        # the compact first-run size the 2-column card layout fits snugly.
-        default_geo = f"{self._MIN_W}x{self._MIN_H}"
+        # scaling, e.g. x1.25), and gui/scaling.py guarantees a 900x672 logical
+        # window fits inside 85% of the work area — so the default below opens
+        # showing the whole card grid on every screen, without maximizing.
+        default_geo = f"{self._DEFAULT_W}x{self._DEFAULT_H}"
         _min_w, _min_h = self._MIN_W, self._MIN_H
 
         saved_geo = self._saved_settings.window_geometry or ""
@@ -365,8 +396,18 @@ class AppGUI(
         )
         self.sidebar.grid(row=2, column=0, sticky="nsew")
         self.sidebar.grid_columnconfigure(0, weight=1)
-        # Cap + center the collapsed card grid whenever the window resizes.
+        # Reflow + re-center the card grid whenever the window resizes.
         self._applied_collapsed_margin: int | None = None
+        self._applied_columns: int | None = None
+        # Padding above the Advanced card that bottom-aligns it with the
+        # display column. See _align_advanced_card.
+        self._advanced_gap = 0
+        self._advanced_align_pending = False
+        # Destroying the window fires <Configure> on every child, which would
+        # otherwise queue an idle job *after* on_close cancelled them all — the
+        # job then runs against half-destroyed widgets and corrupts the Tcl
+        # interpreter for the next root (it broke the GUI suite once before).
+        self._closing = False
         self.sidebar.bind("<Configure>", self._on_sidebar_resize, add="+")
 
         self.content = ctk.CTkFrame(
@@ -376,16 +417,22 @@ class AppGUI(
         self.content.grid_columnconfigure(0, weight=1)
         self.content.grid_rowconfigure(1, weight=1)
 
-        # Two independent card columns. A single shared-row grid couples the
-        # two columns' row heights, so a short card (Controls) next to a tall
-        # one (Translation flow) gets padded out with dead space — the empty
-        # bottom-right the old 2×2 grid showed. Give each column its own frame
-        # so it packs top-down on its own. Left = Controls + Display; right =
-        # Translation flow + Advanced, chosen so the columns end level.
-        self._col_left = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self._col_right = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self._col_left.grid_columnconfigure(0, weight=1)
-        self._col_right.grid_columnconfigure(0, weight=1)
+        # Three independent card columns. A single shared-row grid couples the
+        # columns' row heights, so a short card (Controls) next to a tall one
+        # (Translation flow) gets padded out with dead space — the empty
+        # bottom-right the old 2×2 grid showed. Give each group its own frame so
+        # it packs top-down on its own. A widget's master is fixed at creation,
+        # so the three groups are the reflow's atoms: _layout_sidebar_cards
+        # arranges them in 1, 2 or 3 columns depending on the window width.
+        # A = Controls + Display, B = Translation flow, C = Advanced (its own
+        # group because it is by far the tallest when expanded).
+        self._col_a = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self._col_b = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self._col_c = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        for _col in (self._col_a, self._col_b, self._col_c):
+            _col.grid_columnconfigure(0, weight=1)
+            # Any group changing height moves the bottom edges out of line.
+            _col.bind("<Configure>", self._schedule_advanced_align, add="+")
 
         self._init_batch_state()
         self._init_announce_state()
@@ -397,80 +444,192 @@ class AppGUI(
         # Batch/File is reached from the header icon (a Toplevel), not a card.
         self._batch_win: ctk.CTkToplevel | None = None
 
-        # Each column reserves a weighted spacer row (row 1) between its top and
-        # bottom card. When the columns are placed side by side (sticky "nsew"),
-        # grid stretches the shorter column up to the taller one's height and the
-        # extra height lands in this spacer row, pushing that column's bottom card
-        # down so both bottom cards always end level — no matter which column is
-        # taller (Display when stopped, Advanced + running hint when running).
-        # See _layout_sidebar_cards.
-        self._col_left.grid_rowconfigure(1, weight=1)
-        self._col_right.grid_rowconfigure(1, weight=1)
-
+        # Cards stack top-down inside their group and keep their natural height
+        # ("new"): bottom-aligning the groups pushed Advanced away from
+        # Translation flow into the window's lower edge as soon as anything in
+        # group A was expanded.
         self.control_card.grid(row=0, column=0, sticky="new")
-        self.display_card.grid(row=2, column=0, sticky="sew", pady=(18, 0))
+        self.display_card.grid(row=1, column=0, sticky="new", pady=(18, 0))
         self.language_card.grid(row=0, column=0, sticky="new")
-        self.advanced_card.grid(row=2, column=0, sticky="sew", pady=(18, 0))
+        self.advanced_card.grid(row=0, column=0, sticky="new")
         self._layout_sidebar_cards()
 
         if self._log_collapsed:
             self.content.grid_remove()
 
-    def _layout_sidebar_cards(self) -> None:
-        """Position the two card columns: side by side (2-column masonry) while
-        the log panel is collapsed, stacked into one column (classic look) when
-        it is open. In the side-by-side layout both columns are stretched to the
-        same (taller) height via sticky "nsew"; each column's weighted spacer row
-        then drops its bottom card so the two columns always end level. Stacked,
-        the columns keep their natural heights (sticky "new")."""
-        two_col = self._log_collapsed
-        if two_col:
-            self.sidebar.grid_columnconfigure(0, weight=1, uniform="sbcols")
-            self.sidebar.grid_columnconfigure(1, weight=1, uniform="sbcols")
-            # Equal-height / bottom-aligned columns ("nsew") only while the
-            # Advanced card is collapsed — then the two columns are close in
-            # height and level bottoms look clean. When Advanced is expanded the
-            # right column is far taller; stretching the left column to match
-            # would strand "Anzeige & Audio" floating in the middle, so
-            # top-anchor both columns instead ("new" — natural masonry stacking).
-            col_sticky = "new" if getattr(self, "advanced_visible", False) else "nsew"
-            # columnspan is stated explicitly: grid() retains prior options, and
-            # the single-column branch below leaves columnspan=2 behind — without
-            # resetting it the two columns would overlap after a log toggle.
-            margin = self._collapsed_margin()
-            self._applied_collapsed_margin = margin
-            self._col_left.grid(
-                row=0,
-                column=0,
-                columnspan=1,
-                sticky=col_sticky,
-                padx=(18 + margin, 9),
-                pady=18,
-            )
-            self._col_right.grid(
-                row=0,
-                column=1,
-                columnspan=1,
-                sticky=col_sticky,
-                padx=(9, 18 + margin),
-                pady=18,
-            )
-        else:
-            self._applied_collapsed_margin = None
-            self.sidebar.grid_columnconfigure(0, weight=1, uniform="")
-            self.sidebar.grid_columnconfigure(1, weight=0, uniform="")
-            self._col_left.grid(
-                row=0, column=0, columnspan=2, sticky="new", padx=18, pady=(18, 0)
-            )
-            self._col_right.grid(
-                row=1, column=0, columnspan=2, sticky="new", padx=18, pady=(18, 18)
-            )
+    def _column_count(self) -> int:
+        """How many card columns the current window width affords (1–3).
 
-    def _collapsed_margin(self) -> int:
-        """Extra outer padding (raw px) that caps the 2-column card grid at a
-        comfortable width and centers it, so maximizing the collapsed window
-        doesn't stretch the cards across the whole screen. 0 until the sidebar
-        is mapped; a <Configure> binding re-applies the layout on resize."""
+        Always 1 while the log panel is open (it owns the rest of the width).
+        Before the sidebar is mapped winfo_width() is 1 — assume 2, the default
+        window's layout, so the first paint is already right; the <Configure>
+        binding corrects it if the restored geometry is wider or narrower."""
+        if not self._log_collapsed:
+            return 1
+        try:
+            avail = self.sidebar.winfo_width()
+            scaling = self._get_window_scaling()
+        except Exception:
+            return 2
+        if avail <= 1:  # not yet mapped
+            return 2
+        logical = avail / max(scaling, 0.1)
+        if logical >= self._COL3_MIN_W:
+            return 3
+        if logical >= self._COL2_MIN_W:
+            return 2
+        return 1
+
+    def _layout_sidebar_cards(self) -> None:
+        """(Re)place the three card groups for the current column count.
+
+        Groups keep their natural height and are top-anchored ("new"), so cards
+        stay next to the card above them — a masonry layout. In the 2-column
+        case group A spans both rows so that its height does not push C away
+        from B; the weighted second row absorbs the surplus *below* C."""
+        cols = self._column_count()
+        margin = self._collapsed_margin(cols)
+        previous_cols = self._applied_columns
+        self._applied_columns = cols
+        self._applied_collapsed_margin = margin
+        # Before the placement below, so the column change and the height
+        # change land in one geometry pass: re-laying out afterwards leaves Tk
+        # briefly measuring the new content against the old column widths.
+        if cols != previous_cols:
+            self._sync_advanced_for_columns(cols)
+
+        # Grid columns: 0 and 4 are margin spacers, 1..3 hold the card groups.
+        # The centering margin lives in the spacers rather than in the groups'
+        # own padx, so every card column stays exactly the same width — folding
+        # it into padx makes a middle column wider than the outer two. Each
+        # group carries half the gap on both sides, so the spacers only need
+        # the other half to give the outer edges the same _CARD_GAP margin.
+        half_gap = self._CARD_GAP // 2
+        self.sidebar.grid_columnconfigure(0, weight=0, minsize=half_gap + margin)
+        self.sidebar.grid_columnconfigure(4, weight=0, minsize=half_gap + margin)
+        for index in range(1, 4):
+            in_use = index <= cols
+            self.sidebar.grid_columnconfigure(
+                index,
+                weight=1 if in_use else 0,
+                # Only columns in use join the uniform group: Tk still counts a
+                # weight-0 member when it divides the width, which stranded a
+                # third of the sidebar as dead space in the 2-column layout.
+                uniform="sbcols" if (in_use and cols > 1) else "",
+            )
+        # A tall spanning group A must not lengthen row 0 (that is what pushed
+        # Advanced to the window's bottom edge); the surplus goes to row 1.
+        self.sidebar.grid_rowconfigure(0, weight=0)
+        self.sidebar.grid_rowconfigure(1, weight=1 if cols == 2 else 0)
+
+        if cols == 1:
+            placements = ((0, 1, 1), (1, 1, 1), (2, 1, 1))
+        elif cols == 2:
+            placements = ((0, 1, 2), (0, 2, 1), (1, 2, 1))
+        else:
+            placements = ((0, 1, 1), (0, 2, 1), (0, 3, 1))
+
+        # row/column/rowspan are always stated: grid() retains the options of a
+        # previous placement, so a value left over from another column count
+        # would silently overlap the groups.
+        # Groups keep their natural height. *Stretching* the shorter column's
+        # last card to level the two columns' bottom edges was tried and
+        # reverted (2026-07-21): re-configuring a card's grid options from
+        # inside this <Configure>-driven pass made the real-window test suite
+        # fail intermittently with a corrupted Tcl interpreter (~6 failures in
+        # 15 full runs, 0 in 17 without it). The bottom edges are levelled by
+        # padding above Advanced instead, from an idle callback rather than
+        # from inside this pass — see _align_advanced_card.
+        groups = (self._col_a, self._col_b, self._col_c)
+        for group, (row, column, rowspan) in zip(groups, placements, strict=True):
+            # Only the top row pads above: a group stacked below another one
+            # would otherwise sit a double gap away from it.
+            top_pad = self._CARD_GAP if row == 0 else 0
+            if group is self._col_c and cols == 2:
+                top_pad = self._advanced_gap  # see _align_advanced_card
+            group.grid(
+                row=row,
+                column=column,
+                rowspan=rowspan,
+                columnspan=1,
+                sticky="new",
+                padx=half_gap,
+                pady=(top_pad, self._CARD_GAP),
+            )
+        self._schedule_advanced_align()
+
+    def _schedule_advanced_align(self, _event: object | None = None) -> None:
+        """Queue one bottom-alignment pass for the next idle moment.
+
+        Deliberately deferred instead of measuring inline: re-gridding a card
+        group from inside the <Configure>-driven layout pass is what corrupted
+        the Tcl interpreter in the reverted attempt (see _layout_sidebar_cards).
+        """
+        if self._closing or self._advanced_align_pending:
+            return
+        self._advanced_align_pending = True
+        try:
+            self.after_idle(self._align_advanced_card)
+        except tk.TclError:  # window going away
+            self._advanced_align_pending = False
+
+    def _align_advanced_card(self) -> None:
+        """Pad above Advanced so its bottom edge meets the display column's.
+
+        Two-column layout only — elsewhere Advanced either sits in its own
+        column or in a single stack. The gap is only *measured* while the
+        subtitle-appearance expander is closed: opening it grows the display
+        column, and Advanced must stay where it is rather than follow it down.
+        Because Advanced is top-anchored in the weighted second row, that extra
+        height lands below Advanced and leaves it in place on its own.
+
+        The correction comes from the rendered bottom edges rather than from
+        the columns' requested heights: predicting the offset from the request
+        was consistently a few pixels out (grid rounding, the cards' borders),
+        and what has to line up is what the operator sees."""
+        self._advanced_align_pending = False
+        if self._applied_columns != 2 or getattr(self, "_typography_open", False):
+            return
+        try:
+            if not self._col_c.winfo_ismapped():
+                return  # nothing rendered yet — a later <Configure> retries
+            delta = (
+                self._col_a.winfo_rooty()
+                + self._col_a.winfo_height()
+                - self._col_c.winfo_rooty()
+                - self._col_c.winfo_height()
+            )
+        except tk.TclError:
+            return
+        if abs(delta) < 2:  # deadband, so rounding cannot make this oscillate
+            return
+        # delta is real pixels; the padding is a logical value CustomTkinter
+        # multiplies by the widget scaling on its way into grid().
+        gap = max(0, self._advanced_gap + round(delta / max(self._responsive_scale, 0.1)))
+        if gap == self._advanced_gap:
+            return
+        self._advanced_gap = gap
+        self._layout_sidebar_cards()
+
+    def _sync_advanced_for_columns(self, cols: int) -> None:
+        """Open Advanced once the grid is wide enough to give it its own
+        column, close it again below that.
+
+        In the 3-column layout group C holds nothing but the collapsed Advanced
+        header, so the width that was gained shows an empty column; in the
+        narrower layouts an expanded Advanced is most of the scroll length.
+        Only called when the column count actually changes, so a manual toggle
+        stands until the next reflow."""
+        if not hasattr(self, "advanced_frame"):
+            return  # cards not built yet
+        if (cols >= 3) != self.advanced_visible:
+            self._set_advanced_visible(cols >= 3)
+
+    def _collapsed_margin(self, cols: int) -> int:
+        """Extra outer padding (raw px) that caps the card grid at a comfortable
+        width and centers it, so maximizing the window doesn't stretch the cards
+        across the whole screen. 0 until the sidebar is mapped; a <Configure>
+        binding re-applies the layout on resize."""
         try:
             avail = self.sidebar.winfo_width()
             scaling = self._get_window_scaling()
@@ -478,19 +637,19 @@ class AppGUI(
             return 0
         if avail <= 1:  # not yet mapped
             return 0
-        max_px = int(self._MAX_CARD_AREA_W * scaling)
-        return max(0, (avail - max_px) // 2)
+        cap = self._MAX_CARD_AREA_W if cols < 3 else self._MAX_CARD_AREA_W_WIDE
+        return max(0, (avail - int(cap * scaling)) // 2)
 
     def _on_sidebar_resize(self, _event: object | None = None) -> None:
-        """Re-center the collapsed card grid when the window is resized."""
-        if not self._log_collapsed:
+        """Reflow / re-center the card grid when the window is resized."""
+        cols = self._column_count()
+        if (
+            cols == getattr(self, "_applied_columns", None)
+            and self._collapsed_margin(cols)
+            == getattr(self, "_applied_collapsed_margin", None)
+        ):
             return
-        margin = self._collapsed_margin()
-        if margin == getattr(self, "_applied_collapsed_margin", None):
-            return
-        self._applied_collapsed_margin = margin
-        self._col_left.grid_configure(padx=(18 + margin, 9))
-        self._col_right.grid_configure(padx=(9, 18 + margin))
+        self._layout_sidebar_cards()
 
     def _create_sidebar_header(self) -> None:
         header = ctk.CTkFrame(
@@ -530,7 +689,10 @@ class AppGUI(
 
         self._batch_btn = ctk.CTkButton(
             header,
-            text="▦",
+            # U+1F4C4 "page facing up": Segoe UI Symbol draws it solid, which
+            # is what makes it readable at 44px — the outline pages (U+1F5CB /
+            # U+1F5CE) were too faint next to the solid 📣 and ▶ glyphs.
+            text="📄",
             command=self._open_batch_window,
             width=44,
             height=44,
@@ -684,7 +846,7 @@ class AppGUI(
             webbrowser.open(self._update_available.url)
 
     def _create_control_card(self) -> None:
-        card = self._section_card(self._col_left, "▶", "control_center")
+        card = self._section_card(self._col_a, "▶", "control_center")
         self.control_card = card
         card.grid_columnconfigure(0, weight=1, uniform="control_actions")
         card.grid_columnconfigure(1, weight=1, uniform="control_actions")
@@ -735,7 +897,7 @@ class AppGUI(
         self.stop_btn.grid(row=3, column=1, sticky="ew", padx=(6, 16), pady=(0, 14))
 
     def _create_display_card(self) -> None:
-        card = self._section_card(self._col_left, "▤", "display_routing")
+        card = self._section_card(self._col_a, "▤", "display_routing")
         self.display_card = card
         card.grid_columnconfigure(0, weight=1, uniform="display_cols")
         card.grid_columnconfigure(1, weight=1, uniform="display_cols")
@@ -768,17 +930,23 @@ class AppGUI(
             command=lambda _value: self._on_device_change(),
         )
         if self.device_names:
-            selected_device = 0
             saved_name = self._saved_settings.input_device_name
-            if saved_name in self.device_base_names:
-                selected_device = self.device_base_names.index(saved_name)
-            elif saved_name in self.device_names:
+            selected_device = find_input_device_position(
+                saved_name, self.device_base_names
+            )
+            if selected_device is None and saved_name in self.device_names:
                 selected_device = self.device_names.index(saved_name)
+            if selected_device is None:
+                selected_device = 0
             self.device_combo.current(selected_device)
         self.device_combo.pack(fill="x", pady=(8, 0))
 
+        # Full-width input-level row below both dropdowns (keeps the monitor and
+        # input dropdowns the same height; the meter is one level, not stacked).
+        self._build_input_level_meter(card)
+
         font_frame = self._mini_panel(card)
-        font_frame.grid(row=3, column=0, sticky="nsew", padx=(16, 6), pady=(0, 12))
+        font_frame.grid(row=4, column=0, sticky="nsew", padx=(16, 6), pady=(0, 12))
         self.font_label = self._label(font_frame, "font", size=14, weight="bold")
         self.font_label.pack(anchor="w", padx=12, pady=(10, 4))
         font_buttons = ctk.CTkFrame(font_frame, fg_color="transparent")
@@ -795,7 +963,7 @@ class AppGUI(
         self.font_increase_btn.grid(row=0, column=1, sticky="ew", padx=(5, 0))
 
         height_frame = self._mini_panel(card)
-        height_frame.grid(row=3, column=1, sticky="nsew", padx=(6, 16), pady=(0, 12))
+        height_frame.grid(row=4, column=1, sticky="nsew", padx=(6, 16), pady=(0, 12))
         self.height_label = self._label(height_frame, "height", size=14, weight="bold")
         self.height_label.pack(anchor="w", padx=12, pady=(10, 4))
         self.height_value_label = ctk.CTkLabel(
@@ -819,8 +987,167 @@ class AppGUI(
         self.height_slider.set(self._saved_settings.window_height_percent)
         self.height_slider.pack(fill="x", padx=12, pady=(6, 12))
 
+        # Collapsible subtitle-appearance controls, directly under the font and
+        # height controls they belong with (rows 5 and 6).
+        self._build_typography_section(card, row=5)
+
+    def _on_subtitle_output_change(self) -> None:
+        enabled = self.subtitle_output_var.get()
+        self._saved_settings.subtitle_output_enabled = enabled
+        self._save_current_settings()
+        if not enabled:
+            self._destroy_subtitle_window()
+        elif self._running or not self._saved_settings.hide_subtitle_on_stop:
+            if not (self.subtitle_window and self.subtitle_window.winfo_exists()):
+                self._create_subtitle_window()
+        log(
+            f"Subtitle output on monitor: {'on' if enabled else 'off'}",
+            level="INFO",
+        )
+
+    # Conventional audio-meter zone colours (green/amber/red in both themes).
+    _INPUT_LEVEL_GREEN = "#37B24D"
+    _INPUT_LEVEL_WARNING = "#F08C00"
+    _INPUT_LEVEL_DANGER = "#E03131"
+    # Meter refresh cadence (~20 FPS). The level itself is attack/release
+    # smoothed in the backend, so this only controls how continuous the motion
+    # reads; a cheap snapshot read, polled only while the panel is open.
+    _INPUT_LEVEL_POLL_MS = 50
+
+    def _build_input_level_meter(self, card: ctk.CTkFrame) -> None:
+        """Full-width live input-level row below the monitor/input dropdowns.
+
+        One level line: dBFS readout · segmented bar (stretches) · Test button.
+        Reads controller.get_input_level() (fed by the live capture or a
+        meter-only preview) — see the reliability/meter backend unit.
+        """
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.grid(row=3, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 14))
+        row.grid_columnconfigure(1, weight=1)  # bar stretches; label/button fixed
+
+        self.input_level_value_label = ctk.CTkLabel(
+            row,
+            text=self.gui_texts.get("input_level_no_signal", "No signal"),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=self._colors["muted"],
+            width=84,
+            anchor="w",
+        )
+        self.input_level_value_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        self._muted_labels.append(self.input_level_value_label)
+
+        self.input_level_bar = AudioLevelBar(
+            row,
+            track_color=self._colors["panel_soft"],
+            border_color=self._colors["border"],
+            green_color=self._INPUT_LEVEL_GREEN,
+            warning_color=self._INPUT_LEVEL_WARNING,
+            danger_color=self._INPUT_LEVEL_DANGER,
+            height=12,
+        )
+        self.input_level_bar.grid(row=0, column=1, sticky="ew", padx=(0, 12))
+
+        self.input_level_test_btn = ctk.CTkButton(
+            row,
+            text=self.gui_texts.get("input_level_test", "Test mic"),
+            command=self._toggle_input_level_test,
+            width=110,
+            height=28,
+            corner_radius=14,
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            fg_color=self._colors["button"],
+            hover_color=self._colors["button_hover"],
+            text_color=self._colors["text"],
+        )
+        self.input_level_test_btn.grid(row=0, column=2, sticky="e")
+
+        self._input_level_ui_state = None
+        self.input_level_poll_job = self.after(200, self._poll_input_level)
+
+    def _poll_input_level(self) -> None:
+        try:
+            snapshot = self.controller.get_input_level()
+        except Exception:
+            snapshot = None
+        try:
+            if snapshot is not None and hasattr(self, "input_level_bar"):
+                rms_dbfs = snapshot.rms_dbfs
+                value = max(0.0, min(1.0, (rms_dbfs + 60.0) / 60.0))
+                self.input_level_bar.set(value)
+                if snapshot.clipping_ratio > 0.02:
+                    text = self.gui_texts.get("input_level_clipping", "Clipping!")
+                    color = self._colors["danger"]
+                elif value <= 0.001:
+                    text = self.gui_texts.get("input_level_no_signal", "No signal")
+                    color = self._colors["muted"]
+                else:
+                    text = f"{rms_dbfs:.0f} dBFS"
+                    color = self._colors["text"]
+                self.input_level_value_label.configure(text=text, text_color=color)
+                self._sync_input_level_button()
+            self.input_level_poll_job = self.after(
+                self._INPUT_LEVEL_POLL_MS, self._poll_input_level
+            )
+        except tk.TclError:
+            # Window/widgets torn down between ticks — stop quietly (the
+            # on_close after-sweep and this early return both end the loop).
+            pass
+
+    def _sync_input_level_button(self) -> None:
+        if not hasattr(self, "input_level_test_btn"):
+            return
+        testing = False
+        checker = getattr(self.controller, "is_input_level_test_running", None)
+        if checker is not None:
+            try:
+                testing = bool(checker())
+            except Exception:
+                testing = False
+        state = (self._running, testing)
+        if state == self._input_level_ui_state:
+            return
+        self._input_level_ui_state = state
+        if self._running:
+            # A live session already feeds the meter; a preview cannot own the
+            # same device, so testing is not offered while running.
+            self.input_level_test_btn.configure(
+                text=self.gui_texts.get("input_level_test", "Test mic"),
+                state="disabled",
+            )
+            return
+        self.input_level_test_btn.configure(
+            state="normal",
+            text=(
+                self.gui_texts.get("input_level_stop_test", "Stop")
+                if testing
+                else self.gui_texts.get("input_level_test", "Test mic")
+            ),
+        )
+
+    def _toggle_input_level_test(self) -> None:
+        controller = self.controller
+        checker = getattr(controller, "is_input_level_test_running", None)
+        if checker is not None and checker():
+            try:
+                controller.stop_input_level_test()
+            except Exception:
+                pass
+            self._input_level_ui_state = None
+            return
+        if self._running:
+            return
+        try:
+            controller.start_input_level_test(self.get_selected_device_index())
+        except Exception as exc:
+            self._alert(
+                self.gui_texts.get("input_level", "Input level"),
+                str(exc),
+                danger=True,
+            )
+        self._input_level_ui_state = None
+
     def _create_language_card(self) -> None:
-        card = self._section_card(self._col_right, "⇄", "translation_flow")
+        card = self._section_card(self._col_b, "⇄", "translation_flow")
         self.language_card = card
         card.grid_columnconfigure(0, weight=1)
 
@@ -953,7 +1280,20 @@ class AppGUI(
         strat_lbl = self._label(
             strat_label_frame, "processing_strategy", symbol="⇶", size=14, weight="bold"
         )
-        strat_lbl.pack(anchor="w")
+        strat_lbl.pack(side="left", anchor="w")
+
+        # The "stop to change" hint shares the label's line rather than adding a
+        # row under the dropdown: as its own row it grew the card by ~24px on
+        # Start, which pushed Advanced below the left column's bottom edge every
+        # time the session started. On the label line the card height is the
+        # same running and stopped, so nothing moves.
+        self.strategy_running_hint = ctk.CTkLabel(
+            strat_label_frame,
+            text=self.gui_texts.get("hint_stop_to_change", "⚠ Stop program to change"),
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=self._colors["warning"],
+            height=20,
+        )
 
         strat_combo_row = ctk.CTkFrame(card, fg_color="transparent")
         strat_combo_row.grid(row=6, column=0, sticky="ew", padx=18, pady=(0, 14))
@@ -971,17 +1311,6 @@ class AppGUI(
         self.strategy_combo.current(self._current_strategy_index())
         self.strategy_combo.grid(row=0, column=0, columnspan=2, sticky="ew")
 
-        self.strategy_running_hint = ctk.CTkLabel(
-            strat_combo_row,
-            text=self.gui_texts.get("hint_stop_to_change", "⚠ Stop program to change"),
-            font=ctk.CTkFont(family="Segoe UI", size=12),
-            text_color=self._colors["warning"],
-            height=20,
-        )
-        self.strategy_running_hint.grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(2, 0)
-        )
-        self.strategy_running_hint.grid_remove()
 
         # Display toggles side by side: "Show original text" (bilingual, all
         # modes, default on) on the left; adaptive catch-up (continuous-only,
@@ -990,8 +1319,22 @@ class AppGUI(
         # line is now intrinsic to the Realtime subtitle mode.
         cb_row = ctk.CTkFrame(card, fg_color="transparent")
         cb_row.grid(row=7, column=0, sticky="ew", padx=18, pady=(0, 14))
-        cb_row.grid_columnconfigure(0, weight=1, uniform="cbcols")
-        cb_row.grid_columnconfigure(1, weight=1, uniform="cbcols")
+        # All toggles share a single left column now, so give it the full width
+        # (no half-width uniform split) to keep the longest label from clipping.
+        cb_row.grid_columnconfigure(0, weight=1)
+
+        # All three toggles stack in the left column: Live-Transkript on top,
+        # Originaltext below it, the master overlay toggle at the bottom.
+        self.subtitle_output_var = tk.BooleanVar(
+            value=self._saved_settings.subtitle_output_enabled
+        )
+        self.subtitle_output_cb = self._checkbox(
+            cb_row,
+            "subtitle_output_enabled",
+            self.subtitle_output_var,
+            self._on_subtitle_output_change,
+        )
+        self.subtitle_output_cb.grid(row=2, column=0, sticky="w", pady=(6, 0))
 
         self.bilingual_var = tk.BooleanVar(value=self._saved_settings.bilingual_mode)
         self.bilingual_cb = self._checkbox(
@@ -1000,7 +1343,7 @@ class AppGUI(
             self.bilingual_var,
             self._on_bilingual_change,
         )
-        self.bilingual_cb.grid(row=0, column=0, sticky="w")
+        self.bilingual_cb.grid(row=1, column=0, sticky="w", pady=(6, 0))
 
         self.adaptive_catchup_var = tk.BooleanVar(
             value=self._saved_settings.adaptive_subtitle_catchup
@@ -1011,11 +1354,11 @@ class AppGUI(
             self.adaptive_catchup_var,
             self._on_adaptive_catchup_change,
         )
-        self.adaptive_catchup_cb.grid(row=0, column=1, sticky="w")
+        self.adaptive_catchup_cb.grid(row=0, column=0, sticky="w")
 
         # Realtime-only: toggle the in-progress "live line" (transcript shown
-        # while the speaker is still talking). Shares column 1 with adaptive
-        # catch-up — the two are mutually exclusive by mode, so
+        # while the speaker is still talking). Shares column 0 (top-left) with
+        # adaptive catch-up — the two are mutually exclusive by mode, so
         # _update_speed_button_states() shows at most one of them.
         self.show_interim_var = tk.BooleanVar(
             value=self._saved_settings.show_interim_transcript
@@ -1026,11 +1369,11 @@ class AppGUI(
             self.show_interim_var,
             self._on_show_interim_change,
         )
-        self.show_interim_cb.grid(row=0, column=1, sticky="w")
+        self.show_interim_cb.grid(row=0, column=0, sticky="w")
 
     def _create_advanced_card(self) -> None:
         card = self._section_card(
-            self._col_right,
+            self._col_c,
             "⚙",
             "advanced_settings",
             toggle_command=self._toggle_advanced_settings,
@@ -1351,7 +1694,14 @@ class AppGUI(
         self.log_text.grid(row=0, column=0, sticky="nsew", padx=18, pady=18)
         self.log_text.configure(state="disabled")
 
+    def _subtitle_output_is_enabled(self) -> bool:
+        """Whether the audience overlay window should exist at all."""
+        return bool(getattr(self._saved_settings, "subtitle_output_enabled", True))
+
     def _create_subtitle_window(self) -> None:
+        if not self._subtitle_output_is_enabled():
+            # Run transcription/translation with no overlay window at all.
+            return
         current_screen_idx = self.screen_combo.current()
         if current_screen_idx is None or current_screen_idx < 0:
             current_screen_idx = self.selected_screen_index
@@ -1362,6 +1712,15 @@ class AppGUI(
             on_close=self.on_close,
             monitor_index=current_screen_idx,
             font_size_base=self._saved_settings.font_size_base,
+            source_font_size_base=getattr(
+                self._saved_settings,
+                "source_font_size_base",
+                DEFAULT_SOURCE_FONT_SIZE_BASE,
+            ),
+            translation_text_color=getattr(
+                self._saved_settings, "translation_text_color", ""
+            ),
+            source_text_color=getattr(self._saved_settings, "source_text_color", ""),
             target_language=self._saved_settings.target_language,
             subtitle_mode=self._effective_subtitle_mode(),
             scroll_speed=self.speed_value,
@@ -1574,9 +1933,13 @@ class AppGUI(
                 self._prompt_provider_key(provider)
                 if not has_usable_key(provider):
                     return
+        begin_cost_session()
         try:
             self.controller.start(input_device=self.get_selected_device_index())
         except Exception as exc:
+            # No usage was billed for a start that never ran — drop the session
+            # so it never appears in the cost history.
+            cancel_cost_session()
             self._alert(
                 self.gui_texts.get("error_start_failed", "Start failed"),
                 str(exc),
@@ -1590,6 +1953,7 @@ class AppGUI(
         self._sync_advanced_enabled_states()
         self._start_log_polling()
         self._schedule_inactivity_check()
+        self._schedule_cost_flush()
         if self._saved_settings.hide_subtitle_on_stop and (
             not self.subtitle_window or not self.subtitle_window.winfo_exists()
         ):
@@ -1621,9 +1985,20 @@ class AppGUI(
         self._set_status(False)
         self._sync_advanced_enabled_states()
         self._cancel_inactivity_check()
+        self._end_cost_session("completed")
+        # Optionally clear an in-progress announcement when the session stops
+        # (checkbox in the announcement window, default on). Runs after
+        # _running is cleared so _stop_announcement tears the overlay down when
+        # hide-on-stop is set.
+        if (
+            self._saved_settings.stop_announcement_on_live_stop
+            and self._has_active_announcement()
+        ):
+            self._stop_announcement()
         # Keep the overlay alive if an 'until stopped' announcement is showing —
-        # it must survive a translation stop (user decision). Stopping the
-        # announcement itself then closes the overlay if hide-on-stop is set.
+        # it must survive a translation stop (when the toggle above is off).
+        # Stopping the announcement itself then closes the overlay if
+        # hide-on-stop is set.
         if (
             self._saved_settings.hide_subtitle_on_stop
             and not self._has_active_announcement()
@@ -1670,6 +2045,39 @@ class AppGUI(
             return
         self._schedule_inactivity_check()
 
+    # ── Cost session durability ─────────────────────────────────────────────
+    # Provider threads update the cost tracker in memory only; end_cost_session
+    # writes the final record on Stop. This low-frequency flush persists the
+    # in-progress session so a crash mid-session doesn't lose its usage.
+
+    _COST_FLUSH_INTERVAL_MS = 30_000
+
+    def _schedule_cost_flush(self) -> None:
+        self._cancel_cost_flush()
+        self.cost_flush_job = self.after(
+            self._COST_FLUSH_INTERVAL_MS, self._poll_cost_flush
+        )
+
+    def _cancel_cost_flush(self) -> None:
+        if self.cost_flush_job is not None:
+            try:
+                self.after_cancel(self.cost_flush_job)
+            except Exception:
+                pass
+            self.cost_flush_job = None
+
+    def _poll_cost_flush(self) -> None:
+        self.cost_flush_job = None
+        if not self._running:
+            return
+        flush_cost_history()
+        self._schedule_cost_flush()
+
+    def _end_cost_session(self, status: str) -> None:
+        """Finalize the cost session (writes the record) and stop flushing."""
+        self._cancel_cost_flush()
+        end_cost_session(status)
+
     def _set_status(self, running: bool) -> None:
         if running:
             self.start_btn.configure(
@@ -1693,7 +2101,7 @@ class AppGUI(
                 text_color="#ffffff",
             )
             self.strategy_running_hint.configure(text_color=self._colors["warning"])
-            self.strategy_running_hint.grid()
+            self.strategy_running_hint.pack(side="right", anchor="e")
         else:
             self.start_btn.configure(
                 state="normal",
@@ -1717,7 +2125,7 @@ class AppGUI(
                 fg_color=self._colors["danger_soft"],
                 text_color=self._colors["danger"],
             )
-            self.strategy_running_hint.grid_remove()
+            self.strategy_running_hint.pack_forget()
 
     def _get_input_devices(self) -> tuple[list[str], list[str], list[int], list[bool]]:
         return get_input_devices()
@@ -1740,8 +2148,37 @@ class AppGUI(
             self._saved_settings.input_device_name = self.device_base_names[selection]
             if self._running:
                 self.controller.change_input_device(self.device_indices[selection])
+            else:
+                self._move_input_level_test_to_selected_device()
             log(f"Input device: {self.device_base_names[selection]}", level="INFO")
         self._save_current_settings()
+
+    def _move_input_level_test_to_selected_device(self) -> None:
+        """Re-open a running mic test on the newly selected input device.
+
+        The preview capture thread owns the device it was started with, so
+        without this the meter keeps reading the old input until the test is
+        stopped and started again — which reads as "the new mic doesn't work".
+        start_input_level_test() closes the previous capture itself.
+        """
+        checker = getattr(self.controller, "is_input_level_test_running", None)
+        try:
+            if checker is None or not checker():
+                return
+            self.controller.start_input_level_test(self.get_selected_device_index())
+        except Exception as exc:
+            # The new device could not be opened: leave no half-started
+            # preview behind, and tell the operator why the meter went quiet.
+            try:
+                self.controller.stop_input_level_test()
+            except Exception:
+                pass
+            self._alert(
+                self.gui_texts.get("input_level", "Input level"),
+                str(exc),
+                danger=True,
+            )
+        self._input_level_ui_state = None  # re-sync the Test button next poll
 
     def _on_screen_change(self) -> None:
         idx = self.screen_combo.current()
@@ -1790,6 +2227,7 @@ class AppGUI(
             self._refresh_provider_combos()  # restore the full provider list
             self._set_status(False)
             self._sync_advanced_enabled_states()
+            self._end_cost_session("error")
             self._alert(
                 self.gui_texts.get("error_start_failed", "Start failed"),
                 str(exc),
@@ -1884,9 +2322,14 @@ class AppGUI(
 
     def _increase_subtitle_font(self) -> None:
         if self.subtitle_window and self.subtitle_window.winfo_exists():
+            old_base = self._saved_settings.font_size_base
             self.subtitle_window.increase_font()
             self._saved_settings.font_size_base = (
                 self.subtitle_window.get_font_size_base()
+            )
+            # Keep the original text in proportion with the translation.
+            self._scale_source_font_with_translation(
+                old_base, self._saved_settings.font_size_base
             )
             log(
                 f"Font size changed to: {self.subtitle_window.get_current_font_size()}",
@@ -1896,9 +2339,14 @@ class AppGUI(
 
     def _decrease_subtitle_font(self) -> None:
         if self.subtitle_window and self.subtitle_window.winfo_exists():
+            old_base = self._saved_settings.font_size_base
             self.subtitle_window.decrease_font()
             self._saved_settings.font_size_base = (
                 self.subtitle_window.get_font_size_base()
+            )
+            # Keep the original text in proportion with the translation.
+            self._scale_source_font_with_translation(
+                old_base, self._saved_settings.font_size_base
             )
             log(
                 f"Font size changed to: {self.subtitle_window.get_current_font_size()}",
@@ -2102,13 +2550,12 @@ class AppGUI(
         else:
             self.strategy_combo.configure(state="readonly")
 
-        # Running hint under the strategy row. It grows the right column; grid
-        # auto-restretches the left column to match (equal-height columns), so
-        # no manual re-levelling is needed.
+        # Running hint under the strategy row. It grows the Translation-flow
+        # card; the card grid is masonry, so the neighbours simply stay put.
         if running:
-            self.strategy_running_hint.grid()
+            self.strategy_running_hint.pack(side="right", anchor="e")
         else:
-            self.strategy_running_hint.grid_remove()
+            self.strategy_running_hint.pack_forget()
 
     def _prompt_provider_key(self, provider: str) -> None:
         """Open the API-key dialog for a specific provider."""
@@ -2299,18 +2746,34 @@ class AppGUI(
         log(f"Always on top: {'on' if enabled else 'off'}", level="INFO")
         self._save_current_settings()
 
-    def _toggle_advanced_settings(self) -> None:
-        self.advanced_visible = not self.advanced_visible
-        if self.advanced_visible:
+    def _set_advanced_visible(self, visible: bool) -> None:
+        """Show/hide the Advanced body without re-running the card layout.
+
+        Separate from the toggle so the width-driven open
+        (_sync_advanced_for_columns) can happen inside the layout pass that
+        caused it, instead of recursing back into it."""
+        self.advanced_visible = visible
+        if visible:
             self._advanced_toggle_arrow.configure(text="▴")
             self.advanced_frame.grid(row=1, column=0, sticky="ew", padx=2, pady=(0, 14))
-            self.after(80, lambda: self.advanced_frame.focus_set())
+            # An open Advanced card is the taller column; nothing to align to.
+            # Set here rather than waiting for the idle pass so the placement
+            # below does not flash the stale gap for a frame.
+            self._advanced_gap = 0
         else:
             self._advanced_toggle_arrow.configure(text="▾")
             self.advanced_frame.grid_forget()
-        # Expanding the Advanced card makes the right column much taller — switch
-        # the columns between bottom-aligned (collapsed) and top-anchored
-        # (expanded). See _layout_sidebar_cards.
+        # Closed, the header IS the card, so its body gap becomes the card's
+        # bottom padding and reads lopsided against the header's top padding.
+        top_pad, body_gap = self._CARD_HEADER_PADY
+        self._advanced_header.grid(pady=(top_pad, body_gap if visible else top_pad))
+
+    def _toggle_advanced_settings(self) -> None:
+        self._set_advanced_visible(not self.advanced_visible)
+        if self.advanced_visible:
+            self.after(80, lambda: self.advanced_frame.focus_set())
+        # The card grid keeps its column count, but the group heights changed —
+        # re-run the layout so grid re-measures. See _layout_sidebar_cards.
         self._layout_sidebar_cards()
 
     def _toggle_log_panel(self) -> None:
@@ -2323,14 +2786,14 @@ class AppGUI(
         import re
 
         m = re.match(r"(\d+)x(\d+)", self.geometry())
-        current_width = int(m.group(1)) if m else self._MIN_W
-        current_height = int(m.group(2)) if m else self._MIN_H
+        current_width = int(m.group(1)) if m else self._DEFAULT_W
+        current_height = int(m.group(2)) if m else self._DEFAULT_H
         # Keep the user's chosen width across the toggle (clamped to the min):
         # the log panel appears within the current width (the sidebar shrinks to
         # 500px) instead of snapping the window to a fixed per-mode width.
         current_width = max(current_width, self._MIN_W)
         if self._log_collapsed:
-            # Collapsed: hide the log, reflow into the 2-column card grid.
+            # Collapsed: hide the log, reflow into the card grid.
             self.content.grid_remove()
             self.grid_columnconfigure(0, weight=1, minsize=self._MIN_W)
             self.grid_columnconfigure(1, weight=0, minsize=0)
@@ -2628,6 +3091,23 @@ class AppGUI(
                 border_color=self._colors["entry_border"],
                 text_color=self._colors["text"],
             )
+        if hasattr(self, "input_level_bar"):
+            self.input_level_bar.set_palette(
+                track_color=self._colors["panel_soft"],
+                border_color=self._colors["border"],
+                green_color=self._INPUT_LEVEL_GREEN,
+                warning_color=self._INPUT_LEVEL_WARNING,
+                danger_color=self._INPUT_LEVEL_DANGER,
+            )
+            self.input_level_test_btn.configure(
+                fg_color=self._colors["button"],
+                hover_color=self._colors["button_hover"],
+                text_color=self._colors["text"],
+            )
+            self._input_level_ui_state = None  # re-sync button state next poll
+        # Appearance swatches carry the operator's own colours — they are kept
+        # out of the generic button loop and restyle themselves.
+        self._refresh_typography_controls()
         # The history/batch windows are rebuilt from scratch on open; close a
         # stale one so it isn't left with old-theme/old-language widgets.
         self._close_history_window()
@@ -2753,6 +3233,8 @@ class AppGUI(
         self._close_history_window()
         self._close_batch_window()
         self._close_announce_window()
+        if hasattr(self, "input_level_test_btn"):
+            self._input_level_ui_state = None  # re-sync button text next poll
         for label in self._labels + self._section_titles:
             key = getattr(label, "_text_key", None)
             if key:
@@ -2787,6 +3269,7 @@ class AppGUI(
         self.logs_label.configure(text=f"▤  {self.gui_texts.get('logs', 'Logs')}")
 
         self._refresh_subtitle_mode_combo()
+        self._refresh_typography_controls()
 
         # Update settings window widgets if the window is open
         if self._settings_win_exists():
@@ -2872,6 +3355,9 @@ class AppGUI(
             self.report_callback_exception = lambda *a: None
         except Exception:
             pass
+        # Stops the teardown's own <Configure> storm from queueing fresh idle
+        # jobs behind the cancel-everything pass below.
+        self._closing = True
         try:
             self._saved_settings.window_geometry = self.geometry()
             self._save_current_settings()
@@ -2881,6 +3367,8 @@ class AppGUI(
             self.controller.stop()
         except Exception:
             pass
+        # Persist any in-progress cost session before the app exits.
+        self._end_cost_session("closed")
         # Stop the focus/map handlers from scheduling new surface-restore jobs
         # while the window is being torn down.
         for seq in ("<FocusIn>", "<Map>"):

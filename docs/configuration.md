@@ -20,14 +20,20 @@ These settings are configurable from the control panel / settings window and sav
 | Islamic mode           | On                   | Quran verse & Athan recognition + Islamic translation style; off = general translator (turning it off asks for confirmation) |
 | Noise filter           | On                   | Voice-activity gate: drops static/hum the loudness-based silence gate lets through |
 | Font Size              | 40                   | Subtitle font size                                                      |
+| Original text size     | 70 %                 | Size of the original-text line, relative to the translation (Subtitle appearance) |
+| Translation colour     | Theme default        | Override for the translation text colour (Subtitle appearance)          |
+| Original text colour   | Theme default        | Override for the original-text colour (Subtitle appearance)             |
 | Scroll Speed           | 1.0                  | Speed for continuous mode (0.5x - 5x)                                   |
 | Adaptive catch-up      | On                   | Speeds up continuous scrolling when a backlog builds                    |
 | Subtitle window height | 50 %                 | Height of the subtitle window as % of the screen                        |
 | Transparent            | Off                  | Transparent overlay for static mode                                     |
 | Input Device           | System default       | Microphone, or a Windows `(Loopback)` output device (system audio)      |
 | Subtitle Screen        | Monitor 1            | Monitor for subtitle display                                            |
+| Show subtitles while running | On             | Off = transcribe and translate to history only, no subtitle window       |
 | Show footer            | On                   | AI-disclaimer pill on the subtitle window                               |
 | Hide subtitles on stop | Off                  | Hide the subtitle window while translation is stopped                   |
+| Keep windows always on top | On               | Control panel + subtitle window float above other windows               |
+| Hide announcement when stopped | On           | Clears an "until stopped" announcement when the session is stopped      |
 | Auto start             | Off                  | Start translating as soon as the app launches                           |
 | Auto stop when idle    | On                   | Stop a running session after 10 min without any transcription (cost guard) |
 | Auto cleanup (logs)    | On                   | Purge old log files at startup (see retention below)                    |
@@ -132,6 +138,29 @@ Window sizes are defined in DPI-logical units, so Windows multiplies them by the
 | `MAX_SCREEN_FRACTION` | 0.85    | A window may use at most this much of the usable screen area              |
 
 The factor is never above 1.0 — it only shrinks when the design would not fit, so a large monitor at 150 % keeps the bigger text the user asked for and is left exactly as-is.
+
+### Control-panel window & card grid (gui/app_gui.py)
+
+The control panel opens at a size that shows every card at once and can then be
+dragged as large or as small as you like — the cards reflow to fit. The last
+size and position are remembered in `window_geometry`.
+
+| Parameter                 | Default   | Description                                                    |
+| ------------------------- | --------- | -------------------------------------------------------------- |
+| `_DEFAULT_W`/`_DEFAULT_H` | 880/630   | Size the window opens at on a fresh install (logical units)     |
+| `_MIN_W`/`_MIN_H`         | 380/300   | Floor the window may be dragged down to                         |
+| `_COL2_MIN_W`             | 720       | Card-grid width from which two columns are used                 |
+| `_COL3_MIN_W`             | 1320      | …and three columns (a maximized window shows everything at once) |
+| `_MAX_CARD_AREA_W`        | 1200      | Beyond this the 1/2-column grid is centered instead of stretched |
+| `_MAX_CARD_AREA_W_WIDE`   | 1800      | Same cap for the 3-column grid                                  |
+
+### Announcements (config.py)
+
+| Parameter                       | Default            | Description                                            |
+| ------------------------------- | ------------------ | ------------------------------------------------------ |
+| `ANNOUNCEMENT_DURATIONS_SECONDS`| 10/30/60/300/0     | Preset display durations; `0` = until the operator stops it |
+| `ANNOUNCEMENT_HISTORY_MAX`      | 3                  | Recent announcement texts kept for re-use              |
+| `ANNOUNCEMENT_FAVORITES_MAX`    | 5                  | Pinned announcements kept                              |
 
 ### Realtime subtitle feed
 

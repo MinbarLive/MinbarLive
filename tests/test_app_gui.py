@@ -21,6 +21,7 @@ and handlers are invoked directly, which is what a callback would do anyway.
 
 import queue
 import sys
+import time
 import tkinter as tk
 from pathlib import Path
 
@@ -39,9 +40,35 @@ from utils.settings import (
 )
 
 
+def _build_with_tk_retry(build, attempts: int = 3):
+    """Build a Tk root, retrying a failed interpreter start-up.
+
+    Creating an interpreter makes Tk source ~30 .tcl files from its library
+    directory, and those reads intermittently fail on Windows with
+    ``couldn't read file "...\\button.tcl": no such file or directory`` for a
+    file that is plainly there — real-time virus scanning of the DLLs pytest
+    has just imported is the likely culprit. Measured 2026-07-21: 0 failures
+    in 342 roots when this file runs alone, but 1 in 20 when the whole suite
+    is collected first, i.e. in the window right after that import burst.
+    That is also where every observed failure landed, since this file runs
+    first. No application code has run at that point, so the failure says
+    nothing about the code under test — but it did fail whole suite runs
+    (~1 in 3) and would do the same to CI. A second failure is re-raised.
+    """
+    for attempt in range(attempts):
+        try:
+            return build()
+        except tk.TclError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.5)
+
+
 def _display_available() -> bool:
     try:
-        root = tk.Tk()
+        # Not just a skip guard: a transient failure here would silently skip
+        # every test in this file and still report the run green.
+        root = _build_with_tk_retry(tk.Tk)
     except Exception:
         return False
     root.destroy()
@@ -82,6 +109,30 @@ class FakeController:
     def change_input_device(self, idx):
         return True
 
+    # ── Input-level meter / mic test ──────────────────────────────────────
+    level_test_device = None
+    level_test_running = False
+    level_test_starts = 0
+    level_test_stops = 0
+    level_test_error = None
+
+    def get_input_level(self):
+        return None
+
+    def is_input_level_test_running(self):
+        return self.level_test_running
+
+    def start_input_level_test(self, input_device=None):
+        self.level_test_starts += 1
+        if self.level_test_error is not None:
+            raise self.level_test_error
+        self.level_test_running = True
+        self.level_test_device = input_device
+
+    def stop_input_level_test(self, timeout=1.0):
+        self.level_test_stops += 1
+        self.level_test_running = False
+
 
 @pytest.fixture
 def make_gui(monkeypatch):
@@ -117,7 +168,7 @@ def make_gui(monkeypatch):
         )
 
         controller = FakeController()
-        gui = app_gui.AppGUI(controller)
+        gui = _build_with_tk_retry(lambda: app_gui.AppGUI(controller))
         gui.update_idletasks()
         built.append(gui)
         return gui, controller, settings
@@ -159,6 +210,29 @@ class TestStartup:
     def test_no_subtitle_window_when_hidden_on_stop(self, make_gui):
         gui, _c, _s = make_gui()
         assert gui.subtitle_window is None
+
+    def test_a_failed_tk_start_up_is_retried(self):
+        """Guards the retry itself — see _build_with_tk_retry for why Tk's own
+        library sourcing intermittently fails here."""
+        attempts = []
+
+        def flaky():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise tk.TclError("Can't find a usable tk.tcl")
+            return "root"
+
+        assert _build_with_tk_retry(flaky) == "root"
+        assert len(attempts) == 2
+
+    def test_a_persistent_tk_failure_still_raises(self):
+        """Retrying must not turn a genuinely broken Tk into a green run."""
+
+        def always_fails():
+            raise tk.TclError("no display")
+
+        with pytest.raises(tk.TclError):
+            _build_with_tk_retry(always_fails, attempts=2)
 
 
 class TestProviderSelection:
@@ -318,6 +392,23 @@ class TestAlwaysOnTop:
 
 
 class TestStartStop:
+    def test_starting_does_not_change_the_card_heights(self, make_gui):
+        """The "stop to change" hint shares the strategy label's line. As its
+        own row it grew the Translation-flow card by ~24px on every Start,
+        which pushed the Advanced card below the left column's bottom edge."""
+        gui, _controller, _s = make_gui()
+        gui.update_idletasks()
+        stopped = gui.language_card.winfo_reqheight()
+
+        gui.on_start()
+        gui.update_idletasks()
+        assert gui.strategy_running_hint.winfo_ismapped()
+        assert gui.language_card.winfo_reqheight() == stopped
+
+        gui.on_stop()
+        gui.update_idletasks()
+        assert gui.language_card.winfo_reqheight() == stopped
+
     def test_start_then_stop_drives_the_controller(self, make_gui):
         gui, controller, _s = make_gui()
         gui.on_start()
@@ -606,8 +697,11 @@ class TestAnnouncement:
 
     def test_on_stop_keeps_overlay_when_announcement_active(self, make_gui):
         # hide_subtitle_on_stop=True normally destroys the overlay on stop, but
-        # an active "until stopped" announcement must survive the stop.
-        gui, _c, _s = make_gui(hide_subtitle_on_stop=True)
+        # an active "until stopped" announcement survives the stop when the
+        # announcement window's "hide when stopped" toggle is off.
+        gui, _c, _s = make_gui(
+            hide_subtitle_on_stop=True, stop_announcement_on_live_stop=False
+        )
         fake = _FakeSubtitleWindow()
         gui.subtitle_window = fake
         gui._running = True
@@ -615,6 +709,20 @@ class TestAnnouncement:
         gui.on_stop()
         assert gui.subtitle_window is fake
         assert fake.destroyed is False
+
+    def test_on_stop_clears_announcement_when_toggle_is_on(self, make_gui):
+        # Default: stopping the session also clears an in-progress
+        # announcement, which then lets hide-on-stop tear the overlay down.
+        gui, _c, settings = make_gui(hide_subtitle_on_stop=True)
+        assert settings.stop_announcement_on_live_stop is True
+        fake = _FakeSubtitleWindow()
+        gui.subtitle_window = fake
+        gui._running = True
+        gui._announcement_text_active = "Goes away"
+        gui.on_stop()
+        assert gui._has_active_announcement() is False
+        assert gui.subtitle_window is None
+        assert fake.destroyed is True
 
     def test_on_stop_destroys_overlay_without_announcement(self, make_gui):
         gui, _c, _s = make_gui(hide_subtitle_on_stop=True)
@@ -624,6 +732,234 @@ class TestAnnouncement:
         gui.on_stop()
         assert gui.subtitle_window is None
         assert fake.destroyed is True
+
+
+class TestMicTestDeviceChange:
+    """Switching the input device while the mic test runs must move the test.
+
+    The preview capture thread owns the device it was opened with, so leaving
+    it alone reads to the operator as "the new mic is dead" until they restart
+    the app.
+    """
+
+    def _select_second_device(self, gui):
+        if len(gui.device_indices) < 2:
+            pytest.skip("machine has fewer than two input devices")
+        gui.device_combo.current(1)
+
+    def test_running_test_moves_to_the_new_device(self, make_gui):
+        gui, controller, _s = make_gui()
+        self._select_second_device(gui)
+        controller.level_test_running = True
+        controller.level_test_device = gui.device_indices[0]
+
+        gui._on_device_change()
+
+        assert controller.level_test_starts == 1
+        assert controller.level_test_device == gui.device_indices[1]
+        assert controller.level_test_running is True
+
+    def test_no_test_running_stays_stopped(self, make_gui):
+        gui, controller, _s = make_gui()
+        self._select_second_device(gui)
+
+        gui._on_device_change()
+
+        assert controller.level_test_starts == 0
+        assert controller.level_test_running is False
+
+    def test_unopenable_device_stops_the_test_instead_of_leaving_it_half_open(
+        self, make_gui, monkeypatch
+    ):
+        gui, controller, _s = make_gui()
+        self._select_second_device(gui)
+        controller.level_test_running = True
+        controller.level_test_error = RuntimeError("device busy")
+        alerts = []
+        monkeypatch.setattr(
+            gui, "_alert", lambda *a, **k: alerts.append(a), raising=False
+        )
+
+        gui._on_device_change()
+
+        assert controller.level_test_stops == 1
+        assert controller.level_test_running is False
+        assert alerts, "the operator must be told why the meter went quiet"
+
+    def test_live_session_still_hot_swaps_instead_of_previewing(self, make_gui):
+        gui, controller, _s = make_gui()
+        self._select_second_device(gui)
+        gui._running = True
+
+        gui._on_device_change()
+
+        # A live session feeds the meter itself; no preview may be opened.
+        assert controller.level_test_starts == 0
+
+
+class TestCardGridReflow:
+    """The card grid reflows to 1/2/3 columns so a wide window shows every
+    card at once and a small one stays usable instead of being clipped."""
+
+    def _pin_width(self, gui, monkeypatch, logical_width):
+        monkeypatch.setattr(gui, "_get_window_scaling", lambda: 1.0, raising=False)
+        monkeypatch.setattr(
+            gui.sidebar, "winfo_width", lambda: logical_width, raising=False
+        )
+
+    def test_column_count_follows_the_window_width(self, make_gui, monkeypatch):
+        gui, _c, _s = make_gui()
+        for width, expected in (
+            (gui._COL2_MIN_W - 1, 1),
+            (gui._COL2_MIN_W, 2),
+            (gui._COL3_MIN_W - 1, 2),
+            (gui._COL3_MIN_W, 3),
+        ):
+            self._pin_width(gui, monkeypatch, width)
+            assert gui._column_count() == expected, width
+
+    def test_open_log_panel_forces_a_single_column(self, make_gui, monkeypatch):
+        gui, _c, _s = make_gui()
+        self._pin_width(gui, monkeypatch, gui._COL3_MIN_W)
+        gui._log_collapsed = False
+        assert gui._column_count() == 1
+
+    def test_groups_are_placed_once_per_column_count(self, make_gui, monkeypatch):
+        gui, _c, _s = make_gui()
+        groups = (gui._col_a, gui._col_b, gui._col_c)
+        for width in (400, gui._COL2_MIN_W, gui._COL3_MIN_W):
+            self._pin_width(gui, monkeypatch, width)
+            gui._layout_sidebar_cards()
+            cells = {}
+            for group in groups:
+                info = group.grid_info()
+                for row in range(int(info["row"]), int(info["row"]) + int(info["rowspan"])):
+                    cell = (row, int(info["column"]))
+                    assert cell not in cells, f"{cell} occupied twice at {width}"
+                    cells[cell] = group
+            assert gui._applied_columns == gui._column_count()
+
+    def test_wide_window_caps_and_centres_the_grid(self, make_gui, monkeypatch):
+        """Past the cap the extra width becomes margin, not wider cards."""
+        gui, _c, _s = make_gui()
+        self._pin_width(gui, monkeypatch, gui._MAX_CARD_AREA_W_WIDE + 400)
+        assert gui._collapsed_margin(3) == 200
+        self._pin_width(gui, monkeypatch, gui._MAX_CARD_AREA_W_WIDE)
+        assert gui._collapsed_margin(3) == 0
+
+    def test_advanced_opens_in_three_columns_and_closes_below(
+        self, make_gui, monkeypatch
+    ):
+        """Group C is nothing but the Advanced header while collapsed, so the
+        third column would otherwise be won and then left empty."""
+        gui, _c, _s = make_gui()
+        assert gui.advanced_visible is False
+
+        self._pin_width(gui, monkeypatch, gui._COL3_MIN_W)
+        gui._layout_sidebar_cards()
+        assert gui.advanced_visible is True
+
+        self._pin_width(gui, monkeypatch, gui._COL2_MIN_W)
+        gui._layout_sidebar_cards()
+        assert gui.advanced_visible is False
+
+    def test_manual_advanced_toggle_survives_until_the_columns_change(
+        self, make_gui, monkeypatch
+    ):
+        gui, _c, _s = make_gui()
+        self._pin_width(gui, monkeypatch, gui._COL3_MIN_W)
+        gui._layout_sidebar_cards()
+        assert gui.advanced_visible is True
+
+        gui._toggle_advanced_settings()  # user closes it at this width
+        assert gui.advanced_visible is False
+        gui._layout_sidebar_cards()  # a resize that keeps 3 columns
+        assert gui.advanced_visible is False
+
+        self._pin_width(gui, monkeypatch, gui._COL2_MIN_W)
+        gui._layout_sidebar_cards()
+        self._pin_width(gui, monkeypatch, gui._COL3_MIN_W)
+        gui._layout_sidebar_cards()
+        assert gui.advanced_visible is True
+
+    def test_card_groups_keep_their_natural_height(self, make_gui, monkeypatch):
+        """Guards the 2026-07-21 revert: stretching a group/card to level the
+        columns' bottom edges corrupted the Tcl interpreter intermittently."""
+        gui, _c, _s = make_gui()
+        for width in (gui._COL2_MIN_W, gui._COL3_MIN_W):
+            self._pin_width(gui, monkeypatch, width)
+            gui._layout_sidebar_cards()
+            for group in (gui._col_a, gui._col_b, gui._col_c):
+                assert group.grid_info()["sticky"] == "new", width
+
+    def _pin_bottoms(self, gui, monkeypatch, display_bottom, advanced_bottom):
+        """Fake the two columns' rendered bottom edges (nothing is mapped in a
+        test, so _align_advanced_card would bail out before measuring)."""
+        monkeypatch.setattr(gui, "_responsive_scale", 1.0, raising=False)
+        for group, bottom in (
+            (gui._col_a, display_bottom),
+            (gui._col_c, advanced_bottom),
+        ):
+            monkeypatch.setattr(group, "winfo_ismapped", lambda: True, raising=False)
+            monkeypatch.setattr(group, "winfo_rooty", lambda: 0, raising=False)
+            monkeypatch.setattr(
+                group, "winfo_height", lambda b=bottom: b, raising=False
+            )
+
+    def test_advanced_is_padded_down_to_meet_the_display_column(
+        self, make_gui, monkeypatch
+    ):
+        gui, _c, _s = make_gui()
+        gui._applied_columns = 2
+        gui._advanced_gap = 0
+        gui._typography_open = False
+        self._pin_bottoms(gui, monkeypatch, display_bottom=500, advanced_bottom=400)
+        gui._align_advanced_card()
+        assert gui._advanced_gap == 100
+
+    def test_advanced_stays_put_when_the_subtitle_settings_open(
+        self, make_gui, monkeypatch
+    ):
+        """Opening the subtitle-appearance expander grows the display column.
+        Advanced must hold its position instead of following it down, so the
+        gap measured while the expander was closed stands."""
+        gui, _c, _s = make_gui()
+        gui._applied_columns = 2
+        gui._advanced_gap = 40
+        gui._typography_open = True
+        self._pin_bottoms(gui, monkeypatch, display_bottom=900, advanced_bottom=400)
+        gui._align_advanced_card()
+        assert gui._advanced_gap == 40
+
+    @staticmethod
+    def _pady(widget) -> tuple[int, int]:
+        """Tk reports an even pady as a single value, an uneven one as a pair."""
+        value = widget.grid_info()["pady"]
+        return tuple(value) if isinstance(value, tuple) else (value, value)
+
+    def test_closed_advanced_card_pads_evenly_above_and_below_its_header(
+        self, make_gui
+    ):
+        """Collapsed, the header is the whole card: its smaller bottom pad (the
+        gap to the body) would read as a lopsided card."""
+        gui, _c, _s = make_gui()
+        assert gui.advanced_visible is False
+        top, bottom = self._pady(gui._advanced_header)
+        assert top == bottom
+
+        gui._set_advanced_visible(True)  # body back: bottom pad is a gap again
+        top, bottom = self._pady(gui._advanced_header)
+        assert bottom < top
+
+    def test_minimum_size_is_below_the_default(self, make_gui):
+        """The window may be dragged well under its opening size (item: "as
+        big and as small as the user wants")."""
+        gui, _c, _s = make_gui()
+        assert gui._MIN_W < gui._DEFAULT_W
+        assert gui._MIN_H < gui._DEFAULT_H
+        # CTk's minsize() has no query form (it would compare against None) —
+        # read back what _setup_window stored on the window instead.
+        assert (gui._min_width, gui._min_height) == (gui._MIN_W, gui._MIN_H)
 
 
 if __name__ == "__main__":

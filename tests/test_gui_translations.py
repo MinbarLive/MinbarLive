@@ -44,6 +44,12 @@ WIZARD_KEYS = [
     # Control-panel keys added alongside wizard features
     "bilingual_mode",
     "show_interim_transcript",
+    "input_level",
+    "input_level_no_signal",
+    "input_level_test",
+    "input_level_stop_test",
+    "input_level_clipping",
+    "subtitle_output_enabled",
     "batch_file",
     "batch_file_sub",
     "batch_pick_file",
@@ -82,6 +88,12 @@ WIZARD_KEYS = [
     "history_tab_sessions",
     "history_tab_logs",
     "history_tab_batch",
+    "history_tab_cost",
+    "cost_empty",
+    "cost_estimate_note",
+    "cost_unpriced",
+    "cost_requests",
+    "cost_last_30_days",
     "history_empty",
     "history_batch_empty",
     "history_entries",
@@ -121,6 +133,17 @@ WIZARD_KEYS = [
     "api_key_select_provider",
     "update_available",
     "check_updates_on_launch",
+    # Settings window sections
+    "settings_general",
+    "settings_appearance",
+    "updates_section",
+    # Subtitle appearance (control-panel expander)
+    "subtitle_appearance",
+    "source_text_size",
+    "translation_text_color",
+    "source_text_color",
+    "color_default",
+    "color_choose",
     # Announcement (megaphone) window
     "announce_title",
     "announce_sub",
@@ -136,6 +159,7 @@ WIZARD_KEYS = [
     "announce_recent_empty",
     "announce_send",
     "announce_stop",
+    "announce_stop_on_live_stop",
 ]
 
 

@@ -94,6 +94,9 @@ class CustomDropdown(ctk.CTkFrame):
         self._enabled: bool = True
 
         self._build()
+        # Participate in the normal Tab order. CTkFrame does not expose
+        # ``takefocus`` as a styled option, but its underlying Tk frame does.
+        tk.Frame.configure(self, takefocus=True)
 
     # ── Internal layout ───────────────────────────────────────────────────
 
@@ -132,6 +135,21 @@ class CustomDropdown(ctk.CTkFrame):
 
         for w in (self, self._value_label, self._sep, self._arrow):
             w.bind("<Button-1>", self._on_click, add="+")
+        # Keyboard access (the widget is in the Tab order via takefocus):
+        # Enter/Space/Alt+Down toggle the popup, arrows step the value,
+        # Home/End jump to the first/last, Escape closes. These MUST bind on
+        # the outer tk.Frame — CTkFrame.bind redirects to the internal canvas,
+        # but takefocus/focus lands on the frame, so a canvas binding would
+        # never see the key events.
+        for sequence in ("<Return>", "<space>", "<Alt-Down>"):
+            tk.Frame.bind(self, sequence, self._on_key_toggle, add="+")
+        tk.Frame.bind(self, "<Down>", lambda e: self._on_key_step(e, 1), add="+")
+        tk.Frame.bind(self, "<Up>", lambda e: self._on_key_step(e, -1), add="+")
+        tk.Frame.bind(self, "<Home>", lambda e: self._on_key_edge(e, 0), add="+")
+        tk.Frame.bind(self, "<End>", lambda e: self._on_key_edge(e, -1), add="+")
+        tk.Frame.bind(self, "<Escape>", self._on_key_escape, add="+")
+        tk.Frame.bind(self, "<FocusIn>", self._on_keyboard_focus, add="+")
+        tk.Frame.bind(self, "<FocusOut>", self._on_keyboard_blur, add="+")
 
     # ── Global outside-click detection (installed once per app) ──────────
 
@@ -217,6 +235,7 @@ class CustomDropdown(ctk.CTkFrame):
     def _on_click(self, _event: "tk.Event[Any]") -> str:
         if not self._enabled:
             return "break"
+        self.focus_set()
         # If the window just gained OS focus, this click is the focus-restore
         # click.  Accept the focus but don't open/close the dropdown; the user
         # can click a second time to interact with it.
@@ -232,6 +251,51 @@ class CustomDropdown(ctk.CTkFrame):
         else:
             self._open()
         return "break"  # stop event propagation to parent widgets
+
+    def _on_key_toggle(self, _event: "tk.Event[Any] | None" = None) -> str:
+        """Open/close from Return, Space, or Alt+Down."""
+        if not self._enabled:
+            return "break"
+        if self._is_open:
+            self._close()
+        else:
+            self._open()
+        return "break"
+
+    def _on_key_step(self, _event: "tk.Event[Any] | None", delta: int) -> str:
+        """Choose the adjacent value with the arrow keys."""
+        if not self._enabled or not self._values:
+            return "break"
+        try:
+            index = self._values.index(self._current)
+        except ValueError:
+            index = 0
+        index = max(0, min(len(self._values) - 1, index + delta))
+        if self._values[index] != self._current:
+            self._select(self._values[index])
+        self.focus_set()
+        return "break"
+
+    def _on_key_edge(self, _event: "tk.Event[Any] | None", index: int) -> str:
+        """Choose the first/last value with Home/End."""
+        if not self._enabled or not self._values:
+            return "break"
+        if self._values[index] != self._current:
+            self._select(self._values[index])
+        self.focus_set()
+        return "break"
+
+    def _on_key_escape(self, _event: "tk.Event[Any] | None" = None) -> str:
+        self._close()
+        self.focus_set()
+        return "break"
+
+    def _on_keyboard_focus(self, _event: "tk.Event[Any]") -> None:
+        if self._enabled:
+            super().configure(border_color=self._drop_hover)
+
+    def _on_keyboard_blur(self, _event: "tk.Event[Any]") -> None:
+        super().configure(border_color=self._border_color)
 
     # ── Open popup ────────────────────────────────────────────────────────
 

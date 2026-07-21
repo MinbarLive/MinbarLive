@@ -52,7 +52,11 @@ _NO_CREDIT_PATTERNS = (
     "rate limit",
     "ratelimit",  # RateLimitError type names
 )
-_INVALID_KEY_CODES = ("401", "403")
+# HTTP 401 is an authentication failure.  A bare 403 is not: providers also
+# use it for model/project permissions, regional restrictions and policy
+# denials.  Those stay generic unless their message carries one of the
+# explicit credential fingerprints above.
+_INVALID_KEY_CODES = ("401",)
 _NO_CREDIT_CODES = ("402", "429")
 
 

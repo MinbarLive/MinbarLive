@@ -25,6 +25,12 @@ from utils.icons import ICO_SUPPORTED, scaled_icon_photo
 class WidgetFactoryMixin:
     """UI-kit methods shared by the control panel and its child windows."""
 
+    # Card header padding: above the header, and below it as the gap to the
+    # card's body. A collapsible card that is closed has no body, so the
+    # smaller bottom value would read as a lopsided card — see
+    # AppGUI._set_advanced_visible.
+    _CARD_HEADER_PADY = (18, 10)
+
     def _palette(self, theme_mode: str) -> dict[str, str]:
         if theme_mode == "light":
             return {
@@ -157,13 +163,25 @@ class WidgetFactoryMixin:
             border_width=2,
             corner_radius=24,
         )
-        # Placement is handled by _layout_sidebar_cards() (single column when
-        # the log panel is open, 2-column grid when it is collapsed).
+        # Placement is handled by _layout_sidebar_cards() (the card grid reflows
+        # into 1, 2 or 3 columns; single column while the log panel is open).
         card.grid_columnconfigure(0, weight=1)
         self._cards.append(card)
 
         header = ctk.CTkFrame(card, fg_color="transparent")
-        header.grid(row=0, column=0, columnspan=99, sticky="ew", padx=20, pady=(18, 10))
+        # A collapsible card is built closed, and closed it has no body for the
+        # header's smaller bottom pad to sit against — that reads as a lopsided
+        # card, so it gets its top pad on both sides. AppGUI's
+        # _set_advanced_visible flips it back when the body opens.
+        top_pad, body_gap = self._CARD_HEADER_PADY
+        header.grid(
+            row=0,
+            column=0,
+            columnspan=99,
+            sticky="ew",
+            padx=20,
+            pady=(top_pad, top_pad if toggle_command is not None else body_gap),
+        )
         header.grid_columnconfigure(1, weight=1)
 
         symbol_label = ctk.CTkLabel(
@@ -214,6 +232,7 @@ class WidgetFactoryMixin:
             toggle_arrow.grid(row=0, column=2, sticky="e", padx=(4, 0))
             self._labels.append(toggle_arrow)
             self._advanced_toggle_arrow = toggle_arrow
+            self._advanced_header = header
             for w in (header, symbol_label, title, toggle_arrow):
                 w.bind("<Button-1>", lambda _e: toggle_command(), add="+")
                 try:

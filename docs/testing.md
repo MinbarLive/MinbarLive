@@ -1,6 +1,6 @@
 # Testing
 
-The project includes a test suite of 679 tests using pytest. Provider tests run against faked SDK connections — no API keys or network access needed.
+The project includes a test suite of 860 tests using pytest. Provider tests run against faked SDK connections — no API keys or network access needed.
 
 ## Running Tests
 
@@ -28,7 +28,10 @@ python -m pytest --cov=.
 | `test_buffering.py`          | Chunk/semantic buffering strategies, stale-buffer flush          |
 | `test_cleanup.py`            | Log/history/batch file retention                                 |
 | `test_context_manager.py`    | Adaptive context management                                      |
+| `test_cost_display.py`       | Cost formatting/grouping for the history viewer's Costs tab      |
+| `test_cost_tracking.py`      | Usage metering, price table, per-session cost history files      |
 | `test_dictionary.py`         | Arabic normalization, Athan fuzzy matching                       |
+| `test_dropdown_keyboard.py`  | Keyboard navigation in the shared themed dropdown                |
 | `test_ffmpeg_download.py`    | One-time ffmpeg download/extraction                              |
 | `test_gui_translations.py`   | GUI translation files: all keys present in all 6 languages       |
 | `test_history.py`            | History parsing, session listing, writer→reader roundtrip        |
@@ -45,11 +48,14 @@ python -m pytest --cov=.
 | `test_silence_detection.py`  | Audio silence detection                                          |
 | `test_streaming_pipeline.py` | Controller-level streaming pipeline, live-transcript session, reconnect |
 | `test_stt.py`                | Shared STT helpers: model fallback chain, Arabic re-pass, overlap dedup |
+| `test_subtitle_font_reflow.py` | Subtitle reflow on font/typography changes, shallow windows     |
 | `test_subtitle_split.py`     | Splitting oversized realtime blocks at sentence boundaries       |
+| `test_subtitle_window_visuals.py` | Subtitle window rendering: fonts, colours, line stacking     |
 | `test_translator.py`         | Verified-verse bypass, code-switching prompts, same-language and Islamic-mode behavior |
 | `test_update_check.py`       | Version comparison, GitHub release fetch, failure tolerance      |
 | `test_user_messages.py`      | Audience-facing localized status messages, error classification  |
 | `test_vad.py`                | Noise gate: real-webrtcvad hiss/hum cases, quiet-speech boost    |
+| `test_windows_dpi.py`        | Startup DPI awareness + the PyInstaller manifest that embeds it  |
 
 ## GUI Tests
 

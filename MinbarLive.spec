@@ -31,6 +31,10 @@ def _copy_metadata_by_import_name(package_name, *args, **kwargs):
 _pyi_hooks.copy_metadata = _copy_metadata_by_import_name
 
 ICON_PATH = "public/MinbarLive.ico"
+# Embeds per-monitor DPI awareness (plus longPathAware and Common-Controls v6)
+# into the frozen EXE, so the packaged app is aware from process start rather
+# than from the first CustomTkinter window.
+MANIFEST_PATH = "MinbarLive.manifest"
 
 hiddenimports = (
     collect_submodules("sounddevice")
@@ -132,6 +136,7 @@ exe = EXE(
     [],
     name="MinbarLive",
     icon=ICON_PATH,
+    manifest=MANIFEST_PATH,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

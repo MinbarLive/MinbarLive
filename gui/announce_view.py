@@ -185,7 +185,29 @@ class AnnounceViewMixin:
             idx = _DEFAULT_DURATION_INDEX
         self._announce_duration_combo.set(duration_values[idx])
         self._announce_duration_combo.grid(
-            row=4, column=0, columnspan=2, sticky="ew", padx=20, pady=(6, 16)
+            row=4, column=0, columnspan=2, sticky="ew", padx=20, pady=(6, 10)
+        )
+
+        # Clear the message when the live session stops (default on). A timed
+        # message still expires on its own; this only affects "until stopped".
+        self._announce_stop_on_stop_var = tk.BooleanVar(
+            value=self._saved_settings.stop_announcement_on_live_stop
+        )
+        self._announce_stop_on_stop_cb = ctk.CTkCheckBox(
+            card,
+            text=self.gui_texts.get(
+                "announce_stop_on_live_stop", "Stop when the translation stops"
+            ),
+            variable=self._announce_stop_on_stop_var,
+            command=self._on_announce_stop_on_stop_change,
+            font=ctk.CTkFont(family="Segoe UI", size=13),
+            text_color=self._colors["text"],
+            fg_color=self._colors["accent"],
+            hover_color=self._colors["accent_hover"],
+            border_color=self._colors["border"],
+        )
+        self._announce_stop_on_stop_cb.grid(
+            row=5, column=0, columnspan=2, sticky="w", padx=20, pady=(0, 16)
         )
 
         self._announce_favorites_label = ctk.CTkLabel(
@@ -196,12 +218,12 @@ class AnnounceViewMixin:
             anchor="w",
         )
         self._announce_favorites_label.grid(
-            row=5, column=0, columnspan=2, sticky="ew", padx=20
+            row=6, column=0, columnspan=2, sticky="ew", padx=20
         )
 
         self._announce_favorites_frame = ctk.CTkFrame(card, fg_color="transparent")
         self._announce_favorites_frame.grid(
-            row=6, column=0, columnspan=2, sticky="ew", padx=20, pady=(6, 14)
+            row=7, column=0, columnspan=2, sticky="ew", padx=20, pady=(6, 14)
         )
         self._announce_favorites_frame.grid_columnconfigure(0, weight=1)
         self._populate_announce_favorites()
@@ -213,11 +235,11 @@ class AnnounceViewMixin:
             text_color=self._colors["text"],
             anchor="w",
         )
-        recent_label.grid(row=7, column=0, columnspan=2, sticky="ew", padx=20)
+        recent_label.grid(row=8, column=0, columnspan=2, sticky="ew", padx=20)
 
         self._announce_recent_frame = ctk.CTkFrame(card, fg_color="transparent")
         self._announce_recent_frame.grid(
-            row=8, column=0, columnspan=2, sticky="ew", padx=20, pady=(6, 14)
+            row=9, column=0, columnspan=2, sticky="ew", padx=20, pady=(6, 14)
         )
         self._announce_recent_frame.grid_columnconfigure(0, weight=1)
         self._populate_announce_recent()
@@ -234,7 +256,7 @@ class AnnounceViewMixin:
             text_color="#ffffff",
         )
         self._announce_send_btn.grid(
-            row=9, column=0, sticky="ew", padx=(20, 8), pady=(0, 20)
+            row=10, column=0, sticky="ew", padx=(20, 8), pady=(0, 20)
         )
 
         self._announce_stop_btn = ctk.CTkButton(
@@ -249,9 +271,16 @@ class AnnounceViewMixin:
             text_color=self._colors["text"],
         )
         self._announce_stop_btn.grid(
-            row=9, column=1, sticky="ew", padx=(8, 20), pady=(0, 20)
+            row=10, column=1, sticky="ew", padx=(8, 20), pady=(0, 20)
         )
         self._refresh_announce_stop_state()
+
+    def _on_announce_stop_on_stop_change(self) -> None:
+        """Persist the 'stop announcement when the live session stops' toggle."""
+        self._saved_settings.stop_announcement_on_live_stop = (
+            self._announce_stop_on_stop_var.get()
+        )
+        self._save_current_settings()
 
     def _announce_preview(self, text: str) -> str:
         preview = " ".join(text.split())

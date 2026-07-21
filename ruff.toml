@@ -21,6 +21,15 @@ ignore = [
     "B008",   # do not perform function calls in argument defaults
 ]
 
+[lint.per-file-ignores]
+# Legacy findings that predate CI (baselined 2026-07) so the lint gate can
+# start green. These files are still checked for every other rule, and all
+# other files are checked for these rules. Remove an entry once it is fixed.
+# subtitle_window.py: imports sit below the arabic_reshaper try-block and the
+# module-level regex constants, which is deliberate — fixing it is a refactor.
+"gui/subtitle_window.py" = ["I001", "E402"]
+"gui/dropdown.py" = ["E741"]
+
 [lint.isort]
 known-first-party = ["audio", "gui", "translation", "utils", "config", "version"]
 

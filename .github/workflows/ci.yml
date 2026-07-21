@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Fork PRs run with a read-only token and no access to secrets.
+# Do NOT switch this to pull_request_target.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Deliberately NOT fetching LFS: the three embedding files are
+          # ~600 MB, and the free LFS bandwidth quota is 1 GB/month.
+          # translation/rag.py degrades to "RAG unavailable" when the .npz
+          # files are pointer stubs, and the suite passes that way.
+          lfs: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - run: python -m pytest -q
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install ruff==0.11.12
+
+      # Changed files only: the repo carries pre-existing findings that are
+      # deliberately "left as found", so a repo-wide check would be red on
+      # day one. This enforces the standard on new code instead.
+      - name: Ruff (changed files)
+        shell: bash
+        run: |
+          files=$(git diff --name-only --diff-filter=ACMR \
+            "origin/${{ github.base_ref }}...HEAD" -- '*.py')
+          if [ -z "$files" ]; then
+            echo "No Python files changed."
+            exit 0
+          fi
+          echo "$files"
+          ruff check $files
