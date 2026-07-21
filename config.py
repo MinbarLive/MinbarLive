@@ -57,6 +57,10 @@ RESOURCE_DIR = _get_resource_dir()
 DATA_DIR = os.path.join(RESOURCE_DIR, "data")
 ICON_PATH = os.path.join(RESOURCE_DIR, "public", "MinbarLive.ico")
 ICON_PATH_PNG = os.path.join(RESOURCE_DIR, "public", "MinbarLive1.png")
+# Same artwork outlined in white, for placing on a dark background.
+ICON_PATH_PNG_ON_DARK = os.path.join(
+    RESOURCE_DIR, "public", "MinbarLive_white_stroke.png"
+)
 
 # Writable runtime data (works for EXEs, avoids Program Files permissions)
 APP_DATA_DIR = str(get_app_data_dir())

@@ -12,6 +12,7 @@ from config import (
     GUI_TRANSLATIONS_DIR,
     ICON_PATH,
     ICON_PATH_PNG,
+    ICON_PATH_PNG_ON_DARK,
 )
 from gui.announce_view import AnnounceViewMixin
 from gui.audio_level_bar import (
@@ -60,7 +61,7 @@ from utils.cost_tracking import (
     end_cost_session,
     flush_cost_history,
 )
-from utils.icons import ICO_SUPPORTED, scaled_icon_photo
+from utils.icons import ICO_SUPPORTED, logo_photo, scaled_icon_photo
 from utils.json_helpers import load_json
 from utils.logging import log, log_queue
 from utils.settings import (
@@ -151,10 +152,10 @@ class AppGUI(
 ):
     # Size the window opens at on a fresh install (CTk logical units), shared
     # by _setup_window and _toggle_log_panel (a mismatch there once locked the
-    # window at the larger size after a log toggle). 880x536 logical renders
-    # ~1100x720 px, the compact size the 2-column card grid fits snugly.
-    _DEFAULT_W = 880
-    _DEFAULT_H = 630
+    # window at the larger size after a log toggle). 848x597 logical renders
+    # ~1060x746 px, the compact size the 2-column card grid fits snugly.
+    _DEFAULT_W = 848
+    _DEFAULT_H = 597
     # Floor the user may drag the window down to. Deliberately far below the
     # default: the card grid reflows to a single column on the way down, so a
     # small window stays usable (scrolled) instead of being blocked.
@@ -657,6 +658,25 @@ class AppGUI(
             return
         self._layout_sidebar_cards()
 
+    # Logo height in the header strip (logical units; the strip is 68 tall).
+    _BRAND_LOGO_H = 38
+
+    def _brand_logo_image(self):
+        """The header logo for the current theme, or None if it cannot be read.
+
+        Kept on the instance: a PhotoImage that nothing references is garbage
+        collected and the label goes blank. The white-outlined artwork is the
+        dark-mode variant.
+        """
+        path = ICON_PATH_PNG_ON_DARK if self._theme_mode == "dark" else ICON_PATH_PNG
+        height = max(1, round(self._BRAND_LOGO_H * self._get_widget_scaling()))
+        try:
+            self._brand_logo = logo_photo(path, height, self)
+        except Exception as exc:
+            log(f"Header logo unavailable: {exc}", level="WARNING")
+            return None
+        return self._brand_logo
+
     def _create_sidebar_header(self) -> None:
         header = ctk.CTkFrame(
             self.sidebar_container,
@@ -669,13 +689,34 @@ class AppGUI(
         header.grid_propagate(False)
         self._sidebar_header = header
 
+        # Brand lockup: logo + wordmark, same pairing as the website's nav.
+        # Its own frame so the buttons keep their header columns.
+        brand = ctk.CTkFrame(header, fg_color="transparent")
+        brand.grid(row=0, column=0, sticky="w", padx=22, pady=12)
+
+        self._brand_logo_label = None
+        logo = self._brand_logo_image()
+        if logo is not None:
+            # A plain tk.Label: CTkLabel warns about any image that is not a
+            # CTkImage ("can not be scaled on HighDPI displays") — this one is
+            # already rendered at the scaled pixel height, and CTkImage is not
+            # usable here (see utils.icons.logo_photo).
+            self._brand_logo_label = tk.Label(
+                brand,
+                image=logo,
+                bd=0,
+                highlightthickness=0,
+                bg=self._colors["sidebar"],
+            )
+            self._brand_logo_label.pack(side="left", padx=(0, 10))
+
         title_label = ctk.CTkLabel(
-            header,
+            brand,
             text="MinbarLive",
             font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
             text_color=self._colors["text"],
         )
-        title_label.grid(row=0, column=0, sticky="w", padx=22, pady=16)
+        title_label.pack(side="left")
         self._labels.append(title_label)
 
         self._history_btn = ctk.CTkButton(
@@ -3081,6 +3122,12 @@ class AppGUI(
         self.configure(fg_color=self._colors["app_bg"])
         self.sidebar_container.configure(fg_color=self._colors["sidebar"])
         self._sidebar_header.configure(fg_color=self._colors["sidebar"])
+        # The logo has a light-background and a dark-background artwork.
+        if getattr(self, "_brand_logo_label", None) is not None:
+            self._brand_logo_label.configure(bg=self._colors["sidebar"])
+            logo = self._brand_logo_image()
+            if logo is not None:
+                self._brand_logo_label.configure(image=logo)
         self._update_banner.configure(fg_color=self._colors["accent_soft"])
         self._update_banner_label.configure(text_color=self._colors["accent"])
         self._update_banner_close.configure(text_color=self._colors["accent"])
