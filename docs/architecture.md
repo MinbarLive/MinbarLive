@@ -128,6 +128,16 @@ Both pipelines read from the same device selection (`gui/device_list.py`):
 
 `soundcard` is an optional import: if it is missing, loopback entries simply don't appear.
 
+The control panel shows a live **input level** (smoothed RMS in dBFS, `audio/level_meter.py`) under the device dropdown. While a session runs it is fed by the capture stream itself; while stopped, the **Test mic** button opens a meter-only capture that starts no writers, providers or translation. Changing the input device moves a running test to the new device. The level is measured on the raw capture, *before* the noise gate, so it always shows what the device delivers.
+
+## Cost Tracking
+
+`utils/cost_tracking.py` meters what each provider call reports (tokens, audio seconds) per session and applies a versioned snapshot of published list prices, so the figure is an **estimate**, not an invoice. Worker threads only update memory; the Tk thread flushes to `cost_history/` so live subtitles never wait for disk I/O. Only counters, provider/model ids and timestamps are persisted — never prompts, transcripts, audio or credentials. The history viewer's **Costs** tab renders it (`utils/cost_display.py`). Anthropic and Deepgram usage is currently not metered.
+
+## Announcements
+
+Independently of the translation pipeline, the operator can push a message onto the subtitle screen (megaphone button → text + duration). The message renders large and centred above the subtitles and below the disclaimer pill. The active-announcement state lives on the control panel, not on the subtitle window, so an "until stopped" announcement survives both a translation stop and the subtitle window being destroyed and recreated.
+
 ## Cost Guards
 
 Every stage that can avoid an API call does:

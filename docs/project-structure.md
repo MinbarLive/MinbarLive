@@ -23,6 +23,8 @@
 │
 ├── audio/                   # Audio capture and processing
 │   ├── capture.py           # Ring buffer, silence detection
+│   ├── device_support.py    # Input-device capability probing (channels, rates)
+│   ├── level_meter.py       # Smoothed RMS/peak level behind the input meter
 │   ├── loopback.py          # Registry of WASAPI loopback (system-audio) devices
 │   ├── vad.py               # webrtcvad noise gate: has_speech + StreamNoiseGate
 │   └── writer.py            # Async WAV segment writing
@@ -41,15 +43,19 @@
 │   └── text_writer.py       # Plain transcript + translation export (output format txt/both)
 │
 ├── gui/                     # User interface (CustomTkinter)
-│   ├── app_gui.py           # Control panel core (cards, start/stop, queue polling, theming)
+│   ├── app_gui.py           # Control panel core (reflowing card grid, start/stop,
+│   │                        #   queue polling, theming, input-level meter)
 │   ├── control_state.py     # Settings-derived rules (key/mode/strategy) — Tk-free, unit-tested
 │   ├── widgets.py           # Widget factory mixin: themed dialogs, cards, buttons
 │   ├── settings_view.py     # Settings window + per-provider API key management
 │   ├── batch_view.py        # Batch/File window (file picker, progress, ffmpeg download)
-│   ├── history_view.py      # History | Batch | Log viewer + "Summarise session" dialog
+│   ├── history_view.py      # History | Batch | Costs | Log viewer + "Summarise session"
+│   ├── announce_view.py     # Announcement window (message + duration) & overlay lifecycle
+│   ├── typography.py        # Subtitle appearance controls (source size, text colours)
+│   ├── audio_level_bar.py   # Segmented input-level bar widget
 │   ├── onboarding.py        # First-run setup wizard (5 steps)
 │   ├── subtitle_window.py   # Full-screen subtitle display (realtime/continuous/static)
-│   ├── dropdown.py          # Shared themed dropdown
+│   ├── dropdown.py          # Shared themed dropdown (mouse + keyboard navigation)
 │   ├── scaling.py           # Display-scaling clamp + centering (fits small high-DPI screens)
 │   └── device_list.py       # Audio input device enumeration (mics + WASAPI loopback)
 │
@@ -58,6 +64,8 @@
 │   ├── app_paths.py         # Per-user writable app data directory
 │   ├── cleanup.py           # Log/history/batch file retention cleanup
 │   ├── context_manager.py   # Adaptive context with async summarization
+│   ├── cost_display.py      # Formatting/grouping of cost sessions for the GUI
+│   ├── cost_tracking.py     # Provider usage metering + per-session cost history
 │   ├── ffmpeg_download.py   # One-time ffmpeg download for batch mode (Windows)
 │   ├── history.py           # Transcription/translation logging + history parsing
 │   ├── icons.py             # Shared window-icon helpers (ICO on Windows, scaled PNG elsewhere)
@@ -68,7 +76,8 @@
 │   ├── session_summary.py   # AI session summaries (history viewer)
 │   ├── settings.py          # User preferences dataclass + model/provider lists
 │   ├── update_check.py      # Anonymous startup check for a newer GitHub release
-│   └── user_messages.py     # Audience-facing status messages in the target language
+│   ├── user_messages.py     # Audience-facing status messages in the target language
+│   └── windows_dpi.py       # Per-monitor DPI awareness at process start (Windows)
 │
 ├── data/                            # Static data files (see docs/data-files.md)
 │   ├── embeddings/
@@ -90,7 +99,7 @@
 │
 ├── docs/                    # This documentation + the GitHub Pages landing page (index.html)
 │
-└── tests/                   # Pytest suite (679 tests) — see docs/testing.md
+└── tests/                   # Pytest suite (860 tests) — see docs/testing.md
 ```
 
 ## Runtime Files
@@ -107,6 +116,7 @@ Contents:
 - `logs/` - Daily application log files (e.g., `2026-07-10.log`)
 - `recordings/` - Temporary WAV segments
 - `batch/` - Per-run batch transcripts (shown in the history viewer's Batch tab)
+- `cost_history/` - Per-session API usage counters and cost estimates (no text, no audio)
 - `bin/` - ffmpeg, if downloaded via the batch card (Windows)
 - `settings.json` - All user preferences (NOT the API keys)
 
