@@ -224,6 +224,8 @@ class AppGUI(
         # Compact input-level meter (backend: controller.get_input_level()).
         self.input_level_poll_job: str | None = None
         self._input_level_ui_state: tuple[bool, bool] | None = None
+        # True while the modal API-key dialog is up (see _prompt_provider_key).
+        self._key_prompt_open = False
 
         # Startup update check (worker thread writes, after-poll reads).
         self._update_check_result: UpdateInfo | None = None
@@ -697,7 +699,7 @@ class AppGUI(
         clips its text ("inbarLi"), which reads as a rendering fault. The
         buttons sit in their own fixed columns and the wordmark's column takes
         whatever is left, so the space left for it follows from the header's
-        width alone â€” it does not depend on the wordmark, and the decision
+        width alone — it does not depend on the wordmark, and the decision
         cannot oscillate."""
         label = getattr(self, "_brand_title_label", None)
         if label is None or not label.winfo_exists():
@@ -708,7 +710,7 @@ class AppGUI(
             # layout put them.
             width = getattr(event, "width", None) or self._sidebar_header.winfo_width()
             if width <= 1:
-                return  # header not laid out yet â€” a later <Configure> retries
+                return  # header not laid out yet — a later <Configure> retries
             available = (
                 width
                 - self._header_buttons_span()
@@ -721,7 +723,7 @@ class AppGUI(
         except tk.TclError:
             return
 
-        # winfo_reqwidth() is what the label asks for at its font â€” unaffected
+        # winfo_reqwidth() is what the label asks for at its font — unaffected
         # by how much room it is actually given, and unaffected by being hidden.
         fits = label.winfo_reqwidth() <= available
         # Pack state, not winfo_ismapped(): a withdrawn or minimised window
@@ -736,7 +738,7 @@ class AppGUI(
     def _header_buttons_span(self) -> int:
         """Total px the header buttons occupy, including their grid padding.
 
-        Requested widths and paddings only â€” never laid-out positions. A
+        Requested widths and paddings only — never laid-out positions. A
         <Configure> handler that read winfo_x() measured the PREVIOUS layout,
         which hid the wordmark on a widened header and showed it (clipped) on a
         narrowed one: exactly inverted. Verified against a real header:
@@ -755,7 +757,7 @@ class AppGUI(
 
     @staticmethod
     def _grid_padx(widget) -> tuple[int, int]:
-        """A widget's (left, right) grid padding in real px â€” CustomTkinter has
+        """A widget's (left, right) grid padding in real px — CustomTkinter has
         already applied the widget scaling. Read back from the layout rather
         than recomputed from the constants, so it cannot drift from it."""
         pad = widget.grid_info().get("padx", 0)
@@ -1988,8 +1990,17 @@ class AppGUI(
 
         if has_usable_key(self._saved_settings.ai_provider):
             return
-        # No key found → prompt after the window is fully drawn
-        self.after(500, self.on_change_key)
+        # No key found → prompt after the window is fully drawn, but re-check
+        # then: pressing Start in the meantime prompts too (and the key dialog
+        # grabs input, not timers), so an unconditional prompt here queued a
+        # second dialog behind the first one.
+        self.after(500, self._prompt_key_if_missing)
+
+    def _prompt_key_if_missing(self) -> None:
+        """Prompt for the active provider's key unless one turned up meanwhile."""
+        provider = self._saved_settings.ai_provider
+        if not has_usable_key(provider):
+            self._prompt_provider_key(provider)
 
     def _append_log_line(self, text: str) -> None:
         self.log_text.configure(state="normal")
@@ -2823,15 +2834,26 @@ class AppGUI(
             self.strategy_running_hint.pack_forget()
 
     def _prompt_provider_key(self, provider: str) -> None:
-        """Open the API-key dialog for a specific provider."""
-        prompt_for_api_key(
-            root=self,
-            startup=False,
-            on_close=lambda: None,
-            colors=self._colors,
-            texts=self.gui_texts,
-            provider=provider,
-        )
+        """Open the API-key dialog for a specific provider.
+
+        Never stacks a second dialog on an open one. The dialog grabs input
+        and runs its own event loop, so a second one queued by a timer sits
+        invisible behind it and only surfaces once the first is dismissed —
+        reported as "after entering the key I get a second key prompt"."""
+        if self._key_prompt_open:
+            return
+        self._key_prompt_open = True
+        try:
+            prompt_for_api_key(
+                root=self,
+                startup=False,
+                on_close=lambda: None,
+                colors=self._colors,
+                texts=self.gui_texts,
+                provider=provider,
+            )
+        finally:
+            self._key_prompt_open = False
 
     def _strategy_labels(self) -> list[str]:
         """Localized display names for the Processing Strategy dropdown, in

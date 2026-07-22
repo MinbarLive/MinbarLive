@@ -536,6 +536,66 @@ class TestStartStop:
         assert gui.start_btn.cget("state") == "normal", "Start must be usable again"
 
 
+class TestApiKeyPrompt:
+    """Two dialogs must never stack. The key dialog grabs input and runs its
+    own event loop — a second one opened by an after() timer (grabs block
+    clicks, not timers) sits invisible behind it and only surfaces once the
+    first is dismissed. Reported as "after entering the key I get a second key
+    prompt", with the app already running behind it."""
+
+    def test_a_timer_cannot_stack_a_second_dialog(self, make_gui, monkeypatch):
+        import gui.app_gui as app_gui
+
+        gui, _c, _s = make_gui()
+        opened = []
+
+        def fake_prompt(**kwargs):
+            opened.append(kwargs["provider"])
+            # Exactly what the startup timer did while this dialog was open.
+            gui.on_change_key()
+
+        monkeypatch.setattr(app_gui, "prompt_for_api_key", fake_prompt)
+
+        gui._prompt_provider_key("openai")
+
+        assert opened == ["openai"], "the timer must not open a second dialog"
+
+    def test_the_prompt_is_usable_again_afterwards(self, make_gui, monkeypatch):
+        """The guard must not latch: the next Start still has to be able to ask."""
+        import gui.app_gui as app_gui
+
+        gui, _c, _s = make_gui()
+        opened = []
+        monkeypatch.setattr(
+            app_gui,
+            "prompt_for_api_key",
+            lambda **kwargs: opened.append(kwargs["provider"]),
+        )
+
+        gui._prompt_provider_key("openai")
+        gui._prompt_provider_key("gemini")
+
+        assert opened == ["openai", "gemini"]
+
+    def test_the_deferred_startup_prompt_rechecks_first(self, make_gui, monkeypatch):
+        """The 500 ms startup prompt fires after Start may already have asked
+        for — and stored — the key."""
+        import gui.app_gui as app_gui
+
+        gui, _c, _s = make_gui()
+        opened = []
+        monkeypatch.setattr(
+            app_gui,
+            "prompt_for_api_key",
+            lambda **kwargs: opened.append(kwargs["provider"]),
+        )
+        # The fixture pins has_usable_key True: a key exists by the time the
+        # deferred callback runs.
+        gui._prompt_key_if_missing()
+
+        assert opened == [], "must not ask for a key that is already there"
+
+
 class TestLocalizationAndTheme:
     def test_gui_language_switch_reloads_texts(self, make_gui):
         """The language dropdown lives in the settings window, and
