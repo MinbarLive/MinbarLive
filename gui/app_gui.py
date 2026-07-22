@@ -677,6 +677,93 @@ class AppGUI(
     # Logo height in the header strip (logical units; the strip is 68 tall).
     _BRAND_LOGO_H = 38
 
+    # Wordmark next to the logo (see _fit_brand_wordmark).
+    _BRAND_LOGO_GAP = 10  # raw px, the logo label's right pack padding
+    _BRAND_TITLE_GAP = 4  # raw px of slack, on top of the brand frame's padding
+
+    def _fit_brand_wordmark(self, event: object | None = None) -> None:
+        """Hide the wordmark when the header buttons leave no room for it, and
+        bring it back when they do (opening the log panel narrows the sidebar).
+
+        Without this the label is simply squeezed by grid and CTkLabel centre-
+        clips its text ("inbarLi"), which reads as a rendering fault. The
+        buttons sit in their own fixed columns and the wordmark's column takes
+        whatever is left, so the space left for it follows from the header's
+        width alone â€” it does not depend on the wordmark, and the decision
+        cannot oscillate."""
+        label = getattr(self, "_brand_title_label", None)
+        if label is None or not label.winfo_exists():
+            return
+        try:
+            # The event's width, not winfo_width(): <Configure> is delivered
+            # with the NEW size while the children are still where the previous
+            # layout put them.
+            width = getattr(event, "width", None) or self._sidebar_header.winfo_width()
+            if width <= 1:
+                return  # header not laid out yet â€” a later <Configure> retries
+            available = (
+                width
+                - self._header_buttons_span()
+                - sum(self._grid_padx(self._brand_frame))
+                - self._BRAND_TITLE_GAP
+            )
+            logo = self._brand_logo_label
+            if logo is not None and logo.winfo_manager() == "pack":
+                available -= logo.winfo_reqwidth() + self._BRAND_LOGO_GAP
+        except tk.TclError:
+            return
+
+        # winfo_reqwidth() is what the label asks for at its font â€” unaffected
+        # by how much room it is actually given, and unaffected by being hidden.
+        fits = label.winfo_reqwidth() <= available
+        # Pack state, not winfo_ismapped(): a withdrawn or minimised window
+        # maps nothing, and comparing against that would skip the hide.
+        if fits == (label.winfo_manager() == "pack"):
+            return
+        if fits:
+            label.pack(side="left")  # back after the logo, which stays packed
+        else:
+            label.pack_forget()
+
+    def _header_buttons_span(self) -> int:
+        """Total px the header buttons occupy, including their grid padding.
+
+        Requested widths and paddings only â€” never laid-out positions. A
+        <Configure> handler that read winfo_x() measured the PREVIOUS layout,
+        which hid the wordmark on a widened header and showed it (clipped) on a
+        narrowed one: exactly inverted. Verified against a real header:
+        header width - this span == the first button's x once settled.
+        """
+        span = 0
+        for button in (
+            self._history_btn,
+            self._batch_btn,
+            self._announce_btn,
+            self._settings_btn,
+            self._log_toggle_btn,
+        ):
+            span += button.winfo_reqwidth() + sum(self._grid_padx(button))
+        return span
+
+    @staticmethod
+    def _grid_padx(widget) -> tuple[int, int]:
+        """A widget's (left, right) grid padding in real px â€” CustomTkinter has
+        already applied the widget scaling. Read back from the layout rather
+        than recomputed from the constants, so it cannot drift from it."""
+        pad = widget.grid_info().get("padx", 0)
+        try:
+            if isinstance(pad, tuple | list):
+                values = [int(p) for p in pad]
+            else:
+                values = [int(p) for p in str(pad).split()]
+        except (TypeError, ValueError):
+            return (0, 0)
+        if not values:
+            return (0, 0)
+        if len(values) == 1:
+            return (values[0], values[0])
+        return (values[0], values[1])
+
     def _brand_logo_image(self):
         """The header logo for the current theme, or None if it cannot be read.
 
@@ -710,6 +797,7 @@ class AppGUI(
         brand = ctk.CTkFrame(header, fg_color="transparent")
         brand.grid(row=0, column=0, sticky="w", padx=22, pady=12)
 
+        self._brand_frame = brand
         self._brand_logo_label = None
         logo = self._brand_logo_image()
         if logo is not None:
@@ -734,6 +822,7 @@ class AppGUI(
         )
         title_label.pack(side="left")
         self._labels.append(title_label)
+        self._brand_title_label = title_label
 
         self._history_btn = ctk.CTkButton(
             header,
@@ -812,6 +901,9 @@ class AppGUI(
         )
         self._log_toggle_btn.grid(row=0, column=5, sticky="e", padx=(0, 16), pady=12)
         self._buttons.append(self._log_toggle_btn)
+
+        # Bound last: the handler measures against the buttons above.
+        header.bind("<Configure>", self._fit_brand_wordmark)
 
     # ── Update notice ───────────────────────────────────────────────────────
     # Dismissible banner between the header and the cards, shown when the
