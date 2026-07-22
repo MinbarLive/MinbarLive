@@ -29,12 +29,25 @@ FALLBACK_TRANSCRIPTION_MODELS = [
 
 # GUI dropdown lists (display_name, model_id), mirroring the OpenAI lists in
 # utils/settings.py
+# Every entry below was live-probed 2026-07-22 (listed != usable: the 2.x
+# flash models were still listed long after they started 404ing). Median of
+# 3 runs, Arabic->German translation and a 12s WAV for STT:
+#   gemini-3.5-flash-lite  translate 0.58s  STT  0.97s
+#   gemini-3.1-flash-lite  translate 0.58s  STT  1.42s
+#   gemini-3.6-flash       translate 1.34s  STT 11.20s
+#   gemini-3.5-flash       503 UNAVAILABLE ("high demand") for the whole probe
+# gemini-3.6-flash is deliberately NOT offered for transcription: segmented
+# mode hands over a 12s segment every 9s (DURATION - OVERLAP), and 11.2s per
+# segment cannot keep up. It is fine for translation.
 TRANSLATION_MODELS = [
     ("Gemini 3.1 Flash Lite (Recommended, fastest)", "gemini-3.1-flash-lite"),
+    ("Gemini 3.5 Flash Lite (Fast)", "gemini-3.5-flash-lite"),
+    ("Gemini 3.6 Flash (Newest)", "gemini-3.6-flash"),
     ("Gemini 3.5 Flash (Highest quality)", "gemini-3.5-flash"),
 ]
 TRANSCRIPTION_MODELS = [
     ("Gemini 3.5 Flash (Recommended)", "gemini-3.5-flash"),
+    ("Gemini 3.5 Flash Lite (Fastest)", "gemini-3.5-flash-lite"),
     ("Gemini 3.1 Flash Lite (Faster)", "gemini-3.1-flash-lite"),
 ]
 
