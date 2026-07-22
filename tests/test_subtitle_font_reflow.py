@@ -461,3 +461,44 @@ def test_surface_change_reflows_existing_items_with_new_workarea_font(
     assert window.canvas_width == 1000
     assert new_size == window.get_current_font_size()
     assert new_size > old_size
+
+
+def test_live_line_fills_the_row_before_starting_a_new_one(make_surface):
+    """The in-progress transcript row must grow to the edge and only then
+    start over. Regression: set_live_text used to keep a sliding tail of the
+    logical text, which moved every wrap boundary with it — the last rendered
+    row (REALTIME_LIVE_MAX_ROWS) was then an arbitrary short remainder that
+    never filled, showing one or two words at a time for the rest of a long
+    utterance."""
+    window = make_surface(SUBTITLE_MODE_REALTIME)
+    words = (
+        "the mind is a powerful place and what you feed it can affect the "
+        "way you think about yourself and about everyone else around you "
+        "on any given day of the week no matter what anybody tells you"
+    ).split()
+    assert len(" ".join(words)) > 160  # past the old truncation point
+
+    max_width = window.canvas_width - 140
+    widths = []
+    for count in range(1, len(words) + 1):
+        grown = " ".join(words[:count])
+        window.set_live_text(grown)
+        item_id = window._live_items[0][0]
+        # The drawn row is the last row of the WHOLE utterance's wrap. Wrap
+        # the full text here, not a tail of it: a tail moves the wrap origin
+        # and the drawn row stops matching.
+        expected_rows = window._wrap_text_to_lines(
+            grown, max_width, window._live_font_for(grown)
+        )
+        assert window.canvas.itemcget(item_id, "text") == expected_rows[-1]
+        x1, _, x2, _ = window.canvas.bbox(item_id)
+        widths.append(x2 - x1)
+
+    resets = 0
+    for previous, current in zip(widths, widths[1:], strict=False):
+        if current < previous:
+            resets += 1
+            assert previous >= 0.75 * max_width, (
+                "the live row started over before reaching the edge"
+            )
+    assert resets >= 2, "text was too short to wrap more than once"

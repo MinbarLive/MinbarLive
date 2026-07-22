@@ -144,10 +144,15 @@ DEFAULT_FOOTER = (
 # Continuous scroll settings
 SCROLL_INTERVAL_MS = 30  # Milliseconds between scroll updates (~33 fps)
 
-# Live (in-progress) transcript line: cap the displayed text so a long
-# utterance shows its tail instead of filling the screen. Truncation happens
-# on the logical (pre-RTL-shaping) text so bidi ordering stays correct.
-LIVE_TEXT_MAX_CHARS = 160
+# Live (in-progress) transcript line: runaway guard only — how much of the
+# line is actually visible is decided by REALTIME_LIVE_MAX_ROWS when the text
+# is wrapped in _render_live_line. This has to stay well above one utterance's
+# worth of text: it slides forward word by word, which shifts every wrap
+# boundary with it, so once it bites, the last rendered row is an arbitrary
+# short remainder that never grows to fill the width (the "one or two words,
+# then gone" flicker). Truncation happens on the logical (pre-RTL-shaping)
+# text so bidi ordering stays correct.
+LIVE_TEXT_MAX_CHARS = 1000
 
 # Top padding of the live-feed mode's top-down layout
 LIVE_FEED_TOP_MARGIN = 24
@@ -1091,7 +1096,10 @@ class SubtitleWindow(tk.Toplevel):
         # Show only the newest row(s): a long interim otherwise wraps to
         # several rows and shoves the settled history up by that much at once
         # (the feed never scrolls back down). The full utterance still
-        # arrives as the settled translation block.
+        # arrives as the settled translation block. Wrapping is greedy from
+        # the start of the text, so row boundaries stay put as the interim
+        # grows: the visible row fills up to the edge and the next word starts
+        # a fresh one.
         if len(lines) > REALTIME_LIVE_MAX_ROWS:
             lines = lines[-REALTIME_LIVE_MAX_ROWS:]
         text_id = self.canvas.create_text(
