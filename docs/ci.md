@@ -16,7 +16,7 @@ windows. `lint` has no such constraint and runs on Linux, which starts faster.
 
 Fork pull requests are handled by the `pull_request` trigger, so they run with a
 read-only token and no access to repository secrets. **Do not change this to
-`pull_request_target`** — that would give fork code write access.
+`pull_request_target`**: that would give fork code write access.
 
 ## Git LFS is deliberately disabled
 
@@ -33,7 +33,7 @@ The three files tracked by LFS total roughly 600 MB:
 GitHub's free LFS allowance is 1 GB of bandwidth per month, so fetching them
 would exhaust the quota in under two CI runs.
 
-Nothing needs them. Without LFS, checkout writes ~130-byte pointer stubs in
+No *test* needs them. Without LFS, checkout writes ~130-byte pointer stubs in
 their place; `_load_npz` in `translation/rag.py` catches the resulting load
 failure, logs an error and returns an empty store, so RAG reports itself
 unavailable and the suite passes unchanged. This was verified by cloning with
@@ -41,6 +41,53 @@ unavailable and the suite passes unchanged. This was verified by cloning with
 
 If you ever add a test that genuinely requires real embeddings, mark it to skip
 when `is_rag_available()` is false rather than enabling LFS in CI.
+
+The release workflow is the exception: the EXE bundles the two `.npz` matrices,
+so it pulls them, but selectively, and never the raw JSON. See below.
+
+## Release builds
+
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) builds the
+Windows EXE. Pushing a `v*` tag also publishes it; `workflow_dispatch` builds
+without publishing, for testing the build itself.
+
+It runs the suite before touching LFS, so the tests see the same pointer stubs
+the `test` job does, then pulls only the matrices:
+
+```
+git lfs pull --include="data/embeddings/*.npz"
+```
+
+That is ~182 MB per release build against the 1 GB monthly LFS allowance,
+roughly five builds a month. `lfs: true` on the checkout step would pull all
+600 MB and exhaust the quota in under two.
+
+Three steps exist to fail loudly rather than ship something broken:
+
+| Step                           | Catches                                                                                                   |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| Check the tag matches version.py | A tag like `v1.0.1-beta` on a `1.0.0-beta` build. The in-app update check compares release tags against the built-in version, so a mismatch prompts users forever or never |
+| Verify the matrices are real   | An exhausted LFS quota, which leaves pointer stubs behind *without* failing the pull; the EXE would build fine with Quran verse matching silently dead |
+| Verify the EXE                 | A build that lost the `data/` bundle, which shows up as a far smaller file                                |
+
+The asset must keep the exact name `MinbarLive.exe` and the release must be
+marked latest (`--latest`, and never pre-release): the website's download
+buttons and the in-app update check both resolve
+`releases/latest/download/MinbarLive.exe`.
+
+Every release description starts with the download instructions:
+
+```
+**Windows**
+- "MinbarLive.exe" herunterladen
+- Download "MinbarLive.exe"
+```
+
+`gh` prepends `--notes-file` to what `--generate-notes` produces, so the
+generated changelog follows underneath. If the release already exists because
+it was created through the web UI, the workflow prepends the block to the
+existing description instead, and skips that if the block is already there, so
+hand-written notes are never overwritten.
 
 ## Lint checks changed files only
 

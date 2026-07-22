@@ -1,0 +1,139 @@
+name: Release
+
+# Builds the Windows EXE. Pushing a `v*` tag also publishes it as a release
+# asset; `workflow_dispatch` builds without publishing, for testing the build
+# itself.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# `contents: write` is needed to create the release and upload the asset.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetched selectively below; `lfs: true` would pull all three
+          # tracked files including the 418 MB raw JSON, which the EXE does
+          # not bundle. See "Git LFS" in docs/ci.md.
+          lfs: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # Runs before the LFS pull so the suite sees the same pointer stubs the
+      # `test` job in ci.yml does: identical conditions, no surprise failures
+      # from real embeddings being present.
+      - name: Test
+        run: python -m pytest -q
+
+      - name: Check the tag matches version.py
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver=$(python -c "from version import __version__; print(__version__)")
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version.py ($ver)."
+            echo "The in-app update check compares release tags against the built-in"
+            echo "version, so a mismatch makes it prompt users forever or never."
+            exit 1
+          fi
+
+      # Only the two embedding matrices the spec bundles (~182 MB), not the
+      # 418 MB quran_embeddings.json, which a.datas filters out of the EXE.
+      - name: Fetch embedding matrices from LFS
+        run: git lfs pull --include="data/embeddings/*.npz"
+
+      # An exhausted LFS bandwidth quota leaves ~130-byte pointer stubs behind
+      # without failing the pull. The EXE would build fine and ship with Quran
+      # verse matching silently dead, so fail here instead.
+      - name: Verify the matrices are real
+        shell: bash
+        run: |
+          for f in data/embeddings/quran_embeddings_openai.npz \
+                   data/embeddings/quran_embeddings_gemini.npz; do
+            size=$(stat -c%s "$f")
+            if [ "$size" -lt 1000000 ]; then
+              echo "::error::$f is an LFS pointer stub ($size bytes), not the matrix."
+              exit 1
+            fi
+            echo "$f: $size bytes"
+          done
+
+      - run: pyinstaller MinbarLive.spec
+
+      - name: Verify the EXE
+        shell: bash
+        run: |
+          size=$(stat -c%s dist/MinbarLive.exe)
+          echo "dist/MinbarLive.exe: $size bytes"
+          if [ "$size" -lt 100000000 ]; then
+            echo "::error::EXE is only $size bytes, the data/ bundle is missing."
+            exit 1
+          fi
+
+      - name: Checksum
+        shell: bash
+        run: cd dist && sha256sum MinbarLive.exe | tee SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MinbarLive-exe
+          path: |
+            dist/MinbarLive.exe
+            dist/SHA256SUMS.txt
+
+      # The asset must keep the exact name MinbarLive.exe and the release must
+      # be the "latest" one: the website's download buttons and the in-app
+      # update check both go through releases/latest/download/MinbarLive.exe.
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+
+          # Always the first thing in the release description. `gh` prepends
+          # --notes-file to whatever --generate-notes produces, so the
+          # changelog follows underneath.
+          cat > notes.md <<'EOF'
+          **Windows**
+          - "MinbarLive.exe" herunterladen
+          - Download "MinbarLive.exe"
+          EOF
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # Release already exists, e.g. created through the web UI. Prepend
+            # the block unless it is already there, never overwriting notes
+            # somebody wrote by hand.
+            body=$(gh release view "$tag" --json body -q .body)
+            if ! printf '%s' "$body" | grep -qF 'Download "MinbarLive.exe"'; then
+              printf '\n%s\n' "$body" >> notes.md
+              gh release edit "$tag" --notes-file notes.md
+            fi
+          else
+            gh release create "$tag" \
+              --title "MinbarLive $tag" \
+              --notes-file notes.md \
+              --generate-notes \
+              --latest
+          fi
+
+          gh release upload "$tag" \
+            dist/MinbarLive.exe dist/SHA256SUMS.txt --clobber
