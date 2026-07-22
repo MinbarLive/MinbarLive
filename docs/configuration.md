@@ -2,19 +2,19 @@
 
 ## User Settings (GUI)
 
-These settings are configurable from the control panel / settings window and saved between sessions in `settings.json` (see [Runtime Files](project-structure.md#runtime-files)). API keys are **not** stored there — they go to the OS keychain.
+These settings are configurable from the control panel / settings window and saved between sessions in `settings.json` (see [Runtime Files](project-structure.md#runtime-files)). API keys are **not** stored there; they go to the OS keychain.
 
 | Setting                | Default              | Description                                                            |
 | ---------------------- | -------------------- | ---------------------------------------------------------------------- |
 | GUI Language           | Deutsch              | Interface language (DE, EN, AR, BS, SQ, TR)                             |
-| Appearance             | Light                | Light/dark theme — control panel and subtitle window are set separately |
+| Appearance             | Light                | Light/dark theme; control panel and subtitle window are set separately |
 | Source Language        | Automatic            | Spoken language (Arabic, Turkish, Urdu, …); real-time streaming requires an explicit language (no "Automatic") |
 | Target Language        | German               | Translation output (35+ languages)                                      |
 | Processing Strategy    | Real-time streaming  | Real-time streaming, Chunk-based, or Semantic buffering (Beta)          |
 | Transcription Engine   | Google Gemini (real-time) | STT engine + model; the real-time engines imply streaming mode     |
 | AI Provider            | Google Gemini        | Translation provider (Google Gemini, OpenAI, Anthropic Claude)          |
 | Translation Model      | `gpt-5.2`               | Per-provider model list; "use default" recommended                    |
-| Subtitle Mode          | Realtime             | Realtime feed, Continuous (ticker), or Static (latest only) — Realtime is only available while streaming |
+| Subtitle Mode          | Realtime             | Realtime feed, Continuous (ticker), or Static (latest only); Realtime is only available while streaming |
 | Show original text     | On                   | Bilingual display: source text above the translation                    |
 | Show live transcript   | On                   | Realtime mode: show the in-progress transcript line while the speaker talks (independent of "Show original text") |
 | Islamic mode           | On                   | Quran verse & Athan recognition + Islamic translation style; off = general translator (turning it off asks for confirmation) |
@@ -37,7 +37,7 @@ These settings are configurable from the control panel / settings window and sav
 | Auto start             | Off                  | Start translating as soon as the app launches                           |
 | Auto stop when idle    | On                   | Stop a running session after 10 min without any transcription (cost guard) |
 | Auto cleanup (logs)    | On                   | Purge old log files at startup (see retention below)                    |
-| Auto cleanup (content) | Off                  | Purge old history + batch files at startup — your own content, so opt-in |
+| Auto cleanup (content) | Off                  | Purge old history + batch files at startup; your own content, so opt-in |
 | Check for updates      | On                   | One anonymous GitHub releases request at startup                        |
 
 A **first-run wizard** (interface language & appearance → languages → microphone → provider & API key → disclaimer) sets the essentials on the first launch.
@@ -65,21 +65,21 @@ Select your preferred language from the dropdown in the top-right corner. Change
 
 ## AI Models
 
-Model selection is **user-configurable in the GUI** and lives in `utils/settings.py` (OpenAI lists) and `providers/<provider>/` (Gemini, Anthropic, streaming engines) — not in `config.py`. Each provider has a default plus a fallback chain that is tried automatically when a model fails:
+Model selection is **user-configurable in the GUI** and lives in `utils/settings.py` (OpenAI lists) and `providers/<provider>/` (Gemini, Anthropic, streaming engines), not in `config.py`. Each provider has a default plus a fallback chain that is tried automatically when a model fails:
 
 | Capability                    | Default                  | Fallback chain                                    |
 | ----------------------------- | ------------------------ | ------------------------------------------------- |
 | Translation (Gemini)          | `gemini-3.1-flash-lite`  | `gemini-3.1-flash-lite` → `gemini-3.5-flash`      |
 | Translation (OpenAI)          | `gpt-5.2`                | `gpt-5.2` → `gpt-5.1` → `gpt-4.1` → `gpt-4o-mini` |
 | Translation (Anthropic)       | `claude-sonnet-5`        | `claude-sonnet-5` → `claude-haiku-4-5`            |
-| Transcription (Gemini)          | `gemini-3.5-flash`     | — (segmented; audio sent inline)                  |
+| Transcription (Gemini)          | `gemini-3.5-flash`     | n/a (segmented; audio sent inline)                  |
 | Transcription (OpenAI)        | `gpt-4o-transcribe`      | `gpt-4o-transcribe` → `gpt-4o-mini-transcribe` → `whisper-1` |
-| Real-time STT (Gemini)          | `gemini-2.5-flash-native-audio-latest` | — (whitelisted Live models only)|
-| Embeddings (RAG)              | `gemini-embedding-001` / `text-embedding-3-large` | — (must match the precomputed verse matrix of the active space) |
+| Real-time STT (Gemini)          | `gemini-2.5-flash-native-audio-latest` | n/a (whitelisted Live models only)|
+| Embeddings (RAG)              | `gemini-embedding-001` / `text-embedding-3-large` | n/a (must match the precomputed verse matrix of the active space) |
 
 See [providers.md](providers.md) for the Gemini/Anthropic/streaming model catalogs.
 
-> **Note:** If you change the embedding model, you must regenerate the verse embedding matrix — see [data-files.md](data-files.md).
+> **Note:** If you change the embedding model, you must regenerate the verse embedding matrix; see [data-files.md](data-files.md).
 
 ## Technical Constants (config.py)
 
@@ -100,7 +100,7 @@ See [providers.md](providers.md) for the Gemini/Anthropic/streaming model catalo
 
 ### Noise filter (voice-activity gate)
 
-The loudness-based silence gate above cannot tell speech from static or hum — `audio/vad.py` classifies frames by spectral shape instead. Toggled by the "Noise filter" setting.
+The loudness-based silence gate above cannot tell speech from static or hum; `audio/vad.py` classifies frames by spectral shape instead. Toggled by the "Noise filter" setting.
 
 | Parameter                    | Default | Description                                                     |
 | ---------------------------- | ------- | ---------------------------------------------------------------- |
@@ -109,7 +109,7 @@ The loudness-based silence gate above cannot tell speech from static or hum — 
 | `VAD_STREAM_HANGOVER_SECONDS`| 2.0     | Streaming: sustained non-speech beyond this is fed as digital silence |
 | `VAD_STREAM_WINDOW_SECONDS`  | 1.0     | Rolling window for the streaming open/close decision             |
 | `VAD_STREAM_OPEN_RATIO`      | 0.1     | Speech-frame fraction that opens the streaming gate              |
-| `VAD_DECISION_TARGET_PEAK`   | 0.03    | Quiet audio is boosted to ≈ -30.5 dBFS **for the decision only** — the audio passed on is never modified |
+| `VAD_DECISION_TARGET_PEAK`   | 0.03    | Quiet audio is boosted to ≈ -30.5 dBFS **for the decision only**; the audio passed on is never modified |
 | `VAD_DECISION_MAX_BOOST`     | 16.0    | Cap on that boost (+24 dB)                                       |
 
 ### Buffering & streaming
@@ -137,12 +137,12 @@ Window sizes are defined in DPI-logical units, so Windows multiplies them by the
 | `DESIGN_W`/`DESIGN_H` | 900/672 | Largest window the app can open (history viewer width, wizard height)     |
 | `MAX_SCREEN_FRACTION` | 0.85    | A window may use at most this much of the usable screen area              |
 
-The factor is never above 1.0 — it only shrinks when the design would not fit, so a large monitor at 150 % keeps the bigger text the user asked for and is left exactly as-is.
+The factor is never above 1.0; it only shrinks when the design would not fit, so a large monitor at 150 % keeps the bigger text the user asked for and is left exactly as-is.
 
 ### Control-panel window & card grid (gui/app_gui.py)
 
 The control panel opens at a size that shows every card at once and can then be
-dragged as large or as small as you like — the cards reflow to fit. The last
+dragged as large or as small as you like; the cards reflow to fit. The last
 size and position are remembered in `window_geometry`.
 
 | Parameter                 | Default   | Description                                                    |

@@ -7,7 +7,7 @@ The translation database is built programmatically via public APIs:
 - **Arabic text** (without diacritics) from `quranapi.pages.dev`
 - **Translations** from `quranenc.com`
 
-The dataset contains **6,054 verses** — the source merges some ayahs, so this differs from the canonical count of 6,236; the embeddings cover all of them 1:1.
+The dataset contains **6,054 verses**; the source merges some ayahs, so this differs from the canonical count of 6,236; the embeddings cover all of them 1:1.
 
 ### Available Quran Translations
 
@@ -39,19 +39,19 @@ To add a new language, use `notebooks/build_quran_dict.py` with a translation ke
 
 ## Verse Embeddings (Mini-RAG Database)
 
-`data/embeddings/` contains precomputed vector embeddings for all 6,054 Quran verses. Instead of using an external vector database (like Pinecone, Weaviate, or ChromaDB), the embeddings are stored as a single NumPy matrix — a lightweight "mini-RAG" that lives fully in memory.
+`data/embeddings/` contains precomputed vector embeddings for all 6,054 Quran verses. Instead of using an external vector database (like Pinecone, Weaviate, or ChromaDB), the embeddings are stored as a single NumPy matrix, a lightweight "mini-RAG" that lives fully in memory.
 
 | File                           | Purpose                                                                                     |
 | ------------------------------ | ------------------------------------------------------------------------------------------- |
 | `quran_embeddings_gemini.npz`  | **What the app loads with the Gemini provider**: Gemini-space matrix (`gemini-embedding-001`); used when the AI provider is Gemini and this file exists |
 | `quran_embeddings_openai.npz`  | OpenAI-space matrix, used for every other provider: verse texts + L2-normalized float32 matrix, 6,054 × 3072 (OpenAI `text-embedding-3-large`) |
-| `quran_embeddings.json`        | Raw notebook output (~418 MB, git LFS) — source of truth for rebuilding the `.npz`, **not** bundled into the EXE |
+| `quran_embeddings.json`        | Raw notebook output (~418 MB, git LFS): source of truth for rebuilding the `.npz`, **not** bundled into the EXE |
 
 ### Why this approach?
 
 - No external database dependencies required
 - The dataset is small enough (~6,054 verses, ~86 MB as `.npz`) to fit in memory and load in ~0.1 s
-- Simple deployment — a single file, works offline once loaded
+- Simple deployment: a single file, works offline once loaded
 - Matching one query is a single matrix-vector product (~3 ms)
 
 ### How it works
@@ -66,7 +66,7 @@ To add a new language, use `notebooks/build_quran_dict.py` with a translation ke
 
 This ensures that when Quran is recited, the published translation is used rather than an AI paraphrase.
 
-> Query embeddings and the verse matrix must live in the **same vector space** — that is why the embedding provider is pinned to the space of the loaded `.npz` and does not blindly follow the AI provider setting (see [providers.md](providers.md)).
+> Query embeddings and the verse matrix must live in the **same vector space**; that is why the embedding provider is pinned to the space of the loaded `.npz` and does not blindly follow the AI provider setting (see [providers.md](providers.md)).
 
 ---
 
@@ -101,14 +101,14 @@ data/translations/
 
 ### status_messages.json
 
-Anything shown to the **audience** on the subtitle window (e.g. connection errors) comes from this file, localized to the current *target* language — never hardcoded. New target-language entries belong here.
+Anything shown to the **audience** on the subtitle window (e.g. connection errors) comes from this file, localized to the current *target* language, never hardcoded. New target-language entries belong here.
 
 ### Adding a new target language (Quran + Athan)
 
 1. Create `data/translations/quran/{lang_code}.json` with Arabic → translation mappings
    - Use `notebooks/build_quran_dict.py` with the appropriate translation key from quranenc.com
 2. Create `data/translations/athan/{lang_code}.json` for Athan phrases
-3. No code changes needed — the files are auto-detected when the target language matches
+3. No code changes needed; the files are auto-detected when the target language matches
 
 ## Adding a New GUI Language
 
@@ -143,11 +143,11 @@ That's it! The dropdown will automatically show the new language.
 
 ## Regenerating Embeddings
 
-Two steps — the notebook produces the raw JSON, the script builds the `.npz` the app actually loads:
+Two steps: the notebook produces the raw JSON, the script builds the `.npz` the app actually loads:
 
 1. Run [notebooks/Build_Quran_EmbeddingSpace.ipynb](../notebooks/Build_Quran_EmbeddingSpace.ipynb) (requires `OPENAI_API_KEY`, costs ~$0.20, takes ~10-15 minutes)
 2. Run `python notebooks/build_embeddings_npz.py` to rebuild `data/embeddings/quran_embeddings_openai.npz`
 
 This is required whenever the embedding model (`EMBEDDING_MODEL` in `config.py`) changes.
 
-**Gemini space (optional):** set `PROVIDER = "gemini"` in `build_embeddings_npz.py` and run it — it re-embeds all verse texts via `gemini-embedding-001` (requires a Gemini key) into `quran_embeddings_gemini.npz`. With that file present, Gemini users run verse matching entirely on Gemini.
+**Gemini space (optional):** set `PROVIDER = "gemini"` in `build_embeddings_npz.py` and run it; it re-embeds all verse texts via `gemini-embedding-001` (requires a Gemini key) into `quran_embeddings_gemini.npz`. With that file present, Gemini users run verse matching entirely on Gemini.

@@ -42,7 +42,7 @@
                  └───────────────────┘
 ```
 
-All AI calls (transcription, translation, embeddings) go through the **provider abstraction** in `providers/` — see [providers.md](providers.md). The pipeline never imports an AI SDK directly.
+All AI calls (transcription, translation, embeddings) go through the **provider abstraction** in `providers/`; see [providers.md](providers.md). The pipeline never imports an AI SDK directly.
 
 ## Pipelines
 
@@ -50,7 +50,7 @@ The Processing Strategy setting selects one of two pipelines:
 
 ### Streaming pipeline (default: "Real-time streaming")
 
-1. Audio (microphone or system loopback) is fed as small PCM chunks into a live connection to the streaming engine (Gemini Live, OpenAI Realtime, or Deepgram). With the noise filter on, sustained non-speech is replaced by **digital silence of the same length** — the connection's timing and endpointing stay intact
+1. Audio (microphone or system loopback) is fed as small PCM chunks into a live connection to the streaming engine (Gemini Live, OpenAI Realtime, or Deepgram). With the noise filter on, sustained non-speech is replaced by **digital silence of the same length**, so the connection's timing and endpointing stay intact
 2. The engine sends back **interim transcripts** (word by word, self-correcting) and marks **utterance ends** on natural pauses
 3. The live transcript line is shown on the subtitle window while the speaker talks (Realtime subtitle mode)
 4. Very short utterances are **coalesced**: a 1–3 word fragment from a rhetorical pause is held briefly and merged with the next one, so the LLM translates a whole clause instead of an isolated word (and one API call is saved per fragment)
@@ -63,7 +63,7 @@ The Processing Strategy setting selects one of two pipelines:
 
 1. **Audio Capture** records into a ring buffer; 12 s segments with 3 s overlap are written as WAV (silent segments are skipped entirely, and with the noise filter on, loud-but-speechless segments are dropped before any API call)
 2. **Transcription** converts each segment to text via the configured provider, walking a model fallback chain on errors
-3. **Overlap dedup + fragment gate**: consecutive segments overlap by 3 s, so each transcription repeats the tail of the previous one — the repeated prefix is stripped (fuzzy-matched, since the model transcribes the overlap slightly differently each pass). A residual with fewer than 3 letters is dropped rather than translated
+3. **Overlap dedup + fragment gate**: consecutive segments overlap by 3 s, so each transcription repeats the tail of the previous one; the repeated prefix is stripped (fuzzy-matched, since the model transcribes the overlap slightly differently each pass). A residual with fewer than 3 letters is dropped rather than translated
 4. The **buffering strategy** groups transcriptions:
    - **Chunk-based** (segmented default): every segment is translated immediately (~4–14 s latency)
    - **Semantic buffering** (Beta): waits for sentence-ending punctuation before translating; flushes anyway after 3 segments or 10 s, and a stale buffer is flushed during silence. The sentence heuristics are Arabic-tuned.
@@ -73,9 +73,9 @@ The Processing Strategy setting selects one of two pipelines:
 
 Every text to be translated passes through, in order:
 
-1. **Same-language bypass** — if the source and target language are the same (or the source is "Automatic" and an Arabic-script transcription meets an Arabic target), the text is passed through without an LLM call
-2. **Athan dictionary matching** — fuzzy matching against known Athan phrases (threshold 0.75) returns the curated translation directly
-3. **Quran RAG matching** — the text is embedded and compared against 6,054 precomputed verse embeddings (one matrix-vector product, ~3 ms):
+1. **Same-language bypass**: if the source and target language are the same (or the source is "Automatic" and an Arabic-script transcription meets an Arabic target), the text is passed through without an LLM call
+2. **Athan dictionary matching**: fuzzy matching against known Athan phrases (threshold 0.75) returns the curated translation directly
+3. **Quran RAG matching**: the text is embedded and compared against 6,054 precomputed verse embeddings (one matrix-vector product, ~3 ms):
    - similarity ≥ **0.85** and the segment is essentially the verse alone (word-count guards) → **verified-verse bypass**: the exact published dictionary translation is displayed, marked 📖, and no LLM call is made
    - similarity ≥ 0.60 → the matched verses are passed to the LLM as translation hints
    - below 0.60 → no hint
@@ -92,7 +92,7 @@ For non-Arabic source languages, the segmented and batch pipelines run a **secon
 For long sessions (1-4+ hours), the app uses intelligent context management:
 
 - **Recent segments (last 3)**: Kept raw for immediate disambiguation
-- **Rolling summary**: Updated when ≥10 segments are pending **and** ≥3 minutes have passed since the last summary (async, no delay). Both conditions must hold — streaming utterances arrive every few seconds, so the count alone burned an LLM call on near-identical text every ~45 s
+- **Rolling summary**: Updated when ≥10 segments are pending **and** ≥3 minutes have passed since the last summary (async, no delay). Both conditions must hold: streaming utterances arrive every few seconds, so the count alone burned an LLM call on near-identical text every ~45 s
 - **Hourly summaries**: Long-term context compressed to ~20 words each
 
 This keeps context under ~1500 tokens while maintaining session continuity.
@@ -124,7 +124,7 @@ The context helps disambiguate unclear words without bloating the prompt.
 Both pipelines read from the same device selection (`gui/device_list.py`):
 
 - **Microphones** via `sounddevice`, enumerated per host API (WASAPI preferred; WDM-KS is excluded because its device names are unusable).
-- **Loopback devices** (Windows) via `soundcard`'s WASAPI loopback — capture what an output device is *playing*, so system audio can be translated without a virtual audio cable. Loopback speakers get synthetic negative indices registered in `audio/loopback.py`, which lets the controller resolve them at stream-open time without importing GUI code. They are always recorded in stereo and mixed to mono (single-channel WASAPI recording returns garbage).
+- **Loopback devices** (Windows) via `soundcard`'s WASAPI loopback, capturing what an output device is *playing*, so system audio can be translated without a virtual audio cable. Loopback speakers get synthetic negative indices registered in `audio/loopback.py`, which lets the controller resolve them at stream-open time without importing GUI code. They are always recorded in stereo and mixed to mono (single-channel WASAPI recording returns garbage).
 
 `soundcard` is an optional import: if it is missing, loopback entries simply don't appear.
 
@@ -132,7 +132,7 @@ The control panel shows a live **input level** (smoothed RMS in dBFS, `audio/lev
 
 ## Cost Tracking
 
-`utils/cost_tracking.py` meters what each provider call reports (tokens, audio seconds) per session and applies a versioned snapshot of published list prices, so the figure is an **estimate**, not an invoice. Worker threads only update memory; the Tk thread flushes to `cost_history/` so live subtitles never wait for disk I/O. Only counters, provider/model ids and timestamps are persisted — never prompts, transcripts, audio or credentials. The history viewer's **Costs** tab renders it (`utils/cost_display.py`). Anthropic and Deepgram usage is currently not metered.
+`utils/cost_tracking.py` meters what each provider call reports (tokens, audio seconds) per session and applies a versioned snapshot of published list prices, so the figure is an **estimate**, not an invoice. Worker threads only update memory; the Tk thread flushes to `cost_history/` so live subtitles never wait for disk I/O. Only counters, provider/model ids and timestamps are persisted, never prompts, transcripts, audio or credentials. The history viewer's **Costs** tab renders it (`utils/cost_display.py`). Anthropic and Deepgram usage is currently not metered.
 
 ## Announcements
 

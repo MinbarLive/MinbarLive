@@ -1,6 +1,6 @@
 # Testing
 
-The project includes a test suite of 860 tests using pytest. Provider tests run against faked SDK connections — no API keys or network access needed.
+The project includes a test suite of 860 tests using pytest. Provider tests run against faked SDK connections; no API keys or network access needed.
 
 ## Running Tests
 
@@ -61,9 +61,9 @@ python -m pytest --cov=.
 
 The control panel is covered in two layers, deliberately:
 
-- **`test_control_state.py`** — the rules the panel derives from `Settings` (which providers need a key, which subtitle modes are offered, what a strategy choice does). These live in `gui/control_state.py`, import no Tk, and run headlessly in milliseconds. Most control-panel logic belongs here.
-- **`test_app_gui.py`** — a real `AppGUI` on a real Tk root with a fake controller, covering what genuinely needs a window: startup, start/stop, the settings window, theme/language switching, and that the panel is wired to the rules above. It is skipped automatically when no display is available.
+- **`test_control_state.py`**: the rules the panel derives from `Settings` (which providers need a key, which subtitle modes are offered, what a strategy choice does). These live in `gui/control_state.py`, import no Tk, and run headlessly in milliseconds. Most control-panel logic belongs here.
+- **`test_app_gui.py`**: a real `AppGUI` on a real Tk root with a fake controller, covering what genuinely needs a window: startup, start/stop, the settings window, theme/language switching, and that the panel is wired to the rules above. It is skipped automatically when no display is available.
 
-> **Still worth a human pass:** these tests drive handlers, not pixels. They cannot see that something is misaligned, clipped or the wrong colour — verify visual changes by running the app (`python main.py`).
+> **Still worth a human pass:** these tests drive handlers, not pixels. They cannot see that something is misaligned, clipped or the wrong colour; verify visual changes by running the app (`python main.py`).
 
-**When adding control-panel logic:** if it only reads/writes `Settings`, put it in `gui/control_state.py` and test it headlessly. Reserve `test_app_gui.py` for behaviour that genuinely needs widgets — every test there builds a whole window, which is slow and needs a display.
+**When adding control-panel logic:** if it only reads/writes `Settings`, put it in `gui/control_state.py` and test it headlessly. Reserve `test_app_gui.py` for behaviour that genuinely needs widgets; every test there builds a whole window, which is slow and needs a display.

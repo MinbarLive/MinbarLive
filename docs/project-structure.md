@@ -45,7 +45,7 @@
 ├── gui/                     # User interface (CustomTkinter)
 │   ├── app_gui.py           # Control panel core (reflowing card grid, start/stop,
 │   │                        #   queue polling, theming, input-level meter)
-│   ├── control_state.py     # Settings-derived rules (key/mode/strategy) — Tk-free, unit-tested
+│   ├── control_state.py     # Settings-derived rules (key/mode/strategy), Tk-free, unit-tested
 │   ├── widgets.py           # Widget factory mixin: themed dialogs, cards, buttons
 │   ├── settings_view.py     # Settings window + per-provider API key management
 │   ├── batch_view.py        # Batch/File window (file picker, progress, ffmpeg download)
@@ -99,7 +99,7 @@
 │
 ├── docs/                    # This documentation + the GitHub Pages landing page (index.html)
 │
-└── tests/                   # Pytest suite (860 tests) — see docs/testing.md
+└── tests/                   # Pytest suite (860 tests), see docs/testing.md
 ```
 
 ## Runtime Files
@@ -120,4 +120,4 @@ Contents:
 - `bin/` - ffmpeg, if downloaded via the batch card (Windows)
 - `settings.json` - All user preferences (NOT the API keys)
 
-> **Note:** API keys are stored in your OS keychain, not in settings.json. The one exception is a machine with no keychain backend at all — see [providers.md](providers.md#api-keys).
+> **Note:** API keys are stored in your OS keychain, not in settings.json. The one exception is a machine with no keychain backend at all; see [providers.md](providers.md#api-keys).
