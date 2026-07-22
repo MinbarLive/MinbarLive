@@ -999,5 +999,101 @@ class TestCardGridReflow:
         assert (gui._min_width, gui._min_height) == (gui._MIN_W, gui._MIN_H)
 
 
+class _Configure:
+    """The one field of a <Configure> event the wordmark fitter reads."""
+
+    def __init__(self, width):
+        self.width = width
+
+
+class TestBrandWordmark:
+    """The header wordmark is dropped, not squeezed, when the buttons leave no
+    room: a compressed CTkLabel centre-clips its text ("inbarLi"), which reads
+    as a rendering fault. Opening the log panel halves the sidebar and is the
+    layout where this actually bites."""
+
+    def _header_width_for(self, gui, text_width):
+        """The header width that leaves exactly text_width px for the wordmark."""
+        width = (
+            text_width
+            + gui._header_buttons_span()
+            + sum(gui._grid_padx(gui._brand_frame))
+            + gui._BRAND_TITLE_GAP
+        )
+        logo = gui._brand_logo_label
+        if logo is not None and logo.winfo_manager() == "pack":
+            width += logo.winfo_reqwidth() + gui._BRAND_LOGO_GAP
+        return width
+
+    def _shown(self, gui):
+        return gui._brand_title_label.winfo_manager() == "pack"
+
+    def test_shown_when_it_exactly_fits(self, make_gui):
+        gui, _c, _s = make_gui()
+        needed = gui._brand_title_label.winfo_reqwidth()
+        gui._fit_brand_wordmark(_Configure(self._header_width_for(gui, needed)))
+        assert self._shown(gui) is True
+
+    def test_dropped_one_pixel_short(self, make_gui):
+        gui, _c, _s = make_gui()
+        needed = gui._brand_title_label.winfo_reqwidth()
+        gui._fit_brand_wordmark(_Configure(self._header_width_for(gui, needed - 1)))
+        assert self._shown(gui) is False
+
+    def test_comes_back_after_the_logo_when_room_returns(self, make_gui):
+        """Re-packing must not put the wordmark in front of the logo."""
+        gui, _c, _s = make_gui()
+        needed = gui._brand_title_label.winfo_reqwidth()
+        gui._fit_brand_wordmark(_Configure(self._header_width_for(gui, needed - 1)))
+        assert self._shown(gui) is False
+
+        gui._fit_brand_wordmark(_Configure(self._header_width_for(gui, needed)))
+        assert self._shown(gui) is True
+        assert gui._brand_frame.pack_slaves()[-1] is gui._brand_title_label
+
+    def test_decision_ignores_the_previous_layout(self, make_gui, monkeypatch):
+        """Regression: <Configure> carries the NEW header width while the
+        buttons are still where the PREVIOUS layout put them. Reading their
+        positions inverted the whole feature — the wordmark vanished on a
+        widened header and stayed (clipped) on a narrowed one."""
+        gui, _c, _s = make_gui()
+        needed = gui._brand_title_label.winfo_reqwidth()
+        wide = self._header_width_for(gui, needed)
+        narrow = self._header_width_for(gui, needed - 1)
+
+        # Stale positions from the opposite layout must not change the outcome.
+        monkeypatch.setattr(gui._history_btn, "winfo_x", lambda: 0, raising=False)
+        monkeypatch.setattr(gui._brand_frame, "winfo_x", lambda: 0, raising=False)
+        gui._fit_brand_wordmark(_Configure(wide))
+        assert self._shown(gui) is True
+
+        monkeypatch.setattr(gui._history_btn, "winfo_x", lambda: 10_000, raising=False)
+        gui._fit_brand_wordmark(_Configure(narrow))
+        assert self._shown(gui) is False
+
+    def test_unlaid_out_header_is_left_alone(self, make_gui, monkeypatch):
+        """Before the first layout the header has no width; hiding the wordmark
+        on that would drop it on every start-up."""
+        gui, _c, _s = make_gui()
+        monkeypatch.setattr(
+            gui._sidebar_header, "winfo_width", lambda: 1, raising=False
+        )
+        gui._fit_brand_wordmark()
+        assert self._shown(gui) is True
+
+    def test_button_span_matches_the_rendered_layout(self, make_gui):
+        """The span replaces reading the first button's position, so it has to
+        agree with it once the layout has settled."""
+        gui, _c, _s = make_gui()
+        gui.update_idletasks()
+        header_width = gui._sidebar_header.winfo_width()
+        if header_width <= 1 or gui._history_btn.winfo_x() <= 1:
+            pytest.skip("header not laid out in this environment")
+        assert (
+            header_width - gui._header_buttons_span() == gui._history_btn.winfo_x()
+        )
+
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
