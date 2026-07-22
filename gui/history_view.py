@@ -128,6 +128,7 @@ class HistoryViewMixin:
         )
         self._history_list.grid(row=1, column=0, rowspan=2, sticky="nsw")
         self._history_list.grid_columnconfigure(0, weight=1)
+        self._enable_linux_mousewheel(self._history_list)
 
         # ── Content (right): optional format toolbar + preview textbox ───────
         content = ctk.CTkFrame(win, fg_color=self._colors["log_bg"], corner_radius=0)
