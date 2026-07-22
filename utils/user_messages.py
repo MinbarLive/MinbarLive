@@ -20,7 +20,7 @@ _DEFAULTS = {
     "translation_unavailable": "[⚠️ Translation unavailable]",
     "invalid_api_key": "[⚠️ Invalid API key]",
     "api_credits_exhausted": "[⚠️ API credit used up]",
-    "app_stopped": "[⏸️ Translation stopped]",
+    "app_stopped": "Translation stopped",
 }
 
 # Substring/status-code fingerprints of provider auth and quota errors.
