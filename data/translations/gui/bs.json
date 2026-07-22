@@ -109,6 +109,7 @@
   "wizard_api_key": "API ključ",
   "wizard_keys_info": "Dodajte ključeve za koliko god pružatelja želite mijenjanjem liste iznad. Uz OpenAI (zadano), jedan ključ pokriva prijevod, transkripciju u stvarnom vremenu i prepoznavanje kur'anskih ajeta.",
   "wizard_gemini_rag_note": "Prepoznavanje kur'anskih ajeta koristi OpenAI embeddinge. Bez OpenAI ključa prepoznavanje ajeta je onemogućeno.",
+  "wizard_gemini_latency_note": "U načinu rada u stvarnom vremenu Googleovi modeli transkribuju sporije nego što se govori, pa titlovi tokom dužih govora sve više kasne i sustižu tek kada govornik napravi pauzu. Ovdje OpenAI bolje prati. Chunk i semantički način nisu pogođeni.",
   "wizard_anthropic_stt_note": "Claude nema pretvaranje govora u tekst — transkripcija koristi OpenAI, pa je potreban i OpenAI ključ.",
   "wizard_show_key": "Prikaži",
   "wizard_key_saved_hint": "Ključ je već sačuvan — ostavi prazno da ga zadržiš.",

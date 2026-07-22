@@ -946,6 +946,28 @@ class OnboardingWizard(ctk.CTk):
         # match the dropdown. Gemini has its own bundled embedding space, so
         # the RAG note only applies to Anthropic (embeddings stay OpenAI).
         # Shown as warning callouts so users don't miss the extra-key caveat.
+        if selected == "gemini":
+            # Picking Gemini here lands on gemini_realtime (see
+            # _REALTIME_ENGINE_FOR_PROVIDER), and both whitelisted Live models
+            # transcribe slower than realtime (live-measured 0.75x and 0.89x
+            # over a 63s sample), so subtitles drift further behind the longer
+            # someone speaks. Scoped to real-time on purpose: the SEGMENTED
+            # path (chunk/semantic) is a different API entirely and measures
+            # 0.97-1.42s per 12s segment, comfortably inside budget. Not shown
+            # for other providers — OpenAI holds 1.00x and has nothing to warn
+            # about.
+            self._warning_box(
+                self._container,
+                self._t(
+                    "wizard_gemini_latency_note",
+                    "In real-time mode, Google's models transcribe slower "
+                    "than people speak, so subtitles fall further behind "
+                    "during long talks and only catch up when the speaker "
+                    "pauses. OpenAI keeps up better here. Chunk and semantic "
+                    "mode are not affected.",
+                ),
+                pady=(14, 10),
+            )
         if selected == "anthropic":
             self._warning_box(
                 self._container,

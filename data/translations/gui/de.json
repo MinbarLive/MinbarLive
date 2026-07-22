@@ -120,6 +120,7 @@
   "wizard_api_key": "API-Schlüssel",
   "wizard_keys_info": "Füge Schlüssel für beliebig viele Anbieter hinzu, indem du oben die Liste wechselst. Mit OpenAI (Standard) deckt ein Schlüssel Übersetzung, Echtzeit-Transkription und Koranvers-Erkennung ab.",
   "wizard_gemini_rag_note": "Die Erkennung von Koranversen nutzt OpenAI-Embeddings. Ohne OpenAI-Schlüssel ist der Versabgleich deaktiviert.",
+  "wizard_gemini_latency_note": "Im Echtzeit-Modus transkribieren Googles Modelle langsamer als gesprochen wird. Bei längeren Vorträgen geraten die Untertitel dadurch immer weiter in Rückstand und holen erst in Sprechpausen wieder auf. OpenAI kommt hier besser mit. Chunk- und Semantik-Modus sind nicht betroffen.",
   "wizard_anthropic_stt_note": "Claude bietet keine Spracherkennung — die Transkription läuft über OpenAI, daher wird zusätzlich ein OpenAI-Schlüssel benötigt.",
   "wizard_show_key": "Anzeigen",
   "wizard_key_saved_hint": "Ein Schlüssel ist bereits gespeichert — leer lassen, um ihn zu behalten.",
