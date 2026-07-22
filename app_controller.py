@@ -1008,7 +1008,15 @@ class AppController:
                 gate = self._noise_gate
                 if gate is not None and load_settings().noise_filter:
                     chunk = gate.process(chunk)
-                handle.feed(chunk)
+                try:
+                    handle.feed(chunk)
+                except Exception as e:
+                    # A concurrent swap/stop can close this handle between the
+                    # read above and here; feeding a closed connection then
+                    # raises. Drop the chunk (same policy as chunks captured
+                    # while down) rather than let it kill the feeder thread and
+                    # silence the pipeline for the rest of the session.
+                    log(f"STREAMING feeder dropped a chunk: {e}", level="DEBUG")
 
     def _handle_terminal_stream_error(
         self,
