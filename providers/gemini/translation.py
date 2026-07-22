@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from providers.gemini.client import get_client
+from providers.gemini.thinking import THINKING_LEVEL as _THINKING_LEVEL
 from utils.cost_tracking import record_gemini_response
 
 
@@ -25,7 +26,14 @@ class GeminiTranslationProvider:
             # latency (live-probed 2026-07-15: 4.6s → 2.3s on 3.5-flash).
             # Live subtitles can't afford it — same decision as Anthropic's
             # disabled extended thinking.
-            "thinking_config": types.ThinkingConfig(thinking_budget=0),
+            #
+            # thinking_level, NOT thinking_budget: the newer models dropped
+            # the budget field and reject it outright (live-probed
+            # 2026-07-22: gemini-3.6-flash and gemini-3.5-flash-lite both
+            # return 400 INVALID_ARGUMENT for thinking_budget=0, while
+            # thinking_level="minimal" works on every model we offer — and is
+            # faster than sending nothing at all: 3.17s → 1.23s on 3.6-flash).
+            "thinking_config": types.ThinkingConfig(thinking_level=_THINKING_LEVEL),
         }
         if system_prompt:
             config_kwargs["system_instruction"] = system_prompt

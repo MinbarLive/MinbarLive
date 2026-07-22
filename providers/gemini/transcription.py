@@ -7,6 +7,7 @@ generate_content with a verbatim-transcription instruction.
 from __future__ import annotations
 
 from providers.gemini.client import get_client
+from providers.gemini.thinking import THINKING_LEVEL as _THINKING_LEVEL
 from utils.cost_tracking import record_gemini_response
 
 _INSTRUCTION = (
@@ -48,7 +49,7 @@ class GeminiTranscriptionProvider:
             # Verbatim transcription needs no reasoning; thinking only adds
             # latency on the Gemini 3.x models (see translation.py).
             config=types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(thinking_budget=0)
+                thinking_config=types.ThinkingConfig(thinking_level=_THINKING_LEVEL)
             ),
         )
         record_gemini_response(resp, model=model, role="transcription")

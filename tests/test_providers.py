@@ -485,7 +485,9 @@ class TestGeminiTranslationProvider:
         assert kwargs["config"].system_instruction == "sys"
         assert kwargs["config"].max_output_tokens == 40
         assert kwargs["config"].temperature == 0.2
-        assert kwargs["config"].thinking_config.thinking_budget == 0
+        assert str(
+            kwargs["config"].thinking_config.thinking_level
+        ).upper().endswith("MINIMAL")
 
     def test_user_only_defaults_to_thinking_off(self, monkeypatch):
         # Even a bare call sends a config: Gemini 3.x models think by
@@ -494,7 +496,7 @@ class TestGeminiTranslationProvider:
         GeminiTranslationProvider().complete(model="m", user_prompt="usr")
         cfg = client.models.generate_content.call_args.kwargs["config"]
         assert cfg.system_instruction is None
-        assert cfg.thinking_config.thinking_budget == 0
+        assert str(cfg.thinking_config.thinking_level).upper().endswith("MINIMAL")
 
     def test_none_text_returns_empty_string(self, monkeypatch):
         self._client_mock(monkeypatch, text=None)
@@ -522,7 +524,7 @@ class TestGeminiTranscriptionProvider:
         assert "verbatim" in instruction
         assert "'ar'" in instruction
         cfg = client.models.generate_content.call_args.kwargs["config"]
-        assert cfg.thinking_config.thinking_budget == 0
+        assert str(cfg.thinking_config.thinking_level).upper().endswith("MINIMAL")
 
     def test_auto_detect_has_no_language_hint(self, monkeypatch):
         client = self._client_mock(monkeypatch)
