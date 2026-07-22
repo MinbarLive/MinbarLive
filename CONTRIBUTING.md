@@ -106,4 +106,4 @@ This file is now tracked with **Git LFS** and will be downloaded automatically w
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the GPL-3.0 License.
+By contributing, you agree that your contributions will be licensed under the AGPL-3.0 License.

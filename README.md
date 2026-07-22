@@ -210,4 +210,4 @@ Barakallahu feekum 🌙
 
 ## License
 
-GPL-3.0. See `LICENSE`.
+AGPL-3.0. See `LICENSE`.
