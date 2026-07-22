@@ -1295,8 +1295,10 @@ class AppGUI(
         self.language_combo.grid(row=1, column=0, sticky="ew", pady=(4, 0))
 
         # ── Subtitle Mode + Mode Controls — side by side ─────────────────────
+        # Sits below the Processing Strategy (rows 3/4): the strategy decides
+        # which subtitle modes exist at all (Realtime is streaming-only).
         mode_outer = ctk.CTkFrame(card, fg_color="transparent")
-        mode_outer.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 12))
+        mode_outer.grid(row=5, column=0, sticky="ew", padx=18, pady=(0, 14))
         mode_outer.grid_columnconfigure(0, weight=1)
         mode_outer.grid_columnconfigure(1, weight=0, minsize=160)
 
@@ -1362,9 +1364,9 @@ class AppGUI(
         )
 
         # ── Processing Strategy (master switch: real-time / chunk / semantic) ─
-        # Sits below the Subtitles selector.
+        # Sits above the Subtitles selector (which it feeds).
         strat_label_frame = ctk.CTkFrame(card, fg_color="transparent")
-        strat_label_frame.grid(row=5, column=0, sticky="ew", padx=18, pady=(4, 2))
+        strat_label_frame.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 2))
         strat_label_frame.grid_columnconfigure(0, weight=1)
         strat_lbl = self._label(
             strat_label_frame, "processing_strategy", symbol="⇶", size=14, weight="bold"
@@ -1385,7 +1387,7 @@ class AppGUI(
         )
 
         strat_combo_row = ctk.CTkFrame(card, fg_color="transparent")
-        strat_combo_row.grid(row=6, column=0, sticky="ew", padx=18, pady=(0, 14))
+        strat_combo_row.grid(row=4, column=0, sticky="ew", padx=18, pady=(0, 14))
         strat_combo_row.grid_columnconfigure(0, weight=1)
         # Master switch. "realtime" => streaming (pipeline_mode streaming);
         # "semantic"/"chunk" => segmented buffering. Real-time is first and the
