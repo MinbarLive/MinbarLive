@@ -56,7 +56,15 @@ TRANSCRIPTION_MODELS = [
 # SDK had a chance to either finish or surface its precise connection error.
 WEBSOCKET_OPEN_TIMEOUT_SECONDS = 20.0
 WEBSOCKET_CLOSE_TIMEOUT_SECONDS = 3.0
-STARTUP_TIMEOUT_SECONDS = 30.0
+# Generous on purpose. Measured 2026-07-22 with --debug: on the first connect
+# after an API key changes, the socket opened in 0.78 s and the server then
+# stayed silent for 31.5 s before sending session.created — the 30 s ceiling
+# killed a session that was two seconds from working, and the immediate retry
+# connected in 0.53 s. A rejected key does not need this budget: it arrives as
+# an explicit error event, which fails the start straight away.
+# AppGUI runs the start on a worker thread, so waiting here never freezes the
+# window.
+STARTUP_TIMEOUT_SECONDS = 60.0
 
 _SESSION_READY_EVENTS = frozenset(
     (

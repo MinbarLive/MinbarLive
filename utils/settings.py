@@ -381,9 +381,9 @@ class Settings:
     # together with the live transcript line — user decision)
     bilingual_mode: bool = True
     # Realtime mode only: show the in-progress transcript ("live line") while
-    # the speaker is still talking. Off = the feed shows only finished
-    # translation blocks as they land.
-    show_interim_transcript: bool = True
+    # the speaker is still talking. Off by default (user decision 2026-07-22):
+    # the feed shows only finished translation blocks as they land.
+    show_interim_transcript: bool = False
     # Islamic mode (default on): Quran verse RAG matching + verified-verse
     # bypass + Athan detection + Islamic translation prompt. Off = general
     # professional translator for non-religious content (safety-locked in
@@ -593,7 +593,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             subtitle_theme_mode=subtitle_theme_mode,
             show_footer=data.get("show_footer", True),
             bilingual_mode=data.get("bilingual_mode", True),
-            show_interim_transcript=data.get("show_interim_transcript", True),
+            show_interim_transcript=data.get("show_interim_transcript", False),
             islamic_mode=data.get("islamic_mode", True),
             hide_subtitle_on_stop=data.get("hide_subtitle_on_stop", False),
             always_on_top=data.get("always_on_top", True),

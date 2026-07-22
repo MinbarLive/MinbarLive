@@ -4,6 +4,7 @@
   "start": "▶ Pokreni",
   "stop": "■ Zaustavi",
   "running": "● Radi",
+  "connecting": "○ Povezivanje…",
   "stopped": "Zaustavljeno",
   "audio_device_lost": "Audio uređaj izgubljen",
   "control_center": "Kontrole",

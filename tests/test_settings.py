@@ -579,26 +579,26 @@ class TestCheckForUpdatesSetting:
 
 
 class TestShowInterimTranscriptSetting:
-    def test_round_trip_off(self, tmp_path, monkeypatch):
+    def test_round_trip_on(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             settings_module, "_settings_path", lambda: tmp_path / "settings.json"
         )
         settings_module._cached_settings = None
-        save_settings(Settings(show_interim_transcript=False))
+        save_settings(Settings(show_interim_transcript=True))
         settings_module._cached_settings = None
         try:
-            assert load_settings(use_cache=False).show_interim_transcript is False
+            assert load_settings(use_cache=False).show_interim_transcript is True
         finally:
             settings_module._cached_settings = None
 
-    def test_missing_key_defaults_on(self, tmp_path, monkeypatch):
-        """Pre-existing settings files show the live transcript by default."""
+    def test_missing_key_defaults_off(self, tmp_path, monkeypatch):
+        """Settings files without the key hide the live transcript."""
         path = tmp_path / "settings.json"
         path.write_text(json.dumps({}), encoding="utf-8")
         monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
         settings_module._cached_settings = None
         try:
-            assert load_settings(use_cache=False).show_interim_transcript is True
+            assert load_settings(use_cache=False).show_interim_transcript is False
         finally:
             settings_module._cached_settings = None
 

@@ -224,6 +224,8 @@ class AppGUI(
         # Compact input-level meter (backend: controller.get_input_level()).
         self.input_level_poll_job: str | None = None
         self._input_level_ui_state: tuple[bool, bool] | None = None
+        # True while the modal API-key dialog is up (see _prompt_provider_key).
+        self._key_prompt_open = False
 
         # Startup update check (worker thread writes, after-poll reads).
         self._update_check_result: UpdateInfo | None = None
@@ -231,6 +233,14 @@ class AppGUI(
         self._update_poll_job: str | None = None
         self._update_poll_tries = 0
         self._update_available: UpdateInfo | None = None
+
+        # Start runs on a worker thread (the provider handshake can take tens
+        # of seconds), an after-poll picks the outcome up on the Tk thread.
+        self._starting = False
+        self._start_thread: threading.Thread | None = None
+        self._start_done = threading.Event()
+        self._start_error: Exception | None = None
+        self._start_poll_job: str | None = None
 
         self._running = False
         self._log_polling = False
@@ -677,6 +687,93 @@ class AppGUI(
     # Logo height in the header strip (logical units; the strip is 68 tall).
     _BRAND_LOGO_H = 38
 
+    # Wordmark next to the logo (see _fit_brand_wordmark).
+    _BRAND_LOGO_GAP = 10  # raw px, the logo label's right pack padding
+    _BRAND_TITLE_GAP = 4  # raw px of slack, on top of the brand frame's padding
+
+    def _fit_brand_wordmark(self, event: object | None = None) -> None:
+        """Hide the wordmark when the header buttons leave no room for it, and
+        bring it back when they do (opening the log panel narrows the sidebar).
+
+        Without this the label is simply squeezed by grid and CTkLabel centre-
+        clips its text ("inbarLi"), which reads as a rendering fault. The
+        buttons sit in their own fixed columns and the wordmark's column takes
+        whatever is left, so the space left for it follows from the header's
+        width alone — it does not depend on the wordmark, and the decision
+        cannot oscillate."""
+        label = getattr(self, "_brand_title_label", None)
+        if label is None or not label.winfo_exists():
+            return
+        try:
+            # The event's width, not winfo_width(): <Configure> is delivered
+            # with the NEW size while the children are still where the previous
+            # layout put them.
+            width = getattr(event, "width", None) or self._sidebar_header.winfo_width()
+            if width <= 1:
+                return  # header not laid out yet — a later <Configure> retries
+            available = (
+                width
+                - self._header_buttons_span()
+                - sum(self._grid_padx(self._brand_frame))
+                - self._BRAND_TITLE_GAP
+            )
+            logo = self._brand_logo_label
+            if logo is not None and logo.winfo_manager() == "pack":
+                available -= logo.winfo_reqwidth() + self._BRAND_LOGO_GAP
+        except tk.TclError:
+            return
+
+        # winfo_reqwidth() is what the label asks for at its font — unaffected
+        # by how much room it is actually given, and unaffected by being hidden.
+        fits = label.winfo_reqwidth() <= available
+        # Pack state, not winfo_ismapped(): a withdrawn or minimised window
+        # maps nothing, and comparing against that would skip the hide.
+        if fits == (label.winfo_manager() == "pack"):
+            return
+        if fits:
+            label.pack(side="left")  # back after the logo, which stays packed
+        else:
+            label.pack_forget()
+
+    def _header_buttons_span(self) -> int:
+        """Total px the header buttons occupy, including their grid padding.
+
+        Requested widths and paddings only — never laid-out positions. A
+        <Configure> handler that read winfo_x() measured the PREVIOUS layout,
+        which hid the wordmark on a widened header and showed it (clipped) on a
+        narrowed one: exactly inverted. Verified against a real header:
+        header width - this span == the first button's x once settled.
+        """
+        span = 0
+        for button in (
+            self._history_btn,
+            self._batch_btn,
+            self._announce_btn,
+            self._settings_btn,
+            self._log_toggle_btn,
+        ):
+            span += button.winfo_reqwidth() + sum(self._grid_padx(button))
+        return span
+
+    @staticmethod
+    def _grid_padx(widget) -> tuple[int, int]:
+        """A widget's (left, right) grid padding in real px — CustomTkinter has
+        already applied the widget scaling. Read back from the layout rather
+        than recomputed from the constants, so it cannot drift from it."""
+        pad = widget.grid_info().get("padx", 0)
+        try:
+            if isinstance(pad, tuple | list):
+                values = [int(p) for p in pad]
+            else:
+                values = [int(p) for p in str(pad).split()]
+        except (TypeError, ValueError):
+            return (0, 0)
+        if not values:
+            return (0, 0)
+        if len(values) == 1:
+            return (values[0], values[0])
+        return (values[0], values[1])
+
     def _brand_logo_image(self):
         """The header logo for the current theme, or None if it cannot be read.
 
@@ -710,6 +807,7 @@ class AppGUI(
         brand = ctk.CTkFrame(header, fg_color="transparent")
         brand.grid(row=0, column=0, sticky="w", padx=22, pady=12)
 
+        self._brand_frame = brand
         self._brand_logo_label = None
         logo = self._brand_logo_image()
         if logo is not None:
@@ -734,6 +832,7 @@ class AppGUI(
         )
         title_label.pack(side="left")
         self._labels.append(title_label)
+        self._brand_title_label = title_label
 
         self._history_btn = ctk.CTkButton(
             header,
@@ -812,6 +911,9 @@ class AppGUI(
         )
         self._log_toggle_btn.grid(row=0, column=5, sticky="e", padx=(0, 16), pady=12)
         self._buttons.append(self._log_toggle_btn)
+
+        # Bound last: the handler measures against the buttons above.
+        header.bind("<Configure>", self._fit_brand_wordmark)
 
     # ── Update notice ───────────────────────────────────────────────────────
     # Dismissible banner between the header and the cards, shown when the
@@ -1888,8 +1990,17 @@ class AppGUI(
 
         if has_usable_key(self._saved_settings.ai_provider):
             return
-        # No key found → prompt after the window is fully drawn
-        self.after(500, self.on_change_key)
+        # No key found → prompt after the window is fully drawn, but re-check
+        # then: pressing Start in the meantime prompts too (and the key dialog
+        # grabs input, not timers), so an unconditional prompt here queued a
+        # second dialog behind the first one.
+        self.after(500, self._prompt_key_if_missing)
+
+    def _prompt_key_if_missing(self) -> None:
+        """Prompt for the active provider's key unless one turned up meanwhile."""
+        provider = self._saved_settings.ai_provider
+        if not has_usable_key(provider):
+            self._prompt_provider_key(provider)
 
     def _append_log_line(self, text: str) -> None:
         self.log_text.configure(state="normal")
@@ -2005,19 +2116,14 @@ class AppGUI(
         return batch_size, next_poll_ms
 
     def on_change_key(self, provider: str | None = None) -> None:
-        prompt_for_api_key(
-            root=self,
-            startup=False,
-            on_close=lambda: None,
-            colors=self._colors,
-            texts=self.gui_texts,
-            provider=provider or self._saved_settings.ai_provider,
-        )
+        self._prompt_provider_key(provider or self._saved_settings.ai_provider)
 
     def _required_key_providers(self) -> list[str]:
         return required_key_providers(self._saved_settings)
 
     def on_start(self) -> None:
+        if self._starting or self._running:
+            return
         # Prompt for any missing key; if the user dismisses the dialog the app
         # stays stopped (the dialog re-opens on the next Start attempt).
         for provider in self._required_key_providers():
@@ -2029,15 +2135,54 @@ class AppGUI(
         # controller.start() releases a running preview itself; drop the timer
         # so it can't stop anything once the live session owns the device.
         self._cancel_input_level_auto_stop()
-        try:
-            self.controller.start(input_device=self.get_selected_device_index())
-        except Exception as exc:
+
+        # Off the Tk thread: opening a streaming session waits for the
+        # provider's session confirmation, which was measured at 30+ seconds on
+        # the first connect after an API key changes. Run inline and the whole
+        # window is frozen ("Keine Rückmeldung") for that entire time.
+        device = self.get_selected_device_index()
+        self._start_error = None
+        self._start_done.clear()
+        self._set_starting(True)
+
+        def _work() -> None:
+            try:
+                self.controller.start(input_device=device)
+            except Exception as exc:  # surfaced on the Tk thread below
+                self._start_error = exc
+            finally:
+                self._start_done.set()
+
+        self._start_thread = threading.Thread(
+            target=_work, daemon=True, name="pipeline-start"
+        )
+        self._start_thread.start()
+        self._poll_start_result()
+
+    def _poll_start_result(self) -> None:
+        """Apply the outcome of a Start once the worker thread is done.
+
+        Only ever acts while a start is in flight: the outcome is consumed
+        here, so a second call would read a cleared error as success and mark
+        the panel running after a start that failed."""
+        self._start_poll_job = None
+        if self._closing or not self._starting:
+            return
+        if not self._start_done.is_set():
+            self._start_poll_job = self.after(100, self._poll_start_result)
+            return
+
+        self._start_thread = None
+        self._set_starting(False)
+        error, self._start_error = self._start_error, None
+        if error is not None:
             # No usage was billed for a start that never ran — drop the session
             # so it never appears in the cost history.
             cancel_cost_session()
+            self._set_status(False)
             self._alert(
                 self.gui_texts.get("error_start_failed", "Start failed"),
-                str(exc),
+                str(error),
                 parent=self,
                 danger=True,
             )
@@ -2172,6 +2317,28 @@ class AppGUI(
         """Finalize the cost session (writes the record) and stop flushing."""
         self._cancel_cost_flush()
         end_cost_session(status)
+
+    def _set_starting(self, starting: bool) -> None:
+        """Show that a Start is in flight (the provider handshake can run for
+        tens of seconds). Both buttons are inert meanwhile: Start would queue a
+        second session, and there is nothing to stop until the pipeline is up."""
+        self._starting = starting
+        if not starting:
+            return
+        self.start_btn.configure(
+            state="disabled",
+            fg_color=self._colors["button"],
+            hover_color=self._colors["button_hover"],
+            text_color_disabled=self._colors["muted"],
+        )
+        connecting = self.gui_texts.get("connecting", "Connecting…")
+        self.status_label.configure(text=connecting, text_color=self._colors["accent"])
+        self.status_badge.configure(fg_color=self._colors["accent_soft"])
+        self.right_status.configure(
+            text=connecting,
+            fg_color=self._colors["accent_soft"],
+            text_color=self._colors["accent"],
+        )
 
     def _set_status(self, running: bool) -> None:
         if running:
@@ -2667,15 +2834,26 @@ class AppGUI(
             self.strategy_running_hint.pack_forget()
 
     def _prompt_provider_key(self, provider: str) -> None:
-        """Open the API-key dialog for a specific provider."""
-        prompt_for_api_key(
-            root=self,
-            startup=False,
-            on_close=lambda: None,
-            colors=self._colors,
-            texts=self.gui_texts,
-            provider=provider,
-        )
+        """Open the API-key dialog for a specific provider.
+
+        Never stacks a second dialog on an open one. The dialog grabs input
+        and runs its own event loop, so a second one queued by a timer sits
+        invisible behind it and only surfaces once the first is dismissed —
+        reported as "after entering the key I get a second key prompt"."""
+        if self._key_prompt_open:
+            return
+        self._key_prompt_open = True
+        try:
+            prompt_for_api_key(
+                root=self,
+                startup=False,
+                on_close=lambda: None,
+                colors=self._colors,
+                texts=self.gui_texts,
+                provider=provider,
+            )
+        finally:
+            self._key_prompt_open = False
 
     def _strategy_labels(self) -> list[str]:
         """Localized display names for the Processing Strategy dropdown, in

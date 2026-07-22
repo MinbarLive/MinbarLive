@@ -766,8 +766,22 @@ class SubtitleWindow(tk.Toplevel):
         font_spec = (self._footer_font_family, 13, "bold")
         font_obj = tkfont.Font(family=self._footer_font_family, size=13, weight="bold")
         pad_x, pad_y = 22, 9
-        pill_w = min(font_obj.measure(text) + pad_x * 2, self.canvas_width - 40)
-        pill_h = font_obj.metrics("linespace") + pad_y * 2
+        line_h = font_obj.metrics("linespace")
+        # The pause mark is DRAWN, not typed: every media-control code point
+        # (U+23F8, U+275A, …) either has no glyph in Tk on Windows — it came
+        # out as a tofu box — or carries side bearings so wide that two bars
+        # read as two loose blocks. Drawn bars give the proportions of a real
+        # pause icon at any font size.
+        bar_w = max(2, round(line_h * 0.17))
+        bar_h = round(line_h * 0.66)
+        bar_gap = max(2, round(bar_w * 0.75))
+        icon_w = bar_w * 2 + bar_gap
+        icon_gap = round(pad_x * 0.45)  # icon to text
+        text_w = font_obj.measure(text)
+        pill_w = min(
+            icon_w + icon_gap + text_w + pad_x * 2, self.canvas_width - 40
+        )
+        pill_h = line_h + pad_y * 2
         cx = self.canvas_width / 2
         # Directly above the disclaimer pill when it is shown (both pills use
         # the same font, so their heights match), else in its bottom spot.
@@ -785,17 +799,33 @@ class SubtitleWindow(tk.Toplevel):
             outline=self._card_outline,
             width=1,
         )
+        # Icon left, text right — a pause mark is symmetric, so it needs no
+        # mirroring for right-to-left target languages.
+        mid_y = (y1 + y2) / 2
+        left = cx - pill_w / 2 + pad_x
+        bar_ids = [
+            self.canvas.create_polygon(
+                self._rounded_rect_points(
+                    x, mid_y - bar_h / 2, x + bar_w, mid_y + bar_h / 2, bar_w * 0.35
+                ),
+                smooth=True,
+                splinesteps=8,
+                fill=self._secondary_text,
+                outline="",
+            )
+            for x in (left, left + bar_w + bar_gap)
+        ]
         text_id = self.canvas.create_text(
-            cx,
-            (y1 + y2) / 2,
+            left + icon_w + icon_gap,
+            mid_y,
             text=_reshape_rtl(text),
             fill=self._secondary_text,
             font=font_spec,
-            anchor="center",
-            justify="center",
-            width=int(pill_w - pad_x * 2),
+            anchor="w",
+            justify="left",
+            width=int(pill_w - pad_x * 2 - icon_w - icon_gap),
         )
-        self._stopped_hint_items = [bg_id, text_id]
+        self._stopped_hint_items = [bg_id, *bar_ids, text_id]
 
     def set_announcement(self, text: str):
         """Show (or replace) the big centred announcement card, or clear it
