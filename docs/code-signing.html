@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Code Signing Policy | MinbarLive</title>
+<meta name="description" content="How MinbarLive releases are built, reviewed and signed.">
+<link rel="icon" href="favicon.ico">
+<link rel="canonical" href="https://minbarlive.info/code-signing.html">
+<style>
+  /* Palette and type mirror index.html. Kept self-contained on purpose: the
+     landing page carries its CSS inline, and extracting a shared stylesheet
+     out of it is a refactor this page does not justify. */
+  :root {
+    --navy: #1d4a6b;
+    --navy-soft: #2b6a97;
+    --ink: #24384a;
+    --ink-muted: #5b7188;
+    --card-solid: #ffffff;
+    --border: rgba(29, 74, 107, 0.14);
+    --shadow: 0 10px 30px rgba(29, 74, 107, 0.10);
+    --radius: 22px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: "Inter", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    color: var(--ink);
+    line-height: 1.65;
+    background:
+      radial-gradient(1200px 800px at 0% 0%, rgba(253, 244, 224, 0.9), transparent 60%),
+      linear-gradient(180deg, #f7fafc 0%, #eef4f8 100%);
+    min-height: 100vh;
+  }
+
+  .wrap { max-width: 780px; margin: 0 auto; padding: 0 24px; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    padding: 18px 0;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    background: rgba(255, 255, 255, 0.55);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar-inner {
+    max-width: 780px; margin: 0 auto; padding: 0 24px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--navy); font-weight: 700; }
+  .brand img { height: 40px; width: auto; }
+  .topbar a.back { color: var(--navy-soft); text-decoration: none; font-size: 0.9rem; font-weight: 600; }
+  .topbar a.back:hover { text-decoration: underline; }
+
+  main { padding: 56px 0 72px; }
+
+  h1 { font-size: 2rem; color: var(--navy); line-height: 1.25; }
+  .lede { color: var(--ink-muted); margin-top: 10px; }
+
+  h2 {
+    font-size: 1.15rem; color: var(--navy); margin-top: 40px; padding-top: 26px;
+    border-top: 1px solid var(--border);
+  }
+  h2:first-of-type { border-top: none; padding-top: 0; }
+
+  p, ul, table { margin-top: 14px; }
+  ul { padding-left: 22px; }
+  li { margin-top: 6px; }
+
+  a { color: var(--navy-soft); }
+
+  code {
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 0.88em; background: rgba(29, 74, 107, 0.07);
+    padding: 1px 5px; border-radius: 5px;
+    /* Paths and file names are unbreakable tokens; let them break rather than
+       widen the page on a narrow phone. */
+    overflow-wrap: anywhere;
+  }
+
+  .note {
+    margin-top: 24px; padding: 16px 18px; border-radius: 14px;
+    background: var(--card-solid); border: 1px solid var(--border);
+    box-shadow: var(--shadow); font-size: 0.95rem;
+  }
+  .note strong { color: var(--navy); }
+
+  .table-scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  td { overflow-wrap: anywhere; }
+  th { color: var(--navy); font-weight: 600; white-space: nowrap; }
+
+  footer {
+    border-top: 1px solid var(--border); padding: 34px 0 60px;
+    text-align: center; color: var(--ink-muted); font-size: 0.86rem;
+  }
+  footer a { text-decoration: none; font-weight: 600; }
+  footer a:hover { text-decoration: underline; }
+
+  @media (max-width: 640px) {
+    h1 { font-size: 1.6rem; }
+    main { padding: 40px 0 56px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">
+      <img src="assets/MinbarLive_white_stroke.png" alt="MinbarLive">
+      <span>MinbarLive</span>
+    </a>
+    <a class="back" href="/">← Back to the site</a>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <h1>Code Signing Policy</h1>
+  <p class="lede">
+    How MinbarLive releases are built, who authorises them, and what the
+    published Windows executable is.
+  </p>
+
+  <div class="note">
+    <strong>Current status:</strong> releases are <em>not yet</em> code-signed.
+    Windows therefore shows a Microsoft Defender SmartScreen warning
+    ("unrecognized app", "Unknown publisher") the first time
+    <code>MinbarLive.exe</code> runs. Code signing is being set up; this page
+    will state the signing identity once it is in place.
+  </div>
+
+  <h2>Project identity</h2>
+  <div class="table-scroll">
+    <table>
+      <tr><th>Project</th><td>MinbarLive</td></tr>
+      <tr><th>Homepage</th><td><a href="https://minbarlive.info/">minbarlive.info</a></td></tr>
+      <tr><th>Source</th><td><a href="https://github.com/MinbarLive/MinbarLive">github.com/MinbarLive/MinbarLive</a></td></tr>
+      <tr><th>License</th><td><a href="https://github.com/MinbarLive/MinbarLive/blob/main/LICENSE">AGPL-3.0</a></td></tr>
+      <tr><th>Releases</th><td><a href="https://github.com/MinbarLive/MinbarLive/releases">github.com/MinbarLive/MinbarLive/releases</a></td></tr>
+      <tr><th>Signed artifact</th><td><code>MinbarLive.exe</code>, the Windows application, built with PyInstaller</td></tr>
+    </table>
+  </div>
+  <p>
+    MinbarLive is an open-source tool that displays real-time translated
+    subtitles for mosque lectures. It contains no proprietary components beyond
+    the operating system libraries it links against.
+  </p>
+
+  <h2>Team and roles</h2>
+  <p>
+    MinbarLive is currently maintained by a single person. All three roles are
+    held by the same GitHub account, and this section is updated if that
+    changes.
+  </p>
+  <div class="table-scroll">
+    <table>
+      <tr><th>Role</th><th>Held by</th><th>Responsibility</th></tr>
+      <tr>
+        <td>Author</td>
+        <td><a href="https://github.com/mosait">@mosait</a></td>
+        <td>Writes and commits code; may push to <code>main</code>.</td>
+      </tr>
+      <tr>
+        <td>Reviewer</td>
+        <td><a href="https://github.com/mosait">@mosait</a></td>
+        <td>Reviews and approves every contribution from outside the project before it is merged.</td>
+      </tr>
+      <tr>
+        <td>Approver</td>
+        <td><a href="https://github.com/mosait">@mosait</a></td>
+        <td>Authorises each individual signing request. Signing is never automatic and never unattended.</td>
+      </tr>
+    </table>
+  </div>
+  <p>
+    All accounts with write access to the repository and to the signing platform
+    have multi-factor authentication enabled.
+  </p>
+
+  <h2>How a release is built</h2>
+  <p>
+    Release binaries are never built or uploaded from a personal machine. They
+    are produced by a GitHub Actions workflow
+    (<a href="https://github.com/MinbarLive/MinbarLive/blob/main/.github/workflows/release.yml"><code>.github/workflows/release.yml</code></a>)
+    from the public source at a tagged commit:
+  </p>
+  <ul>
+    <li>The workflow triggers on a <code>v*</code> tag and runs on a clean GitHub-hosted Windows runner.</li>
+    <li>Dependencies are installed from <code>requirements.txt</code>, which pins exact versions.</li>
+    <li>The test suite runs before the build.</li>
+    <li>The tag is checked against the version compiled into the application; a mismatch fails the build.</li>
+    <li>PyInstaller builds the executable from <a href="https://github.com/MinbarLive/MinbarLive/blob/main/MinbarLive.spec"><code>MinbarLive.spec</code></a>.</li>
+    <li>A SHA-256 checksum is published alongside the executable as <code>SHA256SUMS.txt</code>.</li>
+  </ul>
+  <p>
+    Anyone can re-run the same workflow from the same tag and inspect every step
+    in the public Actions log.
+  </p>
+
+  <h2>Privacy</h2>
+  <p>
+    MinbarLive runs locally on the operator's machine. It has no backend, no
+    account system, and no analytics or telemetry.
+  </p>
+  <p>
+    To produce subtitles it sends audio, transcripts and recent session context
+    to the AI service the operator configures, using the operator's own API key;
+    API keys live in the operating system's credential store, and transcripts
+    and logs stay in a folder on the operator's machine. It carries no
+    analytics, telemetry or crash reporting, does not modify system
+    configuration, installs no background services and bundles no third-party
+    offers.
+  </p>
+  <p>
+    The full disclosure, including every outbound connection the software makes,
+    is in the <a href="privacy.html">privacy policy</a>.
+  </p>
+
+  <h2>Reporting a problem</h2>
+  <p>
+    Only executables downloaded from the
+    <a href="https://github.com/MinbarLive/MinbarLive/releases">official releases page</a>
+    or from the download button on <a href="https://minbarlive.info/">minbarlive.info</a>
+    are published by this project. Verify a download against the published
+    SHA-256 checksum if in doubt.
+  </p>
+  <p>
+    If you believe a signed MinbarLive binary has been tampered with, or you
+    find a security issue, please open an issue at
+    <a href="https://github.com/MinbarLive/MinbarLive/issues">github.com/MinbarLive/MinbarLive/issues</a>.
+  </p>
+
+</main>
+
+<footer>
+  <p>© 2026 MinbarLive · <a href="/">minbarlive.info</a></p>
+</footer>
+
+</body>
+</html>

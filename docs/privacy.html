@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy | MinbarLive</title>
+<meta name="description" content="What MinbarLive does with audio, text and settings, and what this website collects.">
+<link rel="icon" href="favicon.ico">
+<link rel="canonical" href="https://minbarlive.info/privacy.html">
+<style>
+  /* Palette and type mirror index.html. Kept self-contained on purpose: the
+     landing page carries its CSS inline, and extracting a shared stylesheet
+     out of it is a refactor this page does not justify. */
+  :root {
+    --navy: #1d4a6b;
+    --navy-soft: #2b6a97;
+    --ink: #24384a;
+    --ink-muted: #5b7188;
+    --card-solid: #ffffff;
+    --border: rgba(29, 74, 107, 0.14);
+    --shadow: 0 10px 30px rgba(29, 74, 107, 0.10);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: "Inter", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    color: var(--ink);
+    line-height: 1.65;
+    background:
+      radial-gradient(1200px 800px at 0% 0%, rgba(253, 244, 224, 0.9), transparent 60%),
+      linear-gradient(180deg, #f7fafc 0%, #eef4f8 100%);
+    min-height: 100vh;
+  }
+
+  .wrap { max-width: 780px; margin: 0 auto; padding: 0 24px; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    padding: 18px 0;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    background: rgba(255, 255, 255, 0.55);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar-inner {
+    max-width: 780px; margin: 0 auto; padding: 0 24px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--navy); font-weight: 700; }
+  .brand img { height: 40px; width: auto; }
+  .topbar a.back { color: var(--navy-soft); text-decoration: none; font-size: 0.9rem; font-weight: 600; }
+  .topbar a.back:hover { text-decoration: underline; }
+
+  main { padding: 56px 0 72px; }
+
+  h1 { font-size: 2rem; color: var(--navy); line-height: 1.25; }
+  .lede { color: var(--ink-muted); margin-top: 10px; }
+
+  h2 {
+    font-size: 1.15rem; color: var(--navy); margin-top: 40px; padding-top: 26px;
+    border-top: 1px solid var(--border);
+  }
+  h3 { font-size: 1rem; color: var(--navy); margin-top: 26px; }
+
+  p, ul { margin-top: 14px; }
+  ul { padding-left: 22px; }
+  li { margin-top: 6px; }
+
+  a { color: var(--navy-soft); }
+
+  code {
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 0.88em; background: rgba(29, 74, 107, 0.07);
+    padding: 1px 5px; border-radius: 5px;
+    overflow-wrap: anywhere;
+  }
+
+  .note {
+    margin-top: 24px; padding: 16px 18px; border-radius: 14px;
+    background: var(--card-solid); border: 1px solid var(--border);
+    box-shadow: var(--shadow); font-size: 0.95rem;
+  }
+  .note strong { color: var(--navy); }
+
+  footer {
+    border-top: 1px solid var(--border); padding: 34px 0 60px;
+    text-align: center; color: var(--ink-muted); font-size: 0.86rem;
+  }
+  footer a { text-decoration: none; font-weight: 600; }
+  footer a:hover { text-decoration: underline; }
+
+  @media (max-width: 640px) {
+    h1 { font-size: 1.6rem; }
+    main { padding: 40px 0 56px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">
+      <img src="assets/MinbarLive_white_stroke.png" alt="MinbarLive">
+      <span>MinbarLive</span>
+    </a>
+    <a class="back" href="/">← Back to the site</a>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <h1>Privacy Policy</h1>
+  <p class="lede">
+    What the MinbarLive application does with audio, text and settings, and what
+    this website collects.
+  </p>
+
+  <div class="note">
+    <strong>In short:</strong> MinbarLive runs on your own computer. The project
+    operates no servers, has no user accounts, and receives no data from you:
+    not audio, not transcripts, not usage statistics. What does leave your
+    machine, by design, is the material needed to produce subtitles: audio,
+    transcripts and recent session context. That goes directly to the AI service
+    <em>you</em> choose, using <em>your</em> own API key. The section below lists
+    it in full.
+  </div>
+
+  <h2>The application</h2>
+
+  <h3>What is sent to the AI services</h3>
+  <p>
+    Producing subtitles requires sending material to the AI service configured
+    by the person running the software, currently Google Gemini, OpenAI,
+    Anthropic or Deepgram. Each connection goes directly from that computer to
+    that provider, authenticated with the operator's own API key. The MinbarLive
+    project never sees any of it. Specifically, the following is transmitted:
+  </p>
+  <ul>
+    <li>
+      <strong>Audio.</strong> In real-time mode the microphone signal is
+      streamed continuously while the session runs; in segmented mode it is sent
+      as short recorded segments. In batch mode the audio file you select is
+      sent segment by segment.
+    </li>
+    <li>
+      <strong>The transcribed text</strong>, which is sent on for translation.
+    </li>
+    <li>
+      <strong>Recent context.</strong> Each translation request also carries the
+      last few transcribed segments and a running summary of what has been said
+      so far in the session, so that the translation stays coherent. A
+      translation request is therefore not limited to the current sentence.
+    </li>
+    <li>
+      <strong>Verse matching.</strong> When Islamic mode is enabled, each
+      transcription is additionally sent to an embedding service to compare it
+      against Quranic verses. Depending on configuration this may be a
+      <em>different</em> provider than the one chosen for translation.
+    </li>
+    <li>
+      <strong>Session summaries.</strong> If you use the "summarise session"
+      function, the stored transcript of that session is sent to the provider to
+      be summarised.
+    </li>
+  </ul>
+  <p>
+    Once data reaches a provider, that provider's own terms and privacy policy
+    apply. Anyone deploying MinbarLive should read them for the service they
+    select. Nothing is sent while a session is stopped.
+  </p>
+
+  <h3>Who is responsible for the recording</h3>
+  <p>
+    MinbarLive captures whatever the microphone hears, which in practice
+    includes the voice of the speaker and possibly people nearby. The person or
+    organisation operating the software, typically the mosque, decides what is
+    recorded and transmitted, and is responsible for informing those present and
+    for meeting any legal obligations that apply to them. The software is a
+    tool; it cannot make that judgement for you.
+  </p>
+
+  <h3>What is stored, and where</h3>
+  <p>
+    Transcripts, translations, logs and optional recordings are written to a
+    folder belonging to the user account on the computer running the software,
+    on Windows <code>%APPDATA%\MinbarLive</code>. They stay there. Nothing is
+    uploaded, and old files are cleaned up automatically after a retention
+    period. They can be deleted at any time by deleting that folder.
+  </p>
+
+  <h3>API keys</h3>
+  <p>
+    Provider API keys are stored in the operating system's own credential store
+    (Windows Credential Manager, macOS Keychain, or the Linux Secret Service),
+    not in configuration files. On a Linux system with no credential store
+    available at all, MinbarLive falls back to storing an OpenAI key in its
+    settings file and tells you so; every other provider is kept in memory for
+    that session only.
+  </p>
+
+  <h3>Update check</h3>
+  <p>
+    At startup the application makes one request to the GitHub releases API to
+    find out whether a newer version exists. It sends nothing about you or your
+    installation; GitHub sees only that a request arrived, as it would for any
+    web request. The check can be switched off in the settings.
+  </p>
+
+  <h3>Other connections</h3>
+  <p>
+    Apart from the AI services and the update check, the application contacts
+    the internet in only two situations, both started by you:
+  </p>
+  <ul>
+    <li>
+      <strong>ffmpeg download.</strong> Batch processing of video and
+      compressed audio needs the ffmpeg tool. If it is not already installed,
+      MinbarLive offers to download it from
+      <a href="https://www.gyan.dev/ffmpeg/builds/">gyan.dev</a>, a third-party
+      publisher of ffmpeg builds for Windows. This happens only after you agree
+      to it, and only on Windows.
+    </li>
+    <li>
+      <strong>Links you click.</strong> The setup wizard offers buttons that
+      open a provider's API key page or a tutorial video in your normal
+      browser. Nothing is contacted unless you click.
+    </li>
+  </ul>
+
+  <h3>What the application never does</h3>
+  <ul>
+    <li>No analytics, telemetry, crash reporting or usage tracking.</li>
+    <li>No user accounts, registration or licence checks.</li>
+    <li>No advertising and no bundled third-party offers.</li>
+    <li>No background services and no changes to system configuration.</li>
+  </ul>
+
+  <h2>This website</h2>
+  <p>
+    <a href="https://minbarlive.info/">minbarlive.info</a> is a set of static
+    pages hosted on GitHub Pages. It sets no cookies, and it runs no analytics
+    or tracking of any kind.
+  </p>
+  <ul>
+    <li>
+      <strong>Hosting.</strong> GitHub serves these pages and, like any web
+      server, processes the requesting IP address in order to deliver them. See
+      the <a href="https://docs.github.com/site-policy/privacy-policies/github-privacy-statement">GitHub Privacy Statement</a>.
+    </li>
+    <li>
+      <strong>Embedded videos.</strong> Some pages embed YouTube videos through
+      <code>youtube-nocookie.com</code>, which does not set advertising cookies
+      before you press play. Your browser still contacts Google's servers when
+      such a page loads, so Google receives your IP address at that point. If
+      you would rather avoid that, do not open the pages containing videos.
+    </li>
+    <li>
+      <strong>Outbound links.</strong> Links to GitHub, Linktree, a feedback
+      form and similar services lead to third parties with their own privacy
+      policies. They are only contacted if you follow the link.
+    </li>
+  </ul>
+
+  <h2>Questions</h2>
+  <p>
+    Questions about this policy can be raised as an issue at
+    <a href="https://github.com/MinbarLive/MinbarLive/issues">github.com/MinbarLive/MinbarLive/issues</a>.
+    See also the <a href="code-signing.html">code signing policy</a> for how
+    released binaries are built and authorised.
+  </p>
+
+</main>
+
+<footer>
+  <p>© 2026 MinbarLive · <a href="/">minbarlive.info</a></p>
+</footer>
+
+</body>
+</html>
