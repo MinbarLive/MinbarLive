@@ -1574,12 +1574,21 @@ class AppController:
         # Stop context manager
         get_context_manager().stop(timeout=timeout)
 
-        # Close the streaming connection if streaming mode was active, so its
-        # receive thread can exit. References are cleared only after the
-        # joins below — the processor thread's final flush still needs them.
-        if self._streaming_handle is not None:
+        # Tear the streaming connection down under the same lock the reconnect
+        # paths use, BEFORE joining: a supervisor/watchdog blocked in a slow
+        # open_stream() would otherwise outlive the join timeout and store a
+        # fresh handle that the cleanup below then nulls without closing —
+        # leaking an open, billed socket. Clearing _streaming_connect first
+        # makes any not-yet-started swap bail; grabbing the handle under the
+        # lock captures one an in-flight swap just opened so we can close it.
+        # Closing lets the streaming receive thread exit before the joins.
+        with self._streaming_lock:
+            self._streaming_connect = None
+            streaming_handle = self._streaming_handle
+            self._streaming_handle = None
+        if streaming_handle is not None:
             try:
-                self._streaming_handle.close()
+                streaming_handle.close()
             except Exception as e:
                 log(f"Error closing streaming handle: {e}", level="DEBUG")
 
@@ -1599,9 +1608,9 @@ class AppController:
                 log(f"Error joining thread {t.name}: {e}", level="DEBUG")
 
         self.strategy = None
-        self._streaming_handle = None
+        # _streaming_handle / _streaming_connect were cleared above under the
+        # lock; the session is safe to drop now that the workers are joined.
         self._streaming_session = None
-        self._streaming_connect = None
         self._noise_gate = None
         self._current_device = None
         self._running = False
