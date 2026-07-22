@@ -8,6 +8,7 @@ final flush on stop, forced flush for continuous speech, error recovery).
 """
 
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -849,6 +850,115 @@ class TestStreamingReconnect:
         assert controller._streaming_backoff > base
         provider.on_transcript("healthy again", False)
         assert controller._streaming_backoff == base
+
+
+class _CountingHandle:
+    """A fake stream handle that records every open and close, so a test can
+    assert that no opened connection is left dangling."""
+
+    def __init__(self, opened: list, closed: list, lock: threading.Lock):
+        self._closed = closed
+        self._lock = lock
+        with lock:
+            opened.append(self)
+
+    def feed(self, pcm_bytes: bytes) -> None:
+        pass
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed.append(self)
+
+
+class TestStreamingConnectionRaces:
+    """The streaming connection handle is mutated from several threads (the
+    reconnect supervisor, the stall watchdog, the terminal-error teardown and
+    stop()). These drive those paths concurrently and assert the lock keeps a
+    replaced connection from being orphaned — open and billed, feeding nothing.
+    """
+
+    def test_concurrent_swaps_leave_no_orphaned_connection(self):
+        """Many threads enter _swap_streaming_connection at once (the supervisor
+        and the watchdog can fire together). Every replaced connection must be
+        closed and exactly the last one opened stays live."""
+        controller = AppController()
+        opened: list = []
+        closed: list = []
+        record_lock = threading.Lock()
+
+        def connect():
+            handle = _CountingHandle(opened, closed, record_lock)
+            # A real open_stream() does network I/O and releases the GIL; the
+            # sleep reproduces that window so a missing lock would actually let
+            # two swaps interleave and orphan a connection (without it the
+            # critical section is too short to preempt under CPython).
+            time.sleep(0.001)
+            return handle
+
+        controller._streaming_connect = connect
+        controller._streaming_handle = connect()  # the initial live connection
+
+        n = 24
+        ready = threading.Barrier(n)
+
+        def worker():
+            ready.wait()  # release all threads together to force the overlap
+            controller._swap_streaming_connection("test")
+
+        threads = [threading.Thread(target=worker) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+
+        # n swaps + 1 initial handle opened; the live one stays open and every
+        # other opened connection was closed exactly once — none leaked.
+        assert len(opened) == n + 1
+        assert controller._streaming_handle in opened
+        survivors = [h for h in opened if h not in closed]
+        assert survivors == [controller._streaming_handle]
+        assert len(closed) == n
+
+    def test_stop_closes_a_connection_opened_during_shutdown(self, streaming_env):
+        """Bug: a reconnect blocked in a slow open_stream() can finish opening a
+        socket while stop() is tearing down. stop() takes the same lock before
+        joining, so it captures and closes that just-opened handle instead of
+        nulling the reference and leaking it."""
+        controller = streaming_env.controller
+        controller.start(input_device=0)
+
+        entered = threading.Event()
+        release = threading.Event()
+        reconnect_opened: list[FakeStreamHandle] = []
+
+        def slow_connect():
+            entered.set()  # we are inside connect now, holding the streaming lock
+            release.wait(timeout=2.0)
+            handle = FakeStreamHandle()
+            reconnect_opened.append(handle)
+            return handle
+
+        controller._streaming_connect = slow_connect
+
+        swap = threading.Thread(
+            target=lambda: controller._swap_streaming_connection("dead")
+        )
+        swap.start()
+        assert entered.wait(timeout=2.0)  # reconnect is mid-open, holding the lock
+
+        stopper = threading.Thread(target=lambda: controller.stop(timeout=2.0))
+        stopper.start()
+        time.sleep(0.05)  # let stop() reach the lock and block on the reconnect
+        release.set()  # the reconnect finishes opening its socket
+
+        swap.join(timeout=3.0)
+        stopper.join(timeout=5.0)
+
+        # The socket the reconnect opened during shutdown was closed, not leaked.
+        assert len(reconnect_opened) == 1
+        assert reconnect_opened[0].closed is True
+        assert controller._streaming_handle is None
+        assert controller._running is False
 
 
 if __name__ == "__main__":
