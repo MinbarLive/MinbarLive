@@ -20,7 +20,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import app_controller
 from app_controller import AppController, _StreamingUtteranceSession
-from utils.settings import PIPELINE_MODE_STREAMING, Settings
+from providers import resolve_streaming_transcription_model
+from utils.settings import (
+    DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER,
+    PIPELINE_MODE_STREAMING,
+    Settings,
+)
 
 
 def _wait_for(predicate, timeout=2.0, interval=0.01):
@@ -234,7 +239,8 @@ class TestStreamingStartValidation:
         self, streaming_env, monkeypatch
     ):
         monkeypatch.setattr(app_controller, "has_usable_key", lambda p: False)
-        with pytest.raises(ValueError, match="Gemini API key"):
+        # Names the key the DEFAULT engine needs, whichever engine that is.
+        with pytest.raises(ValueError, match="API key"):
             streaming_env.controller.start(input_device=0)
         streaming_env.context_mgr.start.assert_not_called()
         assert streaming_env.controller._running is False
@@ -312,10 +318,13 @@ class TestStreamingPipeline:
 
     def test_stream_opened_with_language_and_model(self, streaming_env):
         _controller, provider = self._start(streaming_env)
-        # Default engine (gemini_realtime) with the default transcription
-        # model — passed through as-is.
+        # Default engine with its default transcription model — passed
+        # through as-is. Derived, not hardcoded, so flipping the default
+        # engine does not break this.
         assert provider.opened_with == {
-            "model": "gemini-2.5-flash-native-audio-latest",
+            "model": resolve_streaming_transcription_model(
+                DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER, ""
+            ),
             "language": "ar",
         }
 

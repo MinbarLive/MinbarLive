@@ -107,7 +107,7 @@
   "wizard_provider_title": "AI provajder i API ključ",
   "wizard_provider": "Provajder",
   "wizard_api_key": "API ključ",
-  "wizard_keys_info": "Dodajte ključeve za koliko god pružatelja želite prebacivanjem liste iznad. Uz Google Gemini (zadano) jedan ključ pokriva i prevođenje i transkripciju uživo.",
+  "wizard_keys_info": "Dodajte ključeve za koliko god pružatelja želite mijenjanjem liste iznad. Uz OpenAI (zadano), jedan ključ pokriva prijevod, transkripciju u stvarnom vremenu i prepoznavanje kur'anskih ajeta.",
   "wizard_gemini_rag_note": "Prepoznavanje kur'anskih ajeta koristi OpenAI embeddinge. Bez OpenAI ključa prepoznavanje ajeta je onemogućeno.",
   "wizard_anthropic_stt_note": "Claude nema pretvaranje govora u tekst — transkripcija koristi OpenAI, pa je potreban i OpenAI ključ.",
   "wizard_show_key": "Prikaži",

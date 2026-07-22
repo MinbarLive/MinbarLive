@@ -255,14 +255,20 @@ class TestProviderSelection:
         assert gui._model_ids  # dropdown repopulated for the new provider
 
     def test_provider_model_ids_belong_to_the_selected_provider(self, make_gui):
-        gui, _c, _settings = make_gui(ai_provider="gemini")
+        # An EXPLICIT non-default provider: "Use default" must be off, or the
+        # startup repair legitimately resets it to the default provider.
+        gui, _c, _settings = make_gui(
+            ai_provider="gemini", use_default_translation_model=False
+        )
         from providers import get_model_choices
 
         expected = [mid for _n, mid in get_model_choices("gemini", "translation")]
         assert gui._model_ids == expected
 
     def test_selecting_the_same_provider_is_a_no_op(self, make_gui):
-        gui, _c, settings = make_gui(ai_provider="gemini")
+        gui, _c, settings = make_gui(
+            ai_provider="gemini", use_default_translation_model=False
+        )
         settings.translation_model = "a-deliberately-odd-model"
         idx = gui._provider_ids.index("gemini")
 

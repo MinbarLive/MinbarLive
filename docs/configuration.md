@@ -13,7 +13,7 @@ These settings are configurable from the control panel / settings window and sav
 | Processing Strategy    | Real-time streaming  | Real-time streaming, Chunk-based, or Semantic buffering (Beta)          |
 | Transcription Engine   | Google Gemini (real-time) | STT engine + model; the real-time engines imply streaming mode     |
 | AI Provider            | Google Gemini        | Translation provider (Google Gemini, OpenAI, Anthropic Claude)          |
-| Translation Model      | `gemini-3.1-flash-lite` | Per-provider model list; "use default" recommended                    |
+| Translation Model      | `gpt-5.2`               | Per-provider model list; "use default" recommended                    |
 | Subtitle Mode          | Realtime             | Realtime feed, Continuous (ticker), or Static (latest only) — Realtime is only available while streaming |
 | Show original text     | On                   | Bilingual display: source text above the translation                    |
 | Show live transcript   | On                   | Realtime mode: show the in-progress transcript line while the speaker talks (independent of "Show original text") |
@@ -59,7 +59,7 @@ Select your preferred language from the dropdown in the top-right corner. Change
 
 ### Processing Strategy Options
 
-- **Real-time streaming** (default): live word-by-word transcript, translation per utterance (~1–3 s latency). Engine selectable: Google Gemini Live (default), OpenAI Realtime, Deepgram.
+- **Real-time streaming** (default): live word-by-word transcript, translation per utterance (~1–3 s latency). Engine selectable: OpenAI Realtime (default), Google Gemini Live, Deepgram.
 - **Chunk-based**: translates each 12 s audio segment immediately (~4–14 s latency). No streaming connection needed.
 - **Semantic buffering** (Beta): waits for complete sentences before translating. Best sentence quality, highest latency; heuristics tuned for Arabic.
 
@@ -69,12 +69,12 @@ Model selection is **user-configurable in the GUI** and lives in `utils/settings
 
 | Capability                    | Default                  | Fallback chain                                    |
 | ----------------------------- | ------------------------ | ------------------------------------------------- |
-| Translation (Gemini, default) | `gemini-3.1-flash-lite`  | `gemini-3.1-flash-lite` → `gemini-3.5-flash`      |
+| Translation (Gemini)          | `gemini-3.1-flash-lite`  | `gemini-3.1-flash-lite` → `gemini-3.5-flash`      |
 | Translation (OpenAI)          | `gpt-5.2`                | `gpt-5.2` → `gpt-5.1` → `gpt-4.1` → `gpt-4o-mini` |
 | Translation (Anthropic)       | `claude-sonnet-5`        | `claude-sonnet-5` → `claude-haiku-4-5`            |
-| Transcription (Gemini, default) | `gemini-3.5-flash`     | — (segmented; audio sent inline)                  |
+| Transcription (Gemini)          | `gemini-3.5-flash`     | — (segmented; audio sent inline)                  |
 | Transcription (OpenAI)        | `gpt-4o-transcribe`      | `gpt-4o-transcribe` → `gpt-4o-mini-transcribe` → `whisper-1` |
-| Real-time STT (Gemini, default) | `gemini-2.5-flash-native-audio-latest` | — (whitelisted Live models only)|
+| Real-time STT (Gemini)          | `gemini-2.5-flash-native-audio-latest` | — (whitelisted Live models only)|
 | Embeddings (RAG)              | `gemini-embedding-001` / `text-embedding-3-large` | — (must match the precomputed verse matrix of the active space) |
 
 See [providers.md](providers.md) for the Gemini/Anthropic/streaming model catalogs.

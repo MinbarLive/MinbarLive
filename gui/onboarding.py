@@ -934,8 +934,9 @@ class OnboardingWizard(ctk.CTk):
             self._t(
                 "wizard_keys_info",
                 "Add keys for as many providers as you like by switching the "
-                "list above. With Google Gemini (the default), one key covers "
-                "both translation and real-time transcription.",
+                "list above. With OpenAI (the default), one key covers "
+                "translation, real-time transcription and Quran verse "
+                "detection.",
             ),
             muted=True,
             pady=(14, 10),

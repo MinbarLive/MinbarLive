@@ -107,7 +107,7 @@
   "wizard_provider_title": "Yapay zekâ sağlayıcısı ve API anahtarı",
   "wizard_provider": "Sağlayıcı",
   "wizard_api_key": "API anahtarı",
-  "wizard_keys_info": "Yukarıdaki listeyi değiştirerek istediğiniz kadar sağlayıcı için anahtar ekleyin. Google Gemini (varsayılan) ile tek anahtar hem çeviriyi hem gerçek zamanlı transkripsiyonu kapsar.",
+  "wizard_keys_info": "Yukarıdaki listeyi değiştirerek istediğiniz kadar sağlayıcı için anahtar ekleyin. OpenAI ile (varsayılan) tek bir anahtar çeviriyi, gerçek zamanlı deşifreyi ve Kur'an ayeti tespitini kapsar.",
   "wizard_gemini_rag_note": "Kur'an ayeti tanıma OpenAI embedding'lerini kullanır. OpenAI anahtarı olmadan ayet eşleştirme devre dışıdır.",
   "wizard_anthropic_stt_note": "Claude'un konuşmadan metne dönüştürme özelliği yoktur — transkripsiyon OpenAI üzerinden çalışır, bu yüzden ayrıca bir OpenAI anahtarı gerekir.",
   "wizard_show_key": "Göster",

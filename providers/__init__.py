@@ -123,14 +123,14 @@ _STREAMING_CAPTURE_RATES = {
     "gemini_realtime": FS,
 }
 
-DEFAULT_PROVIDER = "gemini"
+DEFAULT_PROVIDER = "openai"
 
 # Fallback preference when a configured provider lacks a capability (e.g.
 # Anthropic has no STT) or is unknown: the highest-ranked provider the user
 # actually holds a key for, so a Gemini-less setup never "falls back" to a
 # provider it cannot authenticate with. Explicit user choices are never
 # overridden by this ranking — it applies to fallback paths only.
-PROVIDER_RANKING = ["gemini", "openai", "anthropic"]
+PROVIDER_RANKING = ["openai", "gemini", "anthropic"]
 
 # Per-provider model chains: (default, fallbacks) per capability. The user's
 # model setting is only honored when it belongs to the active provider —
@@ -462,8 +462,8 @@ def resolve_streaming_transcription_model(
 
 # (display_name, provider_id) for the translation-provider dropdown
 PROVIDER_CHOICES = [
-    ("Google Gemini", "gemini"),
     ("OpenAI", "openai"),
+    ("Google Gemini", "gemini"),
     ("Anthropic Claude", "anthropic"),
 ]
 
@@ -471,10 +471,10 @@ PROVIDER_CHOICES = [
 # The "(real-time)" entries are streaming engines; the others run the
 # segmented pipeline.
 TRANSCRIPTION_PROVIDER_CHOICES = [
-    ("Google Gemini", "gemini"),
     ("OpenAI", "openai"),
-    ("Google Gemini (real-time)", "gemini_realtime"),
+    ("Google Gemini", "gemini"),
     ("OpenAI (real-time)", "openai_realtime"),
+    ("Google Gemini (real-time)", "gemini_realtime"),
     ("Deepgram (real-time)", "deepgram"),
 ]
 

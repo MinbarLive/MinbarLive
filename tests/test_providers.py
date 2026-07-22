@@ -46,6 +46,7 @@ from providers.openai import embeddings as openai_embeddings
 from providers.openai import realtime as openai_realtime
 from providers.openai import transcription as openai_transcription
 from providers.openai import translation as openai_translation
+from utils.settings import DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER
 
 
 class TestProtocolConformance:
@@ -106,16 +107,18 @@ class TestFactories:
             providers.get_translation_provider(), OpenAITranslationProvider
         )
 
-    def test_unknown_provider_falls_back_to_gemini(self, monkeypatch):
+    def test_unknown_provider_falls_back_to_default(self, monkeypatch):
         self._set_provider(monkeypatch, "not-a-provider")
         assert isinstance(
-            providers.get_translation_provider(), GeminiTranslationProvider
+            providers.get_translation_provider(),
+            type(providers._TRANSLATION_PROVIDERS[providers.DEFAULT_PROVIDER]),
         )
 
-    def test_empty_provider_falls_back_to_gemini(self, monkeypatch):
+    def test_empty_provider_falls_back_to_default(self, monkeypatch):
         self._set_provider(monkeypatch, "")
         assert isinstance(
-            providers.get_translation_provider(), GeminiTranslationProvider
+            providers.get_translation_provider(),
+            type(providers._TRANSLATION_PROVIDERS[providers.DEFAULT_PROVIDER]),
         )
 
     def test_gemini_selected(self, monkeypatch):
@@ -163,12 +166,14 @@ class TestFactories:
             providers.get_translation_provider(), AnthropicTranslationProvider
         )
 
-    def test_anthropic_transcription_falls_back_to_gemini(self, monkeypatch):
+    def test_anthropic_transcription_falls_back_to_ranked(self, monkeypatch):
         """Anthropic has no STT API — the registry falls back to the
-        highest-ranked provider (Gemini since 2026-07-14)."""
+        highest-ranked provider, whichever that currently is."""
         self._set_provider(monkeypatch, "anthropic")
+        top = providers.PROVIDER_RANKING[0]
         assert isinstance(
-            providers.get_transcription_provider(), GeminiTranscriptionProvider
+            providers.get_transcription_provider(),
+            type(providers._TRANSCRIPTION_PROVIDERS[top]),
         )
 
     def test_transcription_independent_of_translation(self, monkeypatch):
@@ -207,12 +212,15 @@ class TestFactories:
 
     def test_streaming_engine_falls_back_to_default(self, monkeypatch):
         """A non-streaming transcription_provider (stale settings) must not
-        break streaming start — it falls back to the default engine
-        (Gemini Live since 2026-07-14)."""
+        break streaming start — it falls back to the default engine,
+        whichever that currently is."""
         self._set_provider(monkeypatch, "gemini")
+        default_engine = providers._STREAMING_TRANSCRIPTION_PROVIDERS[
+            DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER
+        ]
         assert isinstance(
             providers.get_streaming_transcription_provider(),
-            GeminiLiveTranscriptionProvider,
+            type(default_engine),
         )
 
     def test_fallback_warning_logged_once(self, monkeypatch):
@@ -249,11 +257,11 @@ class TestResolveProviderByKeys:
 
     def test_no_keys_at_all_is_default(self, monkeypatch):
         self._keys(monkeypatch, set())
-        assert providers.resolve_provider_by_keys() == "gemini"
+        assert providers.resolve_provider_by_keys() == providers.DEFAULT_PROVIDER
 
     def test_default_key_wins_over_all_others(self, monkeypatch):
         self._keys(monkeypatch, {"gemini", "openai", "anthropic"})
-        assert providers.resolve_provider_by_keys() == "gemini"
+        assert providers.resolve_provider_by_keys() == providers.DEFAULT_PROVIDER
 
     def test_only_openai_key_selects_openai(self, monkeypatch):
         self._keys(monkeypatch, {"openai"})
@@ -275,12 +283,22 @@ class TestResolveProviderByKeys:
         )
 
     def test_session_typed_default_key_wins(self, monkeypatch):
-        self._keys(monkeypatch, {"openai"})
-        assert providers.resolve_provider_by_keys({"gemini": "AIza-x"}) == "gemini"
+        # A key typed into the wizard counts even before it is saved:
+        # the default provider wins as soon as one exists for it.
+        other = next(
+            p for p in providers.PROVIDER_RANKING if p != providers.DEFAULT_PROVIDER
+        )
+        self._keys(monkeypatch, {other})
+        typed = {providers.DEFAULT_PROVIDER: "typed-key-x"}
+        assert providers.resolve_provider_by_keys(typed) == (
+            providers.DEFAULT_PROVIDER
+        )
 
     def test_blank_session_key_is_ignored(self, monkeypatch):
         self._keys(monkeypatch, set())
-        assert providers.resolve_provider_by_keys({"anthropic": "   "}) == "gemini"
+        assert providers.resolve_provider_by_keys({"anthropic": "   "}) == (
+            providers.DEFAULT_PROVIDER
+        )
 
     def test_ambient_env_key_does_not_override_a_configured_provider(
         self, monkeypatch
@@ -452,12 +470,13 @@ class TestModelChains:
 
     def test_anthropic_transcription_chain_uses_ranked_fallback(self, monkeypatch):
         """No Anthropic STT — the chain comes from the ranked key-aware
-        fallback (Gemini when no key decides otherwise)."""
+        fallback (the top-ranked provider when no key decides otherwise)."""
         self._set(monkeypatch, "anthropic", transcription_model="")
         monkeypatch.setattr(providers, "has_usable_key", lambda p: False)
         monkeypatch.setattr(providers, "_fallback_cache", {})
         chain = providers.get_transcription_model_chain()
-        assert chain[0] == providers._MODEL_CHAINS["gemini"]["transcription"][0]
+        top = providers.PROVIDER_RANKING[0]
+        assert chain[0] == providers._MODEL_CHAINS[top]["transcription"][0]
 
 
 class TestGeminiTranslationProvider:
@@ -650,10 +669,10 @@ class TestProviderChoiceHelpers:
         gemini_ids = [m for _n, m in providers.get_model_choices("gemini", "translation")]
         assert all(m.startswith("gemini") for m in gemini_ids)
 
-    def test_unknown_provider_falls_back_to_gemini_choices(self):
+    def test_unknown_provider_falls_back_to_default_choices(self):
         assert providers.get_model_choices(
             "nope", "translation"
-        ) == providers.get_model_choices("gemini", "translation")
+        ) == providers.get_model_choices(providers.DEFAULT_PROVIDER, "translation")
 
     def test_default_model(self):
         assert (
@@ -661,7 +680,7 @@ class TestProviderChoiceHelpers:
             == "gemini-3.1-flash-lite"
         )
         assert providers.get_default_model("nope", "translation") == (
-            providers.get_default_model("gemini", "translation")
+            providers.get_default_model(providers.DEFAULT_PROVIDER, "translation")
         )
 
     def test_anthropic_choices(self, monkeypatch):
@@ -674,12 +693,13 @@ class TestProviderChoiceHelpers:
         assert providers.get_default_model("anthropic", "translation") == (
             "claude-sonnet-5"
         )
-        # Transcription surfaces the ranked fallback engine's models (Gemini)
+        # Transcription surfaces the ranked fallback engine's models
+        top = providers.PROVIDER_RANKING[0]
         assert providers.get_model_choices("anthropic", "transcription") == (
-            providers.get_model_choices("gemini", "transcription")
+            providers.get_model_choices(top, "transcription")
         )
         assert providers.get_default_model("anthropic", "transcription") == (
-            providers.get_default_model("gemini", "transcription")
+            providers.get_default_model(top, "transcription")
         )
 
 
@@ -1315,10 +1335,12 @@ class TestStreamingEngineHelpers:
             )
 
     def test_resolve_model_unknown_engine_uses_default_engine(self):
-        # Default streaming engine is Gemini Live (2026-07-14 decision).
-        assert (
-            providers.resolve_streaming_transcription_model("bogus", "whatever")
-            == "gemini-2.5-flash-native-audio-latest"
+        # Whatever the default streaming engine currently is, an unknown
+        # engine id resolves to that engine's default model.
+        assert providers.resolve_streaming_transcription_model(
+            "bogus", "whatever"
+        ) == providers.resolve_streaming_transcription_model(
+            DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER, ""
         )
 
     def test_key_provider_mapping(self):

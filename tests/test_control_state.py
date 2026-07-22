@@ -23,6 +23,7 @@ from gui.control_state import (
     subtitle_mode_choices,
     visible_provider_choices,
 )
+from providers import PROVIDER_RANKING
 from utils.settings import (
     DEFAULT_AI_PROVIDER,
     DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER,
@@ -173,16 +174,21 @@ class TestRepairDefaultProvider:
     def test_repair_to_a_non_default_provider_turns_the_default_off(
         self, monkeypatch
     ):
-        """An OpenAI-era setup (only an OpenAI key) must keep working rather
-        than being force-migrated to the current default."""
+        """A setup whose only key belongs to a non-default provider must keep
+        working rather than being force-migrated to the current default —
+        and "Use default" has to go off so the panel shows the real one."""
+        # Whichever provider is NOT the default today; the rule is about the
+        # relationship, not about a particular vendor.
+        keyed = next(p for p in PROVIDER_RANKING if p != DEFAULT_AI_PROVIDER)
         monkeypatch.setattr(
-            control_state, "resolve_provider_by_keys", lambda **k: "openai"
+            control_state, "resolve_provider_by_keys", lambda **k: keyed
         )
+        stale = next(p for p in PROVIDER_RANKING if p not in (DEFAULT_AI_PROVIDER, keyed))
         settings = make_settings(
-            ai_provider="anthropic", use_default_translation_model=True
+            ai_provider=stale, use_default_translation_model=True
         )
-        assert repair_default_provider(settings) == "anthropic"
-        assert settings.ai_provider == "openai"
+        assert repair_default_provider(settings) == stale
+        assert settings.ai_provider == keyed
         assert settings.use_default_translation_model is False
 
 

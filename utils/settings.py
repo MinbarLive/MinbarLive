@@ -157,8 +157,15 @@ TARGET_LANGUAGE_DISPLAY_NAMES = [
 # Available translation providers (see providers/ package). Only registered
 # providers belong here; unknown values in settings.json fall back to the
 # default. This drives the ``ai_provider`` setting (translation only).
-AI_PROVIDERS = ["gemini", "openai", "anthropic"]
-DEFAULT_AI_PROVIDER = "gemini"
+AI_PROVIDERS = ["openai", "gemini", "anthropic"]
+# OpenAI is the default everywhere (user decision 2026-07-22, supersedes the
+# Gemini default of 2026-07-14). The deciding evidence was measured, not
+# preference: the Gemini Live realtime engines transcribe BELOW realtime
+# (gemini-2.5-flash-native-audio-latest ran at 0.75x over a 63s sample, so
+# subtitles fall ~1s further behind every 4s of speech and never recover),
+# while OpenAI Realtime held 1.00x on the identical sample. See
+# providers/gemini/realtime.py for the engine-side notes.
+DEFAULT_AI_PROVIDER = "openai"
 
 # Available transcription providers. "openai"/"gemini" run the segmented
 # pipeline; the "*_realtime" ids and "deepgram" are real-time streaming
@@ -167,20 +174,20 @@ DEFAULT_AI_PROVIDER = "gemini"
 # but use the same API keys. Kept separate from AI_PROVIDERS so the
 # translation LLM and the speech-to-text engine can be chosen independently.
 TRANSCRIPTION_PROVIDERS = [
-    "gemini",
     "openai",
+    "gemini",
     "deepgram",
-    "gemini_realtime",
     "openai_realtime",
+    "gemini_realtime",
 ]
-# Fresh installs default to real-time streaming on Gemini — one key covers
-# translation, transcription and RAG (the Gemini embedding space ships with
-# the app). Invalid stored values fall back to the segmented default below
-# instead.
-DEFAULT_TRANSCRIPTION_PROVIDER = "gemini_realtime"
-DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER = "gemini"
-STREAMING_TRANSCRIPTION_PROVIDERS = ["gemini_realtime", "openai_realtime", "deepgram"]
-DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER = "gemini_realtime"
+# Fresh installs default to real-time streaming on OpenAI: one key covers
+# translation, transcription and RAG, and it is the only streaming engine
+# measured to keep up with realtime input (see DEFAULT_AI_PROVIDER above).
+# Invalid stored values fall back to the segmented default below instead.
+DEFAULT_TRANSCRIPTION_PROVIDER = "openai_realtime"
+DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER = "openai"
+STREAMING_TRANSCRIPTION_PROVIDERS = ["openai_realtime", "gemini_realtime", "deepgram"]
+DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER = "openai_realtime"
 
 # Available translation models (display_name, model_id)
 # Keep this list focused on practical TEXT translation models.
@@ -502,7 +509,9 @@ def load_settings(use_cache: bool = True) -> Settings:
             else:
                 # Legacy file (e.g. anthropic) with no transcription engine —
                 # those sessions transcribed via the OpenAI fallback, so keep
-                # that (literal: the app default moved to Gemini later).
+                # that. Deliberately a literal, not the app default: it
+                # records what those sessions actually ran, and must not move
+                # when the default does (it has now been gemini and openai).
                 transcription_provider = "openai"
         if transcription_provider not in TRANSCRIPTION_PROVIDERS:
             transcription_provider = DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER

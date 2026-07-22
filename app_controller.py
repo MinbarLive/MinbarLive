@@ -1256,9 +1256,11 @@ class AppController:
             key_provider, key_provider
         )
         if not has_usable_key(key_provider):
+            # "an OpenAI" / "a Gemini": the article follows the provider name.
+            article = "an" if key_name[:1].upper() in "AEIOU" else "a"
             raise ValueError(
-                f"Real-time streaming mode needs a {key_name} API key. Add "
-                "one in Advanced Settings before starting."
+                f"Real-time streaming mode needs {article} {key_name} API "
+                "key. Add one in Advanced Settings before starting."
             )
         if lang_code != "ar":
             log(

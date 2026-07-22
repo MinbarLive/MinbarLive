@@ -185,10 +185,11 @@ class TestPipelineMode:
     engines => streaming); it is no longer a directly stored/selected value."""
 
     def test_defaults_to_streaming(self):
-        # Fresh installs default to real-time streaming on Gemini — one key
-        # covers translation + transcription + RAG (user decision 2026-07-14,
-        # supersedes the 2026-07-09 OpenAI default).
-        assert DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER == "gemini_realtime"
+        # Fresh installs default to real-time streaming on OpenAI — one key
+        # covers translation + transcription + RAG, and it is the only
+        # streaming engine measured to keep up with realtime input (user
+        # decision 2026-07-22, supersedes the 2026-07-14 Gemini default).
+        assert DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER == "openai_realtime"
         assert (
             Settings().transcription_provider
             == DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER

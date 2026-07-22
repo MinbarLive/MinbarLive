@@ -118,7 +118,7 @@
   "wizard_provider_title": "AI provider & API key",
   "wizard_provider": "Provider",
   "wizard_api_key": "API key",
-  "wizard_keys_info": "Add keys for as many providers as you like by switching the list above. With Google Gemini (the default), one key covers both translation and real-time transcription.",
+  "wizard_keys_info": "Add keys for as many providers as you like by switching the list above. With OpenAI (the default), one key covers translation, real-time transcription and Quran verse detection.",
   "wizard_gemini_rag_note": "Quran verse detection uses OpenAI embeddings. Without an OpenAI key, verse matching is disabled.",
   "wizard_anthropic_stt_note": "Claude has no speech-to-text — transcription runs on OpenAI, so an OpenAI key is also required.",
   "wizard_show_key": "Show",

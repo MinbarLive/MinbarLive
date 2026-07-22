@@ -43,7 +43,7 @@ To add a new language, use `notebooks/build_quran_dict.py` with a translation ke
 
 | File                           | Purpose                                                                                     |
 | ------------------------------ | ------------------------------------------------------------------------------------------- |
-| `quran_embeddings_gemini.npz`  | **What the app loads with the Gemini provider (the default)**: Gemini-space matrix (`gemini-embedding-001`); used when the AI provider is Gemini and this file exists |
+| `quran_embeddings_gemini.npz`  | **What the app loads with the Gemini provider**: Gemini-space matrix (`gemini-embedding-001`); used when the AI provider is Gemini and this file exists |
 | `quran_embeddings_openai.npz`  | OpenAI-space matrix, used for every other provider: verse texts + L2-normalized float32 matrix, 6,054 × 3072 (OpenAI `text-embedding-3-large`) |
 | `quran_embeddings.json`        | Raw notebook output (~418 MB, git LFS) — source of truth for rebuilding the `.npz`, **not** bundled into the EXE |
 

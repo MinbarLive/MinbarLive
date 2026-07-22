@@ -12,7 +12,7 @@ Real-time translation system for mosque lectures and prayers, supporting multipl
 
 This application captures live audio — from a microphone or directly from what your PC is playing — transcribes and translates the speech using AI models, and displays the translation as subtitles on a full-screen window (ideal for a second monitor, a projector, or an OBS overlay).
 
-By default it runs in **real-time streaming mode**: the spoken text appears word by word while the speaker talks, and the translation follows each finished utterance after ~1–3 seconds. You can choose your AI provider — **Google Gemini** (default), **OpenAI**, or **Anthropic Claude** — and a first-run setup wizard walks you through language, microphone, provider, and API key.
+By default it runs in **real-time streaming mode**: the spoken text appears word by word while the speaker talks, and the translation follows each finished utterance after ~1–3 seconds. You can choose your AI provider — **OpenAI** (default), **Google Gemini**, or **Anthropic Claude** — and a first-run setup wizard walks you through language, microphone, provider, and API key.
 
 > **⚠️ Language Note:** The primary development and testing focus was **Arabic → German**. While the app supports 15+ source languages and 35+ target languages, other language combinations have not been extensively tested. The Quran and Athan dictionaries are available in **German, English, Turkish, Albanian, and Bosnian**. Contributions for additional language support are welcome!
 
@@ -45,7 +45,7 @@ By default it runs in **real-time streaming mode**: the spoken text appears word
 
 This application makes continuous API calls while running. **You will be charged for usage by your AI provider.**
 
-Rough guide for an OpenAI setup (segmented mode, Arabic → German); Gemini (the default) is in a similar or lower range:
+Rough guide for an OpenAI setup (the default; segmented mode, Arabic → German). Gemini is in a similar or lower range:
 
 | Usage Pattern                   | Transcription | Translation | Embeddings | **Total**        |
 | ------------------------------- | ------------- | ----------- | ---------- | ---------------- |
@@ -110,7 +110,9 @@ The **Processing Strategy** dropdown in the control panel selects the pipeline:
 | **Chunk-based**                   | Fixed 12 s audio segments, each translated immediately                            | ~4–14 s                 |
 | **Semantic buffering** (Beta)     | Buffers segments until a complete sentence is detected                            | ~5–15 s                 |
 
-Real-time mode supports three transcription engines: **Google Gemini Live** (default — uses your existing Gemini key), **OpenAI Realtime**, and **Deepgram Nova**. Segmented mode transcribes via Gemini or OpenAI. See [docs/providers.md](docs/providers.md).
+Real-time mode supports three transcription engines: **OpenAI Realtime** (default — uses your existing OpenAI key), **Google Gemini Live**, and **Deepgram Nova**. Segmented mode transcribes via OpenAI or Gemini. See [docs/providers.md](docs/providers.md).
+
+> **Note on engine choice:** OpenAI Realtime is the default because it is the only engine measured to transcribe as fast as you speak. The Gemini Live engines run below realtime (~0.75× on a 63-second sample), so on continuous speech the subtitles fall progressively further behind and do not catch up until the speaker pauses.
 
 ## Audio Sources
 
