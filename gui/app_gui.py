@@ -322,6 +322,10 @@ class AppGUI(
         self.after_idle(self._restore_control_window_surface)
         self.bind("<FocusIn>", self._schedule_control_window_surface_restore)
         self.bind("<Map>", self._schedule_control_window_surface_restore)
+        # <FocusIn> only reaches the toplevel itself when no child widget holds
+        # the Tk focus; <Activate> fires on the window whenever the OS makes it
+        # the active window, which is what the restore actually cares about.
+        self.bind("<Activate>", self._schedule_control_window_surface_restore)
 
         if ICO_SUPPORTED and os.path.exists(ICON_PATH):
             try:
@@ -345,6 +349,14 @@ class AppGUI(
     def _schedule_control_window_surface_restore(
         self, _event: object | None = None
     ) -> None:
+        # <FocusIn> and <Map> reach the toplevel's bindtag for EVERY descendant
+        # widget as well, so any widget taking keyboard focus (a dropdown, a
+        # button) used to schedule a lift() 120 ms later. That lift raised the
+        # panel over the dropdown popup the same click had just opened, which
+        # read as "the dropdown closes and I have to click again". Only the
+        # window's own activation/mapping needs the surface restored.
+        if _event is not None and str(getattr(_event, "widget", "")) != str(self):
+            return
         if self._surface_restore_job is not None:
             return
         self._surface_restore_job = self.after(
@@ -367,6 +379,9 @@ class AppGUI(
             self.lift()
         except tk.TclError:
             pass
+        # The lift above would otherwise bury a dropdown popup that is open
+        # right now — e.g. the click that activated the window also opened it.
+        CustomDropdown.raise_active_popup()
 
     def _control_window_should_be_topmost(self) -> bool:
         """The control panel only needs to float above the subtitle overlay
@@ -3468,7 +3483,7 @@ class AppGUI(
         self._end_cost_session("closed")
         # Stop the focus/map handlers from scheduling new surface-restore jobs
         # while the window is being torn down.
-        for seq in ("<FocusIn>", "<Map>"):
+        for seq in ("<FocusIn>", "<Map>", "<Activate>"):
             try:
                 self.unbind(seq)
             except Exception:

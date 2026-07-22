@@ -5,7 +5,6 @@ onboarding wizard (gui/onboarding.py) so the two look and behave
 identically. Extracted from app_gui.py.
 """
 
-import time
 import tkinter as tk
 from collections.abc import Callable
 from typing import Any
@@ -27,17 +26,6 @@ class CustomDropdown(ctk.CTkFrame):
 
     _active: "CustomDropdown | None" = None  # currently open dropdown
     _bound_root: Any = None  # tk root the app-level handlers are bound to
-    # Monotonic timestamp of the last OS-level window FocusIn event.
-    # Used to detect "click that restored window focus" vs a normal click.
-    _focus_in_time: float = -999.0
-    # A click within this many seconds of the window regaining OS focus is
-    # treated as the focus-restore click: it re-focuses the window without
-    # opening the dropdown (the user opens it with a second click). Kept
-    # generous — Tk can dispatch the FocusIn noticeably before the click on a
-    # cold/ scaled window, so the old 50 ms window missed it and the dropdown
-    # opened on the first click. The first click resets the timestamp, so a
-    # wide window never swallows the deliberate second click.
-    _RESTORE_MAX_DELAY: float = 0.3
 
     def __init__(
         self,
@@ -161,30 +149,10 @@ class CustomDropdown(ctk.CTkFrame):
         if cls._bound_root is not root:
             root.bind_all("<Button-1>", cls._on_global_click, add="+")
             root.bind_all("<MouseWheel>", cls._on_global_scroll, add="+")
-            root.bind_all("<FocusIn>", cls._on_any_focus_in, add="+")
             cls._bound_root = root
 
     @staticmethod
-    def _on_any_focus_in(event: "tk.Event[Any]") -> None:
-        """Record when a top-level window gains OS focus (not internal widget focus).
-
-        <FocusIn> fires on the Toplevel widget itself only when the OS activates
-        the window from outside (another app, taskbar, Alt+Tab).  When a child
-        widget gets keyboard focus inside an already-focused window the event
-        goes to the child, so str(event.widget) != str(winfo_toplevel()) and we
-        correctly ignore it.
-        """
-        try:
-            w = event.widget
-            if str(w) == str(w.winfo_toplevel()):
-                CustomDropdown._focus_in_time = time.monotonic()
-        except Exception:
-            pass
-
-    @staticmethod
     def _on_global_click(event: "tk.Event[Any]") -> None:
-        # Any click anywhere consumes the focus-restore state.
-        CustomDropdown._focus_in_time = -999.0
         active = CustomDropdown._active
         if active is None or not active._is_open:
             return
@@ -220,6 +188,26 @@ class CustomDropdown(ctk.CTkFrame):
             pass
         active._close()
 
+    @classmethod
+    def raise_active_popup(cls) -> None:
+        """Put the open popup back on top after a window lifted itself.
+
+        An ``overrideredirect`` popup is not owned by the window it belongs to
+        (Tk ignores ``transient`` for it), so a ``lift()`` of that window — the
+        control panel does one whenever it is activated, and it is topmost
+        while the subtitle overlay is open — buries the popup the click had
+        just opened. Whoever lifts calls this afterwards.
+        """
+        active = cls._active
+        if active is None or not active._is_open or active._popup is None:
+            return
+        try:
+            if active._popup.winfo_exists():
+                active._popup.wm_attributes("-topmost", True)
+                active._popup.lift()
+        except Exception:
+            pass
+
     @staticmethod
     def _on_global_scroll(event: "tk.Event[Any]") -> None:
         """Close the open dropdown when the user scrolls outside of it."""
@@ -236,16 +224,11 @@ class CustomDropdown(ctk.CTkFrame):
         if not self._enabled:
             return "break"
         self.focus_set()
-        # If the window just gained OS focus, this click is the focus-restore
-        # click.  Accept the focus but don't open/close the dropdown; the user
-        # can click a second time to interact with it.
-        just_focused = (
-            time.monotonic() - CustomDropdown._focus_in_time
-            < CustomDropdown._RESTORE_MAX_DELAY
-        )
-        CustomDropdown._focus_in_time = -999.0  # consume regardless
-        if just_focused:
-            return "break"
+        # No special case for a click that also activates the window: on
+        # Windows that click acts on the control it hits, like every other
+        # widget. (It used to be swallowed because the popup it opened was
+        # immediately buried by the panel's activation lift() — fixed at the
+        # source via raise_active_popup(), so the click can do its job.)
         if self._is_open:
             self._close()
         else:
@@ -312,7 +295,7 @@ class CustomDropdown(ctk.CTkFrame):
         item_h = 36
         visible = min(len(self._values), 5)
 
-        popup = tk.Toplevel()
+        popup = tk.Toplevel(self.winfo_toplevel())
         popup.overrideredirect(True)
         popup.wm_attributes("-topmost", True)
 
