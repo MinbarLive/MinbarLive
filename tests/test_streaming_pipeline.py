@@ -960,6 +960,37 @@ class TestStreamingConnectionRaces:
         assert controller._streaming_handle is None
         assert controller._running is False
 
+    def test_feeder_survives_a_feed_error_from_a_closed_handle(self, streaming_env):
+        """A swap/stop can close the live handle in the window between the
+        feeder reading it and calling feed(); feed() on a closed connection then
+        raises. The feeder must drop that chunk and keep running — a raised
+        exception here would kill the thread and silence the pipeline for the
+        rest of the session."""
+        controller = streaming_env.controller
+        controller.start(input_device=0)
+
+        fed_attempted = threading.Event()
+
+        class _RaisingHandle:
+            def feed(self, pcm_bytes):
+                fed_attempted.set()
+                raise RuntimeError("connection already closed")
+
+            def close(self):
+                pass
+
+        # The live handle now rejects every feed, as a just-closed socket would.
+        controller._streaming_handle = _RaisingHandle()
+        controller._streaming_feed_queue.put(b"doomed-chunk")
+        assert fed_attempted.wait(timeout=2.0)  # the feeder hit the error path
+
+        # A healthy handle takes over (as a reconnect would install one). The
+        # feeder is still alive and routes the next chunk to it.
+        fresh = FakeStreamHandle()
+        controller._streaming_handle = fresh
+        controller._streaming_feed_queue.put(b"good-chunk")
+        assert _wait_for(lambda: fresh.fed == [b"good-chunk"])
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
