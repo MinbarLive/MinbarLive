@@ -418,6 +418,7 @@ class AppGUI(
         )
         self.sidebar.grid(row=2, column=0, sticky="nsew")
         self.sidebar.grid_columnconfigure(0, weight=1)
+        self._enable_linux_mousewheel(self.sidebar)
         # Reflow + re-center the card grid whenever the window resizes.
         self._applied_collapsed_margin: int | None = None
         self._applied_columns: int | None = None
