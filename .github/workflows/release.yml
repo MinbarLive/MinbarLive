@@ -2,7 +2,8 @@ name: Release
 
 # Builds the Windows EXE. Pushing a `v*` tag also publishes it as a release
 # asset; `workflow_dispatch` builds without publishing, for testing the build
-# itself.
+# itself. A second job builds an experimental Linux binary, which is kept as a
+# workflow artifact and never attached to the release — see docs/ci.md.
 on:
   push:
     tags: ["v*"]
@@ -75,6 +76,19 @@ jobs:
             echo "$f: $size bytes"
           done
 
+      # Handed to build-linux rather than letting that job run its own
+      # `git lfs pull`: the two matrices are ~182 MB and the free LFS
+      # allowance is 1 GB of bandwidth per month, so pulling them once per
+      # release instead of twice is the difference between five builds a
+      # month and two. compression-level 0 because .npz is already zipped.
+      - name: Share the matrices with the Linux job
+        uses: actions/upload-artifact@v4
+        with:
+          name: embeddings
+          path: data/embeddings/*.npz
+          compression-level: 0
+          retention-days: 1
+
       - run: pyinstaller MinbarLive.spec
 
       - name: Verify the EXE
@@ -137,3 +151,94 @@ jobs:
 
           gh release upload "$tag" \
             dist/MinbarLive.exe dist/SHA256SUMS.txt --clobber
+
+  # EXPERIMENTAL. The result is a workflow artifact only and is deliberately
+  # NOT attached to the release: nobody has run MinbarLive on a Linux desktop
+  # yet, and several features are Windows-only there (the OBS-visible
+  # borderless overlay, transparent static mode, loopback capture, and the OS
+  # keychain, which falls back to plaintext for OpenAI and to session-only for
+  # every other provider). Download the artifact, run it, and only then
+  # consider publishing it. See docs/ci.md.
+  build-linux:
+    needs: build
+    # NOT ubuntu-latest. A PyInstaller binary only starts on glibc at least as
+    # new as the one it was built against, so building on 24.04 (glibc 2.39)
+    # would exclude Debian 12, Ubuntu 22.04 and everything older. 22.04
+    # (glibc 2.35) is the oldest runner GitHub still provides; if it is
+    # retired, build inside a manylinux container rather than moving up.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # tk: setup-python's interpreter links against libtk8.6/libtcl8.6.
+      # libportaudio2: the Linux sounddevice wheel does not bundle PortAudio,
+      # so the spec bundles the system copy. xvfb: for the smoke launch below.
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y tk libportaudio2 xvfb
+
+      - run: pip install -r requirements.txt
+
+      # The matrices the `build` job already pulled from LFS. They overwrite
+      # the pointer stubs checkout left behind.
+      - uses: actions/download-artifact@v4
+        with:
+          name: embeddings
+          path: data/embeddings
+
+      - name: Verify the matrices are real
+        run: |
+          for f in data/embeddings/quran_embeddings_openai.npz \
+                   data/embeddings/quran_embeddings_gemini.npz; do
+            size=$(stat -c%s "$f")
+            if [ "$size" -lt 1000000 ]; then
+              echo "::error::$f is an LFS pointer stub ($size bytes), not the matrix."
+              exit 1
+            fi
+            echo "$f: $size bytes"
+          done
+
+      - run: pyinstaller MinbarLive.spec
+
+      - name: Verify the binary
+        run: |
+          file dist/MinbarLive
+          size=$(stat -c%s dist/MinbarLive)
+          echo "dist/MinbarLive: $size bytes"
+          if [ "$size" -lt 100000000 ]; then
+            echo "::error::Binary is only $size bytes, the data/ bundle is missing."
+            exit 1
+          fi
+
+      # A startup crash — a shared library the bundle missed, an X11 request
+      # the toolkit rejects — exits within seconds. A healthy start sits in
+      # the onboarding wizard until `timeout` kills it, so exit 124 is the
+      # success case and anything else means it died on its own.
+      - name: Smoke-launch the binary
+        run: |
+          set +e
+          xvfb-run -a timeout 30 ./dist/MinbarLive
+          code=$?
+          set -e
+          if [ "$code" -ne 124 ]; then
+            echo "::error::MinbarLive exited with $code instead of staying up for 30s."
+            exit 1
+          fi
+          echo "Stayed up for 30s."
+
+      - name: Checksum
+        run: cd dist && sha256sum MinbarLive | tee SHA256SUMS-linux.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MinbarLive-linux
+          path: |
+            dist/MinbarLive
+            dist/SHA256SUMS-linux.txt

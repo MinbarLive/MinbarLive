@@ -1,6 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import glob
+import sys
+
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules, collect_data_files
+
+IS_WINDOWS = sys.platform == "win32"
+IS_LINUX = sys.platform.startswith("linux")
 
 # --- Fix contrib hooks that hardcode an import name as the distribution name ---
 # webrtcvad is installed as the 'webrtcvad-wheels' distribution (the Windows
@@ -30,10 +36,12 @@ def _copy_metadata_by_import_name(package_name, *args, **kwargs):
 
 _pyi_hooks.copy_metadata = _copy_metadata_by_import_name
 
+# Windows/macOS only. PyInstaller has no use for an icon on Linux — the desktop
+# environment takes it from a .desktop entry, not from the binary.
 ICON_PATH = "public/MinbarLive.ico"
 # Embeds per-monitor DPI awareness (plus longPathAware and Common-Controls v6)
 # into the frozen EXE, so the packaged app is aware from process start rather
-# than from the first CustomTkinter window.
+# than from the first CustomTkinter window. Windows-only.
 MANIFEST_PATH = "MinbarLive.manifest"
 
 hiddenimports = (
@@ -103,6 +111,20 @@ binaries = (
     + collect_dynamic_libs("scipy")
 )
 
+# The Windows and macOS sounddevice wheels ship PortAudio inside the package,
+# so collect_dynamic_libs above finds it. The Linux wheel does not — it dlopens
+# the system libportaudio at import time, which collect_dynamic_libs cannot see.
+# Bundle it explicitly (apt: libportaudio2); the onefile bootloader puts the
+# extraction directory on the loader path, so the dlopen resolves there.
+if IS_LINUX:
+    _portaudio = glob.glob("/usr/lib/*/libportaudio.so*") + glob.glob(
+        "/usr/lib/libportaudio.so*"
+    )
+    if _portaudio:
+        binaries += [(path, ".") for path in _portaudio]
+    else:
+        print("WARNING: libportaudio not found - the Linux build will have no audio.")
+
 # Bundle project data/ and public/ into the executable (available under sys._MEIPASS/)
 datas = [("data", "data"), ("public", "public")] + collect_data_files("customtkinter")
 
@@ -138,8 +160,8 @@ exe = EXE(
     a.datas,
     [],
     name="MinbarLive",
-    icon=ICON_PATH,
-    manifest=MANIFEST_PATH,
+    icon=ICON_PATH if IS_WINDOWS else None,
+    manifest=MANIFEST_PATH if IS_WINDOWS else None,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

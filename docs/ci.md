@@ -4,15 +4,32 @@ GitHub Actions runs the test suite and a lint check on every pull request, and
 on every push to `main`. The workflow lives in
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
 
-| Job    | Runner          | What it does                                     |
-| ------ | --------------- | ------------------------------------------------ |
-| `test` | `windows-latest` | `pip install -r requirements.txt` + `pytest`     |
-| `lint` | `ubuntu-latest`  | `ruff check` on the Python files the PR changed  |
+| Job           | Runner           | What it does                                            |
+| ------------- | ---------------- | ------------------------------------------------------- |
+| `test`        | `windows-latest` | `pip install -r requirements.txt` + `pytest`            |
+| `linux-smoke` | `ubuntu-latest`  | the same suite under `xvfb`, plus the Linux system libs |
+| `lint`        | `ubuntu-latest`  | `ruff check` on the Python files the PR changed         |
 
 `test` runs on Windows because that is the primary target: the code has
 `sys.platform == "win32"` branches (RTL shaping in `gui/subtitle_window.py`, DPI
 awareness in `gui/scaling.py`), and roughly a tenth of the suite builds real Tk
 windows. `lint` has no such constraint and runs on Linux, which starts faster.
+
+`linux-smoke` exists because Linux users do run MinbarLive from source, and
+until it was added nothing in CI ever executed a line of the Linux branches.
+Both Linux bugs reported so far — the fatal X11 `BadLength` from passing a
+3200×3200 PNG to `wm iconphoto`, and CustomTkinter's missing `<Button-4>`/
+`<Button-5>` wheel bindings — reached users before anyone noticed. It installs
+three system packages the runner does not carry:
+
+| Package         | Needed for                                                              |
+| --------------- | ----------------------------------------------------------------------- |
+| `tk`            | `setup-python`'s interpreter links against libtk8.6/libtcl8.6; without them `import tkinter` fails outright |
+| `libportaudio2` | the Linux `sounddevice` wheel does not bundle PortAudio, unlike the Windows and macOS ones |
+| `xvfb`          | `tests/test_app_gui.py` and friends build real Tk windows, which need a display |
+
+It is a *smoke* job, not a guarantee: a green run means the code imports and the
+headless tests pass on Linux, not that the subtitle overlay looks right there.
 
 Fork pull requests are handled by the `pull_request` trigger, so they run with a
 read-only token and no access to repository secrets. **Do not change this to
@@ -49,7 +66,9 @@ so it pulls them, but selectively, and never the raw JSON. See below.
 
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) builds the
 Windows EXE. Pushing a `v*` tag also publishes it; `workflow_dispatch` builds
-without publishing, for testing the build itself.
+without publishing, for testing the build itself. A second job, `build-linux`,
+builds an experimental Linux binary that stays a workflow artifact — see
+[below](#the-linux-build-is-experimental-and-unpublished).
 
 It runs the suite before touching LFS, so the tests see the same pointer stubs
 the `test` job does, then pulls only the matrices:
@@ -89,6 +108,53 @@ it was created through the web UI, the workflow prepends the block to the
 existing description instead, and skips that if the block is already there, so
 hand-written notes are never overwritten.
 
+## The Linux build is experimental and unpublished
+
+`build-linux` runs after `build` and produces `dist/MinbarLive`, an ELF binary,
+as the workflow artifact `MinbarLive-linux`. It is **not** attached to the
+release, and the release notes stay Windows-only. Download the artifact from
+the workflow run to test it.
+
+That is not timidity about the packaging — the packaging works. It is that
+nobody has run MinbarLive on a Linux desktop yet, and these are Windows-only
+today:
+
+| Feature                              | On Linux                                                                 |
+| ------------------------------------ | ------------------------------------------------------------------------ |
+| Borderless overlay visible to OBS    | The `WS_EX_APPWINDOW` styling in `gui/subtitle_window.py` is Win32; Linux falls back to a bare `overrideredirect` window |
+| Transparent static mode              | `wm attributes -transparentcolor` does not exist outside Windows          |
+| Loopback capture ("what the speakers play") | WASAPI-only by design, so Linux has microphone input only          |
+| OS keychain                          | Without a Secret Service backend, `utils/settings.set_saved_api_key` falls back to plaintext for OpenAI and to session-only for every other provider — a Gemini key is lost on restart |
+| ffmpeg download-on-first-use         | Windows-only; batch mode expects ffmpeg from the package manager          |
+
+Publishing the binary means owning those as support questions. Before flipping
+it into the release, run it on a Linux desktop and decide which of them to fix,
+document, or hide in the UI.
+
+### Why `ubuntu-22.04` and not `ubuntu-latest`
+
+A PyInstaller binary is glibc-pinned: it starts only on a glibc at least as new
+as the one it was built against. Building on 24.04 (glibc 2.39) would produce a
+binary that fails on Debian 12, Ubuntu 22.04 and everything older — the opposite
+of the EXE, which runs on any Windows 10 or newer. 22.04 (glibc 2.35) is the
+oldest runner GitHub still provides. When that image is retired, build inside a
+manylinux container or switch to AppImage rather than moving the floor up.
+
+### The matrices come from the Windows job, not from LFS
+
+`build` uploads `data/embeddings/*.npz` as a short-lived `embeddings` artifact
+and `build-linux` downloads it over the pointer stubs. A second `git lfs pull`
+would cost another ~182 MB against the 1 GB monthly allowance, halving the
+number of releases that fit in it. The price is that the two jobs run in
+sequence rather than in parallel.
+
+### Two steps fail loudly
+
+| Step                    | Catches                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------ |
+| Verify the binary       | A build that lost the `data/` bundle, which shows up as a far smaller file                        |
+| Smoke-launch the binary | A startup crash — a shared library the bundle missed, an X11 request the toolkit rejects. The binary is launched under `xvfb` with a 30-second `timeout`, so **exit 124 is the success case**: it means the app was still running when the timeout killed it, sitting in the onboarding wizard. Any other exit code means it died on its own |
+
 ## Lint checks changed files only
 
 `ruff check` runs against the files the pull request touches, not the whole
@@ -116,6 +182,10 @@ The check names only appear in the branch ruleset's picker after the workflow
 has run at least once. Once it has, add `test` and `lint` under **Require status
 checks to pass**, and enable **Require branches to be up to date before
 merging** so a green check cannot go stale against a moved `main`.
+
+Leave `linux-smoke` out of the required set until it has been green on a few
+pull requests. It has never run, so its first result is information about the
+codebase, not a verdict on the branch it happens to run against.
 
 ## Python version
 
