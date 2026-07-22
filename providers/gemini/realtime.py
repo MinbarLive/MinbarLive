@@ -27,10 +27,11 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 import uuid
 from collections.abc import Callable
 
-from config import FS, STREAMING_GEMINI_SILENCE_MS
+from config import FS, STREAMING_GEMINI_SILENCE_MS, STREAMING_MAX_UTTERANCE_SECONDS
 from providers.gemini.client import get_live_client
 from utils.cost_tracking import gemini_usage_values, record_live_usage_snapshot
 from utils.logging import log
@@ -49,6 +50,64 @@ TRANSCRIPTION_MODELS = [
 ]
 
 _AUDIO_MIME = f"audio/pcm;rate={FS}"
+
+# Sentence-final punctuation used to cut an over-long turn cleanly (Latin and
+# Arabic); Gemini's input transcription is punctuated.
+_SENTENCE_END_CHARS = ".!?…؟"
+
+
+def _split_capped_turn(text: str) -> tuple[str, str]:
+    """Split an over-long turn into (flush now, keep accumulating).
+
+    Prefers the last sentence boundary so the flushed piece reaches the
+    translator as a whole clause — but only when that leaves the majority of
+    the text in the flushed half. An early boundary ("Yes." followed by the
+    rest of the cap window) would otherwise hand the remainder a fresh full
+    window and double the wait for text that is already old.
+    """
+    boundary = max(text.rfind(c) for c in _SENTENCE_END_CHARS)
+    if boundary >= len(text) // 2:
+        return text[: boundary + 1].strip(), text[boundary + 1 :].strip()
+    return text.strip(), ""
+
+
+def _maybe_cut_turn(
+    accumulated: str,
+    turn_started: float,
+    on_transcript: Callable[[str, bool], None],
+    on_utterance_end: Callable[[], None],
+) -> tuple[str, float]:
+    """Force an utterance boundary inside a turn that has run too long.
+
+    Gemini ends a turn only after STREAMING_GEMINI_SILENCE_MS of silence, so
+    continuously spoken audio (a lecture without pauses, any media played over
+    a loopback device) keeps ONE turn open indefinitely — measured live: 89 s
+    of speech in a single 692-character turn, one translation call at the very
+    end of it. The controller's forced flush cannot help here: it counts
+    *finals* (STREAMING_MAX_UTTERANCE_SECONDS over accumulated parts) and this
+    engine emits none before turn_complete. Cutting has to happen here, where
+    the per-turn text lives — anywhere else the flushed part would arrive a
+    second time when the turn finally completes.
+
+    Returns the (possibly emptied) accumulator and its new start time.
+    """
+    if time.monotonic() - turn_started < STREAMING_MAX_UTTERANCE_SECONDS:
+        return accumulated, turn_started
+    head, rest = _split_capped_turn(accumulated)
+    if not head:
+        return accumulated, turn_started
+    log(
+        f"Gemini Live turn ran past {STREAMING_MAX_UTTERANCE_SECONDS}s — cut "
+        "into an utterance so it reaches translation.",
+        level="DEBUG",
+    )
+    on_transcript(head, True)
+    on_utterance_end()
+    if rest:
+        # Republish the remainder immediately: the utterance-end above took
+        # the live transcript line down with it.
+        on_transcript(rest, False)
+    return rest, time.monotonic()
 
 
 def _session_config() -> dict:
@@ -155,6 +214,7 @@ class GeminiLiveTranscriptionProvider:
                 try:
                     # Transcription fragments accumulated within one turn.
                     accumulated = ""
+                    turn_started = 0.0
                     # receive() ends at each turn boundary (SDK behavior);
                     # keep re-entering it until the socket actually closes.
                     # A pass that yields no messages at all means the
@@ -180,9 +240,17 @@ class GeminiLiveTranscriptionProvider:
                                 continue
                             tx = content.input_transcription
                             if tx and tx.text:
+                                if not accumulated:
+                                    turn_started = time.monotonic()
                                 accumulated += tx.text
                                 if accumulated.strip():
                                     on_transcript(accumulated, False)
+                                    accumulated, turn_started = _maybe_cut_turn(
+                                        accumulated,
+                                        turn_started,
+                                        on_transcript,
+                                        on_utterance_end,
+                                    )
                             if content.turn_complete:
                                 text = accumulated.strip()
                                 accumulated = ""

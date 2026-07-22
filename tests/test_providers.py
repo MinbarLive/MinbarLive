@@ -1793,6 +1793,90 @@ class TestGeminiLiveTranscriptionProvider:
         assert ("two", True) in transcripts
         assert ("onetwo", False) not in transcripts
 
+    def _fake_clock(self, monkeypatch, ticks):
+        """Drive the provider's monotonic clock from a script. Values run out
+        into a hold at the last one, so only the interesting calls matter."""
+        remaining = iter(ticks)
+        current = [0.0]
+
+        def monotonic():
+            current[0] = next(remaining, current[0])
+            return current[0]
+
+        monkeypatch.setattr(
+            gemini_realtime, "time", SimpleNamespace(monotonic=monotonic)
+        )
+
+    def test_long_turn_is_cut_into_an_utterance(self, monkeypatch):
+        """Gemini ends a turn only after silence, so continuous speech keeps
+        ONE turn open for minutes (measured live: 89s / 692 chars) and nothing
+        reaches translation until it ends. The controller's forced flush can't
+        help — it counts finals and this engine emits none before
+        turn_complete — so the provider cuts the turn itself."""
+        session = _FakeLiveSession(
+            [
+                [
+                    _live_msg(text="Hello there and welcome. "),
+                    _live_msg(text="and it keeps going"),
+                    _live_msg(turn_complete=True),
+                ]
+            ]
+        )
+        self._fake_client(monkeypatch, session)
+        # First fragment starts the turn at 0; the second is checked past the
+        # cap, so it triggers the cut.
+        self._fake_clock(monkeypatch, [0.0, 0.0, 99.0])
+        transcripts, utterance_ends = [], []
+        self._open(transcripts=transcripts, utterance_ends=utterance_ends)
+        assert _wait_until(lambda: len(utterance_ends) == 2)
+        # Cut at the sentence boundary, remainder republished as the live
+        # line, and the completed turn carries ONLY the remainder — the
+        # flushed half must not arrive a second time.
+        assert transcripts == [
+            ("Hello there and welcome. ", False),
+            ("Hello there and welcome. and it keeps going", False),
+            ("Hello there and welcome.", True),
+            ("and it keeps going", False),
+            ("and it keeps going", True),
+        ]
+
+    def test_split_capped_turn_branches(self):
+        # Sentence boundary in the second half: cut there, keep the rest.
+        assert gemini_realtime._split_capped_turn("One sentence. And more") == (
+            "One sentence.",
+            "And more",
+        )
+        # No boundary at all: flush everything, start empty.
+        assert gemini_realtime._split_capped_turn("no boundary here") == (
+            "no boundary here",
+            "",
+        )
+        # Boundary too early to be worth keeping a remainder for — splitting
+        # there would hand the (already old) rest a fresh full cap window.
+        assert gemini_realtime._split_capped_turn("Yes. " + "a" * 60) == (
+            "Yes. " + "a" * 60,
+            "",
+        )
+
+    def test_long_turn_without_sentence_boundary_is_cut_whole(self, monkeypatch):
+        session = _FakeLiveSession(
+            [
+                [
+                    _live_msg(text="one "),
+                    _live_msg(text="two three"),
+                    _live_msg(turn_complete=True),
+                ]
+            ]
+        )
+        self._fake_client(monkeypatch, session)
+        self._fake_clock(monkeypatch, [0.0, 0.0, 99.0])
+        transcripts, utterance_ends = [], []
+        self._open(transcripts=transcripts, utterance_ends=utterance_ends)
+        assert _wait_until(lambda: len(utterance_ends) == 2)
+        assert transcripts[-1] == ("one two three", True)
+        # Nothing left over, so the turn completes empty rather than repeating.
+        assert [t for t in transcripts if t[1]] == [("one two three", True)]
+
     def test_empty_turn_still_signals_utterance_end(self, monkeypatch):
         """A turn without any transcription must flush empty so a pending
         interim can't linger on the subtitle window."""
