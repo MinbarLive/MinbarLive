@@ -232,6 +232,14 @@ class AppGUI(
         self._update_poll_tries = 0
         self._update_available: UpdateInfo | None = None
 
+        # Start runs on a worker thread (the provider handshake can take tens
+        # of seconds), an after-poll picks the outcome up on the Tk thread.
+        self._starting = False
+        self._start_thread: threading.Thread | None = None
+        self._start_done = threading.Event()
+        self._start_error: Exception | None = None
+        self._start_poll_job: str | None = None
+
         self._running = False
         self._log_polling = False
         self._surface_restore_job: str | None = None
@@ -2097,19 +2105,14 @@ class AppGUI(
         return batch_size, next_poll_ms
 
     def on_change_key(self, provider: str | None = None) -> None:
-        prompt_for_api_key(
-            root=self,
-            startup=False,
-            on_close=lambda: None,
-            colors=self._colors,
-            texts=self.gui_texts,
-            provider=provider or self._saved_settings.ai_provider,
-        )
+        self._prompt_provider_key(provider or self._saved_settings.ai_provider)
 
     def _required_key_providers(self) -> list[str]:
         return required_key_providers(self._saved_settings)
 
     def on_start(self) -> None:
+        if self._starting or self._running:
+            return
         # Prompt for any missing key; if the user dismisses the dialog the app
         # stays stopped (the dialog re-opens on the next Start attempt).
         for provider in self._required_key_providers():
@@ -2121,15 +2124,54 @@ class AppGUI(
         # controller.start() releases a running preview itself; drop the timer
         # so it can't stop anything once the live session owns the device.
         self._cancel_input_level_auto_stop()
-        try:
-            self.controller.start(input_device=self.get_selected_device_index())
-        except Exception as exc:
+
+        # Off the Tk thread: opening a streaming session waits for the
+        # provider's session confirmation, which was measured at 30+ seconds on
+        # the first connect after an API key changes. Run inline and the whole
+        # window is frozen ("Keine Rückmeldung") for that entire time.
+        device = self.get_selected_device_index()
+        self._start_error = None
+        self._start_done.clear()
+        self._set_starting(True)
+
+        def _work() -> None:
+            try:
+                self.controller.start(input_device=device)
+            except Exception as exc:  # surfaced on the Tk thread below
+                self._start_error = exc
+            finally:
+                self._start_done.set()
+
+        self._start_thread = threading.Thread(
+            target=_work, daemon=True, name="pipeline-start"
+        )
+        self._start_thread.start()
+        self._poll_start_result()
+
+    def _poll_start_result(self) -> None:
+        """Apply the outcome of a Start once the worker thread is done.
+
+        Only ever acts while a start is in flight: the outcome is consumed
+        here, so a second call would read a cleared error as success and mark
+        the panel running after a start that failed."""
+        self._start_poll_job = None
+        if self._closing or not self._starting:
+            return
+        if not self._start_done.is_set():
+            self._start_poll_job = self.after(100, self._poll_start_result)
+            return
+
+        self._start_thread = None
+        self._set_starting(False)
+        error, self._start_error = self._start_error, None
+        if error is not None:
             # No usage was billed for a start that never ran — drop the session
             # so it never appears in the cost history.
             cancel_cost_session()
+            self._set_status(False)
             self._alert(
                 self.gui_texts.get("error_start_failed", "Start failed"),
-                str(exc),
+                str(error),
                 parent=self,
                 danger=True,
             )
@@ -2264,6 +2306,28 @@ class AppGUI(
         """Finalize the cost session (writes the record) and stop flushing."""
         self._cancel_cost_flush()
         end_cost_session(status)
+
+    def _set_starting(self, starting: bool) -> None:
+        """Show that a Start is in flight (the provider handshake can run for
+        tens of seconds). Both buttons are inert meanwhile: Start would queue a
+        second session, and there is nothing to stop until the pipeline is up."""
+        self._starting = starting
+        if not starting:
+            return
+        self.start_btn.configure(
+            state="disabled",
+            fg_color=self._colors["button"],
+            hover_color=self._colors["button_hover"],
+            text_color_disabled=self._colors["muted"],
+        )
+        connecting = self.gui_texts.get("connecting", "Connecting…")
+        self.status_label.configure(text=connecting, text_color=self._colors["accent"])
+        self.status_badge.configure(fg_color=self._colors["accent_soft"])
+        self.right_status.configure(
+            text=connecting,
+            fg_color=self._colors["accent_soft"],
+            text_color=self._colors["accent"],
+        )
 
     def _set_status(self, running: bool) -> None:
         if running:

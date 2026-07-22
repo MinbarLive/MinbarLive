@@ -21,6 +21,7 @@ and handlers are invoked directly, which is what a callback would do anyway.
 
 import queue
 import sys
+import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -397,6 +398,21 @@ class TestAlwaysOnTop:
         assert gui._saved_settings.ai_provider == DEFAULT_AI_PROVIDER
 
 
+def _start_and_settle(gui, timeout: float = 5.0):
+    """Press Start and let it finish.
+
+    Start hands controller.start() to a worker thread and picks the outcome up
+    from an after() poll (the provider handshake can run for tens of seconds
+    and must not freeze the window). There is no mainloop here, so join the
+    worker and run the poll by hand.
+    """
+    gui.on_start()
+    thread = gui._start_thread
+    if thread is not None:
+        thread.join(timeout)
+    gui._poll_start_result()
+
+
 class TestStartStop:
     def test_starting_does_not_change_the_card_heights(self, make_gui):
         """The "stop to change" hint shares the strategy label's line. As its
@@ -406,7 +422,7 @@ class TestStartStop:
         gui.update_idletasks()
         stopped = gui.language_card.winfo_reqheight()
 
-        gui.on_start()
+        _start_and_settle(gui)
         gui.update_idletasks()
         assert gui.strategy_running_hint.winfo_ismapped()
         assert gui.language_card.winfo_reqheight() == stopped
@@ -417,7 +433,7 @@ class TestStartStop:
 
     def test_start_then_stop_drives_the_controller(self, make_gui):
         gui, controller, _s = make_gui()
-        gui.on_start()
+        _start_and_settle(gui)
         assert controller.started == 1
         assert gui._running is True
 
@@ -432,14 +448,14 @@ class TestStartStop:
         monkeypatch.setattr(app_gui, "has_usable_key", lambda _p: False)
         monkeypatch.setattr(gui, "_prompt_provider_key", lambda _p: None)
 
-        gui.on_start()
+        _start_and_settle(gui)
 
         assert controller.started == 0, "must not start without a usable key"
         assert gui._running is False
 
     def test_escape_on_the_overlay_stops_but_does_not_close(self, make_gui):
         gui, controller, _s = make_gui()
-        gui.on_start()
+        _start_and_settle(gui)
 
         gui._request_stop_from_subtitle()
 
@@ -450,6 +466,74 @@ class TestStartStop:
         gui, controller, _s = make_gui()
         gui._request_stop_from_subtitle()
         assert controller.stopped == 0
+
+    def _gated_start(self, controller):
+        """Replace controller.start with one the test releases on demand."""
+        gate = threading.Event()
+        calls = []
+
+        def slow_start(input_device=None):
+            calls.append(input_device)
+            gate.wait(5)
+            controller.started += 1
+
+        controller.start = slow_start
+        return gate, calls
+
+    def test_start_does_not_block_the_tk_thread(self, make_gui):
+        """Opening a streaming session waits for the provider's confirmation —
+        measured at 30+ s on the first connect after an API key changes. Run
+        inline, that froze the whole window ("Keine Rückmeldung")."""
+        gui, controller, _s = make_gui()
+        gate, _calls = self._gated_start(controller)
+
+        gui.on_start()
+
+        assert gui._starting is True
+        assert gui._running is False
+        gui.update_idletasks()  # the Tk thread is free to keep working
+        assert gui.start_btn.cget("state") == "disabled"
+        assert gui.status_label.cget("text") == gui.gui_texts["connecting"]
+
+        gate.set()
+        gui._start_thread.join(5)
+        gui._poll_start_result()
+
+        assert gui._starting is False
+        assert gui._running is True
+        assert controller.started == 1
+
+    def test_a_second_start_while_connecting_is_ignored(self, make_gui):
+        gui, controller, _s = make_gui()
+        gate, calls = self._gated_start(controller)
+
+        gui.on_start()
+        gui.on_start()  # impatient second click
+
+        gate.set()
+        gui._start_thread.join(5)
+        gui._poll_start_result()
+        assert len(calls) == 1, "a second session must not be opened"
+
+    def test_a_failed_start_reports_and_stays_stopped(self, make_gui, monkeypatch):
+        """The failure arrives on the worker thread; it still has to surface in
+        the normal dialog and leave the panel in the stopped state."""
+        gui, controller, _s = make_gui()
+        alerts = []
+        monkeypatch.setattr(gui, "_alert", lambda *a, **k: alerts.append(a))
+
+        def boom(input_device=None):
+            raise RuntimeError("startup timed out before session confirmation")
+
+        controller.start = boom
+
+        _start_and_settle(gui)
+
+        assert gui._running is False
+        assert gui._starting is False
+        assert alerts, "a failed start must tell the user"
+        assert "session confirmation" in alerts[0][1]
+        assert gui.start_btn.cget("state") == "normal", "Start must be usable again"
 
 
 class TestLocalizationAndTheme:

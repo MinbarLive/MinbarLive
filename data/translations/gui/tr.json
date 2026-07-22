@@ -4,6 +4,7 @@
   "start": "▶ Başlat",
   "stop": "■ Durdur",
   "running": "● Çalışıyor",
+  "connecting": "○ Bağlanıyor…",
   "stopped": "Durduruldu",
   "audio_device_lost": "Ses cihazı kayboldu",
   "control_center": "Kontroller",

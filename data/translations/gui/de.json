@@ -4,6 +4,7 @@
   "start": "▶ Start",
   "stop": "■ Stop",
   "running": "● Läuft",
+  "connecting": "○ Verbindet …",
   "stopped": "Gestoppt",
   "audio_device_lost": "Audiogerät verloren",
   "control_center": "Steuerung",

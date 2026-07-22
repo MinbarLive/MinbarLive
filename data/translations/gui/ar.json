@@ -4,6 +4,7 @@
   "start": "▶ ابدأ",
   "stop": "■ أوقف",
   "running": "● يعمل",
+  "connecting": "○ جارٍ الاتصال…",
   "stopped": "متوقف",
   "audio_device_lost": "فُقد جهاز الصوت",
   "control_center": "التحكم",
