@@ -319,6 +319,24 @@ def _topmost(gui) -> bool:
     return bool(int(gui.attributes("-topmost")))
 
 
+def _wm_reflects_topmost(win) -> bool:
+    """Whether this display honors the -topmost attribute on read-back.
+
+    On X11 -topmost is _NET_WM_STATE_ABOVE, which a window manager has to
+    apply; a bare X server (xvfb in CI, no WM) accepts the set silently but
+    reports 0 when read. Windows, macOS and any real Linux desktop round-trip
+    it. Used to run the read-back assertions only where they can hold, while
+    the always-on-top *decision* is still checked on every platform.
+    """
+    win.update_idletasks()
+    prev = bool(int(win.attributes("-topmost")))
+    win.attributes("-topmost", True)
+    win.update_idletasks()
+    reflected = bool(int(win.attributes("-topmost")))
+    win.attributes("-topmost", prev)
+    return reflected
+
+
 class TestAlwaysOnTop:
     """The control panel floats above the subtitle overlay only while that
     overlay is open, and only if always_on_top is on. The checkbox toggles
@@ -336,7 +354,8 @@ class TestAlwaysOnTop:
         gui.subtitle_window = _FakeOverlay()
         gui._apply_control_window_topmost()
         assert gui._control_window_should_be_topmost() is True
-        assert _topmost(gui) is True
+        if _wm_reflects_topmost(gui):
+            assert _topmost(gui) is True
 
     def test_toggle_off_drops_both_windows(self, make_gui):
         gui, _c, settings = make_gui()
@@ -360,7 +379,8 @@ class TestAlwaysOnTop:
 
         assert settings.always_on_top is True
         assert gui._control_window_should_be_topmost() is True
-        assert _topmost(gui) is True
+        if _wm_reflects_topmost(gui):
+            assert _topmost(gui) is True
 
     def test_off_never_topmost_even_with_overlay(self, make_gui):
         gui, _c, _s = make_gui(always_on_top=False)
