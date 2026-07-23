@@ -259,13 +259,16 @@ jobs:
           fi
           echo "AppImage stayed up for 30s without FUSE."
 
+      # The AppImage is the only shipped Linux artifact: it wraps this same
+      # binary and adds double-click-run + menu integration, so uploading the
+      # bare binary too would just double the artifact size for no benefit. The
+      # binary is still built and smoke-launched above as a base validation.
       - name: Checksum
-        run: cd dist && sha256sum MinbarLive MinbarLive-x86_64.AppImage | tee SHA256SUMS-linux.txt
+        run: cd dist && sha256sum MinbarLive-x86_64.AppImage | tee SHA256SUMS-linux.txt
 
       - uses: actions/upload-artifact@v4
         with:
           name: MinbarLive-linux
           path: |
-            dist/MinbarLive
             dist/MinbarLive-x86_64.AppImage
             dist/SHA256SUMS-linux.txt

@@ -47,10 +47,32 @@ cp "$APPDIR/MinbarLive.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/Minbar
 cp packaging/minbarlive.desktop "$APPDIR/MinbarLive.desktop"
 cp packaging/minbarlive.desktop "$APPDIR/usr/share/applications/MinbarLive.desktop"
 
-# AppRun launches the bundled binary from wherever the AppImage is mounted.
+# AppRun: on first run, register a menu entry + the dome icon so MinbarLive
+# appears in the application grid with its icon (GNOME shows a generic icon for
+# a loose AppImage file - the embedded icon only surfaces once integrated).
+# Then launch the bundled binary from wherever the AppImage is mounted.
 cat > "$APPDIR/AppRun" <<'SH'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "${0}")")"
+
+# First-run desktop integration. $APPIMAGE (the path to this AppImage) is set by
+# the runtime; skip when unset (e.g. an extracted run). Guarded by the entry's
+# existence so it runs once, and every step is best-effort so it can never stop
+# the app from starting.
+if [ -n "${APPIMAGE:-}" ]; then
+  data="${XDG_DATA_HOME:-$HOME/.local/share}"
+  apps="$data/applications"
+  icons="$data/icons/hicolor/256x256/apps"
+  entry="$apps/minbarlive.desktop"
+  if [ ! -f "$entry" ]; then
+    mkdir -p "$apps" "$icons" 2>/dev/null || true
+    cp "$HERE/MinbarLive.png" "$icons/MinbarLive.png" 2>/dev/null || true
+    sed "s|^Exec=.*|Exec=\"$APPIMAGE\"|" "$HERE/MinbarLive.desktop" \
+      > "$entry" 2>/dev/null || true
+    update-desktop-database "$apps" 2>/dev/null || true
+  fi
+fi
+
 exec "${HERE}/usr/bin/MinbarLive" "$@"
 SH
 chmod +x "$APPDIR/AppRun"
