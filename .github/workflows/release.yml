@@ -152,13 +152,13 @@ jobs:
           gh release upload "$tag" \
             dist/MinbarLive.exe dist/SHA256SUMS.txt --clobber
 
-  # EXPERIMENTAL. The result is a workflow artifact only and is deliberately
-  # NOT attached to the release: nobody has run MinbarLive on a Linux desktop
-  # yet, and several features are Windows-only there (the OBS-visible
-  # borderless overlay, transparent static mode, loopback capture, and the OS
-  # keychain, which falls back to plaintext for OpenAI and to session-only for
-  # every other provider). Download the artifact, run it, and only then
-  # consider publishing it. See docs/ci.md.
+  # EXPERIMENTAL Linux build. Verified on a real Linux desktop (2026-07), so the
+  # AppImage is now attached to tagged releases (the publish step at the end of
+  # this job) - but it is still labelled experimental: several features are
+  # Windows-only there (the OBS-visible borderless overlay, transparent static
+  # mode, loopback capture), and the OS keychain needs a Secret Service backend
+  # or it falls back to plaintext for OpenAI / session-only for every other
+  # provider. See docs/ci.md.
   build-linux:
     needs: build
     # NOT ubuntu-latest. A PyInstaller binary only starts on glibc at least as
@@ -272,3 +272,15 @@ jobs:
           path: |
             dist/MinbarLive-x86_64.AppImage
             dist/SHA256SUMS-linux.txt
+
+      # Attach the experimental Linux AppImage to the release (tag builds only).
+      # The Windows `build` job is a dependency and creates the release first,
+      # so it already exists here - just upload alongside MinbarLive.exe.
+      - name: Publish the AppImage to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/MinbarLive-x86_64.AppImage dist/SHA256SUMS-linux.txt --clobber
