@@ -141,6 +141,7 @@ class SettingsViewMixin:
         )
         self._settings_scroll.pack(fill="both", expand=True)
         self._settings_scroll.grid_columnconfigure(0, weight=1)
+        self._enable_linux_mousewheel(self._settings_scroll)
         win.after(300, lambda: self._setup_autohide_scrollbar(self._settings_scroll))
         scroll = self._settings_scroll
 

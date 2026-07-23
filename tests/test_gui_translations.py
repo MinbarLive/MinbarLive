@@ -161,6 +161,7 @@ WIZARD_KEYS = [
     "announce_send",
     "announce_stop",
     "announce_stop_on_live_stop",
+    "connecting",
 ]
 
 

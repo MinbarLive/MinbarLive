@@ -4,6 +4,7 @@
   "start": "▶ Fillo",
   "stop": "■ Ndalo",
   "running": "● Duke punuar",
+  "connecting": "○ Duke u lidhur…",
   "stopped": "Ndalur",
   "audio_device_lost": "Pajisja audio u humb",
   "control_center": "Kontrollet",
