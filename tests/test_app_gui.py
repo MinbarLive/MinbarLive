@@ -433,6 +433,20 @@ def _start_and_settle(gui, timeout: float = 5.0):
     gui._poll_start_result()
 
 
+def _stop_and_settle(gui, timeout: float = 5.0):
+    """Press Stop and let it finish.
+
+    Stop hands controller.stop() to a worker thread and picks the teardown up
+    from an after() poll (closing a streaming session can block on the
+    connection lock for tens of seconds and must not freeze the window). There
+    is no mainloop here, so join the worker and run the poll by hand."""
+    gui.on_stop()
+    thread = gui._stop_thread
+    if thread is not None:
+        thread.join(timeout)
+    gui._poll_stop_result()
+
+
 class TestStartStop:
     def test_starting_does_not_change_the_card_heights(self, make_gui):
         """The "stop to change" hint shares the strategy label's line. As its
@@ -447,7 +461,7 @@ class TestStartStop:
         assert gui.strategy_running_hint.winfo_ismapped()
         assert gui.language_card.winfo_reqheight() == stopped
 
-        gui.on_stop()
+        _stop_and_settle(gui)
         gui.update_idletasks()
         assert gui.language_card.winfo_reqheight() == stopped
 
@@ -457,7 +471,7 @@ class TestStartStop:
         assert controller.started == 1
         assert gui._running is True
 
-        gui.on_stop()
+        _stop_and_settle(gui)
         assert controller.stopped >= 1
         assert gui._running is False
 
@@ -478,6 +492,9 @@ class TestStartStop:
         _start_and_settle(gui)
 
         gui._request_stop_from_subtitle()
+        if gui._stop_thread is not None:
+            gui._stop_thread.join(5)
+        gui._poll_stop_result()
 
         assert controller.stopped >= 1
         assert gui.winfo_exists(), "Esc must never close the app"
@@ -554,6 +571,58 @@ class TestStartStop:
         assert alerts, "a failed start must tell the user"
         assert "session confirmation" in alerts[0][1]
         assert gui.start_btn.cget("state") == "normal", "Start must be usable again"
+
+    def test_stop_does_not_block_the_tk_thread(self, make_gui):
+        """Closing a streaming session takes the connection lock, which a
+        reconnect blocked in a slow open_stream() can hold for tens of seconds.
+        Run inline and the whole window freezes for that wait — so Stop hands
+        controller.stop() to a worker thread, exactly as Start does."""
+        gui, controller, _s = make_gui()
+        _start_and_settle(gui)
+
+        gate = threading.Event()
+
+        def slow_stop():
+            gate.wait(5)
+            controller.stopped += 1
+
+        controller.stop = slow_stop
+
+        gui.on_stop()
+
+        assert gui._stopping is True
+        assert gui._running is True, "still running until the stop completes"
+        gui.update_idletasks()  # the Tk thread is free to keep working
+        assert gui.stop_btn.cget("state") == "disabled"
+
+        gate.set()
+        gui._stop_thread.join(5)
+        gui._poll_stop_result()
+
+        assert gui._stopping is False
+        assert gui._running is False
+        assert controller.stopped == 1
+
+    def test_a_second_stop_while_stopping_is_ignored(self, make_gui):
+        gui, controller, _s = make_gui()
+        _start_and_settle(gui)
+
+        gate = threading.Event()
+        calls = []
+
+        def slow_stop():
+            calls.append(1)
+            gate.wait(5)
+
+        controller.stop = slow_stop
+
+        gui.on_stop()
+        gui.on_stop()  # impatient second click while the first is in flight
+
+        gate.set()
+        gui._stop_thread.join(5)
+        gui._poll_stop_result()
+        assert len(calls) == 1, "a second stop must not run while one is in flight"
 
 
 class TestApiKeyPrompt:
@@ -876,7 +945,7 @@ class TestAnnouncement:
         gui.subtitle_window = fake
         gui._running = True
         gui._announcement_text_active = "Stays up"
-        gui.on_stop()
+        _stop_and_settle(gui)
         assert gui.subtitle_window is fake
         assert fake.destroyed is False
 
@@ -889,7 +958,7 @@ class TestAnnouncement:
         gui.subtitle_window = fake
         gui._running = True
         gui._announcement_text_active = "Goes away"
-        gui.on_stop()
+        _stop_and_settle(gui)
         assert gui._has_active_announcement() is False
         assert gui.subtitle_window is None
         assert fake.destroyed is True
@@ -899,7 +968,7 @@ class TestAnnouncement:
         fake = _FakeSubtitleWindow()
         gui.subtitle_window = fake
         gui._running = True
-        gui.on_stop()
+        _stop_and_settle(gui)
         assert gui.subtitle_window is None
         assert fake.destroyed is True
 

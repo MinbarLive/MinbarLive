@@ -242,6 +242,16 @@ class AppGUI(
         self._start_error: Exception | None = None
         self._start_poll_job: str | None = None
 
+        # Stop runs on a worker thread too: closing a streaming session takes
+        # the connection lock, which a reconnect blocked in a slow open_stream()
+        # can hold for tens of seconds — run inline and the window freezes for
+        # that wait, exactly as Start did. An after-poll applies the teardown.
+        self._stopping = False
+        self._stop_thread: threading.Thread | None = None
+        self._stop_done = threading.Event()
+        self._stop_error: Exception | None = None
+        self._stop_poll_job: str | None = None
+
         self._running = False
         self._log_polling = False
         self._surface_restore_job: str | None = None
@@ -2210,12 +2220,55 @@ class AppGUI(
             self.on_stop()
 
     def on_stop(self) -> None:
-        try:
-            self.controller.stop()
-        except Exception as exc:
+        if self._stopping:
+            return
+        # Off the Tk thread: closing a streaming session takes the connection
+        # lock, which a reconnect blocked in a slow open_stream() can hold for
+        # tens of seconds. Run inline and the whole window freezes for that
+        # wait, exactly as Start did before it moved off-thread. Cancel the
+        # inactivity poll up front so it can't fire a second stop mid-teardown.
+        self._cancel_inactivity_check()
+        self._stop_error = None
+        self._stop_done.clear()
+        self._set_stopping(True)
+
+        def _work() -> None:
+            try:
+                self.controller.stop()
+            except Exception as exc:  # surfaced on the Tk thread below
+                self._stop_error = exc
+            finally:
+                self._stop_done.set()
+
+        self._stop_thread = threading.Thread(
+            target=_work, daemon=True, name="pipeline-stop"
+        )
+        self._stop_thread.start()
+        self._poll_stop_result()
+
+    def _poll_stop_result(self) -> None:
+        """Apply the teardown of a Stop once the worker thread is done.
+
+        Only ever acts while a stop is in flight: the outcome is consumed here,
+        so a stray repeat call after completion is a no-op."""
+        self._stop_poll_job = None
+        if self._closing or not self._stopping:
+            return
+        if not self._stop_done.is_set():
+            self._stop_poll_job = self.after(100, self._poll_stop_result)
+            return
+
+        self._stop_thread = None
+        self._set_stopping(False)
+        error, self._stop_error = self._stop_error, None
+        if error is not None:
+            # Stop failed — leave the session marked running (as the inline
+            # version did) and restore the running button state so it can be
+            # retried, then surface the error.
+            self._set_status(self._running)
             self._alert(
                 self.gui_texts.get("error_stop_failed", "Stop failed"),
-                str(exc),
+                str(error),
                 parent=self,
                 danger=True,
             )
@@ -2224,7 +2277,6 @@ class AppGUI(
         self._refresh_provider_combos()  # restore the full provider list
         self._set_status(False)
         self._sync_advanced_enabled_states()
-        self._cancel_inactivity_check()
         self._end_cost_session("completed")
         # Optionally clear an in-progress announcement when the session stops
         # (checkbox in the announcement window, default on). Runs after
@@ -2338,6 +2390,22 @@ class AppGUI(
             text=connecting,
             fg_color=self._colors["accent_soft"],
             text_color=self._colors["accent"],
+        )
+
+    def _set_stopping(self, stopping: bool) -> None:
+        """Show that a Stop is in flight (closing a streaming session can block
+        on the connection lock for tens of seconds). The Stop button is inert
+        meanwhile so a second click can't double-stop; Start is already disabled
+        while the session runs. The final stopped/running state is applied by
+        the poll's _set_status once controller.stop() returns."""
+        self._stopping = stopping
+        if not stopping:
+            return
+        self.stop_btn.configure(
+            state="disabled",
+            fg_color=self._colors["button"],
+            hover_color=self._colors["button_hover"],
+            text_color_disabled=self._colors["muted"],
         )
 
     def _set_status(self, running: bool) -> None:
