@@ -73,6 +73,19 @@ hiddenimports = (
     + collect_submodules("soundcard")  # imported lazily for WASAPI loopback capture
 )
 
+# keyring's Linux Secret Service backend (GNOME Keyring / KWallet) is provided by
+# secretstorage + jeepney, which keyring only declares as dependencies on Linux.
+# collect_submodules("keyring") pulls in the SecretService backend module but not
+# those two external packages, so PyInstaller may miss them — leaving the frozen
+# Linux binary with no keyring backend and silently falling back to plaintext for
+# the OpenAI key / session-only for every other provider (utils/settings.py).
+# Bundle them explicitly. They are not installed on Windows/macOS, so guard on the
+# platform; secretstorage's cryptography dependency rides along via the import
+# graph (PyInstaller ships a dedicated cryptography hook).
+if IS_LINUX:
+    hiddenimports += collect_submodules("secretstorage")
+    hiddenimports += collect_submodules("jeepney")
+
 # Exclude the MASSIVE unused libraries
 excludes = [
     "torch",
