@@ -1,2 +1,9 @@
 **/quran_embeddings.json filter=lfs diff=lfs merge=lfs -text
 **/quran_embeddings*.npz filter=lfs diff=lfs merge=lfs -text
+
+# Shell scripts and desktop entries run on Linux (the AppImage packaging in
+# .github/workflows/release.yml). CRLF line endings break a bash script with
+# "$'\r': command not found", so force LF regardless of a contributor's
+# core.autocrlf setting.
+*.sh text eol=lf
+*.desktop text eol=lf
