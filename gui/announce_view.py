@@ -132,7 +132,7 @@ class AnnounceViewMixin:
 
         header = ctk.CTkLabel(
             card,
-            text="📣  " + self.gui_texts.get("announce_title", "Announcement"),
+            text="⚑  " + self.gui_texts.get("announce_title", "Announcement"),
             font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
             text_color=self._colors["text"],
             anchor="w",

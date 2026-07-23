@@ -861,10 +861,11 @@ class AppGUI(
 
         self._batch_btn = ctk.CTkButton(
             header,
-            # U+1F4C4 "page facing up": Segoe UI Symbol draws it solid, which
-            # is what makes it readable at 44px — the outline pages (U+1F5CB /
-            # U+1F5CE) were too faint next to the solid 📣 and ▶ glyphs.
-            text="📄",
+            # U+25A4 "square with horizontal fill": a mono BMP glyph (page of
+            # lines) that renders on Linux too — the former color emoji 📄/📣
+            # need an emoji font Ubuntu lacks and showed blank. Matches the
+            # other header buttons (⟲ ⚙), which are already mono symbols.
+            text="▤",
             command=self._open_batch_window,
             width=44,
             height=44,
@@ -879,7 +880,9 @@ class AppGUI(
 
         self._announce_btn = ctk.CTkButton(
             header,
-            text="📣",
+            # U+2691 "black flag" — mono BMP glyph (announcement/notice) that
+            # renders on Linux; see the batch button above for why 📣 was dropped.
+            text="⚑",
             command=self._open_announce_window,
             width=44,
             height=44,

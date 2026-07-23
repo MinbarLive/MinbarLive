@@ -170,7 +170,7 @@ class BatchViewMixin:
         symbol = ctk.CTkLabel(
             header,
             # Same file glyph as the header button that opens this window.
-            text="📄",
+            text="▤",
             font=ctk.CTkFont(family="Segoe UI Symbol", size=20, weight="bold"),
             text_color=self._colors["accent"],
             width=44,
