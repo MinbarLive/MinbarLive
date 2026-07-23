@@ -236,10 +236,12 @@ jobs:
       - name: Package AppImage
         run: bash packaging/build-appimage.sh
 
-      # extract-and-run because the runner has no FUSE; a healthy start sits in
-      # the onboarding wizard until timeout kills it (exit 124 == success),
-      # which proves the AppRun wiring and the bundled binary launch together.
-      - name: Smoke-launch the AppImage
+      # Deliberately NOT setting APPIMAGE_EXTRACT_AND_RUN, and the runner has no
+      # FUSE installed: a clean start therefore proves the embedded uruntime
+      # (FUSE-less) runtime works - i.e. an end user can double-click the
+      # AppImage on a stock modern distro without installing libfuse2. A healthy
+      # start sits in the onboarding wizard until timeout kills it (exit 124).
+      - name: Smoke-launch the AppImage (no FUSE)
         run: |
           size=$(stat -c%s dist/MinbarLive-x86_64.AppImage)
           echo "dist/MinbarLive-x86_64.AppImage: $size bytes"
@@ -248,14 +250,14 @@ jobs:
             exit 1
           fi
           set +e
-          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a timeout 30 ./dist/MinbarLive-x86_64.AppImage
+          xvfb-run -a timeout 30 ./dist/MinbarLive-x86_64.AppImage
           code=$?
           set -e
           if [ "$code" -ne 124 ]; then
-            echo "::error::AppImage exited with $code instead of staying up for 30s."
+            echo "::error::AppImage exited with $code (expected 124). The FUSE-less runtime may not be working."
             exit 1
           fi
-          echo "AppImage stayed up for 30s."
+          echo "AppImage stayed up for 30s without FUSE."
 
       - name: Checksum
         run: cd dist && sha256sum MinbarLive MinbarLive-x86_64.AppImage | tee SHA256SUMS-linux.txt

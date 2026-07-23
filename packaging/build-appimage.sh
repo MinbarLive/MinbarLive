@@ -55,8 +55,22 @@ exec "${HERE}/usr/bin/MinbarLive" "$@"
 SH
 chmod +x "$APPDIR/AppRun"
 
-# appimagetool is itself an AppImage. GitHub runners have no FUSE, so run it
-# with APPIMAGE_EXTRACT_AND_RUN=1 (self-extract instead of mounting).
+# A FUSE-less runtime (uruntime) so the finished AppImage runs on a plain
+# double-click WITHOUT libfuse2 - modern Ubuntu (22.04+) does not ship it, and
+# the default AppImage runtime hard-requires it. uruntime is a static (musl)
+# runtime that self-mounts via a bundled squashfuse, or extract-and-runs, so it
+# needs no system FUSE at all. Pinned for reproducibility.
+URUNTIME_VERSION="v0.5.8"
+RUNTIME="uruntime-appimage-squashfs-${ARCH}"
+if [ ! -f "$RUNTIME" ]; then
+  curl -fsSL -o "$RUNTIME" \
+    "https://github.com/VHSgunzo/uruntime/releases/download/${URUNTIME_VERSION}/${RUNTIME}"
+  chmod +x "$RUNTIME"
+fi
+
+# appimagetool is itself an AppImage. GitHub runners have no FUSE, so run IT with
+# APPIMAGE_EXTRACT_AND_RUN=1; --runtime-file embeds uruntime as the output's
+# runtime instead of appimagetool's default FUSE-requiring one.
 TOOL="appimagetool-${ARCH}.AppImage"
 if [ ! -x "$TOOL" ]; then
   curl -fsSL -o "$TOOL" \
@@ -64,5 +78,5 @@ if [ ! -x "$TOOL" ]; then
   chmod +x "$TOOL"
 fi
 
-ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "./$TOOL" "$APPDIR" "$OUT"
+ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "./$TOOL" --runtime-file "$RUNTIME" "$APPDIR" "$OUT"
 echo "Built $OUT"
