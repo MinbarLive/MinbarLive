@@ -36,6 +36,34 @@ jobs:
 
       - run: python -m pytest -q
 
+  # The same suite under a virtual X server. Linux users exist (the X11 icon
+  # crash and the X11 mouse-wheel gap both arrived as bug reports from people
+  # running from source), but every run so far was Windows-only, so Linux-only
+  # breakage reached them instead of the pull request.
+  linux-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # tk: setup-python's interpreter links against libtk8.6/libtcl8.6, and
+      # `import tkinter` fails outright without them.
+      # libportaudio2: the Linux sounddevice wheel does not bundle PortAudio.
+      # xvfb: roughly a tenth of the suite builds real Tk windows.
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y tk libportaudio2 xvfb
+
+      - run: pip install -r requirements.txt
+
+      - run: xvfb-run -a python -m pytest -q
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
