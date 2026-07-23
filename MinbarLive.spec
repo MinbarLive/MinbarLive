@@ -71,7 +71,26 @@ hiddenimports = (
     + collect_submodules("bidi")
     + collect_submodules("webrtcvad")  # imported lazily by audio/vad.py
     + collect_submodules("soundcard")  # imported lazily for WASAPI loopback capture
+    # PIL.ImageTk (utils/icons.py header logo) pulls in the C helper module
+    # PIL._tkinter_finder indirectly. PyInstaller's PIL hook picks it up on
+    # Windows but misses it on Linux, so the frozen Linux app crashes the
+    # logo render with "No module named 'PIL._tkinter_finder'" and shows a
+    # wordmark-only header. Harmless to list on every platform.
+    + ["PIL._tkinter_finder"]
 )
+
+# keyring's Linux Secret Service backend (GNOME Keyring / KWallet) is provided by
+# secretstorage + jeepney, which keyring only declares as dependencies on Linux.
+# collect_submodules("keyring") pulls in the SecretService backend module but not
+# those two external packages, so PyInstaller may miss them — leaving the frozen
+# Linux binary with no keyring backend and silently falling back to plaintext for
+# the OpenAI key / session-only for every other provider (utils/settings.py).
+# Bundle them explicitly. They are not installed on Windows/macOS, so guard on the
+# platform; secretstorage's cryptography dependency rides along via the import
+# graph (PyInstaller ships a dedicated cryptography hook).
+if IS_LINUX:
+    hiddenimports += collect_submodules("secretstorage")
+    hiddenimports += collect_submodules("jeepney")
 
 # Exclude the MASSIVE unused libraries
 excludes = [
@@ -112,10 +131,13 @@ binaries = (
 )
 
 # The Windows and macOS sounddevice wheels ship PortAudio inside the package,
-# so collect_dynamic_libs above finds it. The Linux wheel does not — it dlopens
-# the system libportaudio at import time, which collect_dynamic_libs cannot see.
-# Bundle it explicitly (apt: libportaudio2); the onefile bootloader puts the
-# extraction directory on the loader path, so the dlopen resolves there.
+# so collect_dynamic_libs above finds it. The Linux wheel does not — sounddevice
+# resolves it at import time via ctypes.util.find_library("portaudio"), which
+# searches only the system library cache (ldconfig), never LD_LIBRARY_PATH or the
+# onefile extraction directory. So bundling the lib here is necessary but not
+# sufficient: rthook_portaudio.py points find_library at the bundled copy at
+# runtime, otherwise a machine without the system libportaudio2 package crashes
+# at startup with "PortAudio library not found". Build dep: apt libportaudio2.
 if IS_LINUX:
     _portaudio = glob.glob("/usr/lib/*/libportaudio.so*") + glob.glob(
         "/usr/lib/libportaudio.so*"
@@ -136,7 +158,9 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    # Makes the bundled libportaudio.so.2 discoverable on Linux (see the
+    # PortAudio note above). No-op on Windows/macOS.
+    runtime_hooks=["rthook_portaudio.py"],
     excludes=excludes,
     noarchive=False,
     optimize=1,

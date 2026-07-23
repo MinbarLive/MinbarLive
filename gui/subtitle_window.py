@@ -69,6 +69,11 @@ if _ARABIC_SUPPORT:
     _reshape_rtl("تهيئة")
 
 
+# Public alias so other GUI widgets (gui/dropdown.py) can reuse the same
+# per-platform RTL shaping without importing a private name.
+reshape_rtl = _reshape_rtl
+
+
 from config import (
     FOOTER_TRANSLATIONS_PATH,
     ICON_PATH,

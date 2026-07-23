@@ -12,6 +12,24 @@ from typing import Any
 import customtkinter as ctk
 
 
+def _display(text: str) -> str:
+    """Shape RTL text for a dropdown label.
+
+    Dropdown values that are Arabic (e.g. the language name "العربية") render
+    with reversed, disconnected letters on Linux/X11, where Tk does not shape
+    Arabic in standard widgets. Reuse the subtitle window's reshaper, which
+    already encodes the per-platform rule (logical text on Windows, where Tk
+    shapes natively; pre-shaped visual order elsewhere). Only the visible label
+    is shaped — the stored value stays logical for get()/set()/comparisons.
+    """
+    try:
+        from gui.subtitle_window import reshape_rtl  # noqa: PLC0415
+
+        return reshape_rtl(text)
+    except Exception:
+        return text
+
+
 class CustomDropdown(ctk.CTkFrame):
     """Custom dropdown replacing CTkComboBox.
 
@@ -96,7 +114,7 @@ class CustomDropdown(ctk.CTkFrame):
 
         self._value_label = ctk.CTkLabel(
             self,
-            text=self._current,
+            text=_display(self._current),
             font=self._font,
             text_color=self._text_color,
             anchor="w",
@@ -346,7 +364,7 @@ class CustomDropdown(ctk.CTkFrame):
             ifrm.pack_propagate(False)
             ilbl = tk.Label(
                 ifrm,
-                text=val,
+                text=_display(val),
                 bg=bg,
                 fg=self._drop_text,
                 font=("Segoe UI", 12),
@@ -414,7 +432,7 @@ class CustomDropdown(ctk.CTkFrame):
 
     def _select(self, value: str) -> None:
         self._current = value
-        self._value_label.configure(text=value)
+        self._value_label.configure(text=_display(value))
         self._close()
         if self._user_command:
             self._user_command(value)
@@ -429,7 +447,7 @@ class CustomDropdown(ctk.CTkFrame):
     def set(self, value: str) -> None:
         self._current = value
         try:
-            self._value_label.configure(text=value)
+            self._value_label.configure(text=_display(value))
         except Exception:
             pass
 
@@ -441,7 +459,7 @@ class CustomDropdown(ctk.CTkFrame):
                 return -1
         if 0 <= index < len(self._values):
             self._current = self._values[index]
-            self._value_label.configure(text=self._current)
+            self._value_label.configure(text=_display(self._current))
         return None
 
     def bind(
