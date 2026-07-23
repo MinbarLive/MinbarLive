@@ -213,6 +213,12 @@ class AppController:
         self._streaming_utterance_queue: queue.Queue[tuple[str, int]] = queue.Queue()
         self._streaming_handle = None
         self._streaming_session: _StreamingUtteranceSession | None = None
+        # Serialises every mutation of the streaming connection handle. The
+        # error-triggered reconnect supervisor, the stall watchdog and the
+        # terminal-error teardown all run on different threads; without this
+        # two of them could each open a socket and orphan the loser's (left
+        # open and billed, feeding nothing). See _swap_streaming_connection.
+        self._streaming_lock = threading.Lock()
         self._noise_gate: StreamNoiseGate | None = None
         # Reconnect-with-backoff state (streaming mode only). The generation
         # counter keeps late callbacks from an already-replaced connection
@@ -1002,7 +1008,15 @@ class AppController:
                 gate = self._noise_gate
                 if gate is not None and load_settings().noise_filter:
                     chunk = gate.process(chunk)
-                handle.feed(chunk)
+                try:
+                    handle.feed(chunk)
+                except Exception as e:
+                    # A concurrent swap/stop can close this handle between the
+                    # read above and here; feeding a closed connection then
+                    # raises. Drop the chunk (same policy as chunks captured
+                    # while down) rather than let it kill the feeder thread and
+                    # silence the pipeline for the rest of the session.
+                    log(f"STREAMING feeder dropped a chunk: {e}", level="DEBUG")
 
     def _handle_terminal_stream_error(
         self,
@@ -1032,13 +1046,18 @@ class AppController:
         # event and performs the normal controller.stop() cleanup. Crucially,
         # never wake the reconnect supervisor for an authentication failure.
         self._streaming_outage = True
-        self._streaming_connect = None
         self._streaming_reconnect_event.clear()
         self._input_stop_event.set()
         self.stop_event.set()
 
-        handle = self._streaming_handle
-        self._streaming_handle = None
+        # Clear the connect callable and grab the live handle under the same
+        # lock the reconnect paths use: a swap racing this teardown then either
+        # sees connect=None and never opens, or we capture and close whatever it
+        # just opened — no socket is left dangling.
+        with self._streaming_lock:
+            self._streaming_connect = None
+            handle = self._streaming_handle
+            self._streaming_handle = None
         if handle is not None:
             try:
                 handle.close()
@@ -1048,6 +1067,34 @@ class AppController:
                     level="DEBUG",
                 )
         return True
+
+    def _swap_streaming_connection(self, reason: str) -> bool:
+        """Atomically replace the live streaming connection with a fresh one.
+
+        Both recovery paths — the error-triggered reconnect supervisor and the
+        stall watchdog — call this from their own threads. The lock serialises
+        them (and the terminal-error teardown, which takes the same lock) so two
+        of them can never each open a socket and leave the loser's connection
+        dangling — open and billed, feeding nothing.
+
+        Returns True once a new connection is open, or False if the session is
+        being torn down (``_streaming_connect`` was cleared by stop() or a
+        terminal error). Any exception raised while opening propagates to the
+        caller so it can classify it.
+        """
+        with self._streaming_lock:
+            connect = self._streaming_connect
+            if connect is None:
+                return False  # stop()/terminal error already tore the session down
+            old = self._streaming_handle
+            self._streaming_handle = None  # feeder drops chunks while down
+            if old is not None:
+                try:
+                    old.close()
+                except Exception as e:
+                    log(f"STREAMING error closing {reason} handle: {e}", level="DEBUG")
+            self._streaming_handle = connect()
+            return True
 
     def _streaming_reconnect_supervisor(self):
         """Reconnect-with-backoff for streaming mode.
@@ -1075,23 +1122,8 @@ class AppController:
             if stop_event.wait(delay):
                 break
             reconnect_event.clear()
-            old = self._streaming_handle
-            self._streaming_handle = None  # feeder drops chunks while down
-            if old is not None:
-                try:
-                    old.close()
-                except Exception as e:
-                    log(f"STREAMING error closing dead handle: {e}", level="DEBUG")
-            connect = self._streaming_connect
-            if connect is None:
-                break  # stop() already tore the session down
             try:
-                self._streaming_handle = connect()
-                log(
-                    f"STREAMING Reconnected after {delay:.0f}s backoff — "
-                    "new connection opened.",
-                    level="INFO",
-                )
+                opened = self._swap_streaming_connection("dead")
             except Exception as e:
                 if self._handle_terminal_stream_error(e):
                     break
@@ -1099,6 +1131,14 @@ class AppController:
                 # via on_error) — but if it does, queue another attempt.
                 log(f"STREAMING Reconnect attempt failed: {e}", level="WARNING")
                 reconnect_event.set()
+                continue
+            if not opened:
+                break  # stop() already tore the session down
+            log(
+                f"STREAMING Reconnected after {delay:.0f}s backoff — "
+                "new connection opened.",
+                level="INFO",
+            )
         log("STREAMING reconnect supervisor ended", level="DEBUG")
 
     def _streaming_stall_watchdog(self):
@@ -1128,25 +1168,18 @@ class AppController:
                 "— reconnecting silently in case the session is stuck.",
                 level="WARNING",
             )
-            old = self._streaming_handle
-            self._streaming_handle = None  # feeder drops chunks during the swap
-            if old is not None:
-                try:
-                    old.close()
-                except Exception as e:
-                    log(f"STREAMING error closing stalled handle: {e}", level="DEBUG")
-            connect = self._streaming_connect
-            if connect is None:
-                break  # stop() already tore the session down
             try:
-                self._streaming_handle = connect()
-                # Restart the timer now, not on the next transcript — otherwise
-                # a connection that also takes a few seconds to speak would
-                # trip the watchdog again before it gets a chance.
-                self._last_pipeline_activity = time.time()
-                log("STREAMING Silently reconnected after a stall.", level="INFO")
+                opened = self._swap_streaming_connection("stalled")
             except Exception as e:
                 log(f"STREAMING Silent reconnect attempt failed: {e}", level="WARNING")
+                continue
+            if not opened:
+                break  # stop() already tore the session down
+            # Restart the timer now, not on the next transcript — otherwise a
+            # connection that also takes a few seconds to speak would trip the
+            # watchdog again before it gets a chance.
+            self._last_pipeline_activity = time.time()
+            log("STREAMING Silently reconnected after a stall.", level="INFO")
         log("STREAMING stall watchdog ended", level="DEBUG")
 
     def _process_streaming_utterances(self, session: _StreamingUtteranceSession):
@@ -1549,12 +1582,21 @@ class AppController:
         # Stop context manager
         get_context_manager().stop(timeout=timeout)
 
-        # Close the streaming connection if streaming mode was active, so its
-        # receive thread can exit. References are cleared only after the
-        # joins below — the processor thread's final flush still needs them.
-        if self._streaming_handle is not None:
+        # Tear the streaming connection down under the same lock the reconnect
+        # paths use, BEFORE joining: a supervisor/watchdog blocked in a slow
+        # open_stream() would otherwise outlive the join timeout and store a
+        # fresh handle that the cleanup below then nulls without closing —
+        # leaking an open, billed socket. Clearing _streaming_connect first
+        # makes any not-yet-started swap bail; grabbing the handle under the
+        # lock captures one an in-flight swap just opened so we can close it.
+        # Closing lets the streaming receive thread exit before the joins.
+        with self._streaming_lock:
+            self._streaming_connect = None
+            streaming_handle = self._streaming_handle
+            self._streaming_handle = None
+        if streaming_handle is not None:
             try:
-                self._streaming_handle.close()
+                streaming_handle.close()
             except Exception as e:
                 log(f"Error closing streaming handle: {e}", level="DEBUG")
 
@@ -1574,9 +1616,9 @@ class AppController:
                 log(f"Error joining thread {t.name}: {e}", level="DEBUG")
 
         self.strategy = None
-        self._streaming_handle = None
+        # _streaming_handle / _streaming_connect were cleared above under the
+        # lock; the session is safe to drop now that the workers are joined.
         self._streaming_session = None
-        self._streaming_connect = None
         self._noise_gate = None
         self._current_device = None
         self._running = False
