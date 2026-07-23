@@ -125,10 +125,13 @@ binaries = (
 )
 
 # The Windows and macOS sounddevice wheels ship PortAudio inside the package,
-# so collect_dynamic_libs above finds it. The Linux wheel does not — it dlopens
-# the system libportaudio at import time, which collect_dynamic_libs cannot see.
-# Bundle it explicitly (apt: libportaudio2); the onefile bootloader puts the
-# extraction directory on the loader path, so the dlopen resolves there.
+# so collect_dynamic_libs above finds it. The Linux wheel does not — sounddevice
+# resolves it at import time via ctypes.util.find_library("portaudio"), which
+# searches only the system library cache (ldconfig), never LD_LIBRARY_PATH or the
+# onefile extraction directory. So bundling the lib here is necessary but not
+# sufficient: rthook_portaudio.py points find_library at the bundled copy at
+# runtime, otherwise a machine without the system libportaudio2 package crashes
+# at startup with "PortAudio library not found". Build dep: apt libportaudio2.
 if IS_LINUX:
     _portaudio = glob.glob("/usr/lib/*/libportaudio.so*") + glob.glob(
         "/usr/lib/libportaudio.so*"
@@ -149,7 +152,9 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    # Makes the bundled libportaudio.so.2 discoverable on Linux (see the
+    # PortAudio note above). No-op on Windows/macOS.
+    runtime_hooks=["rthook_portaudio.py"],
     excludes=excludes,
     noarchive=False,
     optimize=1,
