@@ -71,6 +71,12 @@ hiddenimports = (
     + collect_submodules("bidi")
     + collect_submodules("webrtcvad")  # imported lazily by audio/vad.py
     + collect_submodules("soundcard")  # imported lazily for WASAPI loopback capture
+    # PIL.ImageTk (utils/icons.py header logo) pulls in the C helper module
+    # PIL._tkinter_finder indirectly. PyInstaller's PIL hook picks it up on
+    # Windows but misses it on Linux, so the frozen Linux app crashes the
+    # logo render with "No module named 'PIL._tkinter_finder'" and shows a
+    # wordmark-only header. Harmless to list on every platform.
+    + ["PIL._tkinter_finder"]
 )
 
 # keyring's Linux Secret Service backend (GNOME Keyring / KWallet) is provided by
