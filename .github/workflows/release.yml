@@ -233,12 +233,37 @@ jobs:
           fi
           echo "Stayed up for 30s."
 
+      - name: Package AppImage
+        run: bash packaging/build-appimage.sh
+
+      # extract-and-run because the runner has no FUSE; a healthy start sits in
+      # the onboarding wizard until timeout kills it (exit 124 == success),
+      # which proves the AppRun wiring and the bundled binary launch together.
+      - name: Smoke-launch the AppImage
+        run: |
+          size=$(stat -c%s dist/MinbarLive-x86_64.AppImage)
+          echo "dist/MinbarLive-x86_64.AppImage: $size bytes"
+          if [ "$size" -lt 100000000 ]; then
+            echo "::error::AppImage is only $size bytes, the bundle is missing."
+            exit 1
+          fi
+          set +e
+          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a timeout 30 ./dist/MinbarLive-x86_64.AppImage
+          code=$?
+          set -e
+          if [ "$code" -ne 124 ]; then
+            echo "::error::AppImage exited with $code instead of staying up for 30s."
+            exit 1
+          fi
+          echo "AppImage stayed up for 30s."
+
       - name: Checksum
-        run: cd dist && sha256sum MinbarLive | tee SHA256SUMS-linux.txt
+        run: cd dist && sha256sum MinbarLive MinbarLive-x86_64.AppImage | tee SHA256SUMS-linux.txt
 
       - uses: actions/upload-artifact@v4
         with:
           name: MinbarLive-linux
           path: |
             dist/MinbarLive
+            dist/MinbarLive-x86_64.AppImage
             dist/SHA256SUMS-linux.txt

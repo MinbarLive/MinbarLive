@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MinbarLive
+GenericName=Live Translation
+Comment=Real-time Islamic live translation and subtitles
+Exec=MinbarLive
+Icon=MinbarLive
+Terminal=false
+Categories=AudioVideo;Audio;Utility;
+Keywords=translation;subtitles;transcription;khutbah;quran;
