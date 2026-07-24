@@ -424,14 +424,21 @@ class SettingsViewMixin:
             return None
         return self._api_key_provider_ids[idx]
 
-    def _set_api_key_buttons_enabled(self, enabled: bool) -> None:
-        state = "normal" if enabled else "disabled"
-        for btn in (
-            getattr(self, "change_key_btn", None),
-            getattr(self, "remove_key_btn", None),
+    def _set_api_key_buttons_enabled(
+        self, change_enabled: bool, remove_enabled: bool | None = None
+    ) -> None:
+        """Enable/disable the Change and Remove buttons.
+
+        ``remove_enabled`` defaults to ``change_enabled``; pass it separately so
+        Remove can stay disabled when there is no key to remove."""
+        if remove_enabled is None:
+            remove_enabled = change_enabled
+        for btn, on in (
+            (getattr(self, "change_key_btn", None), change_enabled),
+            (getattr(self, "remove_key_btn", None), remove_enabled),
         ):
             if btn is not None and btn.winfo_exists():
-                btn.configure(state=state)
+                btn.configure(state="normal" if on else "disabled")
 
     def _refresh_api_key_status(self) -> None:
         """Update the 'key saved / not set' hint and enable/disable the
@@ -453,7 +460,9 @@ class SettingsViewMixin:
             )
         )
         label._text_key = key  # type: ignore[attr-defined]
-        self._set_api_key_buttons_enabled(True)
+        # Change is always available for a chosen provider; Remove only when
+        # there is actually a stored key to remove.
+        self._set_api_key_buttons_enabled(True, remove_enabled=saved)
 
     def _on_islamic_mode_change(self) -> None:
         enabled = self._islamic_mode_var.get()
@@ -503,8 +512,8 @@ class SettingsViewMixin:
 
     def _on_settings_remove_key(self) -> None:
         provider = self._selected_api_key_provider()
-        if provider is None:
-            return
+        if provider is None or not has_usable_key(provider):
+            return  # nothing to remove (the button is also disabled in this case)
         remove_api_key(
             is_running=self._running,
             root=self,
