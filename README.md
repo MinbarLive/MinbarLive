@@ -68,16 +68,17 @@ Rough guide for an OpenAI setup (the default; segmented mode, Arabic → German)
 - An audio source: a microphone, or (on Windows) any output device captured via loopback (see [Audio Sources](#audio-sources))
 - Python 3.10–3.12 (Option B only)
 
-### Option A: Use the EXE (recommended)
+### Option A: Download a prebuilt app (recommended)
 
-1. Download the latest EXE: [Click here](https://github.com/MinbarLive/MinbarLive/releases)
-2. Run `MinbarLive.exe`
-3. Follow the first-run wizard: interface language & appearance → spoken/subtitle language → microphone → AI provider & API key → disclaimer. Gemini API key tutorial: [EN](https://www.youtube.com/watch?v=Cl4XKgz6EJQ)/[DE](https://youtu.be/alNk5N-pv7Y), or create one directly at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys)
-4. It's Running!
+1. Download for your platform from the [latest release](https://github.com/MinbarLive/MinbarLive/releases/latest):
+   - **Windows:** [`MinbarLive.exe`](https://github.com/MinbarLive/MinbarLive/releases/latest/download/MinbarLive.exe) — just run it.
+   - **Linux:** [`MinbarLive-x86_64.AppImage`](https://github.com/MinbarLive/MinbarLive/releases/latest/download/MinbarLive-x86_64.AppImage) — `chmod +x` it, then double-click. No FUSE required.
+2. Follow the first-run wizard: interface language & appearance → spoken/subtitle language → microphone → AI provider & API key → disclaimer. Gemini API key tutorial: [EN](https://www.youtube.com/watch?v=Cl4XKgz6EJQ)/[DE](https://youtu.be/alNk5N-pv7Y), or create one directly at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys)
+3. It's Running!
 
 > **Windows SmartScreen:** You may see a warning because the EXE is not code-signed. Click "More info" → "Run anyway".
 
-> **Platform Note:** The EXE is Windows-only. Linux users have had success with Wine. macOS is not supported via EXE.
+> **Linux:** The AppImage runs on modern desktops without extra dependencies, but is still maturing: a few features are Windows-only (the OBS-visible borderless overlay, transparent static mode, and system-audio loopback capture), and API-key storage needs a Secret Service keychain (GNOME Keyring / KWallet) — without one, an OpenAI key falls back to plaintext and other providers are session-only. See [docs/ci.md](docs/ci.md).
 
 ### Option B: Build it yourself (Python)
 

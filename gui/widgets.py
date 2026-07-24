@@ -121,15 +121,21 @@ class WidgetFactoryMixin:
         *,
         parent: tk.Misc | None = None,
         danger: bool = False,
+        icon: str | None = None,
+        icon_color: str | None = None,
     ) -> None:
-        """Themed replacement for messagebox.showerror/showwarning (OK-only)."""
+        """Themed replacement for messagebox.showerror/showwarning (OK-only).
+
+        ``icon``/``icon_color`` default to a warning glyph; pass e.g. ``"🛈"``
+        with the accent colour for a neutral info dialog (dropdown help)."""
         show_message(
             parent or self,
             title,
             message,
             self._colors,
-            icon="✕" if danger else "⚠",
-            icon_color=self._colors["danger"] if danger else self._colors["warning"],
+            icon=icon or ("✕" if danger else "⚠"),
+            icon_color=icon_color
+            or (self._colors["danger"] if danger else self._colors["warning"]),
             ok_label=self.gui_texts.get("dlg_ok", "OK"),
         )
 

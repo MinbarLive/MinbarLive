@@ -292,6 +292,41 @@ class AppGUI(
         }
         return labels.get(mode, mode)
 
+    def _show_dropdown_help(self, kind: str) -> None:
+        """Open a themed info popup describing every option of the Strategy or
+        Subtitles dropdown (each option's name followed by a one-line
+        explanation). Reached via the "?" button next to each dropdown."""
+        if kind == "strategy":
+            title = self.gui_texts.get("processing_strategy", "Processing Strategy")
+            option_ids = self._strategy_ids
+            name_keys = {
+                "realtime": "strategy_realtime",
+                "semantic": "strategy_semantic",
+                "chunk": "strategy_chunk",
+            }
+            hint_prefix = "strategy_hint_"
+        else:
+            title = self.gui_texts.get("subtitles", "Subtitles")
+            # Only the modes actually selectable under the current strategy.
+            option_ids = self._subtitle_mode_values
+            name_keys = {
+                SUBTITLE_MODE_REALTIME: "subtitle_mode_realtime",
+                SUBTITLE_MODE_CONTINUOUS: "subtitle_mode_continuous",
+                SUBTITLE_MODE_STATIC: "subtitle_mode_static",
+            }
+            hint_prefix = "subtitle_hint_"
+        blocks = []
+        for oid in option_ids:
+            name = self.gui_texts.get(name_keys.get(oid, oid), oid)
+            hint = self.gui_texts.get(f"{hint_prefix}{oid}", "")
+            blocks.append(f"{name}\n{hint}" if hint else name)
+        self._alert(
+            title.rstrip(": "),
+            "\n\n".join(blocks),
+            icon="🛈",
+            icon_color=self._colors["accent"],
+        )
+
     def _setup_window(self) -> None:
         self.title(f"MinbarLive v{__version__}")
         # Collapsed (log hidden) is a reflowing 1/2/3-column card grid; expanded
@@ -861,11 +896,13 @@ class AppGUI(
 
         self._batch_btn = ctk.CTkButton(
             header,
-            # U+25A4 "square with horizontal fill": a mono BMP glyph (page of
-            # lines) that renders on Linux too — the former color emoji 📄/📣
-            # need an emoji font Ubuntu lacks and showed blank. Matches the
-            # other header buttons (⟲ ⚙), which are already mono symbols.
-            text="▤",
+            # U+25A6 "square with orthogonal crosshatch fill": a mono BMP glyph
+            # (grid/page) that renders on Linux and macOS too — the former color
+            # emoji 📄/📣 need an emoji font Ubuntu lacks and showed blank.
+            # Deliberately NOT ▤ (U+25A4): that is the Display & Audio card's
+            # symbol, and sharing it made the batch button indistinguishable
+            # from it. Matches the other mono header buttons (⟲ ⚑ ⚙).
+            text="▦",
             command=self._open_batch_window,
             width=44,
             height=44,
@@ -1443,6 +1480,18 @@ class AppGUI(
         else:
             self.subtitle_mode_combo.current(0)
         self.subtitle_mode_combo.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        # A "?" next to the dropdown opens a themed popup describing each mode —
+        # keeps the info one click away without a hint line that would grow the
+        # card and push the Advanced section down.
+        mode_sub.grid_columnconfigure(1, weight=0)
+        self.subtitle_help_btn = self._plain_button(
+            mode_sub,
+            "?",
+            lambda: self._show_dropdown_help("subtitle"),
+            height=44,
+            width=44,
+        )
+        self.subtitle_help_btn.grid(row=1, column=1, sticky="e", padx=(6, 0), pady=(4, 0))
 
         # Mode controls (right — vertically anchored to bottom of mode_sub, aligning with combo)
         self.mode_controls = ctk.CTkFrame(mode_outer, fg_color="transparent")
@@ -1516,7 +1565,17 @@ class AppGUI(
             command=lambda _value: self._on_strategy_change(),
         )
         self.strategy_combo.current(self._current_strategy_index())
-        self.strategy_combo.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.strategy_combo.grid(row=0, column=0, sticky="ew")
+        # A "?" next to the dropdown opens a themed popup describing each strategy.
+        strat_combo_row.grid_columnconfigure(1, weight=0)
+        self.strategy_help_btn = self._plain_button(
+            strat_combo_row,
+            "?",
+            lambda: self._show_dropdown_help("strategy"),
+            height=44,
+            width=44,
+        )
+        self.strategy_help_btn.grid(row=0, column=1, sticky="e", padx=(6, 0))
 
 
         # Display toggles side by side: "Show original text" (bilingual, all

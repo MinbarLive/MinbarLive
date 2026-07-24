@@ -67,8 +67,8 @@ so it pulls them, but selectively, and never the raw JSON. See below.
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) builds the
 Windows EXE. Pushing a `v*` tag also publishes it; `workflow_dispatch` builds
 without publishing, for testing the build itself. A second job, `build-linux`,
-builds an experimental Linux binary that stays a workflow artifact — see
-[below](#the-linux-build-is-experimental-and-unpublished).
+packages an experimental Linux **AppImage** that _is_ attached to tagged releases
+— see [below](#the-linux-build).
 
 It runs the suite before touching LFS, so the tests see the same pointer stubs
 the `test` job does, then pulls only the matrices:
@@ -108,16 +108,16 @@ it was created through the web UI, the workflow prepends the block to the
 existing description instead, and skips that if the block is already there, so
 hand-written notes are never overwritten.
 
-## The Linux build is experimental and unpublished
+## The Linux build
 
-`build-linux` runs after `build` and produces `dist/MinbarLive`, an ELF binary,
-as the workflow artifact `MinbarLive-linux`. It is **not** attached to the
-release, and the release notes stay Windows-only. Download the artifact from
-the workflow run to test it.
+It is experimental. `build-linux` runs after `build`, wraps the PyInstaller
+binary in a FUSE-less, self-integrating **AppImage** (`MinbarLive-x86_64.AppImage`)
+and, on tagged builds, attaches it to the release alongside the EXE — it has been
+verified on a real Linux desktop, which is why it ships. The raw ELF binary is
+still built and smoke-launched first as a base validation, but only the AppImage
+is uploaded.
 
-That is not timidity about the packaging — the packaging works. It is that
-nobody has run MinbarLive on a Linux desktop yet, and these are Windows-only
-today:
+These features are Windows-only on Linux today:
 
 | Feature                              | On Linux                                                                 |
 | ------------------------------------ | ------------------------------------------------------------------------ |
@@ -127,9 +127,8 @@ today:
 | OS keychain                          | Without a Secret Service backend, `utils/settings.set_saved_api_key` falls back to plaintext for OpenAI and to session-only for every other provider — a Gemini key is lost on restart |
 | ffmpeg download-on-first-use         | Windows-only; batch mode expects ffmpeg from the package manager          |
 
-Publishing the binary means owning those as support questions. Before flipping
-it into the release, run it on a Linux desktop and decide which of them to fix,
-document, or hide in the UI.
+They ship as documented gaps (see the README's Linux note), not blockers — fix,
+hide, or keep documenting them as users report which ones actually matter.
 
 ### Why `ubuntu-22.04` and not `ubuntu-latest`
 
