@@ -75,6 +75,7 @@ class AnnounceViewMixin:
             self._announce_win.lift()
             self._announce_win.focus()
             return
+        self._close_secondary_windows()  # one secondary window at a time
 
         win = ctk.CTkToplevel(self)
         win.title(self.gui_texts.get("announce_title", "Announcement"))
@@ -89,6 +90,7 @@ class AnnounceViewMixin:
         win.after(200, lambda: self._set_toplevel_icon(win))
         win.transient(self)
         self._announce_win = win
+        self._register_secondary_window(win, self._close_announce_window)
         self._build_announce_widgets(win)
         self._resize_announce_window()
         try:
