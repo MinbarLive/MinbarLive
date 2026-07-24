@@ -10,7 +10,6 @@ themed-widget registries (``_cards``, ``_labels``, ``_buttons``,
 """
 
 import os
-import sys
 import tkinter as tk
 from collections.abc import Callable
 from typing import Any
@@ -445,27 +444,6 @@ class WidgetFactoryMixin:
         cb._text_key = text_key  # type: ignore[attr-defined]
         self._checkboxes.append(cb)
         return cb
-
-    def _enable_linux_mousewheel(self, sf: ctk.CTkScrollableFrame) -> None:
-        """Make a CTkScrollableFrame respond to the mouse wheel on X11/Linux.
-
-        CustomTkinter (5.2.2) only binds ``<MouseWheel>``, which is never
-        delivered under X11 — there the wheel arrives as ``<Button-4>`` /
-        ``<Button-5>``. Without this the scrollable frames cannot be scrolled
-        with a mouse or touchpad on Linux (issue #4). The synthesized ``delta``
-        matches the +/-1 units the frame's own Linux scroll branch expects.
-        """
-        if not sys.platform.startswith("linux"):
-            return
-
-        def _wheel(event: tk.Event, delta: int) -> None:
-            event.delta = delta
-            sf._mouse_wheel_all(event)
-
-        # bind_all mirrors CustomTkinter's own <MouseWheel> registration so
-        # wheel events over child widgets reach the handler too.
-        sf.bind_all("<Button-4>", lambda e: _wheel(e, 1), add="+")
-        sf.bind_all("<Button-5>", lambda e: _wheel(e, -1), add="+")
 
     def _setup_autohide_scrollbar(self, sf: ctk.CTkScrollableFrame) -> None:
         """Hide the scrollbar of a CTkScrollableFrame when all content fits."""
