@@ -19,13 +19,39 @@ import tkinter as tk
 ICO_SUPPORTED = sys.platform.startswith("win")
 
 
+# Decoding the shipped 3200x3200 PNG into a PhotoImage costs ~200 ms, and every
+# window sets its icon on open (several via after(), so the cost lands on the UI
+# thread just after the window appears — a visible freeze). The downscaled icon
+# is interpreter-independent base64, so it is encoded once and reused; only the
+# cheap PhotoImage wrapper is rebuilt per call.
+_scaled_icon_data: dict[tuple[str, int], str] = {}
+
+
 def scaled_icon_photo(png_path: str, max_px: int = 64) -> tk.PhotoImage:
     """The PNG icon as a PhotoImage downscaled to at most ``max_px``."""
-    img = tk.PhotoImage(file=png_path)
-    factor = max(1, img.width() // max_px, img.height() // max_px)
-    if factor > 1:
-        img = img.subsample(factor, factor)
-    return img
+    key = (png_path, max_px)
+    data = _scaled_icon_data.get(key)
+    if data is None:
+        data = _encode_downscaled_png(png_path, max_px)
+        _scaled_icon_data[key] = data
+    # No master (matches the previous file-based call): the image attaches to
+    # the current default root, which is the window setting the icon.
+    return tk.PhotoImage(data=data)
+
+
+def _encode_downscaled_png(png_path: str, max_px: int) -> str:
+    """Base64 PNG of the icon downscaled to fit ``max_px`` px."""
+    import base64  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
+    from PIL import Image  # noqa: PLC0415 — only GUI callers need Pillow
+
+    with Image.open(png_path) as img:
+        img = img.convert("RGBA")
+        img.thumbnail((max_px, max_px), Image.LANCZOS)
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def logo_mark(png_path: str, height: int):
