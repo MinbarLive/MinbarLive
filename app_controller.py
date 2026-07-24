@@ -39,6 +39,8 @@ from config import (
     STREAMING_MAX_UTTERANCE_SECONDS,
     STREAMING_RECONNECT_BASE_SECONDS,
     STREAMING_RECONNECT_MAX_SECONDS,
+    STREAMING_STALL_GRACE_SECONDS,
+    STREAMING_STALL_MIN_SPEECH_SECONDS,
     STREAMING_STALL_TIMEOUT_SECONDS,
 )
 from providers import (
@@ -235,6 +237,11 @@ class AppController:
         # Last time a transcription arrived (either pipeline mode) — the GUI
         # polls this for the inactivity auto-stop.
         self._last_pipeline_activity = time.time()
+        # Seconds of speech-classified audio fed to the streaming engine since
+        # the last transcript. Arms the stall watchdog: silence produces no
+        # transcripts on a healthy connection too, so only fed speech may
+        # count toward a "stuck session" verdict.
+        self._speech_fed_since_activity = 0.0
 
     def _process_audio(self):
         context_mgr = get_context_manager()
@@ -1064,8 +1071,10 @@ class AppController:
                 # VAD stops inventing turns. The settings read is cached, so
                 # the checkbox toggles this live mid-session.
                 gate = self._noise_gate
+                is_speech = True
                 if gate is not None and load_settings().noise_filter:
                     chunk = gate.process(chunk)
+                    is_speech = not gate.is_zeroing
                 try:
                     handle.feed(chunk)
                 except Exception as e:
@@ -1075,6 +1084,14 @@ class AppController:
                     # while down) rather than let it kill the feeder thread and
                     # silence the pipeline for the rest of the session.
                     log(f"STREAMING feeder dropped a chunk: {e}", level="DEBUG")
+                else:
+                    if is_speech:
+                        # Arm the stall watchdog: only audio the gate passed
+                        # through counts as something the engine should have
+                        # transcribed. int16 mono bytes → seconds.
+                        self._speech_fed_since_activity += (
+                            len(chunk) / 2 / self._streaming_capture_rate
+                        )
 
     def _handle_terminal_stream_error(
         self,
@@ -1201,29 +1218,68 @@ class AppController:
 
     def _streaming_stall_watchdog(self):
         """Silently reopen the connection if it stays up but stops producing
-        transcripts.
+        transcripts while speech is being fed.
 
         Observed live: the connection reports no error and the reconnect
         supervisor above never fires, yet no interim/final transcript arrives
         for 15-26s straight during continuous speech, and content from that
         stretch is lost. Unlike an error-triggered reconnect, this never
-        shows an audience-facing message and never backs off — a real long
-        pause in speech looks identical from here, and reconnecting during
-        genuine silence has no visible cost, so a false trigger is harmless.
+        shows an audience-facing message and never backs off.
+
+        Two guards keep a real pause in speech from triggering it (observed
+        live 2026-07-24: the unconditional version reconnected during every
+        quiet stretch >15s, and because the feeder drops audio while the
+        handle is down, speech resuming into the swap window lost its first
+        words — e.g. a swap fired 0.6s after "Speech resumed"):
+
+        - Arm only after the feeder passed at least
+          STREAMING_STALL_MIN_SPEECH_SECONDS of speech-classified audio to
+          the engine since the last transcript — a healthy connection is
+          just as silent as a stuck one when nothing transcribable is fed.
+        - Once armed, wait up to STREAMING_STALL_GRACE_SECONDS for either a
+          transcript (proof of life — cancel the swap entirely) or a
+          noise-gate-closed moment (only silence is flowing — swap now,
+          losing nothing). Only a gate that stays open through the whole
+          grace forces a mid-speech swap: exactly the stuck-session case,
+          where that speech is already being lost. With the noise filter
+          off there is no gate signal and the swap happens immediately.
         """
         stop_event = self.stop_event  # session-local: see _process_audio
-        while not stop_event.wait(timeout=2.0):
+        while not stop_event.wait(timeout=min(2.0, STREAMING_STALL_TIMEOUT_SECONDS / 2)):
             if self._streaming_outage or self._streaming_handle is None:
                 continue  # the error-triggered supervisor already owns recovery
-            if (
-                time.time() - self._last_pipeline_activity
-                <= STREAMING_STALL_TIMEOUT_SECONDS
-            ):
+            stalled_since = self._last_pipeline_activity
+            if time.time() - stalled_since <= STREAMING_STALL_TIMEOUT_SECONDS:
+                continue
+            if self._speech_fed_since_activity < STREAMING_STALL_MIN_SPEECH_SECONDS:
+                continue  # a pause in the speech, not a stuck session
+            grace_deadline = time.time() + STREAMING_STALL_GRACE_SECONDS
+            cancelled = False
+            while True:
+                if (
+                    self._last_pipeline_activity != stalled_since
+                    or self._streaming_outage
+                ):
+                    cancelled = True  # alive after all / error path owns recovery
+                    break
+                gate = self._noise_gate
+                if (
+                    gate is None
+                    or not load_settings().noise_filter
+                    or gate.is_zeroing
+                    or time.time() >= grace_deadline
+                ):
+                    break  # non-speech moment (or no gate signal / grace over)
+                if stop_event.wait(timeout=0.2):
+                    cancelled = True
+                    break
+            if cancelled:
                 continue
             log(
                 f"STREAMING No transcript for over "
-                f"{STREAMING_STALL_TIMEOUT_SECONDS:.0f}s with no error reported "
-                "— reconnecting silently in case the session is stuck.",
+                f"{STREAMING_STALL_TIMEOUT_SECONDS:.0f}s while speech was fed, "
+                "with no error reported — reconnecting silently in case the "
+                "session is stuck.",
                 level="WARNING",
             )
             try:
@@ -1237,6 +1293,7 @@ class AppController:
             # connection that also takes a few seconds to speak would trip the
             # watchdog again before it gets a chance.
             self._last_pipeline_activity = time.time()
+            self._speech_fed_since_activity = 0.0
             log("STREAMING Silently reconnected after a stall.", level="INFO")
         log("STREAMING stall watchdog ended", level="DEBUG")
 
@@ -1370,6 +1427,7 @@ class AppController:
             if not text.strip():
                 return
             self._last_pipeline_activity = time.time()
+            self._speech_fed_since_activity = 0.0
             if self._streaming_outage:
                 # Proof of life after a reconnect: end the outage and reset
                 # the backoff for the next disconnect.
@@ -1555,6 +1613,7 @@ class AppController:
 
         # A session with no speech at all should still auto-stop 10 min in.
         self._last_pipeline_activity = time.time()
+        self._speech_fed_since_activity = 0.0
 
         # Log the provider and the models actually in use (the settings values
         # may belong to a different provider and would then be ignored)

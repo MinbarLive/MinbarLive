@@ -170,6 +170,13 @@ class StreamNoiseGate:
         self._samples_since_speech = 0
         self._zeroing = False
 
+    @property
+    def is_zeroing(self) -> bool:
+        """True while the gate is closed (currently replacing the feed with
+        silence). The stall watchdog reads this so it never reconnects — and
+        drops audio — at a moment when speech is flowing."""
+        return self._zeroing
+
     def process(self, chunk: bytes) -> bytes:
         # Pass through anything that isn't well-formed int16 PCM — the gate
         # must only ever silence known non-speech, never break the feed.
