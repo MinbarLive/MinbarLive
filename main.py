@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+from pathlib import Path
 
 # DPI awareness must be configured before the first Tk/CustomTkinter window is
 # created. CustomTkinter itself only calls SetProcessDpiAwareness when the first
@@ -192,6 +193,13 @@ def _show_already_running_dialog() -> bool:
     ).pack(side="right")
 
     dlg.protocol("WM_DELETE_WINDOW", _cancel)
+    # Raise above the already-running instance's window. lift()/focus_force()
+    # alone lose to the other instance's foreground window — the warning then
+    # opens behind it (reported on Windows).
+    try:
+        dlg.attributes("-topmost", True)
+    except Exception:
+        pass
     dlg.lift()
     dlg.focus_force()
     dlg.mainloop()
@@ -204,9 +212,39 @@ def _show_already_running_dialog() -> bool:
     return launched[0]
 
 
+def _acquire_posix_instance_lock(lock_dir: Path | None = None) -> int | None:
+    """Acquire the single-instance lock on POSIX (Linux/macOS).
+
+    Uses ``flock()`` on a lock file: the lock lives on the open file
+    description and the kernel releases it when the process exits, so a crash
+    leaves no stale lock (unlike a PID file). Returns the locked file
+    descriptor on success — the caller keeps it open for the process lifetime
+    — or ``None`` when another instance already holds the lock. Fails open
+    (returns a harmless sentinel fd, never ``None``) if the lock file cannot be
+    created, so a filesystem problem never blocks launch.
+    """
+    import fcntl
+
+    from utils.app_paths import get_app_data_dir
+
+    try:
+        d = lock_dir if lock_dir is not None else get_app_data_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(d / "MinbarLive.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError:
+        return -1  # cannot create the lock file → fail open, do not block launch
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None  # already held by another instance
+    return fd
+
+
 def main() -> None:
-    # ── Single-instance guard (Windows only) ─────────────────────────────────
-    _instance_mutex = None
+    # ── Single-instance guard ────────────────────────────────────────────────
+    _instance_mutex = None  # Windows: named-mutex handle
+    _instance_lock_fd = None  # POSIX: flock'd lock-file descriptor
     if sys.platform == "win32":
         import ctypes as _ctypes
 
@@ -219,8 +257,16 @@ def main() -> None:
             # "Launch Anyway" — release handle so we don't block future instances
             _ctypes.windll.kernel32.CloseHandle(_instance_mutex)
             _instance_mutex = None
-    # _instance_mutex (when not None) stays alive until main() exits, keeping
-    # the mutex held for the lifetime of the first instance.
+    else:
+        # POSIX (Linux/macOS): an flock'd lock file, mirroring the Windows mutex.
+        _instance_lock_fd = _acquire_posix_instance_lock()
+        if _instance_lock_fd is None:  # lock held → another instance is running
+            if not _show_already_running_dialog():
+                sys.exit(0)
+            # "Launch Anyway" — proceed without the lock; like Windows, this
+            # instance then won't block a future one either.
+    # The mutex handle / lock fd is never closed here, so the OS keeps it held
+    # for the lifetime of this process — released automatically on exit.
 
     parser = argparse.ArgumentParser(description="MinbarLive - Real-time translation")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
