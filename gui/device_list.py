@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import sounddevice as sd
 
 from audio.device_support import input_extra_settings
@@ -171,8 +173,23 @@ def get_input_devices() -> tuple[list[str], list[str], list[int], list[bool]]:
         try:
             import soundcard as sc  # noqa: PLC0415 (lazy import is intentional)
 
+            # Windows/WASAPI exposes each output as a loopback whose id matches
+            # the speaker id, so speakers are enumerated directly.  On Linux the
+            # loopback lives on a separate PulseAudio/PipeWire "Monitor of …"
+            # source whose id carries a `.monitor` suffix; enumerate those so the
+            # capture path's get_microphone(id, include_loopback=True) resolves
+            # them (the speaker id alone raises "no soundcard with id …").
+            if sys.platform.startswith("linux"):
+                loopback_sources = [
+                    m
+                    for m in sc.all_microphones(include_loopback=True)
+                    if getattr(m, "isloopback", False)
+                ]
+            else:
+                loopback_sources = sc.all_speakers()
+
             fake_idx = -1
-            for speaker in sc.all_speakers():
+            for speaker in loopback_sources:
                 name = str(getattr(speaker, "name", "")).strip()
                 if not name:
                     continue
