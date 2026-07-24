@@ -33,6 +33,7 @@ from gui.audio_level_bar import (
 )
 from gui.device_list import get_input_devices
 from gui.dropdown import CustomDropdown
+from gui.mousewheel import install_x11_mousewheel
 from gui.scaling import apply_display_scaling
 from providers import (
     PROVIDER_CHOICES,
@@ -156,6 +157,10 @@ class OnboardingWizard(ctk.CTk):
 
     def __init__(self, controller) -> None:
         super().__init__()
+
+        # Wheel + touchpad scrolling for this root's dropdown popups on X11/Linux
+        # (delivered as <Button-4/5>, which canvas-based widgets ignore).
+        install_x11_mousewheel(self)
 
         # Build the window invisible and reveal it once the first step is laid
         # out. CTk creates its root at its own default size, so the scaling
