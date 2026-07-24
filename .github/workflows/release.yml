@@ -292,8 +292,15 @@ jobs:
   # will not run on Intel Macs. Several features are Windows-only there (the
   # OBS-visible borderless overlay, transparent static mode, loopback capture).
   # See docs/ci.md. Promote to a release asset only after a real Mac verifies it.
+  #
+  # MANUAL ONLY: this job does NOT run on a tag push / release — it is gated to
+  # workflow_dispatch so an unverified, users-can't-use-it-yet .app never turns a
+  # release run red or costs release CI time. Build/test it on demand from
+  # Actions → Release → Run workflow. Remove this `if` when the .app is signed,
+  # notarized and verified and is ready to ship on releases (issue tracked).
   build-macos:
     needs: build
+    if: github.event_name == 'workflow_dispatch'
     # arm64. macos-14 is Apple Silicon; use it for a native, fast build. A single
     # x86_64 job (macos-13) would also cover Apple Silicon via Rosetta, but the
     # artifact is labelled arm64 to make the limitation explicit rather than

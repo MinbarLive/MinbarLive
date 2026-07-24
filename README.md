@@ -80,7 +80,7 @@ Rough guide for an OpenAI setup (the default; segmented mode, Arabic → German)
 
 > **Linux:** The AppImage runs on modern desktops without extra dependencies, but is still maturing: a few features are Windows-only (the OBS-visible borderless overlay, transparent static mode, and system-audio loopback capture), and API-key storage needs a Secret Service keychain (GNOME Keyring / KWallet) — without one, an OpenAI key falls back to plaintext and other providers are session-only. See [docs/ci.md](docs/ci.md).
 
-> **macOS:** There is no signed release yet. CI produces an experimental, unsigned Apple-Silicon build that is **not** attached to releases (Gatekeeper would block it anyway). For now, run on macOS by building from source (Option B). A signed/notarized build is tracked as future work.
+> **macOS:** There is no signed release yet. CI can build an experimental, unsigned Apple-Silicon `.app` on request, but it is **not** attached to releases (Gatekeeper would block it anyway). For now, run on macOS by building from source (Option B). A signed/notarized build is tracked as future work.
 
 ### Option B: Build it yourself (Python)
 

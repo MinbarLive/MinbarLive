@@ -156,13 +156,20 @@ sequence rather than in parallel.
 | Verify the binary       | A build that lost the `data/` bundle, which shows up as a far smaller file                        |
 | Smoke-launch the binary | A startup crash — a shared library the bundle missed, an X11 request the toolkit rejects. The binary is launched under `xvfb` with a 30-second `timeout`, so **exit 124 is the success case**: it means the app was still running when the timeout killed it, sitting in the onboarding wizard. Any other exit code means it died on its own |
 
-### macOS stays a workflow artifact
+### macOS is a manual-only workflow artifact
 
-`build-macos` runs after `build` on `macos-14` (Apple Silicon), builds the
-one-file binary, wraps it in a `.app` via the spec's `BUNDLE` step, and uploads
-`MinbarLive-macos-arm64.zip` as the `MinbarLive-macos` artifact. It is **not**
-attached to any release, and there is no download link for it on the website —
-deliberately, for two reasons:
+`build-macos` is **manual only** — it is gated with
+`if: github.event_name == 'workflow_dispatch'`, so it never runs on a tag push /
+release. Build or test it on demand from **Actions → Release → Run workflow**;
+that runs all three platform jobs but publishes nothing (the publish steps are
+tag-only). Gating it this way keeps an unverified, users-can't-use-it-yet `.app`
+from reddening a release run or spending release CI time. Remove the `if` once
+the `.app` is signed, notarized and real-Mac-verified and is ready to ship.
+
+When run, it builds (on `macos-14`, Apple Silicon) the one-file binary, wraps it
+in a `.app` via the spec's `BUNDLE` step, and uploads `MinbarLive-macos-arm64.zip`
+as the `MinbarLive-macos` artifact. It is **not** attached to any release, and
+there is no download link for it on the website — deliberately, for two reasons:
 
 - **Unsigned.** Without an Apple Developer certificate and notarization,
   Gatekeeper blocks the app on first launch ("damaged, cannot be opened"). A
