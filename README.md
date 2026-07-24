@@ -94,6 +94,24 @@ pip install -r requirements.txt
 python main.py
 ```
 
+> **Linux — system packages (running from source only).** A few native
+> libraries are provided by the OS, not by pip, so `requirements.txt` cannot
+> install them. On Debian/Ubuntu:
+>
+> ```bash
+> sudo apt install python3-tk libportaudio2
+> ```
+>
+> - `python3-tk` — the Tkinter GUI toolkit (`tkinter` is **not** a PyPI package).
+> - `libportaudio2` — PortAudio, for microphone capture. Without it the app
+>   exits at startup with `OSError: PortAudio library not found`. (The
+>   prebuilt AppImage bundles PortAudio, so this only affects source runs.)
+> - **System-audio (loopback) capture** additionally needs a running
+>   PulseAudio/PipeWire server that exposes a `…​.monitor` source
+>   (`sudo apt install pipewire-pulse pulseaudio-utils`, then check with
+>   `pactl list sources short | grep -i monitor`). A bare-ALSA box has no
+>   monitor source, so no loopback device appears.
+
 Enter your API key in the first-run wizard (stored securely in the OS keychain), or provide it via a `.env` file / environment variable (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`).
 
 Two windows will appear:
