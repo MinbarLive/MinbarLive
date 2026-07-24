@@ -25,6 +25,23 @@ from utils.logging import log
 _EXTRA_PROVIDER_NAMES = {"deepgram": "Deepgram"}
 
 
+def _grab_when_ready(win: tk.Misc) -> None:
+    """Make ``win`` modal once the window manager has mapped it.
+
+    ``grab_set()`` on an X11 window that is not yet viewable raises TclError.
+    The themed dialogs called it right after creation, so on a window manager
+    that maps windows asynchronously (tiling WMs, often without a compositor)
+    the error could abort the dialog mid-build and leave an empty white window.
+    Retry on the Tk loop until the grab takes."""
+    try:
+        win.grab_set()
+    except tk.TclError:
+        try:
+            win.after(50, lambda: _grab_when_ready(win))
+        except tk.TclError:
+            pass  # window was destroyed before it ever became viewable
+
+
 def _provider_display_name(provider: str) -> str:
     for name, provider_id in PROVIDER_CHOICES:
         if provider_id == provider:
@@ -129,7 +146,7 @@ def show_message(
     dlg.resizable(False, False)
     dlg.configure(fg_color=c["app_bg"])
     dlg.transient(root)
-    dlg.grab_set()
+    _grab_when_ready(dlg)
 
     def _set_icon() -> None:
         if ICO_SUPPORTED and os.path.exists(ICON_PATH):
@@ -303,7 +320,7 @@ def prompt_for_api_key(
     dialog.resizable(False, False)
     dialog.configure(fg_color=c["app_bg"])
     dialog.transient(root)
-    dialog.grab_set()
+    _grab_when_ready(dialog)
 
     # Apply icon with a delay (CTkToplevel defers window creation)
     def _set_icon() -> None:
