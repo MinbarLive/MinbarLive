@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from openai import OpenAI
+if TYPE_CHECKING:
+    from openai import OpenAI
 
 _client: OpenAI | None = None
 _api_key: str | None = None
@@ -27,6 +28,11 @@ def get_client() -> OpenAI:
     if _client is None:
         if not has_api_key():
             raise RuntimeError("OpenAI API key is not configured.")
+        # Imported here, not at module load: the openai SDK costs ~400 ms to
+        # import and is only needed once a client is actually created (a running
+        # session or a Quran-embedding call), not at app startup.
+        from openai import OpenAI  # noqa: PLC0415
+
         _client = OpenAI(api_key=_api_key)
     return _client
 
