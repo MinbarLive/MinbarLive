@@ -27,7 +27,7 @@ _NATIVE_WHEEL_CLASSES = {"Text", "Listbox"}
 
 # Roots already wired, so repeated calls (main window + wizard, or several
 # scrollable frames) install the global binding only once per Tk interpreter.
-_bound_roots: "weakref.WeakSet[tk.Misc]" = weakref.WeakSet()
+_bound_roots: weakref.WeakSet[tk.Misc] = weakref.WeakSet()
 
 
 def install_x11_mousewheel(root: tk.Misc) -> None:
@@ -45,7 +45,7 @@ def install_x11_mousewheel(root: tk.Misc) -> None:
     root.bind_all("<Button-5>", lambda e: _on_wheel(e, 1), add="+")
 
 
-def _on_wheel(event: "tk.Event[tk.Misc]", direction: int) -> str | None:
+def _on_wheel(event: tk.Event[tk.Misc], direction: int) -> str | None:
     widget = getattr(event, "widget", None)
     if not isinstance(widget, tk.Misc):
         return None
