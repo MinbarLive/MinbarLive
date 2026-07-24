@@ -115,10 +115,16 @@ def show_message(
     yes_label: str = "Yes",
     no_label: str = "No",
     ok_label: str = "OK",
+    sections: list[tuple[str, str]] | None = None,
 ) -> bool:
     """Show a themed CTk message/confirm dialog. Returns True if OK/Yes clicked.
 
-    The height adapts to the message so long error strings aren't clipped."""
+    The height adapts to the message so long error strings aren't clipped.
+
+    ``sections`` renders a list of ``(heading, body)`` pairs instead of the flat
+    ``message`` — each heading bold and larger, each body muted, with spacing
+    between pairs — so a multi-option explainer reads as a list, not a wall of
+    text. When given, ``message`` is ignored."""
     c = colors or _DEFAULT_COLORS
     result = {"ok": False}
 
@@ -171,15 +177,40 @@ def show_message(
         corner_radius=14,
     ).grid(row=0, column=0, padx=(0, 14), sticky="n")
 
-    ctk.CTkLabel(
-        msg_row,
-        text=message,
-        font=ctk.CTkFont(family="Segoe UI", size=14),
-        text_color=c["text"],
-        wraplength=w - 140,
-        anchor="w",
-        justify="left",
-    ).grid(row=0, column=1, sticky="w")
+    if sections:
+        body = ctk.CTkFrame(msg_row, fg_color="transparent")
+        body.grid(row=0, column=1, sticky="ew")
+        body.grid_columnconfigure(0, weight=1)
+        for i, (heading, text) in enumerate(sections):
+            ctk.CTkLabel(
+                body,
+                text=heading,
+                font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
+                text_color=c["text"],
+                wraplength=w - 140,
+                anchor="w",
+                justify="left",
+            ).grid(row=2 * i, column=0, sticky="w", pady=(0 if i == 0 else 16, 0))
+            if text:
+                ctk.CTkLabel(
+                    body,
+                    text=text,
+                    font=ctk.CTkFont(family="Segoe UI", size=13),
+                    text_color=c.get("muted", c["text"]),
+                    wraplength=w - 140,
+                    anchor="w",
+                    justify="left",
+                ).grid(row=2 * i + 1, column=0, sticky="w", pady=(3, 0))
+    else:
+        ctk.CTkLabel(
+            msg_row,
+            text=message,
+            font=ctk.CTkFont(family="Segoe UI", size=14),
+            text_color=c["text"],
+            wraplength=w - 140,
+            anchor="w",
+            justify="left",
+        ).grid(row=0, column=1, sticky="w")
 
     btn_row = ctk.CTkFrame(card, fg_color="transparent")
     btn_row.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 16))

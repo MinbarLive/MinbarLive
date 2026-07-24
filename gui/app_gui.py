@@ -315,16 +315,19 @@ class AppGUI(
                 SUBTITLE_MODE_STATIC: "subtitle_mode_static",
             }
             hint_prefix = "subtitle_hint_"
-        blocks = []
-        for oid in option_ids:
-            name = self.gui_texts.get(name_keys.get(oid, oid), oid)
-            hint = self.gui_texts.get(f"{hint_prefix}{oid}", "")
-            blocks.append(f"{name}\n{hint}" if hint else name)
+        sections = [
+            (
+                self.gui_texts.get(name_keys.get(oid, oid), oid),
+                self.gui_texts.get(f"{hint_prefix}{oid}", ""),
+            )
+            for oid in option_ids
+        ]
         self._alert(
             title.rstrip(": "),
-            "\n\n".join(blocks),
+            "",
             icon="🛈",
             icon_color=self._colors["accent"],
+            sections=sections,
         )
 
     def _setup_window(self) -> None:
