@@ -169,8 +169,9 @@ class BatchViewMixin:
         header.grid_columnconfigure(1, weight=1)
         symbol = ctk.CTkLabel(
             header,
-            # Same file glyph as the header button that opens this window.
-            text="▤",
+            # Same grid glyph (U+25A6) as the header button that opens this
+            # window; kept distinct from the Display & Audio card's ▤.
+            text="▦",
             font=ctk.CTkFont(family="Segoe UI Symbol", size=20, weight="bold"),
             text_color=self._colors["accent"],
             width=44,
