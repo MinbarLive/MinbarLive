@@ -128,6 +128,8 @@ Both pipelines read from the same device selection (`gui/device_list.py`):
 
 `soundcard` is an optional import: if it is missing, loopback entries simply don't appear.
 
+A microphone that cannot be opened at the pipeline rate is opened at a rate it does support (preferring its native rate, `audio/device_support.usable_input_samplerate`) and each capture block is resampled to the pipeline rate before the callback (`audio/resampler.py`, a stateful streaming windowed-sinc converter — numpy only, since the packaged build omits `scipy.signal`). This is what makes named sources on Linux/PipeWire (Bluetooth headsets, internal mics) selectable: they are exposed only through JACK at their native 48 kHz, which does no rate conversion of its own. On Linux the device list is additionally filtered against PulseAudio's real capture sources, because JACK also lists output monitors and application streams as inputs; if that filter cannot run (no `soundcard`, no PulseAudio), all devices are kept as before.
+
 The control panel shows a live **input level** (smoothed RMS in dBFS, `audio/level_meter.py`) under the device dropdown. While a session runs it is fed by the capture stream itself; while stopped, the **Test mic** button opens a meter-only capture that starts no writers, providers or translation. Changing the input device moves a running test to the new device. The level is measured on the raw capture, *before* the noise gate, so it always shows what the device delivers.
 
 ## Cost Tracking
