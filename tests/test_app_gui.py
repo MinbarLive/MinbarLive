@@ -1040,6 +1040,49 @@ class TestAnnouncement:
         assert fake.destroyed is True
 
 
+class TestSubtitleCloseRequest:
+    """Closing the overlay (taskbar close / Alt+F4) must never quit the app.
+
+    Its WM_DELETE_WINDOW routes to _request_close_from_subtitle — stop a
+    running session (like Esc) and destroy only the overlay. The full app
+    shutdown (on_close) is reserved for the control panel."""
+
+    def test_overlay_close_protocol_is_not_the_app_shutdown(self, make_gui):
+        gui, _c, _s = make_gui()
+        gui._create_subtitle_window()  # real overlay, real protocol wiring
+        win = gui.subtitle_window
+        assert win is not None and win.winfo_exists()
+        assert win._on_close == gui._request_close_from_subtitle
+        win._on_close()  # what WM_DELETE_WINDOW invokes
+        assert gui.subtitle_window is None
+        assert gui.winfo_exists()  # the control panel is still up
+
+    def test_close_while_stopped_destroys_only_the_overlay(self, make_gui):
+        gui, controller, _s = make_gui()
+        fake = _FakeSubtitleWindow()
+        gui.subtitle_window = fake
+        gui._request_close_from_subtitle()
+        assert fake.destroyed is True
+        assert gui.subtitle_window is None
+        assert controller.stopped == 0  # nothing ran, nothing to stop
+
+    def test_close_while_running_stops_the_session_first(self, make_gui):
+        gui, controller, _s = make_gui()
+        fake = _FakeSubtitleWindow()
+        gui.subtitle_window = fake
+        gui._running = True
+        gui._request_close_from_subtitle()
+        thread = gui._stop_thread
+        if thread is not None:
+            thread.join(5.0)
+        gui._poll_stop_result()
+        assert controller.stopped == 1
+        assert gui._running is False
+        assert fake.destroyed is True
+        assert gui.subtitle_window is None
+        assert gui.winfo_exists()
+
+
 class TestMicTestDeviceChange:
     """Switching the input device while the mic test runs must move the test.
 
