@@ -5,12 +5,21 @@ from __future__ import annotations
 import os
 import queue
 import re
+import threading
 from datetime import datetime
 
 from config import LOGS_DIR
 
 # Log queue for thread-safe logging (consumed by GUI)
 log_queue: queue.Queue[str] = queue.Queue()
+
+# Serialises the file appends. Windows' CRT implements append mode as a
+# seek-to-end followed by a write, which is NOT atomic across handles — two
+# threads logging within the same millisecond could interleave those steps,
+# one line overwriting the head of the other (observed live 2026-07-24: a
+# complete line followed by the surviving tail of the clobbered one, e.g.
+# "reated in 0.61s").
+_file_lock = threading.Lock()
 
 # Log level configuration
 LOG_LEVEL = "INFO"
@@ -35,7 +44,7 @@ def _write_to_file(formatted_msg: str) -> None:
     try:
         date_str = datetime.now().strftime("%Y-%m-%d")
         log_path = os.path.join(LOGS_DIR, f"{date_str}.log")
-        with open(log_path, "a", encoding="utf-8") as f:
+        with _file_lock, open(log_path, "a", encoding="utf-8") as f:
             f.write(formatted_msg + "\n")
     except Exception:  # noqa: BLE001 – logging must never crash the app
         pass
