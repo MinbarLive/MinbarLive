@@ -236,6 +236,10 @@ class AppController:
         self._last_pipeline_activity = time.time()
 
     def _process_audio(self):
+        # Lazy import: scipy.io costs ~200 ms to import and is only needed once
+        # audio is actually being processed, not at startup.
+        import scipy.io.wavfile as wavfile  # noqa: PLC0415
+
         context_mgr = get_context_manager()
         files_processed = 0
         # Session-local stop event: start() REPLACES self.stop_event, so a
@@ -260,11 +264,6 @@ class AppController:
                 log(f"AUDIO-PROCESSOR File found: {file}", level="INFO")
 
                 try:
-                    # Lazy import: scipy.io costs ~200 ms to import and is only
-                    # needed once audio is actually being processed, not at
-                    # startup.
-                    import scipy.io.wavfile as wavfile  # noqa: PLC0415
-
                     _, data = wavfile.read(file_path)
                     audio_float = data.astype(np.float32) / 32767.0
 
