@@ -595,7 +595,7 @@ class AnnounceViewMixin:
         if (
             was_active
             and not self._running
-            and self._saved_settings.hide_subtitle_on_stop
+            and not self._subtitle_window_should_exist()
             and self.subtitle_window
             and self.subtitle_window.winfo_exists()
         ):

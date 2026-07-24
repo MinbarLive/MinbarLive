@@ -730,7 +730,7 @@ class SubtitleWindow(tk.Toplevel):
         """Show or remove the "translation stopped" pill.
 
         Shown while the window stays open with the pipeline stopped (the
-        default hide_subtitle_on_stop=False setup), so the audience knows
+        default subtitle_hide_mode="never" setup), so the audience knows
         missing subtitles are deliberate. The text comes from
         status_messages in the target language, fetched at draw time so
         language and theme changes pick up the current wording.

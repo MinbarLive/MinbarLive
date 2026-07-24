@@ -237,33 +237,53 @@ class TestPipelineMode:
             settings_module._cached_settings = None
 
 
-class TestSubtitleOutputEnabled:
-    def test_default_is_true(self):
-        assert Settings().subtitle_output_enabled is True
+class TestSubtitleHideMode:
+    def test_default_is_never(self):
+        assert Settings().subtitle_hide_mode == "never"
 
-    def test_round_trip_false(self, tmp_path, monkeypatch):
+    def test_round_trip(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             settings_module, "_settings_path", lambda: tmp_path / "settings.json"
         )
         settings_module._cached_settings = None
-        save_settings(Settings(subtitle_output_enabled=False))
+        save_settings(Settings(subtitle_hide_mode="stopped"))
         settings_module._cached_settings = None
         try:
-            loaded = load_settings(use_cache=False)
-            assert loaded.subtitle_output_enabled is False
+            assert load_settings(use_cache=False).subtitle_hide_mode == "stopped"
         finally:
             settings_module._cached_settings = None
 
-    def test_invalid_value_falls_back_to_true(self, tmp_path, monkeypatch):
+    def test_invalid_value_falls_back_to_never(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"subtitle_hide_mode": "nope"}), encoding="utf-8")
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).subtitle_hide_mode == "never"
+        finally:
+            settings_module._cached_settings = None
+
+    def test_legacy_output_off_migrates_to_always(self, tmp_path, monkeypatch):
         path = tmp_path / "settings.json"
         path.write_text(
-            json.dumps({"subtitle_output_enabled": "nope"}), encoding="utf-8"
+            json.dumps({"subtitle_output_enabled": False}), encoding="utf-8"
         )
         monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
         settings_module._cached_settings = None
         try:
-            loaded = load_settings(use_cache=False)
-            assert loaded.subtitle_output_enabled is True
+            assert load_settings(use_cache=False).subtitle_hide_mode == "always"
+        finally:
+            settings_module._cached_settings = None
+
+    def test_legacy_hide_on_stop_migrates_to_stopped(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"hide_subtitle_on_stop": True}), encoding="utf-8"
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).subtitle_hide_mode == "stopped"
         finally:
             settings_module._cached_settings = None
 
@@ -628,29 +648,49 @@ class TestNoiseFilterSetting:
             settings_module._cached_settings = None
 
 
-class TestAlwaysOnTopSetting:
-    def test_default_on(self):
-        assert Settings().always_on_top is True
+class TestAlwaysOnTopMode:
+    def test_default_is_running(self):
+        assert Settings().always_on_top_mode == "running"
 
-    def test_round_trip_off(self, tmp_path, monkeypatch):
+    def test_round_trip(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             settings_module, "_settings_path", lambda: tmp_path / "settings.json"
         )
         settings_module._cached_settings = None
-        save_settings(Settings(always_on_top=False))
+        save_settings(Settings(always_on_top_mode="always"))
         settings_module._cached_settings = None
         try:
-            assert load_settings(use_cache=False).always_on_top is False
+            assert load_settings(use_cache=False).always_on_top_mode == "always"
         finally:
             settings_module._cached_settings = None
 
-    def test_missing_key_defaults_on(self, tmp_path, monkeypatch):
+    def test_missing_key_defaults_running(self, tmp_path, monkeypatch):
         path = tmp_path / "settings.json"
         path.write_text(json.dumps({}), encoding="utf-8")
         monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
         settings_module._cached_settings = None
         try:
-            assert load_settings(use_cache=False).always_on_top is True
+            assert load_settings(use_cache=False).always_on_top_mode == "running"
+        finally:
+            settings_module._cached_settings = None
+
+    def test_legacy_true_migrates_to_running(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"always_on_top": True}), encoding="utf-8")
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).always_on_top_mode == "running"
+        finally:
+            settings_module._cached_settings = None
+
+    def test_legacy_false_migrates_to_never(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"always_on_top": False}), encoding="utf-8")
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).always_on_top_mode == "never"
         finally:
             settings_module._cached_settings = None
 

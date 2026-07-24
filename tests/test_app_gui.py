@@ -12,7 +12,7 @@ Isolation (what the fixture neutralises and why):
   OS keychain access, no key dialog popping up mid-test, and no dependence on
   which keys happen to be stored on the machine running the suite.
 - ``check_for_updates=False`` — no network thread at startup.
-- ``hide_subtitle_on_stop=True`` — never opens the fullscreen overlay.
+- ``subtitle_hide_mode="stopped"`` — no fullscreen overlay while stopped.
 
 Note there is deliberately no ``update()`` pump: a manual pump loop crashes
 natively inside Tcl here. ``update_idletasks()`` is enough to settle layout,
@@ -147,7 +147,7 @@ def make_gui(monkeypatch):
         settings = Settings()
         settings.onboarding_completed = True
         settings.disclaimer_accepted = True
-        settings.hide_subtitle_on_stop = True  # no fullscreen overlay
+        settings.subtitle_hide_mode = "stopped"  # no overlay while stopped
         settings.check_for_updates = False  # no network thread
         settings.auto_start = False
         settings.window_geometry = ""
@@ -340,55 +340,65 @@ def _wm_reflects_topmost(win) -> bool:
 
 class TestAlwaysOnTop:
     """The control panel floats above the subtitle overlay only while that
-    overlay is open, and only if always_on_top is on. The checkbox toggles
-    both windows live."""
+    overlay is open, and only if always-on-top is in effect for the current
+    run state (mode 'always', or 'running' while a session runs). The 3-way
+    selector applies to both windows live.
+
+    The fixture default mode is 'running' with the panel stopped, so it starts
+    NOT topmost — these tests set the state they need explicitly."""
 
     def test_not_topmost_while_no_overlay_open(self, make_gui):
-        # hide_subtitle_on_stop=True (fixture default) => no overlay at startup.
-        gui, _c, _s = make_gui()
+        # subtitle_hide_mode="stopped" (fixture default) => no overlay stopped.
+        gui, _c, _s = make_gui(always_on_top_mode="always")
         assert gui.subtitle_window is None
         assert gui._control_window_should_be_topmost() is False
         assert _topmost(gui) is False
 
     def test_topmost_while_overlay_open(self, make_gui):
-        gui, _c, _s = make_gui()
+        gui, _c, _s = make_gui(always_on_top_mode="always")
         gui.subtitle_window = _FakeOverlay()
         gui._apply_control_window_topmost()
         assert gui._control_window_should_be_topmost() is True
         if _wm_reflects_topmost(gui):
             assert _topmost(gui) is True
 
-    def test_toggle_off_drops_both_windows(self, make_gui):
-        gui, _c, settings = make_gui()
+    def test_select_never_drops_both_windows(self, make_gui):
+        gui, _c, settings = make_gui(always_on_top_mode="always")
         overlay = _FakeOverlay()
         gui.subtitle_window = overlay
 
-        gui.always_on_top_var.set(False)
-        gui._on_always_on_top_change()
+        gui._on_always_on_top_mode_change(gui._always_on_top_mode_labels()[0])  # Never
 
-        assert settings.always_on_top is False
+        assert settings.always_on_top_mode == "never"
         assert overlay.always_on_top_calls == [False]  # overlay told to drop
         assert gui._control_window_should_be_topmost() is False
         assert _topmost(gui) is False
 
-    def test_toggle_back_on_restores_topmost_with_overlay(self, make_gui):
-        gui, _c, settings = make_gui(always_on_top=False)
+    def test_select_always_restores_topmost_with_overlay(self, make_gui):
+        gui, _c, settings = make_gui(always_on_top_mode="never")
         gui.subtitle_window = _FakeOverlay()
 
-        gui.always_on_top_var.set(True)
-        gui._on_always_on_top_change()
+        gui._on_always_on_top_mode_change(gui._always_on_top_mode_labels()[2])  # Always
 
-        assert settings.always_on_top is True
+        assert settings.always_on_top_mode == "always"
         assert gui._control_window_should_be_topmost() is True
         if _wm_reflects_topmost(gui):
             assert _topmost(gui) is True
 
-    def test_off_never_topmost_even_with_overlay(self, make_gui):
-        gui, _c, _s = make_gui(always_on_top=False)
+    def test_never_mode_is_never_topmost_even_with_overlay(self, make_gui):
+        gui, _c, _s = make_gui(always_on_top_mode="never")
         gui.subtitle_window = _FakeOverlay()
         gui._apply_control_window_topmost()
         assert gui._control_window_should_be_topmost() is False
         assert _topmost(gui) is False
+
+    def test_running_mode_topmost_only_while_running(self, make_gui):
+        # 'running': not topmost when stopped, topmost once a session runs.
+        gui, _c, _s = make_gui(always_on_top_mode="running")
+        gui.subtitle_window = _FakeOverlay()
+        assert gui._control_window_should_be_topmost() is False
+        gui._running = True
+        assert gui._control_window_should_be_topmost() is True
 
     def test_effective_subtitle_mode_delegates(self, make_gui):
         gui, _c, settings = make_gui(
@@ -935,11 +945,11 @@ class TestAnnouncement:
         assert gui._announce_favorites_frame.grid_info()
 
     def test_on_stop_keeps_overlay_when_announcement_active(self, make_gui):
-        # hide_subtitle_on_stop=True normally destroys the overlay on stop, but
-        # an active "until stopped" announcement survives the stop when the
+        # subtitle_hide_mode="stopped" normally destroys the overlay on stop,
+        # but an active "until stopped" announcement survives the stop when the
         # announcement window's "hide when stopped" toggle is off.
         gui, _c, _s = make_gui(
-            hide_subtitle_on_stop=True, stop_announcement_on_live_stop=False
+            subtitle_hide_mode="stopped", stop_announcement_on_live_stop=False
         )
         fake = _FakeSubtitleWindow()
         gui.subtitle_window = fake
@@ -951,8 +961,8 @@ class TestAnnouncement:
 
     def test_on_stop_clears_announcement_when_toggle_is_on(self, make_gui):
         # Default: stopping the session also clears an in-progress
-        # announcement, which then lets hide-on-stop tear the overlay down.
-        gui, _c, settings = make_gui(hide_subtitle_on_stop=True)
+        # announcement, which then lets the hide policy tear the overlay down.
+        gui, _c, settings = make_gui(subtitle_hide_mode="stopped")
         assert settings.stop_announcement_on_live_stop is True
         fake = _FakeSubtitleWindow()
         gui.subtitle_window = fake
@@ -964,7 +974,7 @@ class TestAnnouncement:
         assert fake.destroyed is True
 
     def test_on_stop_destroys_overlay_without_announcement(self, make_gui):
-        gui, _c, _s = make_gui(hide_subtitle_on_stop=True)
+        gui, _c, _s = make_gui(subtitle_hide_mode="stopped")
         fake = _FakeSubtitleWindow()
         gui.subtitle_window = fake
         gui._running = True
