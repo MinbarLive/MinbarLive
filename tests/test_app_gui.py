@@ -695,6 +695,63 @@ class TestApiKeyPrompt:
         assert opened == [], "must not ask for a key that is already there"
 
 
+class TestSettingsRemoveKeyGating:
+    """The settings window's Remove button must only offer to delete a key
+    that actually exists: Change stays available for any chosen provider,
+    Remove follows has_usable_key, and the handler no-ops defensively."""
+
+    def _select_openai(self, gui, monkeypatch, saved):
+        import gui.settings_view as settings_view
+
+        monkeypatch.setattr(settings_view, "has_usable_key", lambda _p: saved)
+        gui._open_settings_window()
+        gui.update_idletasks()
+        gui.api_key_provider_combo.current(0)  # OpenAI
+        gui._refresh_api_key_status()
+
+    def test_remove_is_disabled_without_a_stored_key(self, make_gui, monkeypatch):
+        gui, _c, _s = make_gui()
+        self._select_openai(gui, monkeypatch, saved=False)
+        assert gui.change_key_btn.cget("state") == "normal"
+        assert gui.remove_key_btn.cget("state") == "disabled"
+
+    def test_remove_is_enabled_with_a_stored_key(self, make_gui, monkeypatch):
+        gui, _c, _s = make_gui()
+        self._select_openai(gui, monkeypatch, saved=True)
+        assert gui.change_key_btn.cget("state") == "normal"
+        assert gui.remove_key_btn.cget("state") == "normal"
+
+    def test_the_handler_never_removes_a_missing_key(self, make_gui, monkeypatch):
+        """Even a click on a stale-enabled button must not open the remove
+        flow when there is no key."""
+        import gui.settings_view as settings_view
+
+        gui, _c, _s = make_gui()
+        removed = []
+        monkeypatch.setattr(
+            settings_view,
+            "remove_api_key",
+            lambda **kwargs: removed.append(kwargs["provider"]),
+        )
+        self._select_openai(gui, monkeypatch, saved=False)
+        gui._on_settings_remove_key()
+        assert removed == []
+
+    def test_the_handler_removes_a_stored_key(self, make_gui, monkeypatch):
+        import gui.settings_view as settings_view
+
+        gui, _c, _s = make_gui()
+        removed = []
+        monkeypatch.setattr(
+            settings_view,
+            "remove_api_key",
+            lambda **kwargs: removed.append(kwargs["provider"]),
+        )
+        self._select_openai(gui, monkeypatch, saved=True)
+        gui._on_settings_remove_key()
+        assert removed == ["openai"]
+
+
 class TestLocalizationAndTheme:
     def test_gui_language_switch_reloads_texts(self, make_gui):
         """The language dropdown lives in the settings window, and
