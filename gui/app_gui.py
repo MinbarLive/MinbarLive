@@ -2033,7 +2033,7 @@ class AppGUI(
 
         self.subtitle_window = SubtitleWindow(
             self,
-            on_close=self.on_close,
+            on_close=self._request_close_from_subtitle,
             monitor_index=current_screen_idx,
             font_size_base=self._saved_settings.font_size_base,
             source_font_size_base=getattr(
@@ -2344,6 +2344,17 @@ class AppGUI(
         is running, so a stray Esc while idle does nothing."""
         if self._running:
             self.on_stop()
+
+    def _request_close_from_subtitle(self) -> None:
+        """Closing the overlay (taskbar close, Alt+F4) closes ONLY the overlay
+        — never the app. The overlay is deliberately kept in the taskbar for
+        OBS capture, so a mis-aimed close there must not take the whole app
+        down mid-session; quitting MinbarLive is the control panel's job
+        alone. A running session is stopped first (like Esc) and Start
+        recreates the window."""
+        if self._running:
+            self.on_stop()
+        self._destroy_subtitle_window()
 
     def on_stop(self) -> None:
         if self._stopping:

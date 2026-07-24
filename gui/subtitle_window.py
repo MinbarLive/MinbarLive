@@ -342,7 +342,8 @@ class SubtitleWindow(tk.Toplevel):
 
         # Esc stops the translation (like the Stop button) but never closes
         # the overlay or the app — a mis-hit shouldn't take the display down
-        # mid-session. The window's close protocol still routes to on_close.
+        # mid-session. The close protocol routes to on_close, which the panel
+        # wires to close just this overlay, never the whole app.
         self.bind("<Escape>", self._on_escape)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
