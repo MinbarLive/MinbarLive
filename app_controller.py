@@ -22,9 +22,11 @@ from audio.device_support import (
     AudioInputError,
     input_device_candidates,
     input_stream_kwargs,
+    usable_input_samplerate,
 )
 from audio.level_meter import AudioLevelMeter, AudioLevelSnapshot
 from audio.loopback import get_speaker as get_loopback_speaker
+from audio.resampler import StreamResampler
 from audio.vad import StreamNoiseGate, has_speech
 from audio.writer import async_write_audio, clear_write_queue, segment_writer
 from config import (
@@ -648,6 +650,45 @@ class AppController:
             report_runtime_error=True,
         )
 
+    def _apply_capture_resampling(
+        self,
+        stream_kwargs: dict,
+        *,
+        open_rate: int,
+        target_rate: int,
+        channels: int,
+    ) -> tuple[dict, StreamResampler | None]:
+        """Wrap the callback to resample capture blocks to the pipeline rate.
+
+        Returns the (possibly rewritten) stream kwargs and the resampler, or
+        the kwargs unchanged with ``None`` when the device already runs at the
+        pipeline rate (the common case, and every path on Windows/macOS)."""
+        real_callback = stream_kwargs.get("callback")
+        if open_rate == target_rate or real_callback is None:
+            return stream_kwargs, None
+
+        resampler = StreamResampler(open_rate, target_rate, channels)
+
+        def _resampling_callback(
+            indata, frames, time_info, status, _cb=real_callback, _rs=resampler
+        ) -> None:
+            out = _rs.process(indata)
+            if out.shape[0]:
+                _cb(out, out.shape[0], time_info, status)
+
+        kwargs = dict(stream_kwargs)
+        kwargs["callback"] = _resampling_callback
+        blocksize = kwargs.get("blocksize")
+        if blocksize:
+            # blocksize is in frames at the stream's (open) rate; scale it so a
+            # block still carries ~the same duration after resampling.
+            kwargs["blocksize"] = max(1, round(blocksize * open_rate / target_rate))
+        log(
+            f"Capturing at {open_rate} Hz, resampling to {target_rate} Hz",
+            level="INFO",
+        )
+        return kwargs, resampler
+
     def _run_sounddevice_input_loop(
         self,
         device: int,
@@ -663,11 +704,26 @@ class AppController:
     ) -> None:
         """Shared PortAudio open/retry loop for sessions and local previews."""
 
+        channels = int(stream_kwargs.get("channels", 1))
+        # Devices that cannot run at the pipeline rate (Linux/PipeWire exposes
+        # named sources only at their native 48 kHz via JACK) are opened at a
+        # supported rate and resampled to `samplerate` before the callback, so
+        # everything downstream still sees the pipeline rate.
+        open_rate = (
+            usable_input_samplerate(
+                sd, device_index=device, requested=samplerate, channels=channels
+            )
+            or samplerate
+        )
+        stream_kwargs, resampler = self._apply_capture_resampling(
+            stream_kwargs, open_rate=open_rate, target_rate=samplerate, channels=channels
+        )
+
         candidates = input_device_candidates(
             sd,
             device_index=device,
-            samplerate=samplerate,
-            channels=int(stream_kwargs.get("channels", 1)),
+            samplerate=open_rate,
+            channels=channels,
             dtype=stream_kwargs.get("dtype"),
         )
         last_error: BaseException | None = None
@@ -679,8 +735,10 @@ class AppController:
                 try:
                     kwargs = dict(stream_kwargs)
                     kwargs.update(input_stream_kwargs(sd, device_index=candidate))
+                    if resampler is not None:
+                        resampler.reset()  # drop any state from a failed attempt
                     stream = sd.InputStream(
-                        samplerate=samplerate,
+                        samplerate=open_rate,
                         device=candidate,
                         **kwargs,
                     )

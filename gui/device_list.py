@@ -6,34 +6,31 @@ import sys
 
 import sounddevice as sd
 
-from audio.device_support import input_extra_settings
+from audio.device_support import usable_input_samplerate
 from audio.loopback import clear as _loopback_clear
 from audio.loopback import register as _loopback_register
 from config import FS
 
 
 def _is_usable_input(device_idx: int, hostapi_name: str = "") -> bool:
-    """Return True if the device can be opened as a mono input at FS.
+    """Return True if the device can be opened as a mono input at some rate.
 
-    The probe must use the same extra settings the capture loops open the
-    device with (audio/device_support.py): a WASAPI endpoint that only runs at
-    48 kHz natively offers FS solely with the system mixer conversion enabled,
-    so probing without it would drop a device the pipeline can in fact open."""
-    try:
-        kwargs = {}
-        extra_settings = input_extra_settings(
+    Prefers the pipeline rate FS but accepts any rate the device supports: the
+    capture loop opens the device at its native rate and resamples to FS
+    (audio/resampler.py).  Without this, Linux/PipeWire named sources — which
+    JACK exposes only at 48 kHz — would all be dropped.  The probe passes the
+    same WASAPI extra settings the capture loops use, so a 48 kHz-only WASAPI
+    endpoint is still recognised via the system mixer conversion."""
+    return (
+        usable_input_samplerate(
             sd,
             device_index=device_idx,
+            requested=FS,
+            channels=1,
             hostapi_name=hostapi_name,
         )
-        if extra_settings is not None:
-            kwargs["extra_settings"] = extra_settings
-        sd.check_input_settings(
-            device=device_idx, channels=1, samplerate=FS, **kwargs
-        )
-        return True
-    except Exception:
-        return False
+        is not None
+    )
 
 
 # Windows generic audio mapper entries that appear under MME/DirectSound as
@@ -49,6 +46,35 @@ _SKIP_NAME_PREFIXES = (
     "primärer soundaufnahmetreiber",
     "primärer soundtreiber",
 )
+
+# Generic PulseAudio/PipeWire routing endpoints to keep on Linux even though
+# they are not physical microphones — "default" follows the system default
+# source, "pipewire"/"pulse" go through the server (both resample). Matched by
+# exact lowercased name.
+_LINUX_GENERIC_INPUTS = frozenset({"default", "pipewire", "pulse"})
+
+
+def _linux_real_source_names() -> set[str] | None:
+    """Names of genuine PulseAudio/PipeWire capture sources, or None.
+
+    On Linux the JACK host API also lists output monitors, application streams
+    and duplicate raw endpoints as input-capable devices; PulseAudio knows
+    which are real microphones.  Returns None when that cannot be determined
+    (soundcard missing, no PulseAudio) so the caller does no filtering and a
+    pure-ALSA machine still shows its raw devices."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        import soundcard as sc  # noqa: PLC0415 (lazy import is intentional)
+
+        names = {
+            str(m.name).strip()
+            for m in sc.all_microphones(include_loopback=False)
+            if str(getattr(m, "name", "")).strip()
+        }
+        return names or None
+    except Exception:
+        return None
 
 # Host API quality priority — lower value = better quality.
 # Windows WDM-KS is intentionally excluded: it exposes devices using
@@ -139,6 +165,10 @@ def get_input_devices() -> tuple[list[str], list[str], list[int], list[bool]]:
         # Sort: best API first, then most channels
         candidates.sort(key=lambda c: (c[0], -c[2]))
 
+        # On Linux, keep only genuine capture sources (plus the generic routing
+        # aliases); None means "couldn't tell" → keep everything as before.
+        real_source_names = _linux_real_source_names()
+
         # Deduplicate: Windows MME truncates device names to ~31 chars, so the
         # same physical device can appear under multiple APIs with slightly
         # different name lengths.  Match by the shorter of the two name prefixes
@@ -148,6 +178,12 @@ def get_input_devices() -> tuple[list[str], list[str], list[int], list[bool]]:
             name_lower = name.lower()
             if any(name_lower.startswith(p) for p in _SKIP_NAME_PREFIXES):
                 continue  # fake Windows audio mapper entry
+            if (
+                real_source_names is not None
+                and name not in real_source_names
+                and name_lower not in _LINUX_GENERIC_INPUTS
+            ):
+                continue  # JACK output monitor / app stream, not a real mic
             is_dup = False
             for s in seen:
                 ml = min(len(name), len(s))

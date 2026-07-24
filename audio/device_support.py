@@ -65,6 +65,61 @@ def input_extra_settings(
         return None
 
 
+# Rates to try when a device rejects the pipeline rate, best (highest quality,
+# most widely native) first.  A device opened at one of these is resampled to
+# the pipeline rate by the capture loop (audio/resampler.py).
+_FALLBACK_SAMPLERATES = (48000, 44100, 32000, 24000, 22050, 16000)
+
+
+def usable_input_samplerate(
+    sounddevice_module: Any,
+    *,
+    device_index: int,
+    requested: int,
+    channels: int = 1,
+    hostapi_name: str | None = None,
+) -> int | None:
+    """Return a samplerate the device can be opened at, or ``None``.
+
+    ``requested`` (the pipeline rate) is tried first so devices that support it
+    natively are opened without conversion.  Otherwise the device's native rate
+    and a few common rates are tried — Linux/PipeWire exposes named sources
+    (Bluetooth, internal mics) only through JACK at their native rate, so
+    probing solely at the pipeline rate would hide every one of them.  The
+    capture loop resamples whatever rate this returns down to ``requested``.
+    """
+    rates = [requested]
+    try:
+        native = int(round(sounddevice_module.query_devices(device_index)["default_samplerate"]))
+        if native > 0:
+            rates.append(native)
+    except Exception:
+        pass
+    rates.extend(_FALLBACK_SAMPLERATES)
+
+    seen: set[int] = set()
+    for rate in rates:
+        if rate in seen:
+            continue
+        seen.add(rate)
+        try:
+            kwargs: dict[str, Any] = {}
+            extra_settings = input_extra_settings(
+                sounddevice_module,
+                device_index=device_index,
+                hostapi_name=hostapi_name,
+            )
+            if extra_settings is not None:
+                kwargs["extra_settings"] = extra_settings
+            sounddevice_module.check_input_settings(
+                device=device_index, channels=channels, samplerate=rate, **kwargs
+            )
+            return rate
+        except Exception:
+            continue
+    return None
+
+
 def input_stream_kwargs(
     sounddevice_module: Any,
     *,
