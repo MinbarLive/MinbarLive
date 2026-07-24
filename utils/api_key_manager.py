@@ -136,6 +136,16 @@ def show_message(
     dlg.configure(fg_color=c["app_bg"])
     dlg.transient(root)
     dlg.grab_set()
+    # Build fully transparent, then reveal once themed and positioned. Without
+    # this a fresh CTkToplevel paints as a black/white rectangle before its
+    # card is drawn — on Linux/X11 that unpainted frame was visible (reported:
+    # the confirm dialog showed as a black window). Alpha (not withdraw) so the
+    # transient window is never unmapped. Same pattern as the settings/batch
+    # windows.
+    try:
+        dlg.attributes("-alpha", 0.0)
+    except tk.TclError:
+        pass
 
     def _set_icon() -> None:
         if ICO_SUPPORTED and os.path.exists(ICON_PATH):
@@ -279,6 +289,13 @@ def show_message(
         dlg.attributes("-topmost", True)
     except Exception:
         pass
+    # Reveal now that the card is drawn and the window is positioned.
+    dlg.update_idletasks()
+    dlg.lift()
+    try:
+        dlg.attributes("-alpha", 1.0)
+    except tk.TclError:
+        pass
 
     dlg.wait_window()
     return result["ok"]
@@ -335,6 +352,12 @@ def prompt_for_api_key(
     dialog.configure(fg_color=c["app_bg"])
     dialog.transient(root)
     dialog.grab_set()
+    # Hide the unpainted first frame (black/white rectangle) until the card is
+    # built and the window positioned — revealed at the end. See show_message.
+    try:
+        dialog.attributes("-alpha", 0.0)
+    except tk.TclError:
+        pass
 
     # Apply icon with a delay (CTkToplevel defers window creation)
     def _set_icon() -> None:
@@ -553,6 +576,14 @@ def prompt_for_api_key(
     entry.bind("<Return>", lambda _e: on_ok())
     dialog.bind("<Escape>", lambda _e: on_cancel())
     dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+
+    # Reveal now that the card is drawn and the window is positioned.
+    dialog.update_idletasks()
+    dialog.lift()
+    try:
+        dialog.attributes("-alpha", 1.0)
+    except tk.TclError:
+        pass
 
     dialog.wait_window()
     key = result["key"]
