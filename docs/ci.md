@@ -66,9 +66,11 @@ so it pulls them, but selectively, and never the raw JSON. See below.
 
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) builds the
 Windows EXE. Pushing a `v*` tag also publishes it; `workflow_dispatch` builds
-without publishing, for testing the build itself. A second job, `build-linux`,
-packages an experimental Linux **AppImage** that _is_ attached to tagged releases
-— see [below](#the-linux-build).
+without publishing, for testing the build itself. Two more jobs cover the other
+platforms: `build-linux` packages an experimental Linux **AppImage** that _is_
+attached to tagged releases, and `build-macos` produces an experimental, unsigned
+macOS `.app` that stays a workflow artifact — see
+[below](#the-linux-and-macos-builds).
 
 It runs the suite before touching LFS, so the tests see the same pointer stubs
 the `test` job does, then pulls only the matrices:
@@ -108,9 +110,9 @@ it was created through the web UI, the workflow prepends the block to the
 existing description instead, and skips that if the block is already there, so
 hand-written notes are never overwritten.
 
-## The Linux build
+## The Linux and macOS builds
 
-It is experimental. `build-linux` runs after `build`, wraps the PyInstaller
+Both are experimental. `build-linux` runs after `build`, wraps the PyInstaller
 binary in a FUSE-less, self-integrating **AppImage** (`MinbarLive-x86_64.AppImage`)
 and, on tagged builds, attaches it to the release alongside the EXE — it has been
 verified on a real Linux desktop, which is why it ships. The raw ELF binary is
@@ -153,6 +155,30 @@ sequence rather than in parallel.
 | ----------------------- | ------------------------------------------------------------------------------------------------ |
 | Verify the binary       | A build that lost the `data/` bundle, which shows up as a far smaller file                        |
 | Smoke-launch the binary | A startup crash — a shared library the bundle missed, an X11 request the toolkit rejects. The binary is launched under `xvfb` with a 30-second `timeout`, so **exit 124 is the success case**: it means the app was still running when the timeout killed it, sitting in the onboarding wizard. Any other exit code means it died on its own |
+
+### macOS stays a workflow artifact
+
+`build-macos` runs after `build` on `macos-14` (Apple Silicon), builds the
+one-file binary, wraps it in a `.app` via the spec's `BUNDLE` step, and uploads
+`MinbarLive-macos-arm64.zip` as the `MinbarLive-macos` artifact. It is **not**
+attached to any release, and there is no download link for it on the website —
+deliberately, for two reasons:
+
+- **Unsigned.** Without an Apple Developer certificate and notarization,
+  Gatekeeper blocks the app on first launch ("damaged, cannot be opened"). A
+  release asset users cannot open without terminal gymnastics is worse than none.
+- **Unverified on real hardware.** The same bar the Linux AppImage had to clear
+  before it was published — nobody has run this `.app` on a Mac yet.
+
+Two build-time checks fail loudly: the bundled binary's size (a lost `data/`
+bundle shows up small) and `NSMicrophoneUsageDescription` being present in
+`Info.plist` — modern macOS hard-kills any app that opens an input stream
+without it, so the spec wires it in and CI asserts it with `PlistBuddy`. The GUI
+smoke-launch is best-effort (`continue-on-error`): whether a hosted runner's
+session can start a Tk window is not something this project has verified, so an
+early exit is reported as a warning, not a build failure. Promote the `.app` to a
+release asset only after signing, notarization, and a real-Mac run — until then,
+macOS users build from source.
 
 ## Lint checks changed files only
 
