@@ -5,18 +5,17 @@ Audio segment writing and file I/O.
 from __future__ import annotations
 
 import os
-import time
 import queue
+import time
 import uuid
-
-import numpy as np
-import scipy.io.wavfile as wavfile
 from datetime import datetime
 
-from config import AUDIO_DIR, FS, DURATION, STEP, SAME_LANG_DURATION, SAME_LANG_STEP
+import numpy as np
+
+from audio.capture import get_ring_segment, is_silence
+from config import AUDIO_DIR, DURATION, FS, SAME_LANG_DURATION, SAME_LANG_STEP, STEP
 from utils.logging import log
 from utils.settings import load_settings
-from audio.capture import get_ring_segment, is_silence
 
 # Queue for async file writing
 write_queue = queue.Queue()
@@ -87,6 +86,10 @@ def async_write_audio(stop_event) -> None:
     Consumer thread that writes audio files from the queue to disk.
     Uses atomic write (temp file + rename) for safety.
     """
+    # Lazy import: scipy.io costs ~200 ms to import and is only needed once this
+    # writer thread actually runs (a started session), not at app startup.
+    import scipy.io.wavfile as wavfile  # noqa: PLC0415
+
     while not stop_event.is_set():
         try:
             try:
