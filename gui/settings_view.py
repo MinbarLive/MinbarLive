@@ -85,11 +85,17 @@ class SettingsViewMixin:
             and self._settings_win.winfo_exists()
         )
 
+    def _close_settings_window(self) -> None:
+        if self._settings_win_exists():
+            self._settings_win.destroy()
+        self._settings_win = None
+
     def _open_settings_window(self) -> None:
         if self._settings_win_exists():
             self._settings_win.lift()
             self._settings_win.focus()
             return
+        self._close_secondary_windows()  # one secondary window at a time
 
         win = ctk.CTkToplevel(self)
         win.title(self.gui_texts.get("settings_title", "Settings"))
@@ -110,6 +116,7 @@ class SettingsViewMixin:
         x, y = centered_position(self, 500, 620)
         win.geometry(f"500x620+{x}+{y}")
         self._settings_win = win
+        self._register_secondary_window(win, self._close_settings_window)
         self._settings_labels = []
         self._settings_muted_labels = []
         self._settings_buttons = []

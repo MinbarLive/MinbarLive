@@ -71,6 +71,7 @@ class HistoryViewMixin:
             self._history_win.focus()
             self._switch_history_tab(initial_tab)
             return
+        self._close_secondary_windows()  # one secondary window at a time
 
         win = ctk.CTkToplevel(self)
         win.title(self.gui_texts.get("history_title", "Session History"))
@@ -82,6 +83,7 @@ class HistoryViewMixin:
         x, y = centered_position(self, 900, 560)
         win.geometry(f"900x560+{x}+{y}")
         self._history_win = win
+        self._register_secondary_window(win, self._close_history_window)
         self._history_active_tab = initial_tab
         self._history_selected_session = None
         self._history_selected_log = None
@@ -982,6 +984,7 @@ class HistoryViewMixin:
         win.grid_columnconfigure(0, weight=1)
         win.grid_rowconfigure(4, weight=1)
         self._summary_win = win
+        self._register_secondary_window(win, self._close_summary_window)
         self._summary_session = session
         self._summary_queue: queue.Queue = queue.Queue()
         self._summary_thread = None

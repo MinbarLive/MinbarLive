@@ -106,6 +106,7 @@ class BatchViewMixin:
             self._batch_win.lift()
             self._batch_win.focus()
             return
+        self._close_secondary_windows()  # one secondary window at a time
 
         win = ctk.CTkToplevel(self)
         win.title(self.gui_texts.get("batch_file", "Batch / File"))
@@ -121,6 +122,7 @@ class BatchViewMixin:
         win.after(200, lambda: self._set_toplevel_icon(win))
         win.transient(self)
         self._batch_win = win
+        self._register_secondary_window(win, self._close_batch_window)
         self._build_batch_widgets(win)
         self._resize_batch_window(recenter=True)
         try:

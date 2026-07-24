@@ -83,6 +83,41 @@ class WidgetFactoryMixin:
             "entry_border": "#334155",
         }
 
+    # Secondary windows, as (window attribute, close-method name). The app
+    # shows at most one at a time: opening one dismisses the others and Escape
+    # closes the current one. The summary dialog is intentionally absent — it is
+    # a child of the history window and closes with it.
+    _SECONDARY_WINDOWS = (
+        ("_settings_win", "_close_settings_window"),
+        ("_history_win", "_close_history_window"),
+        ("_batch_win", "_close_batch_window"),
+        ("_announce_win", "_close_announce_window"),
+    )
+
+    def _close_secondary_windows(self, keep: tk.Misc | None = None) -> None:
+        """Close every open secondary window except ``keep``.
+
+        Called by each ``_open_*`` before it builds its window, so only one
+        secondary window is ever open.  A batch window with a running job is
+        left open — destroying it would orphan the worker thread."""
+        for win_attr, close_name in self._SECONDARY_WINDOWS:
+            win = getattr(self, win_attr, None)
+            if win is None or win is keep:
+                continue
+            if win_attr == "_batch_win" and getattr(self, "_batch_thread", None):
+                continue
+            getattr(self, close_name)()
+
+    def _register_secondary_window(
+        self, win: ctk.CTkToplevel, close: Callable[[], None]
+    ) -> None:
+        """Bind Escape to close a secondary window.
+
+        The binding is on the toplevel, which is in every child widget's
+        bindtags, so Escape closes the window from anywhere inside it — unless a
+        child (e.g. an open dropdown) consumes the key first with ``break``."""
+        win.bind("<Escape>", lambda _e: close())
+
     def _set_toplevel_icon(self, win: ctk.CTkToplevel) -> None:
         """Set the window icon on a CTkToplevel, then re-assert the themed
         titlebar. On Windows ``iconbitmap()`` resets the DWM titlebar to the
