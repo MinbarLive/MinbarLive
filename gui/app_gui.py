@@ -36,6 +36,7 @@ from gui.control_state import (
 from gui.device_list import find_input_device_position, get_input_devices
 from gui.dropdown import CustomDropdown
 from gui.history_view import HistoryViewMixin
+from gui.mousewheel import install_x11_mousewheel
 from gui.scaling import apply_display_scaling
 from gui.settings_view import SettingsViewMixin
 from gui.subtitle_window import SubtitleWindow
@@ -196,6 +197,11 @@ class AppGUI(
             ctk.set_widget_scaling(self._responsive_scale)
 
         super().__init__()
+
+        # Route X11/Linux wheel + touchpad input (delivered as <Button-4/5>) to
+        # whatever scrollable widget is under the pointer — canvas-based frames
+        # and dropdown popups only listen for <MouseWheel> (see gui/mousewheel).
+        install_x11_mousewheel(self)
 
         # The root exists now, so its monitor's DPI is known: clamp the global
         # scaling if this screen is too small for the design (see gui/scaling).
@@ -473,7 +479,6 @@ class AppGUI(
         )
         self.sidebar.grid(row=2, column=0, sticky="nsew")
         self.sidebar.grid_columnconfigure(0, weight=1)
-        self._enable_linux_mousewheel(self.sidebar)
         # Reflow + re-center the card grid whenever the window resizes.
         self._applied_collapsed_margin: int | None = None
         self._applied_columns: int | None = None
