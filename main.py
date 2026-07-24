@@ -192,6 +192,13 @@ def _show_already_running_dialog() -> bool:
     ).pack(side="right")
 
     dlg.protocol("WM_DELETE_WINDOW", _cancel)
+    # Raise above the already-running instance's window. lift()/focus_force()
+    # alone lose to the other instance's foreground window — the warning then
+    # opens behind it (reported on Windows).
+    try:
+        dlg.attributes("-topmost", True)
+    except Exception:
+        pass
     dlg.lift()
     dlg.focus_force()
     dlg.mainloop()
