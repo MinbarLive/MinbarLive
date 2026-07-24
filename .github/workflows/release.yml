@@ -284,3 +284,118 @@ jobs:
         run: |
           gh release upload "$GITHUB_REF_NAME" \
             dist/MinbarLive-x86_64.AppImage dist/SHA256SUMS-linux.txt --clobber
+
+  # EXPERIMENTAL macOS build. Kept as a workflow artifact only and NEVER attached
+  # to a release yet — exactly how the Linux build started before it was verified
+  # on real hardware. It is UNSIGNED and UN-NOTARIZED, so Gatekeeper blocks it on
+  # first launch (right-click → Open to run once). Apple Silicon (arm64) only; it
+  # will not run on Intel Macs. Several features are Windows-only there (the
+  # OBS-visible borderless overlay, transparent static mode, loopback capture).
+  # See docs/ci.md. Promote to a release asset only after a real Mac verifies it.
+  #
+  # MANUAL ONLY: this job does NOT run on a tag push / release — it is gated to
+  # workflow_dispatch so an unverified, users-can't-use-it-yet .app never turns a
+  # release run red or costs release CI time. Build/test it on demand from
+  # Actions → Release → Run workflow. Remove this `if` when the .app is signed,
+  # notarized and verified and is ready to ship on releases (issue tracked).
+  build-macos:
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    # arm64. macos-14 is Apple Silicon; use it for a native, fast build. A single
+    # x86_64 job (macos-13) would also cover Apple Silicon via Rosetta, but the
+    # artifact is labelled arm64 to make the limitation explicit rather than
+    # implying it is universal.
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # The matrices the `build` job already pulled from LFS. They overwrite the
+      # pointer stubs checkout left behind (saves a second LFS pull — see the
+      # note in the `build` job).
+      - uses: actions/download-artifact@v4
+        with:
+          name: embeddings
+          path: data/embeddings
+
+      # macOS `stat` differs from GNU (`-f%z` not `-c%s`), so use `wc -c`, which
+      # is portable across both this job and the Linux one's tooling.
+      - name: Verify the matrices are real
+        run: |
+          for f in data/embeddings/quran_embeddings_openai.npz \
+                   data/embeddings/quran_embeddings_gemini.npz; do
+            size=$(wc -c < "$f")
+            if [ "$size" -lt 1000000 ]; then
+              echo "::error::$f is an LFS pointer stub ($size bytes), not the matrix."
+              exit 1
+            fi
+            echo "$f: $size bytes"
+          done
+
+      # Produces both dist/MinbarLive (the one-file binary) and
+      # dist/MinbarLive.app (the BUNDLE wrapper — see MinbarLive.spec).
+      - run: pyinstaller MinbarLive.spec
+
+      - name: Verify the .app bundle
+        run: |
+          test -d dist/MinbarLive.app || { echo "::error::MinbarLive.app was not produced."; exit 1; }
+          bin="dist/MinbarLive.app/Contents/MacOS/MinbarLive"
+          size=$(wc -c < "$bin")
+          echo "$bin: $size bytes"
+          if [ "$size" -lt 100000000 ]; then
+            echo "::error::Bundled binary is only $size bytes, the data/ bundle is missing."
+            exit 1
+          fi
+          # The mic-usage string is REQUIRED — without it macOS hard-kills the app
+          # the moment it opens an input stream (TCC). Fail if the spec did not
+          # wire it into Info.plist.
+          /usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' \
+            dist/MinbarLive.app/Contents/Info.plist \
+            || { echo "::error::NSMicrophoneUsageDescription missing from Info.plist."; exit 1; }
+
+      # `ditto` is the macOS-correct archiver — it preserves the bundle's symlinks
+      # and permissions where `zip` would mangle them. --keepParent keeps the
+      # MinbarLive.app/ top level inside the archive.
+      - name: Package the .app
+        run: ditto -c -k --keepParent dist/MinbarLive.app dist/MinbarLive-macos-arm64.zip
+
+      - name: Checksum
+        run: cd dist && shasum -a 256 MinbarLive-macos-arm64.zip | tee SHA256SUMS-macos.txt
+
+      # Uploaded BEFORE the smoke launch so the artifact survives even if the
+      # (best-effort, non-fatal) GUI launch below cannot start on the runner.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MinbarLive-macos
+          path: |
+            dist/MinbarLive-macos-arm64.zip
+            dist/SHA256SUMS-macos.txt
+
+      # Best-effort only (continue-on-error): whether a Tkinter GUI can start on
+      # a hosted macOS runner's session is not something this project has yet
+      # verified, so an early exit is reported as a warning, not a build failure.
+      # macOS has no `timeout`, so launch in the background and kill after a grace
+      # period; exiting on its own before then means it crashed at startup.
+      - name: Smoke-launch (best effort)
+        continue-on-error: true
+        run: |
+          ./dist/MinbarLive >/tmp/mac_smoke.log 2>&1 &
+          pid=$!
+          sleep 25
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "Stayed up for 25s."
+            kill "$pid" 2>/dev/null || true
+          else
+            wait "$pid"; code=$?
+            echo "::warning::MinbarLive exited early with $code — see log below."
+            cat /tmp/mac_smoke.log || true
+          fi

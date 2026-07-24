@@ -25,23 +25,6 @@ from utils.logging import log
 _EXTRA_PROVIDER_NAMES = {"deepgram": "Deepgram"}
 
 
-def _grab_when_ready(win: tk.Misc) -> None:
-    """Make ``win`` modal once the window manager has mapped it.
-
-    ``grab_set()`` on an X11 window that is not yet viewable raises TclError.
-    The themed dialogs called it right after creation, so on a window manager
-    that maps windows asynchronously (tiling WMs, often without a compositor)
-    the error could abort the dialog mid-build and leave an empty white window.
-    Retry on the Tk loop until the grab takes."""
-    try:
-        win.grab_set()
-    except tk.TclError:
-        try:
-            win.after(50, lambda: _grab_when_ready(win))
-        except tk.TclError:
-            pass  # window was destroyed before it ever became viewable
-
-
 def _provider_display_name(provider: str) -> str:
     for name, provider_id in PROVIDER_CHOICES:
         if provider_id == provider:
@@ -132,10 +115,16 @@ def show_message(
     yes_label: str = "Yes",
     no_label: str = "No",
     ok_label: str = "OK",
+    sections: list[tuple[str, str]] | None = None,
 ) -> bool:
     """Show a themed CTk message/confirm dialog. Returns True if OK/Yes clicked.
 
-    The height adapts to the message so long error strings aren't clipped."""
+    The height adapts to the message so long error strings aren't clipped.
+
+    ``sections`` renders a list of ``(heading, body)`` pairs instead of the flat
+    ``message`` — each heading bold and larger, each body muted, with spacing
+    between pairs — so a multi-option explainer reads as a list, not a wall of
+    text. When given, ``message`` is ignored."""
     c = colors or _DEFAULT_COLORS
     result = {"ok": False}
 
@@ -146,7 +135,19 @@ def show_message(
     dlg.resizable(False, False)
     dlg.configure(fg_color=c["app_bg"])
     dlg.transient(root)
-    _grab_when_ready(dlg)
+    # grab_set() is deferred until the window is viewable (after the reveal
+    # below): on X11 grabbing an unmapped window raises "grab failed: window
+    # not viewable" and crashes the click handler.
+    # Build fully transparent, then reveal once themed and positioned. Without
+    # this a fresh CTkToplevel paints as a black/white rectangle before its
+    # card is drawn — on Linux/X11 that unpainted frame was visible (reported:
+    # the confirm dialog showed as a black window). Alpha (not withdraw) so the
+    # transient window is never unmapped. Same pattern as the settings/batch
+    # windows.
+    try:
+        dlg.attributes("-alpha", 0.0)
+    except tk.TclError:
+        pass
 
     def _set_icon() -> None:
         if ICO_SUPPORTED and os.path.exists(ICON_PATH):
@@ -188,15 +189,40 @@ def show_message(
         corner_radius=14,
     ).grid(row=0, column=0, padx=(0, 14), sticky="n")
 
-    ctk.CTkLabel(
-        msg_row,
-        text=message,
-        font=ctk.CTkFont(family="Segoe UI", size=14),
-        text_color=c["text"],
-        wraplength=w - 140,
-        anchor="w",
-        justify="left",
-    ).grid(row=0, column=1, sticky="w")
+    if sections:
+        body = ctk.CTkFrame(msg_row, fg_color="transparent")
+        body.grid(row=0, column=1, sticky="ew")
+        body.grid_columnconfigure(0, weight=1)
+        for i, (heading, text) in enumerate(sections):
+            ctk.CTkLabel(
+                body,
+                text=heading,
+                font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
+                text_color=c["text"],
+                wraplength=w - 140,
+                anchor="w",
+                justify="left",
+            ).grid(row=2 * i, column=0, sticky="w", pady=(0 if i == 0 else 16, 0))
+            if text:
+                ctk.CTkLabel(
+                    body,
+                    text=text,
+                    font=ctk.CTkFont(family="Segoe UI", size=13),
+                    text_color=c.get("muted", c["text"]),
+                    wraplength=w - 140,
+                    anchor="w",
+                    justify="left",
+                ).grid(row=2 * i + 1, column=0, sticky="w", pady=(3, 0))
+    else:
+        ctk.CTkLabel(
+            msg_row,
+            text=message,
+            font=ctk.CTkFont(family="Segoe UI", size=14),
+            text_color=c["text"],
+            wraplength=w - 140,
+            anchor="w",
+            justify="left",
+        ).grid(row=0, column=1, sticky="w")
 
     btn_row = ctk.CTkFrame(card, fg_color="transparent")
     btn_row.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 16))
@@ -265,6 +291,23 @@ def show_message(
         dlg.attributes("-topmost", True)
     except Exception:
         pass
+    # Reveal now that the card is drawn and the window is positioned.
+    dlg.update_idletasks()
+    dlg.lift()
+    try:
+        dlg.attributes("-alpha", 1.0)
+    except tk.TclError:
+        pass
+    # Grab only once the window is on screen (see the note above). Never let a
+    # grab failure crash the caller — a non-grabbed dialog still works.
+    try:
+        dlg.wait_visibility()
+    except tk.TclError:
+        pass
+    try:
+        dlg.grab_set()
+    except tk.TclError:
+        pass
 
     dlg.wait_window()
     return result["ok"]
@@ -320,7 +363,14 @@ def prompt_for_api_key(
     dialog.resizable(False, False)
     dialog.configure(fg_color=c["app_bg"])
     dialog.transient(root)
-    _grab_when_ready(dialog)
+    # grab_set() is deferred until the window is viewable (after the reveal) —
+    # on X11 grabbing an unmapped window crashes with "window not viewable".
+    # Hide the unpainted first frame (black/white rectangle) until the card is
+    # built and the window positioned — revealed at the end. See show_message.
+    try:
+        dialog.attributes("-alpha", 0.0)
+    except tk.TclError:
+        pass
 
     # Apply icon with a delay (CTkToplevel defers window creation)
     def _set_icon() -> None:
@@ -539,6 +589,24 @@ def prompt_for_api_key(
     entry.bind("<Return>", lambda _e: on_ok())
     dialog.bind("<Escape>", lambda _e: on_cancel())
     dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+
+    # Reveal now that the card is drawn and the window is positioned.
+    dialog.update_idletasks()
+    dialog.lift()
+    try:
+        dialog.attributes("-alpha", 1.0)
+    except tk.TclError:
+        pass
+    # Grab only once the window is on screen (see the note above); a grab
+    # failure must never crash the caller.
+    try:
+        dialog.wait_visibility()
+    except tk.TclError:
+        pass
+    try:
+        dialog.grab_set()
+    except tk.TclError:
+        pass
 
     dialog.wait_window()
     key = result["key"]

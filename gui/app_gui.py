@@ -315,16 +315,19 @@ class AppGUI(
                 SUBTITLE_MODE_STATIC: "subtitle_mode_static",
             }
             hint_prefix = "subtitle_hint_"
-        blocks = []
-        for oid in option_ids:
-            name = self.gui_texts.get(name_keys.get(oid, oid), oid)
-            hint = self.gui_texts.get(f"{hint_prefix}{oid}", "")
-            blocks.append(f"{name}\n{hint}" if hint else name)
+        sections = [
+            (
+                self.gui_texts.get(name_keys.get(oid, oid), oid),
+                self.gui_texts.get(f"{hint_prefix}{oid}", ""),
+            )
+            for oid in option_ids
+        ]
         self._alert(
             title.rstrip(": "),
-            "\n\n".join(blocks),
+            "",
             icon="🛈",
             icon_color=self._colors["accent"],
+            sections=sections,
         )
 
     def _setup_window(self) -> None:
@@ -2187,8 +2190,12 @@ class AppGUI(
                 return 1, 80
         return batch_size, next_poll_ms
 
-    def on_change_key(self, provider: str | None = None) -> None:
-        self._prompt_provider_key(provider or self._saved_settings.ai_provider)
+    def on_change_key(
+        self, provider: str | None = None, parent: tk.Misc | None = None
+    ) -> None:
+        self._prompt_provider_key(
+            provider or self._saved_settings.ai_provider, parent=parent
+        )
 
     def _required_key_providers(self) -> list[str]:
         return required_key_providers(self._saved_settings)
@@ -2963,8 +2970,14 @@ class AppGUI(
         else:
             self.strategy_running_hint.pack_forget()
 
-    def _prompt_provider_key(self, provider: str) -> None:
+    def _prompt_provider_key(
+        self, provider: str, parent: tk.Misc | None = None
+    ) -> None:
         """Open the API-key dialog for a specific provider.
+
+        ``parent`` is the window the dialog centres over and is transient to;
+        defaults to the control panel. Callers inside the settings window pass
+        it so the dialog stacks above that window instead of hiding behind it.
 
         Never stacks a second dialog on an open one. The dialog grabs input
         and runs its own event loop, so a second one queued by a timer sits
@@ -2975,7 +2988,7 @@ class AppGUI(
         self._key_prompt_open = True
         try:
             prompt_for_api_key(
-                root=self,
+                root=parent or self,
                 startup=False,
                 on_close=lambda: None,
                 colors=self._colors,

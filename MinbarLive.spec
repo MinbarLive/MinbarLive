@@ -7,6 +7,7 @@ from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules, co
 
 IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
+IS_MACOS = sys.platform == "darwin"
 
 # --- Fix contrib hooks that hardcode an import name as the distribution name ---
 # webrtcvad is installed as the 'webrtcvad-wheels' distribution (the Windows
@@ -197,3 +198,31 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
+# macOS: wrap the one-file binary in a .app bundle so it is double-clickable
+# (a bare Unix executable opens a Terminal, not the GUI). EXPERIMENTAL and
+# UNSIGNED — Gatekeeper will warn; users right-click → Open on first launch.
+# NSMicrophoneUsageDescription is REQUIRED: modern macOS (10.14+) hard-kills any
+# app that opens an input stream without a usage string in Info.plist, so
+# without it the very first capture crashes the app under TCC. No icon: the .ico
+# we ship is Windows-only and macOS wants .icns; the experimental build ships
+# with the default icon rather than converting one in CI.
+if IS_MACOS:
+    try:
+        from version import __version__ as _mac_version
+    except Exception:
+        _mac_version = "0.0.0"
+    app = BUNDLE(
+        exe,
+        name="MinbarLive.app",
+        icon=None,
+        bundle_identifier="live.minbar.app",
+        info_plist={
+            "NSMicrophoneUsageDescription": (
+                "MinbarLive captures live audio to transcribe and translate "
+                "speech into subtitles."
+            ),
+            "NSHighResolutionCapable": True,
+            "CFBundleShortVersionString": _mac_version,
+        },
+    )

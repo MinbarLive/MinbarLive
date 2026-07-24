@@ -20,7 +20,10 @@ def _patch_soundcard_without_speakers(monkeypatch) -> None:
     monkeypatch.setitem(
         sys.modules,
         "soundcard",
-        SimpleNamespace(all_speakers=lambda: []),
+        SimpleNamespace(
+            all_speakers=lambda: [],
+            all_microphones=lambda include_loopback=False: [],
+        ),
     )
 
 

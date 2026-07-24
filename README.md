@@ -80,6 +80,8 @@ Rough guide for an OpenAI setup (the default; segmented mode, Arabic → German)
 
 > **Linux:** The AppImage runs on modern desktops without extra dependencies, but is still maturing: a few features are Windows-only (the OBS-visible borderless overlay, transparent static mode, and system-audio loopback capture), and API-key storage needs a Secret Service keychain (GNOME Keyring / KWallet) — without one, an OpenAI key falls back to plaintext and other providers are session-only. See [docs/ci.md](docs/ci.md).
 
+> **macOS:** There is no signed release yet. CI can build an experimental, unsigned Apple-Silicon `.app` on request, but it is **not** attached to releases (Gatekeeper would block it anyway). For now, run on macOS by building from source (Option B). A signed/notarized build is tracked as future work.
+
 ### Option B: Build it yourself (Python)
 
 ```bash
@@ -91,6 +93,24 @@ python -m venv .venv
 pip install -r requirements.txt
 python main.py
 ```
+
+> **Linux — system packages (running from source only).** A few native
+> libraries are provided by the OS, not by pip, so `requirements.txt` cannot
+> install them. On Debian/Ubuntu:
+>
+> ```bash
+> sudo apt install python3-tk libportaudio2
+> ```
+>
+> - `python3-tk` — the Tkinter GUI toolkit (`tkinter` is **not** a PyPI package).
+> - `libportaudio2` — PortAudio, for microphone capture. Without it the app
+>   exits at startup with `OSError: PortAudio library not found`. (The
+>   prebuilt AppImage bundles PortAudio, so this only affects source runs.)
+> - **System-audio (loopback) capture** additionally needs a running
+>   PulseAudio/PipeWire server that exposes a `…​.monitor` source
+>   (`sudo apt install pipewire-pulse pulseaudio-utils`, then check with
+>   `pactl list sources short | grep -i monitor`). A bare-ALSA box has no
+>   monitor source, so no loopback device appears.
 
 Enter your API key in the first-run wizard (stored securely in the OS keychain), or provide it via a `.env` file / environment variable (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`).
 

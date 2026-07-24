@@ -507,7 +507,10 @@ class SettingsViewMixin:
                 parent=self._settings_win if self._settings_win_exists() else self,
             )
             return
-        self.on_change_key(provider=provider)
+        self.on_change_key(
+            provider=provider,
+            parent=self._settings_win if self._settings_win_exists() else self,
+        )
         self._refresh_api_key_status()
 
     def _on_settings_remove_key(self) -> None:
@@ -516,7 +519,11 @@ class SettingsViewMixin:
             return  # nothing to remove (the button is also disabled in this case)
         remove_api_key(
             is_running=self._running,
-            root=self,
+            # Parent to the settings window (not the control panel) so the
+            # confirm dialog centres over and stacks above it. With root=self
+            # both windows centre on the main panel, hiding the dialog behind
+            # the settings window on Linux/X11 (reported: "empty, behind").
+            root=self._settings_win if self._settings_win_exists() else self,
             colors=self._colors,
             texts=self.gui_texts,
             provider=provider,

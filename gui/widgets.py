@@ -158,11 +158,14 @@ class WidgetFactoryMixin:
         danger: bool = False,
         icon: str | None = None,
         icon_color: str | None = None,
+        sections: list[tuple[str, str]] | None = None,
     ) -> None:
         """Themed replacement for messagebox.showerror/showwarning (OK-only).
 
         ``icon``/``icon_color`` default to a warning glyph; pass e.g. ``"🛈"``
-        with the accent colour for a neutral info dialog (dropdown help)."""
+        with the accent colour for a neutral info dialog (dropdown help).
+        ``sections`` renders ``(heading, body)`` pairs with typographic
+        hierarchy instead of one flat ``message``."""
         show_message(
             parent or self,
             title,
@@ -172,6 +175,7 @@ class WidgetFactoryMixin:
             icon_color=icon_color
             or (self._colors["danger"] if danger else self._colors["warning"]),
             ok_label=self.gui_texts.get("dlg_ok", "OK"),
+            sections=sections,
         )
 
     def _confirm(
