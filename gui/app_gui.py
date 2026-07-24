@@ -65,6 +65,7 @@ from utils.icons import ICO_SUPPORTED, logo_photo, scaled_icon_photo
 from utils.json_helpers import load_json
 from utils.logging import log, log_queue
 from utils.settings import (
+    ALWAYS_ON_TOP_MODES,
     DEFAULT_AI_PROVIDER,
     DEFAULT_GUI_LANGUAGE,
     DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER,
@@ -75,6 +76,7 @@ from utils.settings import (
     PIPELINE_MODE_STREAMING,
     SOURCE_LANGUAGES,
     STREAMING_TRANSCRIPTION_PROVIDERS,
+    SUBTITLE_HIDE_MODES,
     SUBTITLE_MODE_CONTINUOUS,
     SUBTITLE_MODE_REALTIME,
     SUBTITLE_MODE_STATIC,
@@ -269,10 +271,11 @@ class AppGUI(
         self._buttons: list[ctk.CTkButton] = []
         self._combos: list[CustomDropdown] = []
         self._checkboxes: list[ctk.CTkCheckBox] = []
+        self._segments: list[ctk.CTkSegmentedButton] = []
 
         self._setup_window()
         self._create_layout()
-        if not self._saved_settings.hide_subtitle_on_stop:
+        if self._subtitle_window_should_exist():
             self._create_subtitle_window()
         self._finalize_setup()
 
@@ -441,11 +444,66 @@ class AppGUI(
         # right now — e.g. the click that activated the window also opened it.
         CustomDropdown.raise_active_popup()
 
+    # ── Window-behaviour policies (always-on-top + subtitle visibility) ──────
+    # Both are 3-way: see Settings.always_on_top_mode / subtitle_hide_mode.
+
+    def _effective_always_on_top(self) -> bool:
+        """Whether the windows should float on top right now, from the
+        always-on-top mode and the current running state."""
+        mode = self._saved_settings.always_on_top_mode
+        if mode == "always":
+            return True
+        if mode == "running":
+            return self._running
+        return False  # "never"
+
+    def _subtitle_window_should_exist(self) -> bool:
+        """Whether the audience overlay should be open right now, from the
+        subtitle-hide mode and the current running state."""
+        mode = self._saved_settings.subtitle_hide_mode
+        if mode == "always":
+            return False
+        if mode == "stopped":
+            return self._running
+        return True  # "never"
+
+    def _reapply_topmost_for_run_state(self) -> None:
+        """Re-apply always-on-top after the running state flips. Only the
+        'running' mode depends on it; 'never'/'always' are constant, so skip
+        the (heavy) overlay re-layout in those cases."""
+        if self._saved_settings.always_on_top_mode != "running":
+            return
+        self._apply_control_window_topmost()
+        win = self.subtitle_window
+        if not (win and win.winfo_exists()):
+            return
+        desired = self._effective_always_on_top()
+        # An overlay just (re)created for this state already floats correctly —
+        # only a *persisted* one (hide mode "never") needs the heavy re-layout.
+        if getattr(win, "_always_on_top", desired) == desired:
+            return
+        try:
+            win.set_always_on_top(desired)
+        except tk.TclError:
+            pass
+
+    def _apply_subtitle_hide_mode(self) -> None:
+        """Create or destroy the overlay so it matches the current hide mode +
+        running state, without disturbing an already-correct window. An active
+        'until stopped' announcement keeps the overlay alive (as on stop)."""
+        should = self._subtitle_window_should_exist()
+        exists = bool(self.subtitle_window and self.subtitle_window.winfo_exists())
+        if should and not exists:
+            self._create_subtitle_window()
+        elif not should and exists and not self._has_active_announcement():
+            self._destroy_subtitle_window()
+
     def _control_window_should_be_topmost(self) -> bool:
         """The control panel only needs to float above the subtitle overlay
-        while that overlay is open — and only if the user hasn't turned
-        always-on-top off. With no overlay open it stays in normal stacking."""
-        if not self._saved_settings.always_on_top:
+        while that overlay is open — and only if always-on-top is in effect for
+        the current run state. With no overlay open it stays in normal
+        stacking."""
+        if not self._effective_always_on_top():
             return False
         return bool(self.subtitle_window and self.subtitle_window.winfo_exists())
 
@@ -1209,19 +1267,13 @@ class AppGUI(
         # height controls they belong with (rows 5 and 6).
         self._build_typography_section(card, row=5)
 
-    def _on_subtitle_output_change(self) -> None:
-        enabled = self.subtitle_output_var.get()
-        self._saved_settings.subtitle_output_enabled = enabled
+    def _on_subtitle_hide_mode_change(self, label: str) -> None:
+        mode = self._mode_from_label(label, self._subtitle_hide_mode_labels(),
+                                     SUBTITLE_HIDE_MODES, "never")
+        self._saved_settings.subtitle_hide_mode = mode
         self._save_current_settings()
-        if not enabled:
-            self._destroy_subtitle_window()
-        elif self._running or not self._saved_settings.hide_subtitle_on_stop:
-            if not (self.subtitle_window and self.subtitle_window.winfo_exists()):
-                self._create_subtitle_window()
-        log(
-            f"Subtitle output on monitor: {'on' if enabled else 'off'}",
-            level="INFO",
-        )
+        self._apply_subtitle_hide_mode()
+        log(f"Subtitle hide mode: {mode}", level="INFO")
 
     # Conventional audio-meter zone colours (green/amber/red in both themes),
     # shared with the setup wizard's meter.
@@ -1592,18 +1644,23 @@ class AppGUI(
         # (no half-width uniform split) to keep the longest label from clipping.
         cb_row.grid_columnconfigure(0, weight=1)
 
-        # All three toggles stack in the left column: Live-Transkript on top,
-        # Originaltext below it, the master overlay toggle at the bottom.
-        self.subtitle_output_var = tk.BooleanVar(
-            value=self._saved_settings.subtitle_output_enabled
-        )
-        self.subtitle_output_cb = self._checkbox(
+        # Live-Transkript on top, Originaltext below it, then the 3-way
+        # subtitle-window visibility selector (Never / When stopped / Always
+        # hide — absorbs the old "show subtitles" master toggle).
+        hide_labels = self._subtitle_hide_mode_labels()
+        self.subtitle_hide_segment = self._build_mode_selector(
             cb_row,
-            "subtitle_output_enabled",
-            self.subtitle_output_var,
-            self._on_subtitle_output_change,
+            "hide_subtitle_label",
+            hide_labels,
+            hide_labels[SUBTITLE_HIDE_MODES.index(
+                self._saved_settings.subtitle_hide_mode
+            )],
+            self._on_subtitle_hide_mode_change,
+            inline=True,
         )
-        self.subtitle_output_cb.grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self.subtitle_hide_segment.master.grid(
+            row=2, column=0, sticky="ew", pady=(10, 0)
+        )
 
         self.bilingual_var = tk.BooleanVar(value=self._saved_settings.bilingual_mode)
         self.bilingual_cb = self._checkbox(
@@ -1797,7 +1854,7 @@ class AppGUI(
             font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
             text_color=self._colors["text"],
         )
-        other_settings_label.grid(row=6, column=0, sticky="w", padx=18, pady=(6, 6))
+        other_settings_label.grid(row=7, column=0, sticky="w", padx=18, pady=(6, 6))
         other_settings_label._text_key = "other_settings"  # type: ignore[attr-defined]
         self._section_titles.append(other_settings_label)
 
@@ -1809,7 +1866,7 @@ class AppGUI(
             self._on_show_footer_change,
         )
         self.show_footer_checkbox.grid(
-            row=7, column=0, sticky="ew", padx=16, pady=(0, 8)
+            row=8, column=0, sticky="ew", padx=16, pady=(0, 8)
         )
 
         self.noise_filter_var = tk.BooleanVar(value=self._saved_settings.noise_filter)
@@ -1819,7 +1876,7 @@ class AppGUI(
             self.noise_filter_var,
             self._on_noise_filter_change,
         )
-        self.noise_filter_cb.grid(row=8, column=0, sticky="ew", padx=16, pady=(0, 8))
+        self.noise_filter_cb.grid(row=10, column=0, sticky="ew", padx=16, pady=(0, 8))
 
         self.auto_cleanup_logs_var = tk.BooleanVar(
             value=self._saved_settings.auto_cleanup_logs
@@ -1831,7 +1888,7 @@ class AppGUI(
             self._on_auto_cleanup_logs_change,
         )
         self.auto_cleanup_logs_cb.grid(
-            row=9, column=0, sticky="ew", padx=16, pady=(0, 8)
+            row=11, column=0, sticky="ew", padx=16, pady=(0, 8)
         )
 
         self.auto_cleanup_content_var = tk.BooleanVar(
@@ -1844,21 +1901,12 @@ class AppGUI(
             self._on_auto_cleanup_content_change,
         )
         self.auto_cleanup_content_cb.grid(
-            row=10, column=0, sticky="ew", padx=16, pady=(0, 8)
+            row=12, column=0, sticky="ew", padx=16, pady=(0, 8)
         )
 
-        self.hide_subtitle_on_stop_var = tk.BooleanVar(
-            value=self._saved_settings.hide_subtitle_on_stop
-        )
-        self.hide_subtitle_on_stop_cb = self._checkbox(
-            self.advanced_frame,
-            "hide_subtitle_on_stop",
-            self.hide_subtitle_on_stop_var,
-            self._on_hide_subtitle_on_stop_change,
-        )
-        self.hide_subtitle_on_stop_cb.grid(
-            row=11, column=0, sticky="ew", padx=16, pady=(0, 8)
-        )
+        # (The subtitle-window visibility policy lives in the Subtitles card,
+        # next to the mode dropdown it governs. The window-on-top selector is
+        # placed above the "Other Settings" header, at row 6.)
 
         self.auto_start_var = tk.BooleanVar(value=self._saved_settings.auto_start)
         self.auto_start_cb = self._checkbox(
@@ -1867,7 +1915,7 @@ class AppGUI(
             self.auto_start_var,
             self._on_auto_start_change,
         )
-        self.auto_start_cb.grid(row=12, column=0, sticky="ew", padx=16, pady=(0, 8))
+        self.auto_start_cb.grid(row=13, column=0, sticky="ew", padx=16, pady=(0, 8))
 
         self.auto_stop_inactivity_var = tk.BooleanVar(
             value=self._saved_settings.auto_stop_inactivity
@@ -1879,20 +1927,21 @@ class AppGUI(
             self._on_auto_stop_inactivity_change,
         )
         self.auto_stop_inactivity_cb.grid(
-            row=13, column=0, sticky="ew", padx=16, pady=(0, 8)
+            row=9, column=0, sticky="ew", padx=16, pady=(0, 8)
         )
 
-        self.always_on_top_var = tk.BooleanVar(
-            value=self._saved_settings.always_on_top
-        )
-        self.always_on_top_cb = self._checkbox(
+        aot_labels = self._always_on_top_mode_labels()
+        self.always_on_top_segment = self._build_mode_selector(
             self.advanced_frame,
-            "always_on_top",
-            self.always_on_top_var,
-            self._on_always_on_top_change,
+            "window_on_top_label",
+            aot_labels,
+            aot_labels[ALWAYS_ON_TOP_MODES.index(
+                self._saved_settings.always_on_top_mode
+            )],
+            self._on_always_on_top_mode_change,
         )
-        self.always_on_top_cb.grid(
-            row=14, column=0, sticky="ew", padx=16, pady=(0, 12)
+        self.always_on_top_segment.master.grid(
+            row=6, column=0, sticky="ew", padx=16, pady=(2, 12)
         )
 
         self._sync_advanced_enabled_states()
@@ -1964,8 +2013,9 @@ class AppGUI(
         self.log_text.configure(state="disabled")
 
     def _subtitle_output_is_enabled(self) -> bool:
-        """Whether the audience overlay window should exist at all."""
-        return bool(getattr(self._saved_settings, "subtitle_output_enabled", True))
+        """Whether the audience overlay window may exist at all — the 'Always
+        hide' policy switches it off entirely."""
+        return self._saved_settings.subtitle_hide_mode != "always"
 
     def _create_subtitle_window(self) -> None:
         if not self._subtitle_output_is_enabled():
@@ -2001,7 +2051,7 @@ class AppGUI(
             theme_mode=getattr(
                 self._saved_settings, "subtitle_theme_mode", self._theme_mode
             ),
-            always_on_top=self._saved_settings.always_on_top,
+            always_on_top=self._effective_always_on_top(),
             on_stop=self._request_stop_from_subtitle,
         )
         self.height_slider.set(self._saved_settings.window_height_percent)
@@ -2034,7 +2084,7 @@ class AppGUI(
         CustomDropdown._install_global_handler(self)
         self._load_api_key_on_startup()
         self._update_speed_button_states()
-        if self._saved_settings.hide_subtitle_on_stop:
+        if not self._subtitle_window_should_exist():
             self.after(150, self._destroy_subtitle_window)
         self._start_log_polling()
         self.translation_poll_job = self.after(50, self._process_translation_queue)
@@ -2273,12 +2323,14 @@ class AppGUI(
         self._start_log_polling()
         self._schedule_inactivity_check()
         self._schedule_cost_flush()
-        if self._saved_settings.hide_subtitle_on_stop and (
+        if self._subtitle_window_should_exist() and (
             not self.subtitle_window or not self.subtitle_window.winfo_exists()
         ):
             self._create_subtitle_window()
         if self.subtitle_window and self.subtitle_window.winfo_exists():
             self.subtitle_window.set_stopped_hint(False)
+        # Running now: 'While running' always-on-top takes effect.
+        self._reapply_topmost_for_run_state()
         log(self.gui_texts.get("log_started", "Started."), level="INFO")
 
     def _request_stop_from_subtitle(self) -> None:
@@ -2358,15 +2410,17 @@ class AppGUI(
             self._stop_announcement()
         # Keep the overlay alive if an 'until stopped' announcement is showing —
         # it must survive a translation stop (when the toggle above is off).
-        # Stopping the announcement itself then closes the overlay if
-        # hide-on-stop is set.
+        # Stopping the announcement itself then closes the overlay if the
+        # hide policy hides it while stopped.
         if (
-            self._saved_settings.hide_subtitle_on_stop
+            not self._subtitle_window_should_exist()
             and not self._has_active_announcement()
         ):
             self._destroy_subtitle_window()
         elif self.subtitle_window and self.subtitle_window.winfo_exists():
             self.subtitle_window.set_stopped_hint(True)
+        # Stopped now: 'While running' always-on-top drops back to normal.
+        self._reapply_topmost_for_run_state()
         log(self.gui_texts.get("log_stopped", "Stopped."), level="INFO")
 
     # ── Inactivity auto-stop ────────────────────────────────────────────────
@@ -3150,31 +3204,100 @@ class AppGUI(
         # while running reconnects the stream (no-op in segmented mode).
         self._restart_pipeline_for_live_change()
 
-    def _on_hide_subtitle_on_stop_change(self) -> None:
-        enabled = self.hide_subtitle_on_stop_var.get()
-        self._saved_settings.hide_subtitle_on_stop = enabled
-        log(f"Hide subtitle on stop: {'on' if enabled else 'off'}", level="INFO")
-        self._save_current_settings()
-        if enabled and not self._running:
-            self._destroy_subtitle_window()
-        elif (
-            not enabled
-            and not self._running
-            and (not self.subtitle_window or not self.subtitle_window.winfo_exists())
-        ):
-            self._create_subtitle_window()
-
-    def _on_always_on_top_change(self) -> None:
-        enabled = self.always_on_top_var.get()
-        self._saved_settings.always_on_top = enabled
+    def _on_always_on_top_mode_change(self, label: str) -> None:
+        mode = self._mode_from_label(label, self._always_on_top_mode_labels(),
+                                     ALWAYS_ON_TOP_MODES, "running")
+        self._saved_settings.always_on_top_mode = mode
         # Applies live to both windows: the overlay drops/regains topmost, and
         # the control panel re-evaluates (it stays topmost only while an
-        # overlay is open and this setting is on).
+        # overlay is open and this setting is in effect for the run state).
         if self.subtitle_window and self.subtitle_window.winfo_exists():
-            self.subtitle_window.set_always_on_top(enabled)
+            self.subtitle_window.set_always_on_top(self._effective_always_on_top())
         self._apply_control_window_topmost()
-        log(f"Always on top: {'on' if enabled else 'off'}", level="INFO")
+        log(f"Always on top mode: {mode}", level="INFO")
         self._save_current_settings()
+
+    # ── 3-way mode selectors (label <-> id mapping + live re-labelling) ──────
+
+    def _build_mode_selector(
+        self, parent, title_key, labels, current_label, command, inline=False
+    ) -> ctk.CTkSegmentedButton:
+        """A bold title + a 3-segment button (Light/Dark theme-row style).
+
+        ``inline`` puts the title beside the segment on one row, keeping the
+        control as short as the checkbox it replaced — used for the
+        always-visible subtitle selector so it doesn't lengthen the card and
+        break the 2-column bottom alignment. Otherwise the segment stacks
+        below the title. Container gridded by the caller; the segment is
+        returned and registered for theme re-colouring."""
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        title = self._label(frame, title_key, size=14, weight="bold")
+        seg = ctk.CTkSegmentedButton(
+            frame,
+            values=labels,
+            command=command,
+            height=36,
+            corner_radius=12,
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            fg_color=self._colors["button"],
+            selected_color=self._colors["accent"],
+            selected_hover_color=self._colors["accent_hover"],
+            unselected_color=self._colors["button"],
+            unselected_hover_color=self._colors["button_hover"],
+            text_color=self._colors["text"],
+        )
+        seg.set(current_label)
+        if inline:
+            frame.grid_columnconfigure(0, weight=0)
+            frame.grid_columnconfigure(1, weight=1)
+            title.grid(row=0, column=0, sticky="w", padx=(2, 12))
+            seg.grid(row=0, column=1, sticky="ew")
+        else:
+            frame.grid_columnconfigure(0, weight=1)
+            title.grid(row=0, column=0, sticky="w", padx=2, pady=(0, 4))
+            seg.grid(row=1, column=0, sticky="ew")
+        self._segments.append(seg)
+        return seg
+
+    @staticmethod
+    def _mode_from_label(
+        label: str, labels: list[str], ids: tuple[str, ...], default: str
+    ) -> str:
+        return ids[labels.index(label)] if label in labels else default
+
+    def _always_on_top_mode_labels(self) -> list[str]:
+        """Localized segment labels, in ALWAYS_ON_TOP_MODES order."""
+        return [
+            self.gui_texts.get("mode_never", "Never"),
+            self.gui_texts.get("mode_when_running", "When running"),
+            self.gui_texts.get("mode_always", "Always"),
+        ]
+
+    def _subtitle_hide_mode_labels(self) -> list[str]:
+        """Localized segment labels, in SUBTITLE_HIDE_MODES order."""
+        return [
+            self.gui_texts.get("mode_never", "Never"),
+            self.gui_texts.get("mode_when_stopped", "When stopped"),
+            self.gui_texts.get("mode_always", "Always"),
+        ]
+
+    def _refresh_mode_segments(self) -> None:
+        """Re-apply localized labels + current selection to both selectors
+        (called on a GUI-language switch)."""
+        aot_labels = self._always_on_top_mode_labels()
+        self.always_on_top_segment.configure(values=aot_labels)
+        self.always_on_top_segment.set(
+            aot_labels[ALWAYS_ON_TOP_MODES.index(
+                self._saved_settings.always_on_top_mode
+            )]
+        )
+        hide_labels = self._subtitle_hide_mode_labels()
+        self.subtitle_hide_segment.configure(values=hide_labels)
+        self.subtitle_hide_segment.set(
+            hide_labels[SUBTITLE_HIDE_MODES.index(
+                self._saved_settings.subtitle_hide_mode
+            )]
+        )
 
     def _set_advanced_visible(self, visible: bool) -> None:
         """Show/hide the Advanced body without re-running the card layout.
@@ -3527,6 +3650,15 @@ class AppGUI(
                 border_color=self._colors["entry_border"],
                 text_color=self._colors["text"],
             )
+        for seg in self._segments:
+            seg.configure(
+                fg_color=self._colors["button"],
+                selected_color=self._colors["accent"],
+                selected_hover_color=self._colors["accent_hover"],
+                unselected_color=self._colors["button"],
+                unselected_hover_color=self._colors["button_hover"],
+                text_color=self._colors["text"],
+            )
         if hasattr(self, "input_level_bar"):
             self.input_level_bar.set_palette(
                 track_color=self._colors["panel_soft"],
@@ -3691,6 +3823,7 @@ class AppGUI(
             key = getattr(cb, "_text_key", None)
             if key:
                 cb.configure(text=self.gui_texts.get(key, key))
+        self._refresh_mode_segments()
         # The "Use Default" checkbox width changed with the language, so the
         # provider dropdowns must be re-padded to stay aligned with it.
         self._align_provider_combo_widths()

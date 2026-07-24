@@ -342,13 +342,22 @@ def _load_subtitle_text_color(value: object) -> str:
     return ""
 
 
+# Valid values (and dropdown order) for the two window-behaviour selectors.
+SUBTITLE_HIDE_MODES = ("never", "stopped", "always")
+ALWAYS_ON_TOP_MODES = ("never", "running", "always")
+
+
 @dataclass
 class Settings:
     # Note: openai_api_key is stored securely via keyring, not in this dataclass
     monitor_index: int = 1
-    # False keeps transcription/translation running without ever creating the
-    # audience overlay window. monitor_index still remembers the last monitor.
-    subtitle_output_enabled: bool = True
+    # Subtitle-overlay visibility policy (absorbs the old
+    # subtitle_output_enabled master toggle + hide_subtitle_on_stop):
+    #   "never"   – always show the overlay (running and stopped),
+    #   "stopped" – show only while a session is running,
+    #   "always"  – never create the overlay at all (transcription/translation
+    #               still run). monitor_index still remembers the last monitor.
+    subtitle_hide_mode: str = "never"
     input_device_name: str | None = None
     font_size_base: int = 40
     # Independent divisor for the original-text / live-transcript lines. The
@@ -389,11 +398,12 @@ class Settings:
     # professional translator for non-religious content (safety-locked in
     # the GUI so it can't be switched off accidentally).
     islamic_mode: bool = True
-    hide_subtitle_on_stop: bool = False  # Hide subtitle window when stopped
-    # Keep the subtitle overlay (and, while it is open, the control panel)
-    # above other windows. Off = neither window is ever topmost; the control
-    # panel is also never topmost while no subtitle overlay is open.
-    always_on_top: bool = True
+    # When the control panel + subtitle overlay float above other windows:
+    #   "never"   – never topmost,
+    #   "running" – only while a session is running (the default),
+    #   "always"  – topmost whenever the overlay is open (running or stopped).
+    # The control panel is topmost only while a subtitle overlay is open.
+    always_on_top_mode: str = "running"
     # Voice-activity noise filter (audio/vad.py): skip/zero-fill non-speech
     # audio (static, hum) that the loudness-based silence gate lets through.
     noise_filter: bool = True
@@ -548,13 +558,33 @@ def load_settings(use_cache: bool = True) -> Settings:
         )
         if not isinstance(stop_announcement_on_live_stop, bool):
             stop_announcement_on_live_stop = True
-        subtitle_output_enabled = data.get("subtitle_output_enabled", True)
-        if not isinstance(subtitle_output_enabled, bool):
-            subtitle_output_enabled = True
+        # Subtitle-overlay policy: prefer the new 3-way setting, else migrate
+        # the two legacy booleans (output-off => "always" hide; hide-on-stop
+        # => "stopped"; otherwise "never").
+        raw_hide_mode = data.get("subtitle_hide_mode")
+        if raw_hide_mode in SUBTITLE_HIDE_MODES:
+            subtitle_hide_mode = raw_hide_mode
+        elif data.get("subtitle_output_enabled", True) is False:
+            subtitle_hide_mode = "always"
+        elif data.get("hide_subtitle_on_stop", False) is True:
+            subtitle_hide_mode = "stopped"
+        else:
+            subtitle_hide_mode = "never"
+        # Always-on-top policy: prefer the new 3-way setting, else migrate the
+        # legacy boolean. An explicit False stays "never"; the legacy default
+        # True adopts the new "running" default (on-top-while-stopped had no
+        # real use — the whole point of this control was to drop it).
+        raw_aot_mode = data.get("always_on_top_mode")
+        if raw_aot_mode in ALWAYS_ON_TOP_MODES:
+            always_on_top_mode = raw_aot_mode
+        elif data.get("always_on_top", True) is False:
+            always_on_top_mode = "never"
+        else:
+            always_on_top_mode = "running"
         font_size_base = data.get("font_size_base", 40)
         _cached_settings = Settings(
             monitor_index=data.get("monitor_index", 1),
-            subtitle_output_enabled=subtitle_output_enabled,
+            subtitle_hide_mode=subtitle_hide_mode,
             input_device_name=data.get("input_device_name"),
             font_size_base=font_size_base,
             source_font_size_base=_load_source_font_size_base(
@@ -595,8 +625,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             bilingual_mode=data.get("bilingual_mode", True),
             show_interim_transcript=data.get("show_interim_transcript", False),
             islamic_mode=data.get("islamic_mode", True),
-            hide_subtitle_on_stop=data.get("hide_subtitle_on_stop", False),
-            always_on_top=data.get("always_on_top", True),
+            always_on_top_mode=always_on_top_mode,
             noise_filter=data.get("noise_filter", True),
             adaptive_subtitle_catchup=data.get("adaptive_subtitle_catchup", True),
             # Migrate the old single flag: an existing user who had cleanup on
@@ -642,7 +671,7 @@ def save_settings(settings: Settings) -> None:
     # Note: API key is stored securely via keyring, not in this file
     payload = {
         "monitor_index": settings.monitor_index,
-        "subtitle_output_enabled": settings.subtitle_output_enabled,
+        "subtitle_hide_mode": settings.subtitle_hide_mode,
         "input_device_name": settings.input_device_name,
         "font_size_base": settings.font_size_base,
         "source_font_size_base": settings.source_font_size_base,
@@ -667,8 +696,7 @@ def save_settings(settings: Settings) -> None:
         "bilingual_mode": settings.bilingual_mode,
         "show_interim_transcript": settings.show_interim_transcript,
         "islamic_mode": settings.islamic_mode,
-        "hide_subtitle_on_stop": settings.hide_subtitle_on_stop,
-        "always_on_top": settings.always_on_top,
+        "always_on_top_mode": settings.always_on_top_mode,
         "noise_filter": settings.noise_filter,
         "adaptive_subtitle_catchup": settings.adaptive_subtitle_catchup,
         "auto_cleanup_logs": settings.auto_cleanup_logs,
