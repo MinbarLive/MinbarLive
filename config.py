@@ -270,10 +270,19 @@ STREAMING_RECONNECT_MAX_SECONDS = 30.0
 # producing transcripts (observed live: 15-26s of total silence — no interim,
 # no final, no error callback — during continuous speech the reconnect logic
 # above never sees). Unlike that reconnect-with-backoff, a stall reconnect
-# never shows an audience-facing error message (a genuine long pause in
-# speech looks identical from here, and reconnecting during real silence has
-# no visible cost) and never backs off — each check is independent.
+# never shows an audience-facing error message and never backs off — each
+# check is independent. Two guards keep a real pause in speech from
+# triggering it (observed live 2026-07-24: the unconditional version
+# reconnected during every quiet stretch >15s, and audio captured during the
+# swap is dropped, so speech resuming into that window lost its first words):
+# the watchdog arms only after MIN_SPEECH seconds of speech-classified audio
+# were fed since the last transcript, and once armed it waits up to
+# GRACE_SECONDS for a transcript (proof of life — cancels the swap) or a
+# noise-gate-closed moment (nothing transcribable flowing — swap loses
+# nothing) before swapping mid-speech.
 STREAMING_STALL_TIMEOUT_SECONDS = 15.0
+STREAMING_STALL_MIN_SPEECH_SECONDS = 3.0
+STREAMING_STALL_GRACE_SECONDS = 5.0
 STREAMING_ENDPOINTING_MS = 300  # Deepgram endpointing sensitivity (silence -> final)
 STREAMING_UTTERANCE_END_MS = 1000  # Deepgram UtteranceEnd silence threshold (ms)
 # Gemini Live VAD: silence before the turn (utterance) is considered ended.

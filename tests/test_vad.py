@@ -224,6 +224,17 @@ class TestStreamNoiseGate:
         fake_vad.speech = True
         assert gate.process(self.CHUNK) == self.CHUNK
 
+    def test_is_zeroing_tracks_gate_state(self, fake_vad):
+        """The stall watchdog reads is_zeroing to pick a safe swap moment."""
+        gate = StreamNoiseGate(FS)
+        assert gate.is_zeroing is False  # starts open
+        fake_vad.speech = False
+        self._run_until_zeroed(gate)
+        assert gate.is_zeroing is True
+        fake_vad.speech = True
+        gate.process(self.CHUNK)
+        assert gate.is_zeroing is False
+
     def test_passthrough_when_vad_unavailable(self, monkeypatch):
         monkeypatch.setattr(vad_mod, "_new_vad", lambda: None)
         gate = StreamNoiseGate(FS)

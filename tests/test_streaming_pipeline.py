@@ -992,5 +992,88 @@ class TestStreamingConnectionRaces:
         assert _wait_for(lambda: fresh.fed == [b"good-chunk"])
 
 
+class TestStallWatchdog:
+    """The silent stall reconnect must only fire for a genuinely stuck
+    session: armed by fed speech, cancelled by proof of life, and timed to a
+    noise-gate pause. Observed live 2026-07-24: the unconditional version
+    reconnected during every >15s quiet stretch, and because the feeder drops
+    audio while the handle is down, speech resuming into the swap window lost
+    its first words."""
+
+    def _start(self, streaming_env, monkeypatch, *, timeout=0.3, grace=0.4):
+        monkeypatch.setattr(
+            app_controller, "STREAMING_STALL_TIMEOUT_SECONDS", timeout
+        )
+        monkeypatch.setattr(
+            app_controller, "STREAMING_STALL_MIN_SPEECH_SECONDS", 1.0
+        )
+        monkeypatch.setattr(app_controller, "STREAMING_STALL_GRACE_SECONDS", grace)
+        controller = streaming_env.controller
+        controller.start(input_device=0)
+        assert streaming_env.provider.open_count == 1
+        return controller, streaming_env.provider
+
+    def test_silence_only_never_reconnects(self, streaming_env, monkeypatch):
+        """No transcripts because nothing transcribable was fed — a healthy
+        connection is just as silent as a stuck one. The old watchdog
+        reconnected here on every check cycle."""
+        controller, provider = self._start(streaming_env, monkeypatch)
+        controller._speech_fed_since_activity = 0.0
+        controller._last_pipeline_activity = time.time() - 60  # way past timeout
+        time.sleep(0.8)  # several watchdog polls at the shrunk timeout
+        assert provider.open_count == 1
+
+    def test_speech_with_no_transcripts_reconnects(self, streaming_env, monkeypatch):
+        """The original stuck-session case stays covered: speech was fed, no
+        transcript arrived, the gate reports a pause — swap immediately."""
+        controller, provider = self._start(streaming_env, monkeypatch)
+        controller._noise_gate = SimpleNamespace(is_zeroing=True)
+        controller._speech_fed_since_activity = 5.0
+        controller._last_pipeline_activity = time.time() - 60
+        assert _wait_for(lambda: provider.open_count == 2)
+        # Re-armed fresh: the counted speech died with the old connection.
+        assert controller._speech_fed_since_activity == 0.0
+
+    def test_transcript_during_grace_cancels_the_swap(
+        self, streaming_env, monkeypatch
+    ):
+        """Speech resumed just before the check: the engine is alive and its
+        transcript merely in flight. The grace wait must catch it and keep
+        the connection (the live-observed harm case)."""
+        controller, provider = self._start(streaming_env, monkeypatch, grace=1.2)
+        controller._noise_gate = SimpleNamespace(is_zeroing=False)  # speech flowing
+        controller._speech_fed_since_activity = 5.0
+        controller._last_pipeline_activity = time.time() - 60
+        time.sleep(0.3)  # let the watchdog arm and enter the grace wait
+        provider.on_transcript("proof of life", False)  # interim
+        time.sleep(1.8)  # past where the swap would have happened
+        assert provider.open_count == 1
+
+    def test_grace_expiry_still_recovers_a_stuck_session(
+        self, streaming_env, monkeypatch
+    ):
+        """Continuous speech with zero transcripts is the original bug — the
+        gate never closes, so the swap must proceed once the grace runs out."""
+        controller, provider = self._start(streaming_env, monkeypatch, grace=0.3)
+        controller._noise_gate = SimpleNamespace(is_zeroing=False)
+        controller._speech_fed_since_activity = 5.0
+        controller._last_pipeline_activity = time.time() - 60
+        assert _wait_for(lambda: provider.open_count == 2, timeout=3.0)
+
+    def test_feeder_accumulates_speech_seconds(self, streaming_env, monkeypatch):
+        """The feeder converts fed bytes to seconds at the capture rate, and a
+        transcript resets the count."""
+        # Production timeout: the watchdog must not fire mid-test.
+        controller, provider = self._start(streaming_env, monkeypatch, timeout=15.0)
+        assert controller._speech_fed_since_activity == 0.0
+        rate = controller._streaming_capture_rate
+        controller._streaming_feed_queue.put(b"\x00\x00" * rate)  # 1 s of int16
+        assert _wait_for(
+            lambda: abs(controller._speech_fed_since_activity - 1.0) < 1e-6
+        )
+        provider.on_transcript("text arrived", True)
+        assert controller._speech_fed_since_activity == 0.0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
