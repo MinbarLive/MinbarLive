@@ -135,7 +135,9 @@ def show_message(
     dlg.resizable(False, False)
     dlg.configure(fg_color=c["app_bg"])
     dlg.transient(root)
-    dlg.grab_set()
+    # grab_set() is deferred until the window is viewable (after the reveal
+    # below): on X11 grabbing an unmapped window raises "grab failed: window
+    # not viewable" and crashes the click handler.
     # Build fully transparent, then reveal once themed and positioned. Without
     # this a fresh CTkToplevel paints as a black/white rectangle before its
     # card is drawn — on Linux/X11 that unpainted frame was visible (reported:
@@ -296,6 +298,16 @@ def show_message(
         dlg.attributes("-alpha", 1.0)
     except tk.TclError:
         pass
+    # Grab only once the window is on screen (see the note above). Never let a
+    # grab failure crash the caller — a non-grabbed dialog still works.
+    try:
+        dlg.wait_visibility()
+    except tk.TclError:
+        pass
+    try:
+        dlg.grab_set()
+    except tk.TclError:
+        pass
 
     dlg.wait_window()
     return result["ok"]
@@ -351,7 +363,8 @@ def prompt_for_api_key(
     dialog.resizable(False, False)
     dialog.configure(fg_color=c["app_bg"])
     dialog.transient(root)
-    dialog.grab_set()
+    # grab_set() is deferred until the window is viewable (after the reveal) —
+    # on X11 grabbing an unmapped window crashes with "window not viewable".
     # Hide the unpainted first frame (black/white rectangle) until the card is
     # built and the window positioned — revealed at the end. See show_message.
     try:
@@ -582,6 +595,16 @@ def prompt_for_api_key(
     dialog.lift()
     try:
         dialog.attributes("-alpha", 1.0)
+    except tk.TclError:
+        pass
+    # Grab only once the window is on screen (see the note above); a grab
+    # failure must never crash the caller.
+    try:
+        dialog.wait_visibility()
+    except tk.TclError:
+        pass
+    try:
+        dialog.grab_set()
     except tk.TclError:
         pass
 
