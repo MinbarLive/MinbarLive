@@ -192,6 +192,10 @@ class AppGUI(
     # Chrome around a segment label (logical units) — the button's own padding
     # plus the gap to its neighbour.
     _SEG_LABEL_PADDING = 26
+    # True between "window built" and "window painted and faded in" (see
+    # _reveal_control_window). A class default so any handler that runs before
+    # _setup_window has set it treats the window as already visible.
+    _reveal_pending = False
 
     def __init__(self, controller):
         self._saved_settings = load_settings()
@@ -405,9 +409,26 @@ class AppGUI(
         self.minsize(_min_w, _min_h)
         self.configure(fg_color=self._colors["app_bg"])
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        # Invisible until the window has painted. CustomTkinter keeps the root
+        # withdrawn during the build and maps it inside mainloop(), but the
+        # widgets only draw on the <Configure> events that follow mapping — so
+        # the panel used to appear as an empty frame, then a header, then the
+        # cards. Alpha (not withdraw): the window must map for that drawing to
+        # happen at all. Where per-window alpha is unavailable (X11 without a
+        # compositor) this is a no-op and the old behaviour remains.
+        self._reveal_pending = True
+        try:
+            self.attributes("-alpha", 0.0)
+        except tk.TclError:
+            self._reveal_pending = False
         self.after_idle(self._restore_control_window_surface)
         self.bind("<FocusIn>", self._schedule_control_window_surface_restore)
         self.bind("<Map>", self._schedule_control_window_surface_restore)
+        # The settle window has to start when the window is actually mapped
+        # (an after() scheduled at the end of the build would already be overdue
+        # by then — CTk's mainloop() spends ~300 ms laying the panel out before
+        # it deiconifies).
+        self.bind("<Map>", self._reveal_control_window, add="+")
         # <FocusIn> only reaches the toplevel itself when no child widget holds
         # the Tk focus; <Activate> fires on the window whenever the OS makes it
         # the active window, which is what the restore actually cares about.
@@ -449,6 +470,30 @@ class AppGUI(
             120, self._restore_control_window_surface
         )
 
+    def _reveal_control_window(self, _event: object | None = None) -> None:
+        """Fade the control panel in once it has painted (first <Map> only).
+
+        See the alpha note in _setup_window and _reveal_when_drawn(): the same
+        post-mapping drawing that made secondary windows fill in visibly
+        applies to the root, so the settle window starts here."""
+        if not self._reveal_pending:
+            return
+        if _event is not None and str(getattr(_event, "widget", "")) != str(self):
+            return
+
+        def _show() -> None:
+            self._reveal_pending = False
+            try:
+                self.attributes("-alpha", 1.0)
+            except tk.TclError:
+                pass
+
+        try:
+            self.update_idletasks()
+            self.after(self._REVEAL_SETTLE_MS, _show)
+        except tk.TclError:
+            self._reveal_pending = False
+
     def _restore_control_window_surface(self, _event: object | None = None) -> None:
         """Keep the control panel opaque and above the subtitle overlay."""
         self._surface_restore_job = None
@@ -456,10 +501,13 @@ class AppGUI(
             self.wm_attributes("-transparentcolor", "")
         except tk.TclError:
             pass
-        try:
-            self.attributes("-alpha", 1.0)
-        except tk.TclError:
-            pass
+        # Not while the first reveal is still pending — this runs from an
+        # after_idle() during startup and would show the unpainted window.
+        if not self._reveal_pending:
+            try:
+                self.attributes("-alpha", 1.0)
+            except tk.TclError:
+                pass
         try:
             self.attributes("-topmost", self._control_window_should_be_topmost())
             self.lift()

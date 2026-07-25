@@ -110,6 +110,13 @@ class HistoryViewMixin:
 
         win = ctk.CTkToplevel(self)
         win.configure(fg_color=self._colors["app_bg"])
+        # This window used to build in plain sight — 400+ widgets appearing one
+        # after the other. Transparent while building, revealed once painted
+        # (alpha, not withdraw: see the note in gui/settings_view.py).
+        try:
+            win.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
 
         if self._use_integrated_windows():
             self._modal_host.present(
@@ -327,6 +334,7 @@ class HistoryViewMixin:
         win.after(0, self._layout_history_responsive)
 
         self._render_history_tab()
+        self._reveal_when_drawn(win)
 
     # ── responsive layout ───────────────────────────────────────────────────
 
@@ -471,6 +479,14 @@ class HistoryViewMixin:
             )
         for child in self._history_list.winfo_children():
             child.destroy()
+        # Rows go into an unmanaged body frame that is attached once at the end
+        # of this method: gridded straight into the scrollable list, every row
+        # made its scrollbar flush the pending layout (CTkScrollbar._draw ends
+        # with update_idletasks()), so a long list built visibly, row by row.
+        self._history_list_body = ctk.CTkFrame(
+            self._history_list, fg_color="transparent"
+        )
+        self._history_list_body.grid_columnconfigure(0, weight=1)
         # The SRT|TXT toggle is a batch-only affordance; hide it here and let
         # _show_batch_run bring it back when a multi-format run is selected.
         self._history_format_bar.grid_remove()
@@ -495,6 +511,9 @@ class HistoryViewMixin:
             self._close_summary_window()
             self._render_log_list()
 
+        # All rows exist → show them in one layout pass.
+        self._history_list_body.grid(row=0, column=0, sticky="ew")
+
     @staticmethod
     def _ellipsize(text: str, limit: int = 40) -> str:
         """Middle-ellipsis so a long filename keeps its start AND its extension."""
@@ -512,7 +531,7 @@ class HistoryViewMixin:
         short/long title can never be clipped against the subtitle (the bug the
         single-button rows hit at fractional DPI)."""
         frame = ctk.CTkFrame(
-            self._history_list, fg_color=self._colors["button"], corner_radius=14
+            self._history_list_body, fg_color=self._colors["button"], corner_radius=14
         )
         frame.grid(
             row=index, column=0, sticky="ew", padx=10,

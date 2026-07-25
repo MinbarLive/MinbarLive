@@ -157,10 +157,7 @@ class BatchViewMixin:
         self._batch_win = win
         self._build_batch_widgets(build_parent)
         self._resize_batch_window(recenter=True)
-        try:
-            win.attributes("-alpha", 1.0)
-        except tk.TclError:
-            pass
+        self._reveal_when_drawn(win)
 
     def _resize_batch_window(self, recenter: bool) -> None:
         """Size the window to the content's natural height (varies with GUI
@@ -203,7 +200,10 @@ class BatchViewMixin:
             border_width=2,
             corner_radius=24,
         )
-        card.pack(fill="both", expand=True, padx=16, pady=16)
+        # Packed at the end of this method, not here: while the card is not
+        # managed, filling it changes no scroll region, so the integrated
+        # panel's scrollbar does not flush the pending layout per widget
+        # (CTkScrollbar._draw ends with update_idletasks()).
         card.grid_columnconfigure(0, weight=1, uniform="batch_actions")
         card.grid_columnconfigure(1, weight=1, uniform="batch_actions")
 
@@ -393,6 +393,10 @@ class BatchViewMixin:
         self.batch_open_folder_btn.grid(
             row=6, column=1, sticky="ew", padx=(6, 18), pady=(2, 18)
         )
+
+        # Card is complete → attach it (one layout pass). _resize_batch_window
+        # measures the content right after this, so it must be managed by now.
+        card.pack(fill="both", expand=True, padx=16, pady=16)
 
     def _build_batch_options(self, card: ctk.CTkBaseClass) -> None:
         """Per-run language, provider and model dropdowns. The batch job is

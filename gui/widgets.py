@@ -92,6 +92,49 @@ class WidgetFactoryMixin:
             "entry_border": "#334155",
         }
 
+    # How long a fully built window stays transparent before it is revealed.
+    # CTk widgets do not paint at construction: each one redraws when the
+    # <Configure> event that follows mapping reaches it, and those events are
+    # only delivered once the event loop runs again. A window revealed on the
+    # last line of its build therefore appears EMPTY and fills in over the
+    # next ~0.6 s (measured: 551 widgets in the settings window, ~150 redraws
+    # landing after the reveal) — which is what "you can watch the window
+    # build itself" was. A beat back in the event loop lets that drawing
+    # happen while the window is still invisible.
+    #
+    # 250 ms is measured, not guessed: redraws still landing after the reveal
+    # were 38-39 at 40 ms and 21-32 at 120 ms, and exactly 0 at 250 ms — in
+    # BOTH window styles. The tail comes from the ``after(200)`` iconbitmap
+    # call every CTkToplevel schedules for itself (plus, in windowed mode, our
+    # own icon + dark-titlebar job behind it): those cannot run while the build
+    # blocks the loop, so they land right after it and repaint the window.
+    # A window therefore appears ~0.25 s later than it could, but it appears
+    # finished — and sooner than the old path finished filling in.
+    _REVEAL_SETTLE_MS = 250
+
+    def _reveal_when_drawn(self, win: tk.Misc) -> None:
+        """Fade a finished window in once its widgets have actually painted.
+
+        Deliberately not ``win.update()``: that would flush the same drawing
+        synchronously, but it also processes queued *user input* in the middle
+        of an open (a second click on the button that opened the window, a
+        click on Start), i.e. reentrancy in the worst place.
+        ``update_idletasks()`` alone cannot do it — the pending work is
+        events, not idle tasks (measured: 0 redraws, one pass)."""
+
+        def _show() -> None:
+            try:
+                if win.winfo_exists():
+                    win.attributes("-alpha", 1.0)
+            except tk.TclError:
+                pass
+
+        try:
+            win.update_idletasks()  # geometry now, so only drawing is left
+            win.after(self._REVEAL_SETTLE_MS, _show)
+        except tk.TclError:
+            pass
+
     def _integrated_windows_supported(self) -> bool:
         """Whether this platform can render integrated windows at all.
 

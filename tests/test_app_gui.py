@@ -1549,6 +1549,73 @@ class TestBrandWordmark:
         )
 
 
+class TestPaintBeforeReveal:
+    """Windows must be invisible until they have painted.
+
+    CTk widgets draw on the <Configure> events that follow mapping, not at
+    construction, so a window shown at the end of its build appears empty and
+    fills in over ~0.6 s — the "you can watch it build itself" effect. Every
+    window therefore builds transparent and fades in one settle beat later.
+    """
+
+    @staticmethod
+    def _alpha(win) -> float:
+        return float(win.attributes("-alpha"))
+
+    def test_control_panel_is_built_transparent(self, make_gui):
+        gui, _c, _s = make_gui()
+        assert gui._reveal_pending is True
+        assert self._alpha(gui) == 0.0
+
+    def test_surface_restore_does_not_show_an_unpainted_window(self, make_gui):
+        """_restore_control_window_surface runs from an after_idle() during
+        start-up; forcing the window opaque there would undo the guard."""
+        gui, _c, _s = make_gui()
+        gui._restore_control_window_surface()
+        assert self._alpha(gui) == 0.0
+
+    def test_surface_restore_still_repairs_a_revealed_window(self, make_gui):
+        gui, _c, _s = make_gui()
+        gui._reveal_pending = False
+        gui.attributes("-alpha", 0.3)  # e.g. left behind by the overlay
+        gui._restore_control_window_surface()
+        assert self._alpha(gui) == 1.0
+
+    def test_map_of_a_child_widget_does_not_reveal(self, make_gui):
+        """<Map> reaches the toplevel's bindtag for every descendant, so the
+        first dropdown popup would otherwise reveal the unpainted panel."""
+        gui, _c, _s = make_gui()
+        scheduled = []
+        gui.after = lambda ms, fn=None, *a: scheduled.append((ms, fn))
+
+        class _Event:
+            widget = gui.sidebar
+
+        gui._reveal_control_window(_Event())
+        assert scheduled == []
+        assert gui._reveal_pending is True
+
+    def test_reveal_fades_in_after_the_settle_beat(self, make_gui):
+        gui, _c, _s = make_gui()
+        scheduled = []
+        gui.after = lambda ms, fn=None, *a: scheduled.append((ms, fn))
+
+        gui._reveal_control_window()
+        assert [ms for ms, _fn in scheduled] == [gui._REVEAL_SETTLE_MS]
+        assert self._alpha(gui) == 0.0  # still hidden until the beat elapses
+
+        scheduled[0][1]()  # the timer fires
+        assert gui._reveal_pending is False
+        assert self._alpha(gui) == 1.0
+
+    def test_reveal_happens_only_once(self, make_gui):
+        gui, _c, _s = make_gui()
+        gui._reveal_pending = False
+        scheduled = []
+        gui.after = lambda ms, fn=None, *a: scheduled.append((ms, fn))
+        gui._reveal_control_window()
+        assert scheduled == []
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
