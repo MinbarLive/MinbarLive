@@ -206,6 +206,7 @@
   "window_style_label": "Stili i dritareve",
   "window_style_integrated": "I integruar",
   "window_style_windowed": "Dritare",
+  "window_style_windows_only": "Dritaret brenda aplikacionit për momentin janë të disponueshme vetëm në Windows — sistemet e tjera përdorin gjithmonë dritare të veçanta.",
   "input_level": "Niveli i hyrjes",
   "input_level_no_signal": "Pa sinjal",
   "input_level_test": "Testo mikrofonin",

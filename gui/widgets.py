@@ -10,6 +10,7 @@ themed-widget registries (``_cards``, ``_labels``, ``_buttons``,
 """
 
 import os
+import sys
 import tkinter as tk
 from collections.abc import Callable
 from typing import Any
@@ -85,9 +86,17 @@ class WidgetFactoryMixin:
     def _use_integrated_windows(self) -> bool:
         """Whether secondary windows open in-app (Discord-style panels over a
         dim overlay) instead of as separate OS windows — the window_style
-        setting, applied per open via gui/modal_host.py."""
+        setting, applied per open via gui/modal_host.py.
+
+        Windows-only for now: on X11 without a compositor the dim overlay's
+        per-window alpha is ignored (solid black) and borderless panels do
+        not reliably stack above it, so the whole window goes black with no
+        popup. Linux/macOS always get classic separate windows until that is
+        solved (the Fenster-Stil control is disabled off Windows)."""
         return (
-            getattr(self._saved_settings, "window_style", "windowed") == "integrated"
+            sys.platform == "win32"
+            and getattr(self._saved_settings, "window_style", "windowed")
+            == "integrated"
         )
 
     def _set_toplevel_icon(self, win: ctk.CTkToplevel) -> None:

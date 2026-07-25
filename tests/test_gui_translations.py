@@ -148,6 +148,7 @@ WIZARD_KEYS = [
     "window_style_label",
     "window_style_integrated",
     "window_style_windowed",
+    "window_style_windows_only",
     # Settings window sections
     "settings_general",
     "settings_appearance",

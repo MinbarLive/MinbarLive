@@ -217,6 +217,7 @@
   "window_style_label": "Fenster-Stil",
   "window_style_integrated": "Integriert",
   "window_style_windowed": "Fenster",
+  "window_style_windows_only": "In-App-Fenster sind vorerst nur unter Windows verfügbar — andere Systeme nutzen immer separate Fenster.",
   "input_level": "Eingangspegel",
   "input_level_no_signal": "Kein Signal",
   "input_level_test": "Mikro testen",

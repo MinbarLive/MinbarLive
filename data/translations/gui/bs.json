@@ -206,6 +206,7 @@
   "window_style_label": "Stil prozora",
   "window_style_integrated": "Integrisano",
   "window_style_windowed": "Prozori",
+  "window_style_windows_only": "Prozori unutar aplikacije zasad su dostupni samo na Windowsu — drugi sistemi uvijek koriste zasebne prozore.",
   "input_level": "Ulazni nivo",
   "input_level_no_signal": "Nema signala",
   "input_level_test": "Test mikrofona",

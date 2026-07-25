@@ -206,6 +206,7 @@
   "window_style_label": "Pencere stili",
   "window_style_integrated": "Entegre",
   "window_style_windowed": "Pencereler",
+  "window_style_windows_only": "Uygulama içi pencereler şimdilik yalnızca Windows'ta kullanılabilir — diğer sistemler her zaman ayrı pencereler kullanır.",
   "input_level": "Giriş seviyesi",
   "input_level_no_signal": "Sinyal yok",
   "input_level_test": "Mikrofon testi",

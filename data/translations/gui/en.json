@@ -217,6 +217,7 @@
   "window_style_label": "Window style",
   "window_style_integrated": "Integrated",
   "window_style_windowed": "Windows",
+  "window_style_windows_only": "In-app windows are only available on Windows for now — other systems always use separate windows.",
   "input_level": "Input level",
   "input_level_no_signal": "No signal",
   "input_level_test": "Test mic",

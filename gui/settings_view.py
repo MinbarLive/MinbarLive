@@ -11,6 +11,7 @@ those toggles) — AppGUI._apply_theme / _update_all_ui_texts re-style its
 widgets in place via the ``_settings_*`` registries populated here.
 """
 
+import sys
 import tkinter as tk
 
 import customtkinter as ctk
@@ -300,22 +301,29 @@ class SettingsViewMixin:
             unselected_hover_color=self._colors["button_hover"],
             text_color=self._colors["text"],
         )
+        # Integrated mode is Windows-only for now (X11 has no reliable
+        # borderless-panel stacking + per-window alpha) — force + disable the
+        # control off Windows so a Linux user can't land on the black-screen
+        # bug, and point the hint at the reason.
+        _win = sys.platform == "win32"
+        _integrated = _win and self._saved_settings.window_style == "integrated"
         self.window_style_segment.set(
             self.gui_texts.get(
-                "window_style_integrated"
-                if self._saved_settings.window_style == "integrated"
-                else "window_style_windowed",
+                "window_style_integrated" if _integrated else "window_style_windowed",
                 "Integrated",
             )
         )
+        if not _win:
+            self.window_style_segment.configure(state="disabled")
         self.window_style_segment.grid(
             row=6, column=0, sticky="ew", padx=18, pady=(0, 6)
         )
 
+        _hint_key = "integrated_windows_hint" if _win else "window_style_windows_only"
         window_style_hint = ctk.CTkLabel(
             appearance_card,
             text=self.gui_texts.get(
-                "integrated_windows_hint",
+                _hint_key,
                 "Open settings, history and batch inside the main window "
                 "(Esc closes) instead of as separate windows.",
             ),
@@ -326,7 +334,7 @@ class SettingsViewMixin:
             wraplength=420,
         )
         window_style_hint.grid(row=7, column=0, sticky="w", padx=22, pady=(0, 18))
-        window_style_hint._text_key = "integrated_windows_hint"  # type: ignore[attr-defined]
+        window_style_hint._text_key = _hint_key  # type: ignore[attr-defined]
         self._settings_muted_labels.append(window_style_hint)
 
         # ── Card: Islamic mode ───────────────────────────────────────────

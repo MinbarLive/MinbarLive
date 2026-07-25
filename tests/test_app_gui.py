@@ -793,6 +793,21 @@ class TestIntegratedWindows:
         assert not bool(win.overrideredirect())
         assert gui._modal_host._overlay is None
 
+    def test_integrated_is_gated_to_windows(self, make_gui, monkeypatch):
+        """On X11 the dim overlay is solid black and borderless panels do not
+        reliably stack above it (black screen, no popup) — integrated mode
+        must fall back to separate windows off Windows even when selected."""
+        import gui.widgets as widgets
+
+        gui, _c, _s = make_gui(window_style="integrated")
+        assert gui._use_integrated_windows() is True  # win32 test host
+        monkeypatch.setattr(widgets.sys, "platform", "linux")
+        assert gui._use_integrated_windows() is False
+        gui._open_settings_window()
+        gui.update_idletasks()
+        assert not gui._modal_host.is_presented(gui._settings_win)
+        assert not bool(gui._settings_win.overrideredirect())
+
     def test_segment_round_trips_the_setting(self, make_gui):
         gui, _c, settings = make_gui(window_style="integrated")
         gui._open_settings_window()
