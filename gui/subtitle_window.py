@@ -107,6 +107,19 @@ _ARABIC_ANY_RE = re.compile(
 # guess can only widen the gap, never let letters touch.
 # Capital letters with diacritics (Ä Ü Š İ Ç …) reach well above plain caps.
 _TALL_DIACRITIC_RE = re.compile(r"[À-ÖØ-ÞĀ-ɏ̀-ͯ]")
+
+# How high a line's tallest ink reaches above the baseline, as a fraction of
+# the font's em — one value per ink class. Ink-probe measured on Segoe UI at
+# 64pt (2026-07-15); cap height is ~0.70 em across sans families, so these
+# travel between fonts. What does NOT travel is the blank space above the
+# ink, which is (font ascent − ink top) and therefore font-specific: Segoe UI
+# has an unusually deep ascent (1.07 em), Arial/Helvetica-class fonts 0.90 em.
+# That is why _stack_overlap measures the ascent instead of assuming it.
+_INK_TOP_EM_ARABIC = 1.05  # marks reach the ascent line
+_INK_TOP_EM_TALL_DIACRITIC = 0.86
+_INK_TOP_EM_PLAIN = 0.70  # cap height
+# Visual gap kept between the two ink edges.
+_STACK_INK_GAP_EM = 0.09
 # The Allah honorifics the translator inserts into TARGET-language lines
 # (Allah ﷻ, Muhammad ﷺ) are Arabic presentation-form ligatures but render
 # within plain Latin ink bounds (probed 33/30px vs plain text 35px below the
@@ -182,6 +195,11 @@ STATIC_CARD_OUTLINE_ALLOWANCE = 2
 # settings, but protect the actual audience window with a small physical floor
 # whenever the footer is present. Footer-free overlays still honour true 5%.
 MIN_FOOTER_SURFACE_HEIGHT = 96
+# Floor for the "shrink the overlay into what the WM actually granted" repair
+# (_fit_geometry_to_monitor). Below these, the measurement is more likely to be
+# wrong than the window: leave the overlay alone rather than crush it.
+MIN_FITTED_OVERLAY_WIDTH = 240
+MIN_FITTED_OVERLAY_HEIGHT = 120
 
 
 def _prefers_reduced_motion() -> bool:
@@ -331,6 +349,12 @@ class SubtitleWindow(tk.Toplevel):
         # family bakes Semibold into its name, so "not bold" needs its own).
         self._slant_font_family = "Segoe UI" if is_windows else "Helvetica"
         self._footer_font_family = "Segoe UI" if is_windows else "Helvetica"
+        # {font spec: (em px, ascent px)} for the ink-aware line stacking.
+        self._font_metrics_cache: dict[tuple, tuple[float, float]] = {}
+        # Declared here, not with the other delayed jobs below: the first one
+        # is scheduled by _set_screen_position further down in __init__, and a
+        # later `= None` would orphan it (uncancellable callback).
+        self._geometry_fit_job: str | None = None
         self._apply_theme_palette(self._theme_mode)
 
         self.configure(bg=self._bg_color)
@@ -716,6 +740,7 @@ class SubtitleWindow(tk.Toplevel):
             "_continuous_start_job",
             "_scroll_animation_id",
             "_feed_anim_job",
+            "_geometry_fit_job",
         ):
             self._cancel_after_job(attribute)
 
@@ -1521,30 +1546,69 @@ class SubtitleWindow(tk.Toplevel):
                 bottoms.append(bbox[3])
         return (max(bottoms) - min(tops)) if tops else 75
 
+    def _font_em_and_ascent(self, font_spec) -> tuple[float, float]:
+        """(em height, ascent) of a Tk font spec, both in pixels.
+
+        Tk font sizes are POINTS, so the pixel em depends on the display DPI
+        and is measured against a font of a known PIXEL size rather than
+        assumed. Cached per spec — this runs per row per animation frame."""
+        import tkinter.font as tkfont
+
+        # Lazily healed: the scripted render harnesses build this window with
+        # object.__new__ and only the attributes they render with.
+        cache = getattr(self, "_font_metrics_cache", None)
+        if cache is None:
+            cache = self._font_metrics_cache = {}
+        key = tuple(font_spec)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            font_obj = tkfont.Font(font=font_spec)
+            ascent = float(font_obj.metrics("ascent"))
+            linespace = float(font_obj.metrics("linespace"))
+            reference = tkfont.Font(font=font_spec)
+            reference.configure(size=-1000)  # same family/style, em = 1000 px
+            em = 1000.0 * linespace / float(reference.metrics("linespace"))
+        except (tk.TclError, ZeroDivisionError, ValueError):
+            # No usable metrics (headless/synthetic harness): fall back to the
+            # nominal size as the em and Segoe UI's ascent ratio.
+            em = float(self._current_font_size)
+            ascent = 1.07 * em
+        cache[key] = (em, ascent)
+        return em, ascent
+
     def _stack_overlap(self, lower_text: str) -> int:
         """How far a line's bounding box may overlap the box of `lower_text`
         (translation font) directly below it.
 
-        Tk boxes are font-METRIC sized: even at zero box gap the glyphs sit
-        ~0.5em apart, because the lower font's leading above its tallest ink
-        is blank pixels inside the box. Overlapping by that (ink-probe
-        measured, loose-biased) amount pulls the lines visually together
-        while the ink itself can never touch.
+        Tk boxes are font-METRIC sized: even at zero box gap the glyphs can
+        sit ~0.5em apart, because the lower font's leading above its tallest
+        ink is blank pixels inside the box. Overlapping by that amount pulls
+        the lines visually together while the ink itself can never touch.
+
+        That leading is the font's ascent minus its ink top, and it varies
+        per FAMILY: Segoe UI (Windows) carries ~0.37 em of it, an
+        Arial/Helvetica-class font (the Linux fallback) barely 0.20 em, and
+        Helvetica clones like Nimbus Sans none at all. Hardcoding the Windows
+        figure overlapped real ink on Linux, so both terms are measured from
+        the live font — a family without leading simply gets no overlap.
 
         The upper line always keeps its full descent zone, even when its
         text has no descenders: baseline distances must stay CONSTANT for
         the spacing to READ as even — the eye measures baselines, not
         descender tips, so tucking a descender-less line closer makes it an
         outlier (live-session feedback 2026-07-15)."""
-        size = self._current_font_size
+        em, ascent = self._font_em_and_ascent(self.font)
         lower_text = _HONORIFIC_LIGATURE_RE.sub("", lower_text)
         if _ARABIC_ANY_RE.search(lower_text):
-            lower_ws = 0.03 * size  # Arabic marks reach almost the box top
+            ink_top = _INK_TOP_EM_ARABIC
         elif _TALL_DIACRITIC_RE.search(lower_text):
-            lower_ws = 0.28 * size  # capital diacritics (probed 0.33×size)
+            ink_top = _INK_TOP_EM_TALL_DIACRITIC
         else:
-            lower_ws = 0.50 * size  # plain caps/ascenders (probed 0.55×size)
-        return max(0, round(lower_ws - 0.12 * size))
+            ink_top = _INK_TOP_EM_PLAIN
+        leading = ascent - ink_top * em
+        return max(0, round(leading - _STACK_INK_GAP_EM * em))
 
     def _stack_rows_tight(self, line_items, bottom_y: float | None = None):
         """Position a multi-row Realtime block's rows bottom-up so each row
@@ -2124,14 +2188,18 @@ class SubtitleWindow(tk.Toplevel):
             pass
         return full
 
-    def _set_screen_position(self, force_redraw: bool = False):
+    def _active_monitor(self):
+        """The monitor the overlay is configured for (falls back like the
+        rest of the app when the stored index no longer exists)."""
         monitors = get_monitors()
         if self._monitor_index < len(monitors):
-            mon = monitors[self._monitor_index]
-        elif len(monitors) > 1:
-            mon = monitors[1]
-        else:
-            mon = monitors[0]
+            return monitors[self._monitor_index]
+        if len(monitors) > 1:
+            return monitors[1]
+        return monitors[0]
+
+    def _set_screen_position(self, force_redraw: bool = False):
+        mon = self._active_monitor()
 
         # A full-height overlay always fills the whole monitor so OBS captures
         # the entire frame (no uncovered taskbar strip at the bottom). Only a
@@ -2207,6 +2275,75 @@ class SubtitleWindow(tk.Toplevel):
         # transparent overlay; a full-screen opaque overlay stays in normal
         # stacking. Gated by the user's always_on_top setting.
         self._apply_topmost()
+        self._schedule_geometry_fit_check()
+
+    def _schedule_geometry_fit_check(self):
+        """Queue a check of what the window manager actually granted.
+
+        Windows places the overlay exactly (SetWindowPos), so this only runs
+        elsewhere: an X11 WM may honour the requested SIZE but not the
+        requested POSITION — GNOME keeps a splash-type window clear of the
+        top-bar/dock struts, so a full-monitor overlay is pushed down and its
+        bottom strip (the disclaimer pill) ends up below the screen edge.
+        """
+        # __init__ positions the window before the teardown flags exist.
+        if sys.platform == "win32" or getattr(self, "_destroying", False):
+            return
+        self._cancel_after_job("_geometry_fit_job")
+        self._geometry_fit_job = self.after(250, self._fit_geometry_to_monitor)
+
+    def _fit_geometry_to_monitor(self):
+        """Re-fit the overlay to the rectangle the WM actually granted, so
+        nothing it draws lands off-screen. Two ways the request can be
+        refused: the WM keeps the size but moves the window (its bottom then
+        hangs off the screen — resize it), or it grants a smaller window than
+        asked (the canvas is then smaller than _applied_size claims — just
+        re-sync). Only ever shrinks; an implausible measurement is ignored."""
+        self._geometry_fit_job = None
+        if getattr(self, "_destroying", False) or getattr(self, "_is_hidden", False):
+            return
+        try:
+            mon = self._active_monitor()
+            self.update_idletasks()
+            x, y = self.winfo_rootx(), self.winfo_rooty()
+            width, height = self.winfo_width(), self.winfo_height()
+        except (tk.TclError, IndexError, OSError):
+            return
+        if width <= 1 or height <= 1:
+            return
+        fit_w = min(width, mon.x + mon.width - x)
+        fit_h = min(height, mon.y + mon.height - y)
+        if fit_w < MIN_FITTED_OVERLAY_WIDTH or fit_h < MIN_FITTED_OVERLAY_HEIGHT:
+            return  # implausible reading; a sliver of an overlay helps nobody
+        hangs_off_screen = fit_w < width or fit_h < height
+        if not hangs_off_screen and (fit_w, fit_h) == self._applied_size:
+            return  # the WM granted the request — nothing to correct
+        old_width, old_height = self.canvas_width, self.canvas_height
+        if hangs_off_screen:
+            try:
+                self.geometry(f"{fit_w}x{fit_h}+{x}+{y}")
+            except tk.TclError:
+                return
+        self._applied_size = (fit_w, fit_h)
+        self.canvas_width, self.canvas_height = self._applied_size
+        # Same bottom-anchored bookkeeping as set_window_height_percent: the
+        # top edge moved, so shift the modes that lay out from the canvas top.
+        delta = self.canvas_height - old_height
+        if delta and old_height > 1:
+            if self._subtitle_mode == SUBTITLE_MODE_REALTIME:
+                self._live_feed_scroll -= delta
+                self._live_feed_scroll_target -= delta
+            elif self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
+                for block in self.subtitle_stack:
+                    self._move_block(block, delta)
+        self._update_font()
+        self._update_footer_visibility()
+        if self.canvas_width != old_width or self._subtitle_mode == SUBTITLE_MODE_STATIC:
+            self._refresh_subtitles(reflow=True)
+        elif self._subtitle_mode == SUBTITLE_MODE_REALTIME:
+            self._reposition_subtitles()
+            self._render_live_line()
+        self._render_announcement()
 
     def _desired_topmost(self) -> bool:
         """Whether the overlay should sit above other windows, ignoring the
