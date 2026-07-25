@@ -36,6 +36,7 @@ from gui.control_state import (
 from gui.device_list import find_input_device_position, get_input_devices
 from gui.dropdown import CustomDropdown
 from gui.history_view import HistoryViewMixin
+from gui.modal_host import ModalHost
 from gui.mousewheel import install_x11_mousewheel
 from gui.scaling import apply_display_scaling
 from gui.settings_view import SettingsViewMixin
@@ -280,6 +281,10 @@ class AppGUI(
         self._segments: list[ctk.CTkSegmentedButton] = []
 
         self._setup_window()
+        # In-app (Discord-style) presentation of secondary windows — the
+        # mechanism is always available; the window_style setting decides per
+        # open whether a window goes through it (see _use_integrated_windows).
+        self._modal_host = ModalHost(self)
         self._create_layout()
         if self._subtitle_window_should_exist():
             self._create_subtitle_window()
@@ -446,8 +451,11 @@ class AppGUI(
             self.lift()
         except tk.TclError:
             pass
-        # The lift above would otherwise bury a dropdown popup that is open
-        # right now — e.g. the click that activated the window also opened it.
+        # The lift above would otherwise bury the in-app modal panels (they are
+        # overrideredirect windows — transient() can't own them) and any open
+        # dropdown popup. Panels first: a popup can belong to a panel and must
+        # end up above it.
+        self._modal_host.raise_all()
         CustomDropdown.raise_active_popup()
 
     # ── Window-behaviour policies (always-on-top + subtitle visibility) ──────
@@ -3064,6 +3072,9 @@ class AppGUI(
                 colors=self._colors,
                 texts=self.gui_texts,
                 provider=provider,
+                modal_host=(
+                    self._modal_host if self._use_integrated_windows() else None
+                ),
             )
         finally:
             self._key_prompt_open = False
@@ -3611,6 +3622,7 @@ class AppGUI(
         self._update_banner_close.configure(text_color=self._colors["accent"])
         self.sidebar.configure(fg_color=self._colors["sidebar"])
         self.content.configure(fg_color=self._colors["app_bg"])
+        self._modal_host.update_chrome(self._colors)
         self._restore_control_window_surface()
         # The OS titlebar is set once at startup and doesn't follow a runtime
         # switch — repaint it (main window here, settings window below).
@@ -3794,17 +3806,18 @@ class AppGUI(
         self.speed_label.configure(text_color=self._colors["text"])
         # Control panel theme does NOT touch subtitle window — see _apply_subtitle_theme()
         if self._settings_win_exists():
-            try:
-                self.subtitle_theme_segment.configure(
-                    fg_color=self._colors["button"],
-                    selected_color=self._colors["accent"],
-                    selected_hover_color=self._colors["accent_hover"],
-                    unselected_color=self._colors["button"],
-                    unselected_hover_color=self._colors["button_hover"],
-                    text_color=self._colors["text"],
-                )
-            except Exception:
-                pass
+            for seg_name in ("subtitle_theme_segment", "window_style_segment"):
+                try:
+                    getattr(self, seg_name).configure(
+                        fg_color=self._colors["button"],
+                        selected_color=self._colors["accent"],
+                        selected_hover_color=self._colors["accent_hover"],
+                        unselected_color=self._colors["button"],
+                        unselected_hover_color=self._colors["button_hover"],
+                        text_color=self._colors["text"],
+                    )
+                except Exception:
+                    pass
         self._set_status(self._running)
         # Re-apply disabled states: after colour update, the new border_color must
         # be used as the "greyed out" text colour for disabled combos.
@@ -3883,6 +3896,23 @@ class AppGUI(
                 self.subtitle_theme_segment.set(
                     self.gui_texts.get(
                         "theme_light" if _sub_mode == "light" else "theme_dark", "Dark"
+                    )
+                )
+            except Exception:
+                pass
+            try:
+                self.window_style_segment.configure(
+                    values=[
+                        self.gui_texts.get("window_style_windowed", "Windows"),
+                        self.gui_texts.get("window_style_integrated", "Integrated"),
+                    ]
+                )
+                self.window_style_segment.set(
+                    self.gui_texts.get(
+                        "window_style_integrated"
+                        if self._saved_settings.window_style == "integrated"
+                        else "window_style_windowed",
+                        "Integrated",
                     )
                 )
             except Exception:

@@ -108,8 +108,6 @@ class BatchViewMixin:
             return
 
         win = ctk.CTkToplevel(self)
-        win.title(self.gui_texts.get("batch_file", "Batch / File"))
-        win.resizable(False, False)
         win.configure(fg_color=self._colors["app_bg"])
         # Transparent while building + sizing to hide the flash, then fade in.
         # Alpha (not withdraw) so the transient window is never unmapped.
@@ -118,10 +116,36 @@ class BatchViewMixin:
         except tk.TclError:
             pass
 
-        win.after(200, lambda: self._set_toplevel_icon(win))
-        win.transient(self)
+        if self._use_integrated_windows():
+            # Height is provisional — _resize_batch_window() below re-declares
+            # the natural content height through the host.
+            # No floating ✕ — it would sit on the card's rounded corner; the
+            # card header gets its own close button in _build_batch_widgets.
+            self._modal_host.present(
+                win,
+                480,
+                560,
+                close_command=self._close_batch_window,
+            )
+            # The host clamps the panel to the main window — content taller
+            # than that must scroll instead of clipping (e.g. the More-settings
+            # expander in a small main window). Scrollbar autohides when
+            # everything fits.
+            self._batch_scroll = ctk.CTkScrollableFrame(
+                win, fg_color="transparent", corner_radius=0
+            )
+            self._batch_scroll.pack(fill="both", expand=True)
+            win.after(300, lambda: self._setup_autohide_scrollbar(self._batch_scroll))
+            build_parent = self._batch_scroll
+        else:
+            win.title(self.gui_texts.get("batch_file", "Batch / File"))
+            win.resizable(False, False)
+            win.after(200, lambda: self._set_toplevel_icon(win))
+            win.transient(self)
+            self._batch_scroll = None
+            build_parent = win
         self._batch_win = win
-        self._build_batch_widgets(win)
+        self._build_batch_widgets(build_parent)
         self._resize_batch_window(recenter=True)
         try:
             win.attributes("-alpha", 1.0)
@@ -144,6 +168,15 @@ class BatchViewMixin:
         win.update_idletasks()
         w = 480
         scaling = ctk.ScalingTracker.get_window_scaling(win)
+        if self._modal_host.is_presented(win):
+            # Integrated panel: the natural height is the scroll host's
+            # content height (win.winfo_reqheight() would report the canvas
+            # default). The host clamps to the main window and keeps the
+            # panel centred — content that doesn't fit scrolls.
+            content = self._batch_scroll
+            h = int(content.winfo_reqheight() / scaling) + 6
+            self._modal_host.update_design_size(win, w, h)
+            return
         h = int(win.winfo_reqheight() / scaling) + 1
         if recenter:
             x, y = centered_position(self, w, h)
@@ -188,6 +221,21 @@ class BatchViewMixin:
             anchor="w",
         )
         title.grid(row=0, column=1, sticky="ew")
+        if self._modal_host.is_presented(parent.winfo_toplevel()):
+            # In-app panel: no titlebar ✕, so the card header carries one.
+            close_btn = ctk.CTkButton(
+                header,
+                text="✕",
+                command=self._close_batch_window,
+                width=32,
+                height=32,
+                corner_radius=16,
+                font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+                fg_color=self._colors["button"],
+                hover_color=self._colors["button_hover"],
+                text_color=self._colors["text"],
+            )
+            close_btn.grid(row=0, column=2, sticky="ne", padx=(8, 0))
         subtitle = ctk.CTkLabel(
             header,
             text=self.gui_texts.get("batch_file_sub", ""),

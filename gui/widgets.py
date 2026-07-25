@@ -10,6 +10,7 @@ themed-widget registries (``_cards``, ``_labels``, ``_buttons``,
 """
 
 import os
+import sys
 import tkinter as tk
 from collections.abc import Callable
 from typing import Any
@@ -82,6 +83,22 @@ class WidgetFactoryMixin:
             "entry_border": "#334155",
         }
 
+    def _use_integrated_windows(self) -> bool:
+        """Whether secondary windows open in-app (Discord-style panels over a
+        dim overlay) instead of as separate OS windows — the window_style
+        setting, applied per open via gui/modal_host.py.
+
+        Windows-only for now: on X11 without a compositor the dim overlay's
+        per-window alpha is ignored (solid black) and borderless panels do
+        not reliably stack above it, so the whole window goes black with no
+        popup. Linux/macOS always get classic separate windows until that is
+        solved (the Fenster-Stil control is disabled off Windows)."""
+        return (
+            sys.platform == "win32"
+            and getattr(self._saved_settings, "window_style", "windowed")
+            == "integrated"
+        )
+
     def _set_toplevel_icon(self, win: ctk.CTkToplevel) -> None:
         """Set the window icon on a CTkToplevel, then re-assert the themed
         titlebar. On Windows ``iconbitmap()`` resets the DWM titlebar to the
@@ -140,6 +157,7 @@ class WidgetFactoryMixin:
             or (self._colors["danger"] if danger else self._colors["warning"]),
             ok_label=self.gui_texts.get("dlg_ok", "OK"),
             sections=sections,
+            modal_host=self._modal_host if self._use_integrated_windows() else None,
         )
 
     def _confirm(
@@ -156,6 +174,7 @@ class WidgetFactoryMixin:
             icon_color=self._colors["danger"],
             yes_label=self.gui_texts.get("dlg_yes", "Yes"),
             no_label=self.gui_texts.get("dlg_no", "No"),
+            modal_host=self._modal_host if self._use_integrated_windows() else None,
         )
 
     def _section_card(
