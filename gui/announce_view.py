@@ -95,13 +95,25 @@ class AnnounceViewMixin:
                 520,
                 close_command=self._close_announce_window,
             )
+            # Clamped content (many favorites/recents in a small main window)
+            # scrolls instead of clipping; scrollbar autohides when it fits.
+            self._announce_scroll = ctk.CTkScrollableFrame(
+                win, fg_color="transparent", corner_radius=0
+            )
+            self._announce_scroll.pack(fill="both", expand=True)
+            win.after(
+                300, lambda: self._setup_autohide_scrollbar(self._announce_scroll)
+            )
+            build_parent = self._announce_scroll
         else:
             win.title(self.gui_texts.get("announce_title", "Announcement"))
             win.resizable(False, False)
             win.after(200, lambda: self._set_toplevel_icon(win))
             win.transient(self)
+            self._announce_scroll = None
+            build_parent = win
         self._announce_win = win
-        self._build_announce_widgets(win)
+        self._build_announce_widgets(build_parent)
         self._resize_announce_window()
         try:
             win.attributes("-alpha", 1.0)
@@ -124,12 +136,15 @@ class AnnounceViewMixin:
         win.update_idletasks()
         w = 460
         scaling = ctk.ScalingTracker.get_window_scaling(win)
-        h = int(win.winfo_reqheight() / scaling) + 1
         if self._modal_host.is_presented(win):
-            # Integrated panel: clamped + centred over the main window by the
-            # host instead of screen-centred geometry.
+            # Integrated panel: natural height = the scroll host's content
+            # height (win.winfo_reqheight() would report the canvas default);
+            # the host clamps + centres, extra content scrolls.
+            content = self._announce_scroll
+            h = int(content.winfo_reqheight() / scaling) + 6
             self._modal_host.update_design_size(win, w, h)
             return
+        h = int(win.winfo_reqheight() / scaling) + 1
         x, y = centered_position(self, w, h)
         win.geometry(f"{w}x{h}+{x}+{y}")
 
@@ -155,7 +170,7 @@ class AnnounceViewMixin:
             anchor="w",
         )
         header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=20, pady=(18, 0))
-        if self._modal_host.is_presented(parent):
+        if self._modal_host.is_presented(parent.winfo_toplevel()):
             # In-app panel: no titlebar ✕, so the card header carries one
             # (created after the header label, so it stacks above its empty
             # right end).

@@ -571,12 +571,26 @@ class SettingsViewMixin:
         integrated = value == self.gui_texts.get(
             "window_style_integrated", "Integrated"
         )
-        self._saved_settings.window_style = "integrated" if integrated else "windowed"
-        log(
-            f"Window style: {'integrated' if integrated else 'windowed'}",
-            level="INFO",
-        )
+        style = "integrated" if integrated else "windowed"
+        if self._saved_settings.window_style == style:
+            return
+        self._saved_settings.window_style = style
+        log(f"Window style: {style}", level="INFO")
         self._save_current_settings()
+        # Apply immediately: other popups close (they reopen in the new
+        # style), and the settings window itself rebuilds in the new style —
+        # deferred, since this callback runs from a widget inside it.
+        self._close_history_window()
+        self._close_batch_window()
+        self._close_announce_window()
+        if self._settings_win_exists():
+            self.after(0, self._rebuild_settings_window)
+
+    def _rebuild_settings_window(self) -> None:
+        if self._settings_win_exists():
+            self._settings_win.destroy()
+        self._settings_win = None
+        self._open_settings_window()
 
     def _on_settings_change_key(self) -> None:
         provider = self._selected_api_key_provider()
