@@ -22,6 +22,15 @@ from gui.dropdown import CustomDropdown
 from utils.api_key_manager import apply_dark_titlebar, show_message
 from utils.icons import ICO_SUPPORTED, scaled_icon_photo
 
+# Whether integrated (in-app panel) window style can work on this platform.
+# Windows-only for now: on X11 without a compositor the dim overlay's
+# per-window alpha is ignored (the whole window goes solid black) and
+# borderless panels do not reliably stack above it. A named constant rather
+# than an inline platform test, so the gate and the Fenster-Stil control read
+# the same fact — and so tests can drive both branches on any host without
+# patching sys.platform process-wide.
+INTEGRATED_WINDOWS_SUPPORTED = sys.platform == "win32"
+
 
 class WidgetFactoryMixin:
     """UI-kit methods shared by the control panel and its child windows."""
@@ -83,18 +92,21 @@ class WidgetFactoryMixin:
             "entry_border": "#334155",
         }
 
+    def _integrated_windows_supported(self) -> bool:
+        """Whether this platform can render integrated windows at all.
+
+        Off Windows the stored setting is ignored and the Fenster-Stil control
+        is forced to "windowed" + disabled (see gui/settings_view.py), so a
+        Linux user can't land on the black-screen bug."""
+        return INTEGRATED_WINDOWS_SUPPORTED
+
     def _use_integrated_windows(self) -> bool:
         """Whether secondary windows open in-app (Discord-style panels over a
         dim overlay) instead of as separate OS windows — the window_style
-        setting, applied per open via gui/modal_host.py.
-
-        Windows-only for now: on X11 without a compositor the dim overlay's
-        per-window alpha is ignored (solid black) and borderless panels do
-        not reliably stack above it, so the whole window goes black with no
-        popup. Linux/macOS always get classic separate windows until that is
-        solved (the Fenster-Stil control is disabled off Windows)."""
+        setting, applied per open via gui/modal_host.py, and only on a
+        platform that supports it."""
         return (
-            sys.platform == "win32"
+            self._integrated_windows_supported()
             and getattr(self._saved_settings, "window_style", "windowed")
             == "integrated"
         )

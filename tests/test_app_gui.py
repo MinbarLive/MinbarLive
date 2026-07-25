@@ -754,12 +754,27 @@ class TestSettingsRemoveKeyGating:
 
 class TestIntegratedWindows:
     """The window_style setting: separate windows (default, while integrated
-    mode is still tested on Linux) vs in-app panels."""
+    mode is still tested on Linux) vs in-app panels.
+
+    Integrated mode is gated to Windows (see _integrated_windows_supported),
+    so the tests that drive a real in-app panel only run there — off Windows
+    that configuration cannot occur, and the dim overlay would be exercised
+    under exactly the conditions (no compositor, no window manager) that made
+    the mode unusable on X11 in the first place. What matters on Linux is the
+    gate, and test_integrated_is_gated_to_windows drives BOTH of its branches
+    on every platform."""
+
+    _windows_only = pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="integrated mode is Windows-only; the gate is covered on all "
+        "platforms by test_integrated_is_gated_to_windows",
+    )
 
     def test_windowed_is_the_default(self, make_gui):
         gui, _c, settings = make_gui()
         assert settings.window_style == "windowed"
 
+    @_windows_only
     def test_integrated_opens_as_in_app_panel(self, make_gui):
         gui, _c, _s = make_gui(window_style="integrated")
         gui._open_settings_window()
@@ -770,6 +785,7 @@ class TestIntegratedWindows:
         overlay = gui._modal_host._overlay
         assert overlay is not None and overlay.winfo_exists()
 
+    @_windows_only
     def test_escape_closes_the_panel_and_hides_the_overlay(self, make_gui):
         # Drives the host's Escape handler directly — a synthesized key event
         # needs a mapped + focused window, and this file never pumps the event
@@ -796,17 +812,30 @@ class TestIntegratedWindows:
     def test_integrated_is_gated_to_windows(self, make_gui, monkeypatch):
         """On X11 the dim overlay is solid black and borderless panels do not
         reliably stack above it (black screen, no popup) — integrated mode
-        must fall back to separate windows off Windows even when selected."""
+        must fall back to separate windows off Windows even when selected.
+
+        Both branches are driven through the platform-capability constant, so
+        this runs on every host: patching sys.platform itself would apply
+        process-wide (gui.widgets.sys *is* the sys module) and change what
+        Tk/CustomTkinter do about titlebars mid-test."""
         import gui.widgets as widgets
 
         gui, _c, _s = make_gui(window_style="integrated")
-        assert gui._use_integrated_windows() is True  # win32 test host
-        monkeypatch.setattr(widgets.sys, "platform", "linux")
+        monkeypatch.setattr(widgets, "INTEGRATED_WINDOWS_SUPPORTED", True)
+        assert gui._use_integrated_windows() is True
+        monkeypatch.setattr(widgets, "INTEGRATED_WINDOWS_SUPPORTED", False)
         assert gui._use_integrated_windows() is False
         gui._open_settings_window()
         gui.update_idletasks()
         assert not gui._modal_host.is_presented(gui._settings_win)
         assert not bool(gui._settings_win.overrideredirect())
+        # The control itself must be unreachable, not just ineffective.
+        # CTkSegmentedButton.cget("state") raises (unsupported argument), so
+        # read the attribute configure() stores it in.
+        assert gui.window_style_segment._state == "disabled"
+        assert gui.window_style_segment.get() == gui.gui_texts.get(
+            "window_style_windowed", "Windows"
+        )
 
     def test_segment_round_trips_the_setting(self, make_gui):
         gui, _c, settings = make_gui(window_style="integrated")
@@ -821,6 +850,7 @@ class TestIntegratedWindows:
         )
         assert settings.window_style == "integrated"
 
+    @_windows_only
     def test_announce_panel_routes_resize_through_the_host(self, make_gui):
         gui, _c, _s = make_gui(window_style="integrated")
         gui._open_announce_window()
