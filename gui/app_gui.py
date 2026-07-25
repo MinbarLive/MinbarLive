@@ -156,9 +156,12 @@ class AppGUI(
 ):
     # Size the window opens at on a fresh install (CTk logical units), shared
     # by _setup_window and _toggle_log_panel (a mismatch there once locked the
-    # window at the larger size after a log toggle). 848x597 logical renders
-    # ~1060x746 px, the compact size the 2-column card grid fits snugly.
-    _DEFAULT_W = 848
+    # window at the larger size after a log toggle). The 2-column card grid
+    # fits inside this without the sidebar scrolling. Kept at or below
+    # gui/scaling.DESIGN_W/DESIGN_H, which the DPI clamp guarantees fits in 85%
+    # of the work area — so it opens unscrolled on every resolution/DPI, not
+    # just the machine it was tuned on.
+    _DEFAULT_W = 880
     _DEFAULT_H = 597
     # Floor the user may drag the window down to. Deliberately far below the
     # default: the card grid reflows to a single column on the way down, so a
