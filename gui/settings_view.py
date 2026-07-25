@@ -11,7 +11,6 @@ those toggles) — AppGUI._apply_theme / _update_all_ui_texts re-style its
 widgets in place via the ``_settings_*`` registries populated here.
 """
 
-import sys
 import tkinter as tk
 
 import customtkinter as ctk
@@ -305,7 +304,7 @@ class SettingsViewMixin:
         # borderless-panel stacking + per-window alpha) — force + disable the
         # control off Windows so a Linux user can't land on the black-screen
         # bug, and point the hint at the reason.
-        _win = sys.platform == "win32"
+        _win = self._integrated_windows_supported()
         _integrated = _win and self._saved_settings.window_style == "integrated"
         self.window_style_segment.set(
             self.gui_texts.get(
