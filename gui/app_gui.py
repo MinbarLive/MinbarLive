@@ -2174,20 +2174,32 @@ class AppGUI(
         )
 
     def _update_live_transcript_display(self) -> None:
-        """Mirror the controller's in-progress streaming transcript onto the
-        subtitle window's live line (settled subtitles are drained first, so
-        a translation and its live-line removal land in the same tick).
-        The window only renders it in Realtime mode."""
+        """Mirror the controller's in-progress streaming text onto the subtitle
+        window's live line (settled subtitles are drained first, so a
+        translation and its live-line removal land in the same tick). The
+        window only renders it in Realtime mode.
+
+        Two things can occupy the live line, in priority order:
+        1. A translation being streamed from the LLM — shown growing word by
+           word (settled colouring: it is the target-language text).
+        2. Otherwise the in-progress source transcript from the STT engine.
+        The streamed translation replaces the source interim until the settled
+        block lands, so the audience sees the translation appear immediately
+        instead of waiting for the whole answer."""
         if self._saved_settings.pipeline_mode != PIPELINE_MODE_STREAMING:
             return
-        if self.subtitle_window and self.subtitle_window.winfo_exists():
-            if self._saved_settings.show_interim_transcript:
-                text, settled = self.controller.get_live_transcript()
-            else:
-                # Live line off: keep the window's live line cleared so only
-                # settled translation blocks show.
-                text, settled = "", False
-            self.subtitle_window.set_live_text(text, settled)
+        if not (self.subtitle_window and self.subtitle_window.winfo_exists()):
+            return
+        if not self._saved_settings.show_interim_transcript:
+            # Live line off: keep it cleared so only settled blocks show.
+            self.subtitle_window.set_live_text("", False)
+            return
+        live_translation = self.controller.get_live_translation()
+        if live_translation:
+            self.subtitle_window.set_live_text(live_translation, True)
+            return
+        text, settled = self.controller.get_live_transcript()
+        self.subtitle_window.set_live_text(text, settled)
 
     def _poll_errors(self) -> None:
         while True:

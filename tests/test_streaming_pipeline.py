@@ -118,7 +118,7 @@ def streaming_env(monkeypatch):
     monkeypatch.setattr(
         app_controller,
         "translate_text",
-        lambda text, context="", arabic_text="": f"XX:{text}",
+        lambda text, context="", arabic_text="", on_delta=None: f"XX:{text}",
     )
     monkeypatch.setattr(
         app_controller, "log_transcription_and_translation", lambda *a, **k: None
@@ -307,7 +307,7 @@ class TestStreamingPipeline:
         monkeypatch.setattr(
             app_controller,
             "translate_text",
-            lambda text, context="", arabic_text="": text,
+            lambda text, context="", arabic_text="", on_delta=None: text,
         )
         controller, provider = self._start(streaming_env)
         provider.on_transcript("unchanged text", True)
@@ -377,7 +377,7 @@ class TestStreamingPipeline:
     ):
         calls = {"n": 0}
 
-        def flaky(text, context="", arabic_text=""):
+        def flaky(text, context="", arabic_text="", on_delta=None):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("boom")
@@ -617,7 +617,7 @@ class TestLiveTranscript:
 
         release = threading.Event()
 
-        def slow_translate(text, context="", arabic_text=""):
+        def slow_translate(text, context="", arabic_text="", on_delta=None):
             release.wait(timeout=2.0)
             return f"XX:{text}"
 
@@ -637,7 +637,7 @@ class TestLiveTranscript:
 
         release = threading.Event()
 
-        def slow_translate(text, context="", arabic_text=""):
+        def slow_translate(text, context="", arabic_text="", on_delta=None):
             release.wait(timeout=2.0)
             return f"XX:{text}"
 
@@ -654,7 +654,7 @@ class TestLiveTranscript:
         assert controller.get_live_transcript() == ("second utter", False)
 
     def test_cleared_after_error_subtitle(self, streaming_env, monkeypatch):
-        def boom(text, context="", arabic_text=""):
+        def boom(text, context="", arabic_text="", on_delta=None):
             raise RuntimeError("boom")
 
         monkeypatch.setattr(app_controller, "translate_text", boom)
@@ -663,6 +663,30 @@ class TestLiveTranscript:
         provider.on_utterance_end()
         assert _wait_for(lambda: not controller.translation_queue.empty())
         assert _wait_for(lambda: controller.get_live_transcript() == ("", False))
+
+    def test_streamed_translation_grows_then_clears(self, streaming_env, monkeypatch):
+        """The LLM's streamed fragments accumulate onto the live translation,
+        which is cleared once the settled block is queued."""
+        partials: list[str | None] = []
+
+        def streaming_translate(text, context="", arabic_text="", on_delta=None):
+            for frag in ("Alles ", "Lob."):
+                if on_delta:
+                    on_delta(frag)
+                    partials.append(streaming_env.controller.get_live_translation())
+            return "Alles Lob."
+
+        monkeypatch.setattr(app_controller, "translate_text", streaming_translate)
+        controller, provider = self._start(streaming_env)
+        provider.on_transcript("الحمد لله", True)
+        provider.on_utterance_end()
+        assert _wait_for(lambda: not controller.translation_queue.empty())
+        # The live translation grew fragment by fragment while generating.
+        assert partials == ["Alles ", "Alles Lob."]
+        # The settled block carries the full text.
+        assert controller.translation_queue.get_nowait()[0] == "Alles Lob."
+        # And the live partial is gone once the block is out.
+        assert _wait_for(lambda: controller.get_live_translation() is None)
 
     def test_stream_error_clears_live_text(self, streaming_env):
         controller, provider = self._start(streaming_env)

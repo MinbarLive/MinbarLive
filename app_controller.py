@@ -241,6 +241,13 @@ class AppController:
         # transcripts on a healthy connection too, so only fed speech may
         # count toward a "stuck session" verdict.
         self._speech_fed_since_activity = 0.0
+        # In-progress translation text for the live subtitle line: the LLM
+        # streams the target-language words as they are generated (streaming
+        # mode only), so the audience sees the translation grow instead of
+        # waiting for the whole answer. None when no translation is streaming.
+        # Written by a translation worker thread, read by the Tk thread.
+        self._live_translation: str | None = None
+        self._live_translation_lock = threading.Lock()
 
     def _process_audio(self):
         # Lazy import: scipy.io costs ~200 ms to import and is only needed once
@@ -437,6 +444,7 @@ class AppController:
         arabic_text: str = "",
         log_history: bool = True,
         log_prefix: str = "AUDIO-PROCESSOR",
+        stream_live: bool = False,
     ) -> str:
         """Translate one transcription and emit it to the subtitle queue.
 
@@ -445,6 +453,11 @@ class AppController:
         processor: same-language check → context → translation → bilingual
         source suppression → queue → history log. Callers that batch-log
         with a measured duration pass log_history=False.
+
+        ``stream_live`` (streaming pipeline only): stream the LLM's output into
+        the live subtitle line so the translation grows word by word instead of
+        appearing all at once after a wait. The settled block still lands on the
+        queue as usual once the full text is ready.
         """
         settings = load_settings()
         same_language = settings.source_language == settings.target_language
@@ -456,7 +469,24 @@ class AppController:
             log(f"{log_prefix} Same-language mode", level="INFO")
         else:
             log(f"{log_prefix} Translation started", level="INFO")
-        translation = translate_text(trans_text, context, arabic_text=arabic_text)
+
+        on_delta = None
+        if stream_live and not same_language:
+            parts: list[str] = []
+
+            def on_delta(fragment: str) -> None:
+                parts.append(fragment)
+                self.set_live_translation("".join(parts))
+
+        try:
+            translation = translate_text(
+                trans_text, context, arabic_text=arabic_text, on_delta=on_delta
+            )
+        finally:
+            # The settled block (or the suppression below) takes over the live
+            # line now; never leave a stale streamed partial on screen.
+            if on_delta is not None:
+                self.clear_live_translation()
         if not translation.strip():
             # GPT judged the input unintelligible (the system prompt returns an
             # empty string for that) — emit no subtitle rather than a blank
@@ -1310,7 +1340,10 @@ class AppController:
             # kill all subtitles for the rest of the session.
             try:
                 self._translate_and_queue(
-                    context_mgr, trans_text, log_prefix="STREAMING-PROCESSOR"
+                    context_mgr,
+                    trans_text,
+                    log_prefix="STREAMING-PROCESSOR",
+                    stream_live=True,
                 )
             except Exception as e:
                 log(f"STREAMING-PROCESSOR Error: {e}", level="ERROR")
@@ -1766,6 +1799,21 @@ class AppController:
         or in segmented mode."""
         session = self._streaming_session
         return session.get_live_state() if session is not None else ("", False)
+
+    def set_live_translation(self, text: str) -> None:
+        """Publish the in-progress streamed translation (translation worker)."""
+        with self._live_translation_lock:
+            self._live_translation = text
+
+    def get_live_translation(self) -> str | None:
+        """The translation currently being streamed, or None (Tk thread)."""
+        with self._live_translation_lock:
+            return self._live_translation
+
+    def clear_live_translation(self) -> None:
+        """Drop the live translation once its final block is queued."""
+        with self._live_translation_lock:
+            self._live_translation = None
 
     def seconds_since_last_activity(self) -> float:
         """Seconds since the last transcription arrived (either pipeline

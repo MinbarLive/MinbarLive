@@ -79,7 +79,7 @@ def segmented_env(monkeypatch, tmp_path):
     translations = {"fn": lambda text: f"DE:{text}"}
     translate_calls = []
 
-    def fake_translate(text, context="", arabic_text=""):
+    def fake_translate(text, context="", arabic_text="", on_delta=None):
         translate_calls.append((text, context, arabic_text))
         return translations["fn"](text)
 
