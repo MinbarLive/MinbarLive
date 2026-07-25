@@ -185,6 +185,13 @@ class AppGUI(
     # was a column one character wide.
     _SIDEBAR_W_WITH_LOG = 500
     _LOG_PANEL_MIN_W = 340
+    # Font sizes an inline mode selector steps down through when its card is
+    # too narrow for the full-size labels: (title, segment), largest first.
+    # See _fit_inline_mode_selector.
+    _SEG_FIT_SIZES = ((14, 13), (13, 12), (12, 11), (11, 10))
+    # Chrome around a segment label (logical units) — the button's own padding
+    # plus the gap to its neighbour.
+    _SEG_LABEL_PADDING = 26
 
     def __init__(self, controller):
         self._saved_settings = load_settings()
@@ -3286,12 +3293,69 @@ class AppGUI(
             frame.grid_columnconfigure(1, weight=1)
             title.grid(row=0, column=0, sticky="w", padx=(2, 12))
             seg.grid(row=0, column=1, sticky="ew")
+            # Keep the one-line layout at every card width by printing smaller
+            # when it gets tight (see _fit_inline_mode_selector). Measuring
+            # copies, so the live fonts are set once, to the winning size.
+            frame._selector_parts = (title, seg)  # type: ignore[attr-defined]
+            frame._fit_probes = (  # type: ignore[attr-defined]
+                ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+                ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            )
+            frame.bind(
+                "<Configure>",
+                lambda e, f=frame: self._fit_inline_mode_selector(f, e.width),
+                add="+",
+            )
         else:
             frame.grid_columnconfigure(0, weight=1)
             title.grid(row=0, column=0, sticky="w", padx=2, pady=(0, 4))
             seg.grid(row=1, column=0, sticky="ew")
         self._segments.append(seg)
         return seg
+
+    def _fit_inline_mode_selector(self, frame, width: int | None = None) -> None:
+        """Shrink an inline selector's text until the title and all of its
+        segment labels fit on their shared row.
+
+        The row keeps its one-line layout at every card width — only the font
+        sizes step down. Without this the segment simply gets whatever the
+        title leaves over and clips its labels ("Immer" → "mmer") in the
+        narrower card grids. Sizes are measured with CTkFonts, whose size is
+        independent of display scaling, so the same steps apply at every DPI
+        and in every GUI language (where both texts change length).
+
+        ``width`` is the <Configure> event's width: during that event the
+        frame's own new size is known while its children are still laid out
+        for the previous one, so nothing here reads a child's position.
+        """
+        title, seg = frame._selector_parts
+        try:
+            scale = ctk.ScalingTracker.get_widget_scaling(frame) or 1.0
+        except Exception:
+            scale = 1.0
+        avail = (width if width is not None else frame.winfo_width()) / scale
+        values = list(seg.cget("values") or [])
+        if avail <= 1 or not values:  # not laid out yet / nothing to measure
+            return
+
+        probe_title, probe_seg = frame._fit_probes
+        text = title.cget("text")
+        chosen = self._SEG_FIT_SIZES[-1]
+        for sizes in self._SEG_FIT_SIZES:
+            probe_title.configure(size=sizes[0])
+            probe_seg.configure(size=sizes[1])
+            # padx(2, 12) around the title, plus a little slack.
+            per_label = (avail - probe_title.measure(text) - 16) / len(values)
+            widest = max(probe_seg.measure(v) for v in values)
+            if widest + self._SEG_LABEL_PADDING <= per_label:
+                chosen = sizes
+                break
+
+        title_font, seg_font = title.cget("font"), seg.cget("font")
+        if (title_font.cget("size"), seg_font.cget("size")) == chosen:
+            return  # already right — never re-render on every resize event
+        title_font.configure(size=chosen[0])
+        seg_font.configure(size=chosen[1])
 
     @staticmethod
     def _mode_from_label(
@@ -3332,6 +3396,9 @@ class AppGUI(
                 self._saved_settings.subtitle_hide_mode
             )]
         )
+        # Title and segment labels just changed length — what fitted in one
+        # language may not fit in the next (runs after the label texts above).
+        self._fit_inline_mode_selector(self.subtitle_hide_segment.master)
 
     def _set_advanced_visible(self, visible: bool) -> None:
         """Show/hide the Advanced body without re-running the card layout.
