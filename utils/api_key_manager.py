@@ -35,6 +35,16 @@ def _provider_display_name(provider: str) -> str:
 # Placeholder hint per provider key format
 _KEY_PLACEHOLDERS = {"openai": "sk-…", "gemini": "AIza…", "anthropic": "sk-ant-…"}
 
+# Dialog widths (logical units): the message/confirm box and the key entry.
+DIALOG_W = 440
+KEY_DIALOG_W = 480
+
+# How much bigger these get as in-app panels (integrated window style). The
+# view windows scale with the main window; a notification does not — it is
+# the same short sentence whatever the window size, so it only takes one
+# fixed step up so it doesn't look undersized over a large panel.
+DIALOG_PANEL_GROWTH = 1.1
+
 # Default dark-theme colours used when no colours dict is provided.
 _DEFAULT_COLORS: dict[str, str] = {
     "app_bg": "#0b1020",
@@ -134,7 +144,13 @@ def show_message(
     c = colors or _DEFAULT_COLORS
     result = {"ok": False}
 
-    w = 440
+    # In-app dialogs are a touch wider than the separate-window ones (see
+    # DIALOG_PANEL_GROWTH) — deliberately a fixed step, not a share of the
+    # main window: a "stop the program before changing the key" notice
+    # blown up to a fraction of a maximized window would read as an error
+    # page. The wraplengths below follow ``w``, so the extra width becomes
+    # text, not margin.
+    w = int(DIALOG_W * DIALOG_PANEL_GROWTH) if modal_host is not None else DIALOG_W
     dlg = ctk.CTkToplevel(root)
     dlg.configure(fg_color=c["app_bg"])
     if modal_host is None:
@@ -397,7 +413,13 @@ def prompt_for_api_key(
 
     _dlg_h = 285 if _keyring_missing else 250
     if modal_host is not None:
-        modal_host.present(dialog, 480, _dlg_h)
+        # One fixed step up as an in-app panel, never a share of the main
+        # window (see DIALOG_PANEL_GROWTH).
+        modal_host.present(
+            dialog,
+            int(KEY_DIALOG_W * DIALOG_PANEL_GROWTH),
+            int(_dlg_h * DIALOG_PANEL_GROWTH),
+        )
     else:
         dialog.title(f"{display} API Key")
         dialog.resizable(False, False)
@@ -421,9 +443,9 @@ def prompt_for_api_key(
 
         # Centre over parent window
         root.update_idletasks()
-        x = root.winfo_rootx() + (root.winfo_width() - 480) // 2
+        x = root.winfo_rootx() + (root.winfo_width() - KEY_DIALOG_W) // 2
         y = root.winfo_rooty() + (root.winfo_height() - _dlg_h) // 2
-        dialog.geometry(f"480x{_dlg_h}+{x}+{y}")
+        dialog.geometry(f"{KEY_DIALOG_W}x{_dlg_h}+{x}+{y}")
 
         try:
             dialog.attributes("-topmost", True)

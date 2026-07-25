@@ -46,6 +46,16 @@ _BATCH_STT_FALLBACKS = {
 }
 
 
+# Width the batch card is laid out for, as a separate OS window and as an
+# in-app panel (logical units). The panel may get a little wider on a large
+# main window — enough to read as an in-app panel rather than a floating
+# card — but not proportionally: the content is a stack of single-column
+# dropdowns and buttons that stretch badly. Its HEIGHT stays the content's
+# natural height (_resize_batch_window re-declares it), clamped by the host.
+BATCH_WINDOW_W = 480
+BATCH_PANEL_MAX_W = 640
+
+
 def _batch_stt_fallback(provider_id: str) -> str:
     """Segmented sibling for a streaming engine. Deepgram has no segmented
     mode and no shared key family — pick the highest-ranked segmented STT
@@ -123,7 +133,7 @@ class BatchViewMixin:
             # card header gets its own close button in _build_batch_widgets.
             self._modal_host.present(
                 win,
-                480,
+                BATCH_PANEL_MAX_W,
                 560,
                 close_command=self._close_batch_window,
             )
@@ -166,7 +176,7 @@ class BatchViewMixin:
             return
         win = self._batch_win
         win.update_idletasks()
-        w = 480
+        w = BATCH_WINDOW_W
         scaling = ctk.ScalingTracker.get_window_scaling(win)
         if self._modal_host.is_presented(win):
             # Integrated panel: the natural height is the scroll host's
@@ -175,7 +185,7 @@ class BatchViewMixin:
             # panel centred — content that doesn't fit scrolls.
             content = self._batch_scroll
             h = int(content.winfo_reqheight() / scaling) + 6
-            self._modal_host.update_design_size(win, w, h)
+            self._modal_host.update_design_size(win, BATCH_PANEL_MAX_W, h)
             return
         h = int(win.winfo_reqheight() / scaling) + 1
         if recenter:

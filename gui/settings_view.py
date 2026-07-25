@@ -22,6 +22,18 @@ from utils.logging import log
 from utils.settings import GUI_LANGUAGE_CODES, GUI_LANGUAGES
 from version import __version__
 
+# Size the settings window opens at as a separate OS window (logical units).
+SETTINGS_WINDOW_W = 500
+SETTINGS_WINDOW_H = 620
+
+# As an in-app panel it may grow — mostly in height, which simply shows more
+# cards before the scroll starts. The width cap keeps it column-shaped: its
+# cards are single dropdowns and switches, and stretched across a maximized
+# window they read as a form pulled out of shape. ModalHost clamps both to
+# PANEL_FRACTION of the main window.
+SETTINGS_PANEL_MAX_W = 760
+SETTINGS_PANEL_MAX_H = 1150
+
 
 class SettingsViewMixin:
     """Settings window + API-key management UI, hosted by AppGUI."""
@@ -106,7 +118,11 @@ class SettingsViewMixin:
             # Floating ✕ pinned top-right; the hero line + cards scroll under
             # it like any normal window.
             self._modal_host.present(
-                win, 500, 620, close_command=win.destroy, close_button=True
+                win,
+                SETTINGS_PANEL_MAX_W,
+                SETTINGS_PANEL_MAX_H,
+                close_command=win.destroy,
+                close_button=True,
             )
         else:
             win.title(self.gui_texts.get("settings_title", "Settings"))
@@ -114,8 +130,8 @@ class SettingsViewMixin:
             win.after(200, lambda: self._set_toplevel_icon(win))
             win.transient(self)
             self.update_idletasks()
-            x, y = centered_position(self, 500, 620)
-            win.geometry(f"500x620+{x}+{y}")
+            x, y = centered_position(self, SETTINGS_WINDOW_W, SETTINGS_WINDOW_H)
+            win.geometry(f"{SETTINGS_WINDOW_W}x{SETTINGS_WINDOW_H}+{x}+{y}")
         self._settings_win = win
         self._settings_labels = []
         self._settings_muted_labels = []
