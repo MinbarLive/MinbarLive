@@ -98,6 +98,7 @@
   "already_running_title": "MinbarLive është tashmë duke punuar",
   "already_running_body": "MinbarLive është tashmë duke punuar ose duke u nisur!\n\nNëse nuk keni pasur qëllim ta bëni këtë, ju lutemi mbyllni instancën ekzistuese para se të filloni një të re.",
   "already_running_launch_anyway": "Hap gjithsesi",
+  "provider_default_tag": "Parazgjedhur",
   "ai_provider": "Ofruesi i IA-së",
   "dlg_paste_key_any": "Ngjit çelësin API të {provider}",
   "dlg_enter_key_any": "Fut një çelës të ri API për {provider}",
