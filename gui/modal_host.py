@@ -269,10 +269,19 @@ class ModalHost:
             self._close_panel(self._panels[-1])
 
     def _on_overlay_click(self, _event: object | None = None) -> str:
-        """A click on the dim layer must never leave it above the panels (the
-        OS raises a clicked window) — repair the stacking and hand focus back
-        to the topmost panel so Esc keeps working."""
+        """Clicking the dim backdrop closes the topmost panel (Discord
+        convention, same as Esc) — but only for windows the host may close
+        itself (``close_command`` set). Dialogs (alerts/confirms/key entry)
+        have explicit OK/Cancel semantics and are never dismissed by a stray
+        click; their grab normally swallows the click before it gets here
+        anyway. In that case just repair the stacking (the OS raises a
+        clicked window — the dim must never end up above the panels) and
+        hand focus back so Esc keeps working."""
         try:
+            if self._panels and self._panels[-1].close_command is not None:
+                top = self._panels[-1]
+                self._main.after(0, lambda: self._close_panel(top))
+                return "break"
             self._main.after(0, self.raise_all)
             if self._panels:
                 win = self._panels[-1].win

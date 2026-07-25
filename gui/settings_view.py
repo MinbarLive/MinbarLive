@@ -103,9 +103,11 @@ class SettingsViewMixin:
             pass
 
         if self._use_integrated_windows():
-            # No floating ✕ — scrolled cards would slide underneath it; a
-            # fixed top strip below holds the close button instead.
-            self._modal_host.present(win, 500, 620, close_command=win.destroy)
+            # Floating ✕ pinned top-right; the hero line + cards scroll under
+            # it like any normal window.
+            self._modal_host.present(
+                win, 500, 620, close_command=win.destroy, close_button=True
+            )
         else:
             win.title(self.gui_texts.get("settings_title", "Settings"))
             win.resizable(False, False)
@@ -132,30 +134,6 @@ class SettingsViewMixin:
         _cmb_start = len(self._combos)
         _chk_start = len(self._checkboxes)
 
-        # Integrated panel: a fixed strip above the scroll holds the ✕, so
-        # scrolled content never slides underneath a floating button.
-        if self._modal_host.is_presented(win):
-            self._settings_top_bar = ctk.CTkFrame(
-                win, fg_color=self._colors["sidebar"], height=44, corner_radius=0
-            )
-            self._settings_top_bar.pack(fill="x", side="top")
-            close_btn = ctk.CTkButton(
-                self._settings_top_bar,
-                text="✕",
-                command=win.destroy,
-                width=32,
-                height=32,
-                corner_radius=16,
-                font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
-                fg_color=self._colors["button"],
-                hover_color=self._colors["button_hover"],
-                text_color=self._colors["text"],
-            )
-            close_btn.pack(side="right", padx=14, pady=6)
-            self._settings_buttons.append(close_btn)
-        else:
-            self._settings_top_bar = None
-
         # Bottom bar (packed before scroll so it anchors to the bottom)
         self._settings_bottom_bar = ctk.CTkFrame(
             win,
@@ -173,7 +151,8 @@ class SettingsViewMixin:
         win.after(300, lambda: self._setup_autohide_scrollbar(self._settings_scroll))
         scroll = self._settings_scroll
 
-        # App info header
+        # App info header — scrolls with the content like any window; the
+        # floating ✕ stays pinned over it (integrated mode).
         info_label = ctk.CTkLabel(
             scroll,
             text=f"MinbarLive  —  v{__version__}",
@@ -307,8 +286,8 @@ class SettingsViewMixin:
         self.window_style_segment = ctk.CTkSegmentedButton(
             appearance_card,
             values=[
-                self.gui_texts.get("window_style_integrated", "Integrated"),
                 self.gui_texts.get("window_style_windowed", "Windows"),
+                self.gui_texts.get("window_style_integrated", "Integrated"),
             ],
             command=self._on_window_style_change,
             height=44,

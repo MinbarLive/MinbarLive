@@ -753,11 +753,15 @@ class TestSettingsRemoveKeyGating:
 
 
 class TestIntegratedWindows:
-    """The window_style setting: in-app panels (default) vs separate windows."""
+    """The window_style setting: separate windows (default, while integrated
+    mode is still tested on Linux) vs in-app panels."""
 
-    def test_settings_opens_as_in_app_panel_by_default(self, make_gui):
+    def test_windowed_is_the_default(self, make_gui):
         gui, _c, settings = make_gui()
-        assert settings.window_style == "integrated"
+        assert settings.window_style == "windowed"
+
+    def test_integrated_opens_as_in_app_panel(self, make_gui):
+        gui, _c, _s = make_gui(window_style="integrated")
         gui._open_settings_window()
         gui.update_idletasks()
         win = gui._settings_win
@@ -770,7 +774,7 @@ class TestIntegratedWindows:
         # Drives the host's Escape handler directly — a synthesized key event
         # needs a mapped + focused window, and this file never pumps the event
         # loop (see the module docstring).
-        gui, _c, _s = make_gui()
+        gui, _c, _s = make_gui(window_style="integrated")
         gui._open_settings_window()
         gui.update_idletasks()
         gui._modal_host._on_escape()
@@ -790,7 +794,7 @@ class TestIntegratedWindows:
         assert gui._modal_host._overlay is None
 
     def test_segment_round_trips_the_setting(self, make_gui):
-        gui, _c, settings = make_gui()
+        gui, _c, settings = make_gui(window_style="integrated")
         gui._open_settings_window()
         gui.update_idletasks()
         gui._on_window_style_change(
@@ -803,7 +807,7 @@ class TestIntegratedWindows:
         assert settings.window_style == "integrated"
 
     def test_announce_panel_routes_resize_through_the_host(self, make_gui):
-        gui, _c, _s = make_gui()
+        gui, _c, _s = make_gui(window_style="integrated")
         gui._open_announce_window()
         gui.update_idletasks()
         win = gui._announce_win

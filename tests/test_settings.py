@@ -289,28 +289,29 @@ class TestSubtitleHideMode:
 
 
 class TestWindowStyle:
-    def test_default_is_integrated(self):
-        assert Settings().window_style == "integrated"
+    def test_default_is_windowed(self):
+        # Integrated mode is still being tested on Linux (see the dataclass).
+        assert Settings().window_style == "windowed"
 
-    def test_round_trip_windowed(self, tmp_path, monkeypatch):
+    def test_round_trip_integrated(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             settings_module, "_settings_path", lambda: tmp_path / "settings.json"
         )
         settings_module._cached_settings = None
-        save_settings(Settings(window_style="windowed"))
+        save_settings(Settings(window_style="integrated"))
         settings_module._cached_settings = None
         try:
-            assert load_settings(use_cache=False).window_style == "windowed"
+            assert load_settings(use_cache=False).window_style == "integrated"
         finally:
             settings_module._cached_settings = None
 
-    def test_invalid_value_falls_back_to_integrated(self, tmp_path, monkeypatch):
+    def test_invalid_value_falls_back_to_windowed(self, tmp_path, monkeypatch):
         path = tmp_path / "settings.json"
         path.write_text(json.dumps({"window_style": "floating"}), encoding="utf-8")
         monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
         settings_module._cached_settings = None
         try:
-            assert load_settings(use_cache=False).window_style == "integrated"
+            assert load_settings(use_cache=False).window_style == "windowed"
         finally:
             settings_module._cached_settings = None
 

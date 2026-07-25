@@ -3720,13 +3720,6 @@ class AppGUI(
             self._settings_win.configure(fg_color=self._colors["app_bg"])
             self._settings_scroll.configure(fg_color=self._colors["sidebar"])
             self._settings_bottom_bar.configure(fg_color=self._colors["sidebar"])
-            if getattr(self, "_settings_top_bar", None) is not None:
-                try:
-                    self._settings_top_bar.configure(
-                        fg_color=self._colors["sidebar"]
-                    )
-                except Exception:
-                    pass
             for label in getattr(self, "_settings_labels", []):
                 try:
                     label.configure(text_color=self._colors["text"])
@@ -3910,8 +3903,8 @@ class AppGUI(
             try:
                 self.window_style_segment.configure(
                     values=[
-                        self.gui_texts.get("window_style_integrated", "Integrated"),
                         self.gui_texts.get("window_style_windowed", "Windows"),
+                        self.gui_texts.get("window_style_integrated", "Integrated"),
                     ]
                 )
                 self.window_style_segment.set(
