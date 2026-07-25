@@ -752,6 +752,69 @@ class TestSettingsRemoveKeyGating:
         assert removed == ["openai"]
 
 
+class TestIntegratedWindows:
+    """The window_style setting: in-app panels (default) vs separate windows."""
+
+    def test_settings_opens_as_in_app_panel_by_default(self, make_gui):
+        gui, _c, settings = make_gui()
+        assert settings.window_style == "integrated"
+        gui._open_settings_window()
+        gui.update_idletasks()
+        win = gui._settings_win
+        assert gui._modal_host.is_presented(win)
+        assert bool(win.overrideredirect())
+        overlay = gui._modal_host._overlay
+        assert overlay is not None and overlay.winfo_exists()
+
+    def test_escape_closes_the_panel_and_hides_the_overlay(self, make_gui):
+        # Drives the host's Escape handler directly — a synthesized key event
+        # needs a mapped + focused window, and this file never pumps the event
+        # loop (see the module docstring).
+        gui, _c, _s = make_gui()
+        gui._open_settings_window()
+        gui.update_idletasks()
+        gui._modal_host._on_escape()
+        gui.update_idletasks()
+        assert not gui._settings_win_exists()
+        assert gui._modal_host.active is False
+        overlay = gui._modal_host._overlay
+        assert overlay is not None and overlay.state() == "withdrawn"
+
+    def test_windowed_mode_keeps_separate_windows(self, make_gui):
+        gui, _c, _s = make_gui(window_style="windowed")
+        gui._open_settings_window()
+        gui.update_idletasks()
+        win = gui._settings_win
+        assert not gui._modal_host.is_presented(win)
+        assert not bool(win.overrideredirect())
+        assert gui._modal_host._overlay is None
+
+    def test_segment_round_trips_the_setting(self, make_gui):
+        gui, _c, settings = make_gui()
+        gui._open_settings_window()
+        gui.update_idletasks()
+        gui._on_window_style_change(
+            gui.gui_texts.get("window_style_windowed", "Windows")
+        )
+        assert settings.window_style == "windowed"
+        gui._on_window_style_change(
+            gui.gui_texts.get("window_style_integrated", "Integrated")
+        )
+        assert settings.window_style == "integrated"
+
+    def test_announce_panel_routes_resize_through_the_host(self, make_gui):
+        gui, _c, _s = make_gui()
+        gui._open_announce_window()
+        gui.update_idletasks()
+        win = gui._announce_win
+        assert gui._modal_host.is_presented(win)
+        # The natural-height resize must not screen-centre an in-app panel.
+        gui._resize_announce_window()
+        assert gui._modal_host.is_presented(win)
+        gui._close_announce_window()
+        assert gui._modal_host.active is False
+
+
 class TestLocalizationAndTheme:
     def test_gui_language_switch_reloads_texts(self, make_gui):
         """The language dropdown lives in the settings window, and

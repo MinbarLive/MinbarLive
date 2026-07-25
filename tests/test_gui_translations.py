@@ -144,6 +144,10 @@ WIZARD_KEYS = [
     "api_key_select_provider",
     "update_available",
     "check_updates_on_launch",
+    "integrated_windows_hint",
+    "window_style_label",
+    "window_style_integrated",
+    "window_style_windowed",
     # Settings window sections
     "settings_general",
     "settings_appearance",

@@ -73,14 +73,23 @@ class HistoryViewMixin:
             return
 
         win = ctk.CTkToplevel(self)
-        win.title(self.gui_texts.get("history_title", "Session History"))
         win.configure(fg_color=self._colors["app_bg"])
 
-        win.after(200, lambda: self._set_toplevel_icon(win))
-        win.transient(self)
-        self.update_idletasks()
-        x, y = centered_position(self, 900, 560)
-        win.geometry(f"900x560+{x}+{y}")
+        if self._use_integrated_windows():
+            self._modal_host.present(
+                win,
+                900,
+                560,
+                close_command=self._close_history_window,
+                close_button=True,
+            )
+        else:
+            win.title(self.gui_texts.get("history_title", "Session History"))
+            win.after(200, lambda: self._set_toplevel_icon(win))
+            win.transient(self)
+            self.update_idletasks()
+            x, y = centered_position(self, 900, 560)
+            win.geometry(f"900x560+{x}+{y}")
         self._history_win = win
         self._history_active_tab = initial_tab
         self._history_selected_session = None
@@ -969,15 +978,24 @@ class HistoryViewMixin:
 
     def _open_summary_dialog(self, session: HistorySession) -> None:
         win = ctk.CTkToplevel(self)
-        win.title(self.gui_texts.get("summary_title", "Summarise session"))
         win.configure(fg_color=self._colors["app_bg"])
-        win.after(200, lambda: self._set_toplevel_icon(win))
-        win.transient(self._history_win if self._history_win_exists() else self)
-        self.update_idletasks()
         w, h = 520, 430
-        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
-        y = self.winfo_rooty() + (self.winfo_height() - h) // 2
-        win.geometry(f"{w}x{h}+{x}+{y}")
+        if self._use_integrated_windows():
+            self._modal_host.present(
+                win,
+                w,
+                h,
+                close_command=self._close_summary_window,
+                close_button=True,
+            )
+        else:
+            win.title(self.gui_texts.get("summary_title", "Summarise session"))
+            win.after(200, lambda: self._set_toplevel_icon(win))
+            win.transient(self._history_win if self._history_win_exists() else self)
+            self.update_idletasks()
+            x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+            y = self.winfo_rooty() + (self.winfo_height() - h) // 2
+            win.geometry(f"{w}x{h}+{x}+{y}")
         win.grid_columnconfigure(0, weight=1)
         win.grid_rowconfigure(4, weight=1)
         self._summary_win = win

@@ -346,6 +346,12 @@ def _load_subtitle_text_color(value: object) -> str:
 SUBTITLE_HIDE_MODES = ("never", "stopped", "always")
 ALWAYS_ON_TOP_MODES = ("never", "running", "always")
 
+# How the control panel's secondary windows (settings, history, batch,
+# announcement, dialogs) open: locked inside the main window over a dim
+# overlay ("integrated", Discord-style, the default) or as classic separate
+# OS windows ("windowed").
+WINDOW_STYLES = ("integrated", "windowed")
+
 
 @dataclass
 class Settings:
@@ -404,6 +410,9 @@ class Settings:
     #   "always"  – topmost whenever the overlay is open (running or stopped).
     # The control panel is topmost only while a subtitle overlay is open.
     always_on_top_mode: str = "running"
+    # Secondary windows open inside the main window over a dim overlay
+    # ("integrated") or as classic separate OS windows ("windowed").
+    window_style: str = "integrated"
     # Voice-activity noise filter (audio/vad.py): skip/zero-fill non-speech
     # audio (static, hum) that the loudness-based silence gate lets through.
     noise_filter: bool = True
@@ -581,6 +590,10 @@ def load_settings(use_cache: bool = True) -> Settings:
             always_on_top_mode = "never"
         else:
             always_on_top_mode = "running"
+        raw_window_style = data.get("window_style")
+        window_style = (
+            raw_window_style if raw_window_style in WINDOW_STYLES else "integrated"
+        )
         font_size_base = data.get("font_size_base", 40)
         _cached_settings = Settings(
             monitor_index=data.get("monitor_index", 1),
@@ -626,6 +639,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             show_interim_transcript=data.get("show_interim_transcript", False),
             islamic_mode=data.get("islamic_mode", True),
             always_on_top_mode=always_on_top_mode,
+            window_style=window_style,
             noise_filter=data.get("noise_filter", True),
             adaptive_subtitle_catchup=data.get("adaptive_subtitle_catchup", True),
             # Migrate the old single flag: an existing user who had cleanup on
@@ -697,6 +711,7 @@ def save_settings(settings: Settings) -> None:
         "show_interim_transcript": settings.show_interim_transcript,
         "islamic_mode": settings.islamic_mode,
         "always_on_top_mode": settings.always_on_top_mode,
+        "window_style": settings.window_style,
         "noise_filter": settings.noise_filter,
         "adaptive_subtitle_catchup": settings.adaptive_subtitle_catchup,
         "auto_cleanup_logs": settings.auto_cleanup_logs,

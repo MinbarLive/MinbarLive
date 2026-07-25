@@ -92,8 +92,6 @@ class SettingsViewMixin:
             return
 
         win = ctk.CTkToplevel(self)
-        win.title(self.gui_texts.get("settings_title", "Settings"))
-        win.resizable(False, False)
         win.configure(fg_color=self._colors["app_bg"])
         # Build fully transparent to hide the white first-paint flash, then fade
         # to opaque once themed. Alpha (not withdraw()) so the window is never
@@ -104,11 +102,18 @@ class SettingsViewMixin:
         except tk.TclError:
             pass
 
-        win.after(200, lambda: self._set_toplevel_icon(win))
-        win.transient(self)
-        self.update_idletasks()
-        x, y = centered_position(self, 500, 620)
-        win.geometry(f"500x620+{x}+{y}")
+        if self._use_integrated_windows():
+            # No floating ✕ — scrolled cards would slide underneath it; a
+            # fixed top strip below holds the close button instead.
+            self._modal_host.present(win, 500, 620, close_command=win.destroy)
+        else:
+            win.title(self.gui_texts.get("settings_title", "Settings"))
+            win.resizable(False, False)
+            win.after(200, lambda: self._set_toplevel_icon(win))
+            win.transient(self)
+            self.update_idletasks()
+            x, y = centered_position(self, 500, 620)
+            win.geometry(f"500x620+{x}+{y}")
         self._settings_win = win
         self._settings_labels = []
         self._settings_muted_labels = []
@@ -126,6 +131,30 @@ class SettingsViewMixin:
         _btn_start = len(self._buttons)
         _cmb_start = len(self._combos)
         _chk_start = len(self._checkboxes)
+
+        # Integrated panel: a fixed strip above the scroll holds the ✕, so
+        # scrolled content never slides underneath a floating button.
+        if self._modal_host.is_presented(win):
+            self._settings_top_bar = ctk.CTkFrame(
+                win, fg_color=self._colors["sidebar"], height=44, corner_radius=0
+            )
+            self._settings_top_bar.pack(fill="x", side="top")
+            close_btn = ctk.CTkButton(
+                self._settings_top_bar,
+                text="✕",
+                command=win.destroy,
+                width=32,
+                height=32,
+                corner_radius=16,
+                font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+                fg_color=self._colors["button"],
+                hover_color=self._colors["button_hover"],
+                text_color=self._colors["text"],
+            )
+            close_btn.pack(side="right", padx=14, pady=6)
+            self._settings_buttons.append(close_btn)
+        else:
+            self._settings_top_bar = None
 
         # Bottom bar (packed before scroll so it anchors to the bottom)
         self._settings_bottom_bar = ctk.CTkFrame(
@@ -265,8 +294,61 @@ class SettingsViewMixin:
             )
         )
         self.subtitle_theme_segment.grid(
-            row=4, column=0, sticky="ew", padx=18, pady=(0, 18)
+            row=4, column=0, sticky="ew", padx=18, pady=(0, 12)
         )
+
+        # Window style: in-app panels over a dim overlay (Discord-style) vs
+        # classic separate OS windows. Applies to windows opened after the
+        # change; a window that is already open keeps its style.
+        window_style_label = self._label(
+            appearance_card, "window_style_label", size=14, weight="bold"
+        )
+        window_style_label.grid(row=5, column=0, sticky="w", padx=20, pady=(0, 4))
+        self.window_style_segment = ctk.CTkSegmentedButton(
+            appearance_card,
+            values=[
+                self.gui_texts.get("window_style_integrated", "Integrated"),
+                self.gui_texts.get("window_style_windowed", "Windows"),
+            ],
+            command=self._on_window_style_change,
+            height=44,
+            corner_radius=16,
+            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            fg_color=self._colors["button"],
+            selected_color=self._colors["accent"],
+            selected_hover_color=self._colors["accent_hover"],
+            unselected_color=self._colors["button"],
+            unselected_hover_color=self._colors["button_hover"],
+            text_color=self._colors["text"],
+        )
+        self.window_style_segment.set(
+            self.gui_texts.get(
+                "window_style_integrated"
+                if self._saved_settings.window_style == "integrated"
+                else "window_style_windowed",
+                "Integrated",
+            )
+        )
+        self.window_style_segment.grid(
+            row=6, column=0, sticky="ew", padx=18, pady=(0, 6)
+        )
+
+        window_style_hint = ctk.CTkLabel(
+            appearance_card,
+            text=self.gui_texts.get(
+                "integrated_windows_hint",
+                "Open settings, history and batch inside the main window "
+                "(Esc closes) instead of as separate windows.",
+            ),
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=self._colors["muted"],
+            anchor="w",
+            justify="left",
+            wraplength=420,
+        )
+        window_style_hint.grid(row=7, column=0, sticky="w", padx=22, pady=(0, 18))
+        window_style_hint._text_key = "integrated_windows_hint"  # type: ignore[attr-defined]
+        self._settings_muted_labels.append(window_style_hint)
 
         # ── Card: Islamic mode ───────────────────────────────────────────
         # One switch. Turning it OFF asks for confirmation (so it can't be
@@ -485,6 +567,17 @@ class SettingsViewMixin:
         log(f"Update check on startup: {'on' if enabled else 'off'}", level="INFO")
         self._save_current_settings()
 
+    def _on_window_style_change(self, value: str) -> None:
+        integrated = value == self.gui_texts.get(
+            "window_style_integrated", "Integrated"
+        )
+        self._saved_settings.window_style = "integrated" if integrated else "windowed"
+        log(
+            f"Window style: {'integrated' if integrated else 'windowed'}",
+            level="INFO",
+        )
+        self._save_current_settings()
+
     def _on_settings_change_key(self) -> None:
         provider = self._selected_api_key_provider()
         if provider is None:
@@ -519,6 +612,9 @@ class SettingsViewMixin:
             colors=self._colors,
             texts=self.gui_texts,
             provider=provider,
+            modal_host=(
+                self._modal_host if self._use_integrated_windows() else None
+            ),
         )
         self._refresh_api_key_status()
 
