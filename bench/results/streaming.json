@@ -1,0 +1,389 @@
+{
+  "meta": {
+    "provider": "openai",
+    "model": "gpt-5.2",
+    "source_language": "Arabic",
+    "target_language": "German",
+    "temperature": "0",
+    "mode": "stream",
+    "n_repeats": 5,
+    "date": "2026-07-25T00:26:39.794769+00:00",
+    "git_commit": "fb756b9"
+  },
+  "per_entry": [
+    {
+      "id": "predigt_short_1",
+      "kategorie": "predigt_short",
+      "t_total": [
+        2.0221,
+        0.7999,
+        0.822,
+        0.8751,
+        0.8459
+      ],
+      "t_first": [
+        1.8267,
+        0.6255,
+        0.6387,
+        0.6785,
+        0.6529
+      ],
+      "output": "Alles Lob gebührt Allah ﷻ, dem Herrn der Welten.",
+      "bypassed": false
+    },
+    {
+      "id": "predigt_short_2",
+      "kategorie": "predigt_short",
+      "t_total": [
+        0.901,
+        0.8735,
+        1.1448,
+        0.9717,
+        0.9444
+      ],
+      "t_first": [
+        0.6113,
+        0.628,
+        0.9395,
+        0.6077,
+        0.7037
+      ],
+      "output": "Fürchtet Allahﷻ, ihr Diener Allahs.",
+      "bypassed": false
+    },
+    {
+      "id": "predigt_medium_1",
+      "kategorie": "predigt_medium",
+      "t_total": [
+        1.1438,
+        1.4407,
+        1.4626,
+        1.281,
+        1.3486
+      ],
+      "t_first": [
+        0.5688,
+        0.6704,
+        0.8299,
+        0.6184,
+        0.6335
+      ],
+      "output": "Ich ermahne euch und mich selbst zur Taqwa gegenüber Allah ﷻ, im Verborgenen wie in der Öffentlichkeit; denn sie ist Allahs ﷻ Vermächtnis an die Früheren und die Späteren.",
+      "bypassed": false
+    },
+    {
+      "id": "predigt_medium_2",
+      "kategorie": "predigt_medium",
+      "t_total": [
+        1.271,
+        1.2067,
+        1.6063,
+        1.4132,
+        1.3729
+      ],
+      "t_first": [
+        0.5695,
+        0.5771,
+        0.6524,
+        0.7212,
+        0.6027
+      ],
+      "output": "Gewiss, diese Dunja ist eine Durchgangsstation und keine bleibende Wohnstätte. So handelt für eure Akhira, bevor ein Tag kommt, an dem weder Besitz noch Kinder nützen.",
+      "bypassed": false
+    },
+    {
+      "id": "predigt_medium_3",
+      "kategorie": "predigt_medium",
+      "t_total": [
+        1.19,
+        1.2917,
+        1.372,
+        1.3248,
+        1.1551
+      ],
+      "t_first": [
+        0.5734,
+        0.612,
+        0.6285,
+        0.6781,
+        0.6105
+      ],
+      "output": "Zu den größten Ursachen für das Glück des Herzens gehören das beständige Gedenken Allahs ﷻ und das häufige Bitten um Vergebung (Istighfar) in allen Lebenslagen.",
+      "bypassed": false
+    },
+    {
+      "id": "quran_hint_1",
+      "kategorie": "quran_hint",
+      "t_total": [
+        1.3705,
+        1.5131,
+        1.2722,
+        1.1931,
+        1.2458
+      ],
+      "t_first": [
+        0.5969,
+        0.73,
+        0.7236,
+        0.5998,
+        0.6648
+      ],
+      "output": "Und unser Herr ﷻ sagt in Seiner eindeutigen Offenbarung: „Gewiss, mit der Erschwernis kommt Erleichterung.“ So freut euch auf die nahe Befreiung.",
+      "bypassed": false
+    },
+    {
+      "id": "quran_hint_2",
+      "kategorie": "quran_hint",
+      "t_total": [
+        1.2957,
+        1.2563,
+        1.1559,
+        1.2843,
+        1.2585
+      ],
+      "t_first": [
+        0.7721,
+        0.6332,
+        0.6467,
+        0.6514,
+        0.6417
+      ],
+      "output": "Und gedenkt Seines Wortes: „Und seid standhaft geduldig; gewiss, Allah ﷻ ist mit den Standhaft-Geduldigen“ – zu jeder Zeit und an jedem Ort.",
+      "bypassed": false
+    },
+    {
+      "id": "codeswitch_1",
+      "kategorie": "codeswitch",
+      "t_total": [
+        0.9198,
+        0.929,
+        1.071,
+        0.928,
+        0.693
+      ],
+      "t_first": [
+        0.5988,
+        0.6963,
+        0.6836,
+        0.6043,
+        0.5335
+      ],
+      "output": "Wir sind heute in der Stadt München und sprechen über die Bedeutung der Salah im Leben des Muslims.",
+      "bypassed": false
+    },
+    {
+      "id": "codeswitch_2",
+      "kategorie": "codeswitch",
+      "t_total": [
+        0.7969,
+        0.7467,
+        0.7996,
+        0.8638,
+        0.747
+      ],
+      "t_first": [
+        0.6165,
+        0.5839,
+        0.6122,
+        0.6803,
+        0.5837
+      ],
+      "output": "Bruder Ahmad wird die Khutbah in Kürze ins Deutsche übersetzen.",
+      "bypassed": false
+    },
+    {
+      "id": "dauersatz_1",
+      "kategorie": "dauersatz",
+      "t_total": [
+        2.6887,
+        2.6564,
+        2.4587,
+        2.602,
+        2.5194
+      ],
+      "t_first": [
+        0.6052,
+        0.5904,
+        0.6183,
+        0.9186,
+        0.6655
+      ],
+      "output": "Wisst – Allah erbarme sich eurer –, dass der Mensch in diesem diesseitigen Leben mit Gutem und Schlechtem, mit Reichtum und Armut, mit Gesundheit und Krankheit geprüft wird, damit die Wahrhaftigkeit seines Iman und sein gutes Tawakkul auf seinen Herrn sichtbar werden. Wer bei der Prüfung geduldig ist und in Zeiten der Erleichterung dankbar, der hat wahrlich einen gewaltigen Erfolg errungen und das Wohlgefallen Allahs ﷻ in beiden Welten erlangt.",
+      "bypassed": false
+    },
+    {
+      "id": "dauersatz_2",
+      "kategorie": "dauersatz",
+      "t_total": [
+        2.1224,
+        2.1623,
+        2.0989,
+        1.9825,
+        1.9887
+      ],
+      "t_first": [
+        0.5784,
+        0.6206,
+        0.6385,
+        0.5917,
+        0.5852
+      ],
+      "output": "Zu den Zeichen der Liebe des Dieners zu seinem Herrn gehört, dass er die fünf Pflichtgebete zu ihren Zeiten in Gemeinschaft verrichtet, die Verwandtschaftsbande pflegt, seinen Nachbarn Gutes erweist, den Menschen keinen Schaden zufügt und sich – soweit er dazu einen Weg findet – Tag und Nacht bemüht, die Anliegen seiner muslimischen Brüder zu erfüllen.",
+      "bypassed": false
+    },
+    {
+      "id": "fragment_1",
+      "kategorie": "fragment",
+      "t_total": [
+        0.6901,
+        0.8112,
+        0.7437,
+        0.8864,
+        0.9255
+      ],
+      "t_first": [
+        0.6088,
+        0.6566,
+        0.6033,
+        0.7445,
+        0.7696
+      ],
+      "output": "Subhanallah wa bi-hamdihi.",
+      "bypassed": false
+    },
+    {
+      "id": "fragment_2",
+      "kategorie": "fragment",
+      "t_total": [
+        0.6842,
+        0.6905,
+        0.7402,
+        0.7429,
+        0.8462
+      ],
+      "t_first": [
+        0.5756,
+        0.6378,
+        0.6286,
+        0.6627,
+        0.624
+      ],
+      "output": "Und danach,",
+      "bypassed": false
+    }
+  ],
+  "per_category": {
+    "codeswitch": {
+      "t_total": {
+        "median": 0.8317,
+        "p90": 0.929,
+        "min": 0.693,
+        "max": 1.071,
+        "n": 10
+      },
+      "t_first": {
+        "median": 0.6083,
+        "p90": 0.6836,
+        "min": 0.5335,
+        "max": 0.6963,
+        "n": 10
+      }
+    },
+    "dauersatz": {
+      "t_total": {
+        "median": 2.3105,
+        "p90": 2.6564,
+        "min": 1.9825,
+        "max": 2.6887,
+        "n": 10
+      },
+      "t_first": {
+        "median": 0.6118,
+        "p90": 0.6655,
+        "min": 0.5784,
+        "max": 0.9186,
+        "n": 10
+      }
+    },
+    "fragment": {
+      "t_total": {
+        "median": 0.7433,
+        "p90": 0.8864,
+        "min": 0.6842,
+        "max": 0.9255,
+        "n": 10
+      },
+      "t_first": {
+        "median": 0.6332,
+        "p90": 0.7445,
+        "min": 0.5756,
+        "max": 0.7696,
+        "n": 10
+      }
+    },
+    "predigt_medium": {
+      "t_total": {
+        "median": 1.3248,
+        "p90": 1.4626,
+        "min": 1.1438,
+        "max": 1.6063,
+        "n": 15
+      },
+      "t_first": {
+        "median": 0.6184,
+        "p90": 0.7212,
+        "min": 0.5688,
+        "max": 0.8299,
+        "n": 15
+      }
+    },
+    "predigt_short": {
+      "t_total": {
+        "median": 0.888,
+        "p90": 1.1448,
+        "min": 0.7999,
+        "max": 2.0221,
+        "n": 10
+      },
+      "t_first": {
+        "median": 0.6458,
+        "p90": 0.9395,
+        "min": 0.6077,
+        "max": 1.8267,
+        "n": 10
+      }
+    },
+    "quran_hint": {
+      "t_total": {
+        "median": 1.2654,
+        "p90": 1.3705,
+        "min": 1.1559,
+        "max": 1.5131,
+        "n": 10
+      },
+      "t_first": {
+        "median": 0.649,
+        "p90": 0.73,
+        "min": 0.5969,
+        "max": 0.7721,
+        "n": 10
+      }
+    }
+  },
+  "global": {
+    "t_total": {
+      "median": 1.19,
+      "p90": 2.1224,
+      "min": 0.6842,
+      "max": 2.6887,
+      "n": 65
+    },
+    "t_first": {
+      "median": 0.6285,
+      "p90": 0.7445,
+      "min": 0.5335,
+      "max": 1.8267,
+      "n": 65
+    }
+  }
+}

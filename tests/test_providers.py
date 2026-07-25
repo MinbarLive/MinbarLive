@@ -935,6 +935,71 @@ class TestOpenAITranslationProvider:
         assert out == "cut off"
         assert "WARNING" in logged
 
+    def _stream_client(self, monkeypatch, chunks):
+        client = MagicMock()
+        client.chat.completions.create.return_value = iter(chunks)
+        monkeypatch.setattr(openai_translation, "get_client", lambda: client)
+        monkeypatch.setattr(
+            openai_translation, "record_openai_chat_response",
+            lambda *a, **k: None,
+        )
+        return client
+
+    @staticmethod
+    def _delta_chunk(text):
+        return SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(delta=SimpleNamespace(content=text))],
+        )
+
+    @staticmethod
+    def _usage_chunk():
+        # The include_usage tail: usage set, no choices.
+        return SimpleNamespace(usage=SimpleNamespace(prompt_tokens=1), choices=[])
+
+    def test_streaming_calls_on_delta_and_assembles(self, monkeypatch):
+        chunks = [
+            self._delta_chunk("Hallo "),
+            self._delta_chunk("Welt"),
+            self._usage_chunk(),
+        ]
+        client = self._stream_client(monkeypatch, chunks)
+        seen = []
+        out = OpenAITranslationProvider().complete(
+            model="m", user_prompt="usr", on_delta=seen.append
+        )
+        # Streamed fragments equal the returned text (no dropped/dup tokens).
+        assert seen == ["Hallo ", "Welt"]
+        assert out == "Hallo Welt"
+        # include_usage must be requested or cost tracking would go blind.
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["stream"] is True
+        assert kwargs["stream_options"] == {"include_usage": True}
+
+    def test_streaming_error_falls_back_to_blocking(self, monkeypatch):
+        client = MagicMock()
+        client.chat.completions.create.side_effect = RuntimeError("stream boom")
+        monkeypatch.setattr(openai_translation, "get_client", lambda: client)
+
+        def fake_blocking(**kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="blocked"))]
+            )
+
+        monkeypatch.setattr(openai_translation, "create_chat_completion", fake_blocking)
+        monkeypatch.setattr(
+            openai_translation, "record_openai_chat_response", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            openai_translation, "log", lambda *a, **k: None
+        )
+        seen = []
+        out = OpenAITranslationProvider().complete(
+            model="m", user_prompt="usr", on_delta=seen.append
+        )
+        # A dead stream still returns a translation (degrades to "waits").
+        assert out == "blocked"
+
 
 class TestOpenAITranscriptionProvider:
     """Request construction for the transcription API."""

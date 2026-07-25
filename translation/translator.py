@@ -13,6 +13,7 @@ Same-language mode (source == target):
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from difflib import SequenceMatcher
 
 from config import (
@@ -488,6 +489,7 @@ def translate_text(
     provider: str | None = None,
     source_language: str | None = None,
     target_language: str | None = None,
+    on_delta: Callable[[str], None] | None = None,
 ) -> str:
     """
     Translate mosque audio transcription to the configured target language.
@@ -638,6 +640,7 @@ def translate_text(
                     model=model,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
+                    on_delta=on_delta,
                 )
 
             translation = retry_with_backoff(

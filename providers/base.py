@@ -107,8 +107,16 @@ class TranslationProvider(Protocol):
         system_prompt: str | None = None,
         max_output_tokens: int | None = None,
         temperature: float | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> str:
         """Generate text from a system/user prompt pair.
+
+        Args:
+            on_delta: If given, the provider streams the completion and calls
+                this with each text fragment as it arrives (for live subtitles
+                that show words as they are generated instead of waiting for the
+                whole answer). The full text is still returned at the end.
+                Providers that cannot stream may ignore it and return normally.
 
         Returns:
             The generated text, stripped of surrounding whitespace.
