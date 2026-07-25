@@ -39,6 +39,13 @@ _DURATION_KEYS = [
 ]
 _DEFAULT_DURATION_INDEX = 1  # 30 seconds
 
+# Width the announcement card is laid out for, as a separate OS window and as
+# an in-app panel (logical units) — see BATCH_PANEL_MAX_W for the reasoning:
+# a modest bump so it doesn't look lost in a large main window, while the
+# height stays the content's natural height (favourites/recents vary).
+ANNOUNCE_WINDOW_W = 460
+ANNOUNCE_PANEL_MAX_W = 620
+
 
 class AnnounceViewMixin:
     """Announcement window + overlay lifecycle, hosted by AppGUI."""
@@ -91,7 +98,7 @@ class AnnounceViewMixin:
             # card header gets its own close button in _build_announce_widgets.
             self._modal_host.present(
                 win,
-                460,
+                ANNOUNCE_PANEL_MAX_W,
                 520,
                 close_command=self._close_announce_window,
             )
@@ -134,7 +141,7 @@ class AnnounceViewMixin:
             return
         win = self._announce_win
         win.update_idletasks()
-        w = 460
+        w = ANNOUNCE_WINDOW_W
         scaling = ctk.ScalingTracker.get_window_scaling(win)
         if self._modal_host.is_presented(win):
             # Integrated panel: natural height = the scroll host's content
@@ -142,7 +149,7 @@ class AnnounceViewMixin:
             # the host clamps + centres, extra content scrolls.
             content = self._announce_scroll
             h = int(content.winfo_reqheight() / scaling) + 6
-            self._modal_host.update_design_size(win, w, h)
+            self._modal_host.update_design_size(win, ANNOUNCE_PANEL_MAX_W, h)
             return
         h = int(win.winfo_reqheight() / scaling) + 1
         x, y = centered_position(self, w, h)

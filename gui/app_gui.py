@@ -38,7 +38,7 @@ from gui.dropdown import CustomDropdown
 from gui.history_view import HistoryViewMixin
 from gui.modal_host import ModalHost
 from gui.mousewheel import install_x11_mousewheel
-from gui.scaling import apply_display_scaling
+from gui.scaling import apply_display_scaling, window_work_area
 from gui.settings_view import SettingsViewMixin
 from gui.subtitle_window import SubtitleWindow
 from gui.typography import SubtitleTypographyMixin
@@ -178,6 +178,20 @@ class AppGUI(
     # Gap between card groups and around the grid (raw px, matches the gap
     # between two cards inside a group).
     _CARD_GAP = 18
+    # Width the sidebar keeps while the log panel is open, and the narrowest
+    # the log panel is still worth reading at (logical units). Opening the log
+    # inside a window that can't hold both grows the window to their sum —
+    # otherwise the panel gets whatever is left over, which in a small window
+    # was a column one character wide.
+    _SIDEBAR_W_WITH_LOG = 500
+    _LOG_PANEL_MIN_W = 340
+    # Font sizes an inline mode selector steps down through when its card is
+    # too narrow for the full-size labels: (title, segment), largest first.
+    # See _fit_inline_mode_selector.
+    _SEG_FIT_SIZES = ((14, 13), (13, 12), (12, 11), (11, 10))
+    # Chrome around a segment label (logical units) — the button's own padding
+    # plus the gap to its neighbour.
+    _SEG_LABEL_PADDING = 26
 
     def __init__(self, controller):
         self._saved_settings = load_settings()
@@ -3279,12 +3293,69 @@ class AppGUI(
             frame.grid_columnconfigure(1, weight=1)
             title.grid(row=0, column=0, sticky="w", padx=(2, 12))
             seg.grid(row=0, column=1, sticky="ew")
+            # Keep the one-line layout at every card width by printing smaller
+            # when it gets tight (see _fit_inline_mode_selector). Measuring
+            # copies, so the live fonts are set once, to the winning size.
+            frame._selector_parts = (title, seg)  # type: ignore[attr-defined]
+            frame._fit_probes = (  # type: ignore[attr-defined]
+                ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+                ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            )
+            frame.bind(
+                "<Configure>",
+                lambda e, f=frame: self._fit_inline_mode_selector(f, e.width),
+                add="+",
+            )
         else:
             frame.grid_columnconfigure(0, weight=1)
             title.grid(row=0, column=0, sticky="w", padx=2, pady=(0, 4))
             seg.grid(row=1, column=0, sticky="ew")
         self._segments.append(seg)
         return seg
+
+    def _fit_inline_mode_selector(self, frame, width: int | None = None) -> None:
+        """Shrink an inline selector's text until the title and all of its
+        segment labels fit on their shared row.
+
+        The row keeps its one-line layout at every card width — only the font
+        sizes step down. Without this the segment simply gets whatever the
+        title leaves over and clips its labels ("Immer" → "mmer") in the
+        narrower card grids. Sizes are measured with CTkFonts, whose size is
+        independent of display scaling, so the same steps apply at every DPI
+        and in every GUI language (where both texts change length).
+
+        ``width`` is the <Configure> event's width: during that event the
+        frame's own new size is known while its children are still laid out
+        for the previous one, so nothing here reads a child's position.
+        """
+        title, seg = frame._selector_parts
+        try:
+            scale = ctk.ScalingTracker.get_widget_scaling(frame) or 1.0
+        except Exception:
+            scale = 1.0
+        avail = (width if width is not None else frame.winfo_width()) / scale
+        values = list(seg.cget("values") or [])
+        if avail <= 1 or not values:  # not laid out yet / nothing to measure
+            return
+
+        probe_title, probe_seg = frame._fit_probes
+        text = title.cget("text")
+        chosen = self._SEG_FIT_SIZES[-1]
+        for sizes in self._SEG_FIT_SIZES:
+            probe_title.configure(size=sizes[0])
+            probe_seg.configure(size=sizes[1])
+            # padx(2, 12) around the title, plus a little slack.
+            per_label = (avail - probe_title.measure(text) - 16) / len(values)
+            widest = max(probe_seg.measure(v) for v in values)
+            if widest + self._SEG_LABEL_PADDING <= per_label:
+                chosen = sizes
+                break
+
+        title_font, seg_font = title.cget("font"), seg.cget("font")
+        if (title_font.cget("size"), seg_font.cget("size")) == chosen:
+            return  # already right — never re-render on every resize event
+        title_font.configure(size=chosen[0])
+        seg_font.configure(size=chosen[1])
 
     @staticmethod
     def _mode_from_label(
@@ -3325,6 +3396,9 @@ class AppGUI(
                 self._saved_settings.subtitle_hide_mode
             )]
         )
+        # Title and segment labels just changed length — what fitted in one
+        # language may not fit in the next (runs after the label texts above).
+        self._fit_inline_mode_selector(self.subtitle_hide_segment.master)
 
     def _set_advanced_visible(self, visible: bool) -> None:
         """Show/hide the Advanced body without re-running the card layout.
@@ -3356,6 +3430,36 @@ class AppGUI(
         # re-run the layout so grid re-measures. See _layout_sidebar_cards.
         self._layout_sidebar_cards()
 
+    def _work_area_logical(self) -> tuple[float, float]:
+        """The usable area of the monitor this window is on, in CTk logical
+        units — the units geometry() takes. Physical px / DPI scaling, so the
+        result means the same thing on a 1080p monitor at 100 % and a 4K one
+        at 200 %."""
+        _x, _y, w, h = window_work_area(self)
+        try:
+            scaling = ctk.ScalingTracker.get_window_scaling(self) or 1.0
+        except Exception:
+            scaling = 1.0
+        return w / scaling, h / scaling
+
+    def _keep_on_screen(self, width: int, height: int) -> None:
+        """Pull a just-grown window back onto its monitor. Sizing alone keeps
+        the top-left corner, so a window near the right or bottom edge grows
+        straight off the screen — with the log panel, off the edge the user
+        just made room for."""
+        try:
+            scaling = ctk.ScalingTracker.get_window_scaling(self) or 1.0
+        except Exception:
+            scaling = 1.0
+        area_x, area_y, area_w, area_h = window_work_area(self)
+        self.update_idletasks()
+        x, y = self.winfo_rootx(), self.winfo_rooty()
+        new_x = min(x, area_x + area_w - int(width * scaling))
+        new_y = min(y, area_y + area_h - int(height * scaling))
+        new_x, new_y = max(area_x, new_x), max(area_y, new_y)
+        if (new_x, new_y) != (x, y):
+            self.geometry(f"{width}x{height}+{new_x}+{new_y}")
+
     def _toggle_log_panel(self) -> None:
         self._log_collapsed = not self._log_collapsed
         self._saved_settings.log_panel_collapsed = self._log_collapsed
@@ -3382,11 +3486,23 @@ class AppGUI(
             self._log_toggle_btn.configure(text="▶")
         else:
             # Expanded: single-column sidebar + log panel (classic look).
-            self.grid_columnconfigure(0, weight=0, minsize=500)
+            self.grid_columnconfigure(0, weight=0, minsize=self._SIDEBAR_W_WITH_LOG)
             self.grid_columnconfigure(1, weight=1)
             self.content.grid()
             self.minsize(self._MIN_W, self._MIN_H)
+            # The log panel only gets what the 500px sidebar leaves over, so in
+            # a window narrower than both it opened as a sliver of one wrapped
+            # character per line. Make room for it instead — never beyond the
+            # monitor this window is on.
+            current_width = max(
+                current_width,
+                min(
+                    self._SIDEBAR_W_WITH_LOG + self._LOG_PANEL_MIN_W,
+                    int(self._work_area_logical()[0]),
+                ),
+            )
             self.geometry(f"{current_width}x{current_height}")
+            self._keep_on_screen(current_width, current_height)
             self._log_toggle_btn.configure(text="◀")
         self._layout_sidebar_cards()
         self._save_current_settings()

@@ -38,8 +38,17 @@ from gui.scaling import centered_position
 
 # A panel may occupy at most this fraction of the main window (per axis);
 # smaller main windows shrink the panels proportionally, larger ones never
-# stretch a panel past its design size.
-PANEL_FRACTION = 0.92
+# stretch a panel past the size it asks for.
+#
+# The size a call site passes is therefore the panel's *maximum* — what it
+# wants when there is room — not the size it opens at in a separate window.
+# The big view windows (history, settings, summary) ask for far more than
+# their windowed geometry so they actually grow on a large screen; the
+# form-shaped ones (batch, announcement) ask only for a modest width because
+# their content is laid out for a narrow card. Notification dialogs ask for
+# their design size plus a tenth (see utils/api_key_manager.py) and are
+# nowhere near the fraction, so they never scale with the main window.
+PANEL_FRACTION = 0.85
 
 # The dim layer's opacity (0 = invisible, 1 = solid black).
 DIM_ALPHA = 0.6
@@ -62,9 +71,11 @@ def clamped_panel_size(
     main_h: float,
     fraction: float = PANEL_FRACTION,
 ) -> tuple[int, int]:
-    """The size (logical units) a panel gets inside a main window: its design
-    size, clamped to ``fraction`` of the main window per axis, with a usability
-    floor. Pure function so the sizing rule is testable without a display."""
+    """The size (logical units) a panel gets inside a main window: the size it
+    asks for (``design_w``/``design_h``, i.e. its maximum — see
+    PANEL_FRACTION), clamped to ``fraction`` of the main window per axis, with
+    a usability floor. Pure function so the sizing rule is testable without a
+    display."""
     w = min(int(design_w), int(main_w * fraction))
     h = min(int(design_h), int(main_h * fraction))
     return max(MIN_PANEL_W, w), max(MIN_PANEL_H, h)

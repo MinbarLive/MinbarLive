@@ -67,6 +67,43 @@ def centered_position(parent, width: int, height: int) -> tuple[int, int]:
     return x, y
 
 
+def window_work_area(window) -> tuple[int, int, int, int]:
+    """``(x, y, width, height)`` in physical px of the usable area of the
+    monitor ``window`` currently sits on (taskbar excluded).
+
+    Per *monitor*, not per desktop: growing a window to fit "the screen" must
+    use the screen it is actually on, or a window on a small secondary display
+    is grown to the primary's width and half of it ends up off-screen.
+    Falls back to the primary work area, then to the full screen.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _MONITORINFO(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", wintypes.DWORD),
+                    ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT),
+                    ("dwFlags", wintypes.DWORD),
+                ]
+
+            hwnd = ctypes.windll.user32.GetAncestor(window.winfo_id(), 2)  # GA_ROOT
+            # MONITOR_DEFAULTTONEAREST — a window dragged half off-screen still
+            # resolves to the monitor it mostly covers.
+            monitor = ctypes.windll.user32.MonitorFromWindow(hwnd, 2)
+            info = _MONITORINFO()
+            info.cbSize = ctypes.sizeof(_MONITORINFO)
+            if ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                r = info.rcWork
+                return r.left, r.top, r.right - r.left, r.bottom - r.top
+        except Exception:
+            pass
+    w, h = _work_area(window)
+    return 0, 0, w, h
+
+
 def _work_area(window) -> tuple[int, int]:
     """Usable screen size in physical px, excluding the Windows taskbar."""
     if sys.platform == "win32":
