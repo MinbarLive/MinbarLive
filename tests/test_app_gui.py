@@ -65,20 +65,39 @@ def _build_with_tk_retry(build, attempts: int = 3):
             time.sleep(0.5)
 
 
-def _display_available() -> bool:
+def _probe_display() -> tuple[bool, bool]:
+    """Ask the display two questions with one throwaway root.
+
+    Returns ``(display available, per-window opacity applied)``. The first is
+    not just a skip guard: a transient failure here would silently skip every
+    test in this file and still report the run green.
+
+    Opacity is asked because X11 without a compositing manager (CI's xvfb)
+    accepts ``-alpha`` without raising and then reports 1.0 back whatever was
+    requested — the paint-before-reveal fade is a documented no-op on such a
+    display, and its *logic* is asserted via ``_reveal_pending`` instead.
+    """
     try:
-        # Not just a skip guard: a transient failure here would silently skip
-        # every test in this file and still report the run green.
         root = _build_with_tk_retry(tk.Tk)
     except Exception:
-        return False
+        return False, False
+    # Withdrawn: a mapped root flashes an empty box in the corner of the screen
+    # on every run. Alpha still round-trips while withdrawn.
+    root.withdraw()
+    try:
+        root.attributes("-alpha", 0.5)
+        alpha_applied = abs(float(root.attributes("-alpha")) - 0.5) < 0.01
+    except Exception:
+        alpha_applied = False
     root.destroy()
-    return True
+    return True, alpha_applied
 
 
 # The control panel needs a real display; skip rather than fail on headless CI.
+_DISPLAY_AVAILABLE, _ALPHA_HONOURED = _probe_display()
+
 pytestmark = pytest.mark.skipif(
-    not _display_available(), reason="no display available for GUI tests"
+    not _DISPLAY_AVAILABLE, reason="no display available for GUI tests"
 )
 
 
@@ -1558,6 +1577,12 @@ class TestPaintBeforeReveal:
     window therefore builds transparent and fades in one settle beat later.
     """
 
+    # Opacity can only be asserted where the platform applies it (see
+    # _probe_display); the reveal logic itself is checked everywhere.
+    _needs_alpha = pytest.mark.skipif(
+        not _ALPHA_HONOURED, reason="per-window opacity not applied by this display"
+    )
+
     @staticmethod
     def _alpha(win) -> float:
         return float(win.attributes("-alpha"))
@@ -1565,15 +1590,19 @@ class TestPaintBeforeReveal:
     def test_control_panel_is_built_transparent(self, make_gui):
         gui, _c, _s = make_gui()
         assert gui._reveal_pending is True
-        assert self._alpha(gui) == 0.0
+        if _ALPHA_HONOURED:
+            assert self._alpha(gui) == 0.0
 
     def test_surface_restore_does_not_show_an_unpainted_window(self, make_gui):
         """_restore_control_window_surface runs from an after_idle() during
         start-up; forcing the window opaque there would undo the guard."""
         gui, _c, _s = make_gui()
         gui._restore_control_window_surface()
-        assert self._alpha(gui) == 0.0
+        assert gui._reveal_pending is True
+        if _ALPHA_HONOURED:
+            assert self._alpha(gui) == 0.0
 
+    @_needs_alpha
     def test_surface_restore_still_repairs_a_revealed_window(self, make_gui):
         gui, _c, _s = make_gui()
         gui._reveal_pending = False
@@ -1602,11 +1631,14 @@ class TestPaintBeforeReveal:
 
         gui._reveal_control_window()
         assert [ms for ms, _fn in scheduled] == [gui._REVEAL_SETTLE_MS]
-        assert self._alpha(gui) == 0.0  # still hidden until the beat elapses
+        assert gui._reveal_pending is True  # still hidden until the beat elapses
+        if _ALPHA_HONOURED:
+            assert self._alpha(gui) == 0.0
 
         scheduled[0][1]()  # the timer fires
         assert gui._reveal_pending is False
-        assert self._alpha(gui) == 1.0
+        if _ALPHA_HONOURED:
+            assert self._alpha(gui) == 1.0
 
     def test_reveal_happens_only_once(self, make_gui):
         gui, _c, _s = make_gui()
