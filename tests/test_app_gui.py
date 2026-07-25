@@ -1617,5 +1617,44 @@ class TestPaintBeforeReveal:
         assert scheduled == []
 
 
+class _LevelSnapshot:
+    def __init__(self, rms_dbfs: float, clipping_ratio: float = 0.0):
+        self.rms_dbfs = rms_dbfs
+        self.clipping_ratio = clipping_ratio
+
+
+class TestIdleMeterCosts:
+    """The level meter polls 20x a second; an unchanged reading must cost no
+    redraw (it used to reconfigure a label and three progress bars per tick,
+    forever, silent input included)."""
+
+    def test_unchanged_level_does_not_redraw_the_bar(self, make_gui):
+        gui, _c, _s = make_gui()
+        bar = gui.input_level_bar
+        bar.set(0.42)
+        calls = []
+        for segment in bar._segments:
+            segment.set = lambda value, _c=calls: _c.append(value)
+        bar.set(0.42)
+        assert calls == []
+        bar.set(0.43)
+        assert len(calls) == len(bar._segments)
+
+    def test_unchanged_readout_does_not_reconfigure_the_label(self, make_gui):
+        gui, controller, _s = make_gui()
+        controller.get_input_level = lambda: _LevelSnapshot(-24.0)
+        calls = []
+        gui.input_level_value_label.configure = lambda **kw: calls.append(kw)
+
+        gui._poll_input_level()
+        assert len(calls) == 1  # first reading is written
+        gui._poll_input_level()
+        assert len(calls) == 1  # identical reading: no redraw
+
+        controller.get_input_level = lambda: _LevelSnapshot(-12.0)
+        gui._poll_input_level()
+        assert len(calls) == 2  # a changed reading still gets through
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

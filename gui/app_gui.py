@@ -251,6 +251,9 @@ class AppGUI(
         # Compact input-level meter (backend: controller.get_input_level()).
         self.input_level_poll_job: str | None = None
         self._input_level_ui_state: tuple[bool, bool] | None = None
+        # Last (text, colour) actually written to the level readout, so an
+        # unchanged reading costs no redraw (see _poll_input_level).
+        self._input_level_text_state: tuple[str, str] | None = None
         # True while the modal API-key dialog is up (see _prompt_provider_key).
         self._key_prompt_open = False
 
@@ -1413,6 +1416,7 @@ class AppGUI(
         self.input_level_test_btn.grid(row=0, column=2, sticky="e")
 
         self._input_level_ui_state = None
+        self._input_level_text_state: tuple[str, str] | None = None
         self._input_level_auto_job = None  # pending auto-stop of a short preview
         self.input_level_poll_job = self.after(200, self._poll_input_level)
 
@@ -1435,7 +1439,16 @@ class AppGUI(
                 else:
                     text = f"{rms_dbfs:.0f} dBFS"
                     color = self._colors["text"]
-                self.input_level_value_label.configure(text=text, text_color=color)
+                # Only touch the label when the readout actually changed: a
+                # configure() redraws it, and this runs 20x a second (see
+                # AudioLevelBar.set). Theme/GUI-language switches recolour or
+                # re-word the label themselves, and the next tick recomputes
+                # both from _colors/gui_texts, so a stale cache self-heals.
+                if (text, color) != self._input_level_text_state:
+                    self._input_level_text_state = (text, color)
+                    self.input_level_value_label.configure(
+                        text=text, text_color=color
+                    )
                 self._sync_input_level_button()
             self.input_level_poll_job = self.after(
                 self._INPUT_LEVEL_POLL_MS, self._poll_input_level

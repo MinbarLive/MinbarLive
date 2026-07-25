@@ -93,9 +93,18 @@ class AudioLevelBar(ctk.CTkFrame):
         return max(0.0, min(1.0, float(value)))
 
     def set(self, value: float) -> None:
-        """Set the total normalized fill across all three zones."""
+        """Set the total normalized fill across all three zones.
 
-        self._value = self._clamp(value)
+        A no-op when the level has not moved. ``CTkProgressBar.set()`` redraws
+        unconditionally, and the control panel polls this meter at 20 Hz — so
+        an unguarded call meant three canvas redraws per tick forever, silent
+        input included (measured: ~58 widget redraws/second on an idle app).
+        """
+
+        value = self._clamp(value)
+        if value == self._value:
+            return
+        self._value = value
         for segment, (start, end) in zip(
             self._segments, self._ranges, strict=True
         ):
