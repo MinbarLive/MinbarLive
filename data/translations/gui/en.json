@@ -109,6 +109,7 @@
   "already_running_title": "MinbarLive is already running",
   "already_running_body": "MinbarLive is already running or is currently starting up!\n\nUnless you meant to do this, please shut down the existing instance before starting a new one.",
   "already_running_launch_anyway": "Launch Anyway",
+  "provider_default_tag": "Default",
   "ai_provider": "AI Provider",
   "dlg_paste_key_any": "Paste your {provider} API key",
   "dlg_enter_key_any": "Enter a new {provider} API key",

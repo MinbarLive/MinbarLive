@@ -147,7 +147,7 @@ size and position are remembered in `window_geometry`.
 
 | Parameter                 | Default   | Description                                                    |
 | ------------------------- | --------- | -------------------------------------------------------------- |
-| `_DEFAULT_W`/`_DEFAULT_H` | 880/630   | Size the window opens at on a fresh install (logical units)     |
+| `_DEFAULT_W`/`_DEFAULT_H` | 880/597   | Size the window opens at on a fresh install (logical units)     |
 | `_MIN_W`/`_MIN_H`         | 380/300   | Floor the window may be dragged down to                         |
 | `_COL2_MIN_W`             | 720       | Card-grid width from which two columns are used                 |
 | `_COL3_MIN_W`             | 1320      | …and three columns (a maximized window shows everything at once) |

@@ -855,12 +855,20 @@ class OnboardingWizard(ctk.CTk):
             self._t("wizard_provider_title", "AI provider & API key"),
         )
 
-        # Deepgram (real-time streaming STT) is listed alongside the translation
+        # Deepgram (streaming STT) is listed alongside the translation
         # providers so its key can be entered here too. Selecting a translation
         # provider also makes it the active one; selecting Deepgram only reveals
-        # its key field (it has no translation capability).
-        choices = list(PROVIDER_CHOICES) + [("Deepgram (real-time)", "deepgram")]
-        provider_names = [name for name, _pid in choices]
+        # its key field (it has no translation capability). No "(real-time)"
+        # tag here — this step is about whose key is being entered, and the
+        # pipeline-mode wording only means something in the control panel.
+        choices = list(PROVIDER_CHOICES) + [("Deepgram", "deepgram")]
+        # The shipped provider is tagged so a first-run user has an answer to
+        # "which one do I pick?" without reading the notes below.
+        default_tag = self._t("provider_default_tag", "Default")
+        provider_names = [
+            f"{name} ({default_tag})" if pid == DEFAULT_AI_PROVIDER else name
+            for name, pid in choices
+        ]
         provider_ids = [pid for _name, pid in choices]
 
         self._section_label(

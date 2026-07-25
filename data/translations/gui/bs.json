@@ -98,6 +98,7 @@
   "already_running_title": "MinbarLive je već pokrenuto",
   "already_running_body": "MinbarLive je već pokrenuto ili se upravo pokreće!\n\nOsim ako niste namjeravali ovo učiniti, molimo ugasite postojeću instancu prije pokretanja nove.",
   "already_running_launch_anyway": "Pokreni svejedno",
+  "provider_default_tag": "Zadano",
   "ai_provider": "AI provajder",
   "dlg_paste_key_any": "Zalijepi svoj {provider} API ključ",
   "dlg_enter_key_any": "Unesi novi {provider} API ključ",

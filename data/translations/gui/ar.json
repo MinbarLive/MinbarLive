@@ -98,6 +98,7 @@
   "already_running_title": "MinbarLive قيد التشغيل بالفعل",
   "already_running_body": "MinbarLive قيد التشغيل بالفعل أو يبدأ الآن!\n\nإذا لم تكن تقصد ذلك، يرجى إغلاق النسخة الحالية قبل تشغيل نسخة جديدة.",
   "already_running_launch_anyway": "تشغيل على أي حال",
+  "provider_default_tag": "الافتراضي",
   "ai_provider": "مزوّد الذكاء الاصطناعي",
   "dlg_paste_key_any": "الصق مفتاح API الخاص بـ {provider}",
   "dlg_enter_key_any": "أدخل مفتاح API جديدًا لـ {provider}",

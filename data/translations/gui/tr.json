@@ -98,6 +98,7 @@
   "already_running_title": "MinbarLive zaten çalışıyor",
   "already_running_body": "MinbarLive zaten çalışıyor veya şu an başlatılıyor!\n\nBunu kasıtlı yapmıyorsanız, yeni bir örnek başlatmadan önce lütfen mevcut örneği kapatın.",
   "already_running_launch_anyway": "Yine de başlat",
+  "provider_default_tag": "Varsayılan",
   "ai_provider": "Yapay Zekâ Sağlayıcısı",
   "dlg_paste_key_any": "{provider} API anahtarını yapıştır",
   "dlg_enter_key_any": "Yeni bir {provider} API anahtarı gir",

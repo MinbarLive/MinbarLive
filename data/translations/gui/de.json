@@ -109,6 +109,7 @@
   "already_running_title": "MinbarLive läuft bereits",
   "already_running_body": "MinbarLive läuft bereits oder startet gerade!\n\nFalls Sie das nicht beabsichtigt haben, schließen Sie bitte die vorhandene Instanz, bevor Sie eine neue starten.",
   "already_running_launch_anyway": "Trotzdem starten",
+  "provider_default_tag": "Standard",
   "ai_provider": "KI-Anbieter",
   "dlg_paste_key_any": "Füge deinen {provider}-API-Schlüssel ein",
   "dlg_enter_key_any": "Neuen {provider}-API-Schlüssel eingeben",

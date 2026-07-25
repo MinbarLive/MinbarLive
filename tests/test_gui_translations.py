@@ -32,6 +32,7 @@ WIZARD_KEYS = [
     "wizard_no_devices",
     "wizard_provider_title",
     "wizard_provider",
+    "provider_default_tag",
     "wizard_api_key",
     "wizard_keys_info",
     "wizard_gemini_rag_note",
