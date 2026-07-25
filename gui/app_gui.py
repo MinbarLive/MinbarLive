@@ -38,7 +38,7 @@ from gui.dropdown import CustomDropdown
 from gui.history_view import HistoryViewMixin
 from gui.modal_host import ModalHost
 from gui.mousewheel import install_x11_mousewheel
-from gui.scaling import apply_display_scaling
+from gui.scaling import apply_display_scaling, window_work_area
 from gui.settings_view import SettingsViewMixin
 from gui.subtitle_window import SubtitleWindow
 from gui.typography import SubtitleTypographyMixin
@@ -178,6 +178,13 @@ class AppGUI(
     # Gap between card groups and around the grid (raw px, matches the gap
     # between two cards inside a group).
     _CARD_GAP = 18
+    # Width the sidebar keeps while the log panel is open, and the narrowest
+    # the log panel is still worth reading at (logical units). Opening the log
+    # inside a window that can't hold both grows the window to their sum —
+    # otherwise the panel gets whatever is left over, which in a small window
+    # was a column one character wide.
+    _SIDEBAR_W_WITH_LOG = 500
+    _LOG_PANEL_MIN_W = 340
 
     def __init__(self, controller):
         self._saved_settings = load_settings()
@@ -3356,6 +3363,36 @@ class AppGUI(
         # re-run the layout so grid re-measures. See _layout_sidebar_cards.
         self._layout_sidebar_cards()
 
+    def _work_area_logical(self) -> tuple[float, float]:
+        """The usable area of the monitor this window is on, in CTk logical
+        units — the units geometry() takes. Physical px / DPI scaling, so the
+        result means the same thing on a 1080p monitor at 100 % and a 4K one
+        at 200 %."""
+        _x, _y, w, h = window_work_area(self)
+        try:
+            scaling = ctk.ScalingTracker.get_window_scaling(self) or 1.0
+        except Exception:
+            scaling = 1.0
+        return w / scaling, h / scaling
+
+    def _keep_on_screen(self, width: int, height: int) -> None:
+        """Pull a just-grown window back onto its monitor. Sizing alone keeps
+        the top-left corner, so a window near the right or bottom edge grows
+        straight off the screen — with the log panel, off the edge the user
+        just made room for."""
+        try:
+            scaling = ctk.ScalingTracker.get_window_scaling(self) or 1.0
+        except Exception:
+            scaling = 1.0
+        area_x, area_y, area_w, area_h = window_work_area(self)
+        self.update_idletasks()
+        x, y = self.winfo_rootx(), self.winfo_rooty()
+        new_x = min(x, area_x + area_w - int(width * scaling))
+        new_y = min(y, area_y + area_h - int(height * scaling))
+        new_x, new_y = max(area_x, new_x), max(area_y, new_y)
+        if (new_x, new_y) != (x, y):
+            self.geometry(f"{width}x{height}+{new_x}+{new_y}")
+
     def _toggle_log_panel(self) -> None:
         self._log_collapsed = not self._log_collapsed
         self._saved_settings.log_panel_collapsed = self._log_collapsed
@@ -3382,11 +3419,23 @@ class AppGUI(
             self._log_toggle_btn.configure(text="▶")
         else:
             # Expanded: single-column sidebar + log panel (classic look).
-            self.grid_columnconfigure(0, weight=0, minsize=500)
+            self.grid_columnconfigure(0, weight=0, minsize=self._SIDEBAR_W_WITH_LOG)
             self.grid_columnconfigure(1, weight=1)
             self.content.grid()
             self.minsize(self._MIN_W, self._MIN_H)
+            # The log panel only gets what the 500px sidebar leaves over, so in
+            # a window narrower than both it opened as a sliver of one wrapped
+            # character per line. Make room for it instead — never beyond the
+            # monitor this window is on.
+            current_width = max(
+                current_width,
+                min(
+                    self._SIDEBAR_W_WITH_LOG + self._LOG_PANEL_MIN_W,
+                    int(self._work_area_logical()[0]),
+                ),
+            )
             self.geometry(f"{current_width}x{current_height}")
+            self._keep_on_screen(current_width, current_height)
             self._log_toggle_btn.configure(text="◀")
         self._layout_sidebar_cards()
         self._save_current_settings()
