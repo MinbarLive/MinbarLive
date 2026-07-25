@@ -163,11 +163,9 @@ class ModalHost:
         self._panels.append(panel)
         self._show_overlay()
         self._layout_panel(panel)
-        self._sync_topmost(win)
-        try:
-            win.lift()
-        except tk.TclError:
-            pass
+        # Full re-stack: the overlay moves up under this new topmost panel,
+        # dimming any panel it opened over.
+        self.raise_all()
 
         if close_command is not None:
             win.bind("<Escape>", lambda _e: self._close_panel(panel), add="+")
@@ -202,24 +200,34 @@ class ModalHost:
                 return
 
     def raise_all(self) -> None:
-        """Put overlay + panels back above the main window after it lifted
-        itself (surface restore), matching its -topmost so they can rise
-        above a topmost panel at all."""
+        """Re-assert the stacking order: main < older panels < dim overlay <
+        topmost panel. The dim sits directly below the NEWEST popup, so a
+        dialog over an open panel dims that panel too — only the newest
+        popup is bright, focused and clickable; everything underneath is
+        dark and click-blocked by the overlay. Also called after the main
+        window lifted itself (surface restore)."""
         if not self._panels:
             return
-        if self._overlay is not None and self._overlay.winfo_exists():
-            self._sync_topmost(self._overlay)
-            try:
-                self._overlay.lift()
-            except tk.TclError:
-                pass
-        for panel in self._panels:
+        for panel in self._panels[:-1]:
             if panel.win.winfo_exists():
                 self._sync_topmost(panel.win)
                 try:
                     panel.win.lift()
                 except tk.TclError:
                     pass
+        if self._overlay is not None and self._overlay.winfo_exists():
+            self._sync_topmost(self._overlay)
+            try:
+                self._overlay.lift()
+            except tk.TclError:
+                pass
+        top = self._panels[-1]
+        if top.win.winfo_exists():
+            self._sync_topmost(top.win)
+            try:
+                top.win.lift()
+            except tk.TclError:
+                pass
 
     def update_chrome(self, colors: dict[str, str]) -> None:
         """Follow a runtime theme switch: panel borders + ✕ buttons."""
@@ -278,7 +286,9 @@ class ModalHost:
         if not self._panels:
             self._hide_overlay()
         elif self._panels[-1].win.winfo_exists():
-            # Hand focus back to the panel underneath (Esc keeps working).
+            # The overlay drops back under the new topmost panel (it
+            # brightens again), and focus returns so Esc keeps working.
+            self.raise_all()
             self._focus_panel(self._panels[-1].win)
 
     def _focus_panel(self, win: tk.Toplevel) -> None:
