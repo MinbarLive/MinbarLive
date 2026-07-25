@@ -165,7 +165,15 @@ class SettingsViewMixin:
         self._settings_scroll.pack(fill="both", expand=True)
         self._settings_scroll.grid_columnconfigure(0, weight=1)
         win.after(300, lambda: self._setup_autohide_scrollbar(self._settings_scroll))
-        scroll = self._settings_scroll
+        # Build into a container that is not managed yet: CTkScrollbar._draw()
+        # ends with update_idletasks(), so every card gridded straight into the
+        # scroll frame flushed the whole pending layout (measured: 40+ flushes
+        # per open, individual ones up to 320 ms). An unmanaged holder changes
+        # no scroll region while it fills, so the build costs one flush at the
+        # end instead. Gridded in _finish_settings_layout().
+        scroll = ctk.CTkFrame(self._settings_scroll, fg_color="transparent")
+        scroll.grid_columnconfigure(0, weight=1)
+        self._settings_content = scroll
 
         # App info header — scrolls with the content like any window; the
         # floating ✕ stays pinned over it (integrated mode).
@@ -482,12 +490,10 @@ class SettingsViewMixin:
         cancel_btn.pack(side="right", padx=18, pady=9)
         self._settings_buttons.append(cancel_btn)
 
-        # Content is fully built and themed now — fade in without the flash.
-        win.update_idletasks()
-        try:
-            win.attributes("-alpha", 1.0)
-        except tk.TclError:
-            pass
+        # Content is fully built and themed now: attach it (one layout pass for
+        # the whole card stack) and fade in once it has painted.
+        self._settings_content.grid(row=0, column=0, sticky="ew")
+        self._reveal_when_drawn(win)
 
     def _selected_api_key_provider(self) -> str | None:
         """Provider chosen in the settings API-key dropdown, or None while the

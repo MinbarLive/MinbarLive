@@ -122,10 +122,7 @@ class AnnounceViewMixin:
         self._announce_win = win
         self._build_announce_widgets(build_parent)
         self._resize_announce_window()
-        try:
-            win.attributes("-alpha", 1.0)
-        except tk.TclError:
-            pass
+        self._reveal_when_drawn(win)
         # If an overlay is open the control panel is -topmost; match it so this
         # window isn't hidden behind the panel.
         self._raise_announce_window()
@@ -165,7 +162,9 @@ class AnnounceViewMixin:
             border_width=2,
             corner_radius=24,
         )
-        card.pack(fill="both", expand=True, padx=16, pady=16)
+        # Packed at the end of this method (see gui/batch_view.py): an
+        # unmanaged card can be filled without the integrated panel's
+        # scrollbar flushing the pending layout per widget.
         card.grid_columnconfigure(0, weight=1, uniform="announce_actions")
         card.grid_columnconfigure(1, weight=1, uniform="announce_actions")
 
@@ -330,6 +329,10 @@ class AnnounceViewMixin:
             row=10, column=1, sticky="ew", padx=(8, 20), pady=(0, 20)
         )
         self._refresh_announce_stop_state()
+
+        # Card is complete → attach it (one layout pass). _resize_announce_window
+        # measures the content right after this, so it must be managed by now.
+        card.pack(fill="both", expand=True, padx=16, pady=16)
 
     def _on_announce_stop_on_stop_change(self) -> None:
         """Persist the 'stop announcement when the live session stops' toggle."""
