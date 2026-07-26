@@ -58,7 +58,10 @@ Rough guide for an OpenAI setup (the default; segmented mode, Arabic → German)
 
 ## Setup
 
-🎬 **Videos:** What MinbarLive is and how it works: [EN](https://www.youtube.com/watch?v=ajzSpuskEro)/[DE](https://www.youtube.com/watch?v=GWvEXOW8930) · [Setup tutorial](https://youtu.be/_VI6Y8qFDZQ)
+🎬 **Watch first, two short videos:**
+
+- **What MinbarLive is and how it works** — [English](https://www.youtube.com/watch?v=ajzSpuskEro) · [Deutsch](https://www.youtube.com/watch?v=GWvEXOW8930)
+- **How to install it** — [Setup tutorial](https://youtu.be/TvxxN0iadck)
 
 > 📧 **Need help setting up?** Write us an email at [minbar.live@outlook.com](mailto:minbar.live@outlook.com) and we'll help you with your first setup.
 
