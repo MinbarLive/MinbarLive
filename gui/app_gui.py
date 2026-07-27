@@ -2302,7 +2302,10 @@ class AppGUI(
 
     def _get_translation_drain_policy(self) -> tuple[int, int]:
         queue_depth = self.controller.translation_queue.qsize()
-        mode = self._saved_settings.subtitle_mode
+        # The effective mode, not the stored one: a stored Realtime under a
+        # segmented strategy renders as continuous, and the window-side
+        # catch-up is active there — the drain policy has to agree.
+        mode = self._effective_subtitle_mode()
         adaptive = self._saved_settings.adaptive_subtitle_catchup
         batch_size = 1
         # 50 ms base so the live streaming transcript line (mirrored on every
