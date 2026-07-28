@@ -27,6 +27,16 @@ _ARABIC_BLOCK_RE = re.compile(r"[؀-ۿݐ-ݿࢠ-ࣿ]")
 # strings don't trigger it — that's why the reshape+bidi pipeline normally
 # renders correctly here.
 _TK_HANDLES_ARABIC = sys.platform == "win32"
+# macOS Tk draws EVERY string through CoreText: tkMacOSXFont.c builds an
+# NSAttributedString and lays it out with CTTypesetterCreateWithAttributedString
+# — no paragraph style, no kCTTypesetterOptionForcedEmbeddingLevel — so the full
+# bidi algorithm and contextual shaping always run, including over the
+# presentation forms arabic_reshaper emits (those are strong RTL too). Handing
+# CoreText our already-visual string therefore reorders it a second time: the
+# reversed, disconnected Arabic reported on macOS in both the overlay and the
+# control panel's dropdowns. Unlike Windows this is unconditional — there is no
+# "safe" pre-shaped case to keep — so macOS always gets the logical text.
+_TK_SHAPES_ARABIC = sys.platform == "darwin"
 
 
 def _reshape_rtl(text: str) -> str:
@@ -37,7 +47,7 @@ def _reshape_rtl(text: str) -> str:
     python-bidi before passing it to the canvas. Non-Arabic text is
     returned unchanged.
     """
-    if not _ARABIC_SUPPORT:
+    if _TK_SHAPES_ARABIC or not _ARABIC_SUPPORT:
         return text
     try:
         reshaped = arabic_reshaper.reshape(text)

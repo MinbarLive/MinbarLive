@@ -18,9 +18,9 @@ def _display(text: str) -> str:
     Dropdown values that are Arabic (e.g. the language name "العربية") render
     with reversed, disconnected letters on Linux/X11, where Tk does not shape
     Arabic in standard widgets. Reuse the subtitle window's reshaper, which
-    already encodes the per-platform rule (logical text on Windows, where Tk
-    shapes natively; pre-shaped visual order elsewhere). Only the visible label
-    is shaped — the stored value stays logical for get()/set()/comparisons.
+    already encodes the per-platform rule (logical text on Windows and macOS,
+    where Tk shapes natively; pre-shaped visual order on X11). Only the visible
+    label is shaped — the stored value stays logical for get()/set()/comparisons.
     """
     try:
         from gui.subtitle_window import reshape_rtl  # noqa: PLC0415
