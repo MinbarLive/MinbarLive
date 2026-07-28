@@ -299,3 +299,55 @@ class TestGeometryFitCorrection:
         assert window._geometries == []
         assert window._applied_size == (1920, 1043)
         assert window.canvas_height == 1043
+
+
+class TestMacOSWorkArea:
+    """A -topmost Tk window on macOS sits below the Dock and the menu bar, so
+    the overlay is laid out inside the usable area instead of over it."""
+
+    MONITOR = (0, 0, 1440, 900)
+
+    def test_unknown_usable_size_keeps_the_full_monitor(self):
+        assert subtitle_module._macos_work_area(self.MONITOR, None) == self.MONITOR
+
+    def test_dock_at_the_bottom_reserves_menu_bar_and_dock(self):
+        # 900 - 25 (menu bar) - 60 (Dock) = 815 usable.
+        area = subtitle_module._macos_work_area(self.MONITOR, (1440, 815))
+
+        assert area == (0, 25, 1440, 815)
+        x, y, _w, h = area
+        assert y + h == 840  # ends exactly where the Dock starts
+
+    def test_dock_on_a_side_only_reserves_the_menu_bar(self):
+        # The whole height loss is the menu bar; the Dock ate width instead.
+        assert subtitle_module._macos_work_area(self.MONITOR, (1370, 875)) == (
+            0,
+            25,
+            1370,
+            875,
+        )
+
+    def test_hidden_menu_bar_and_dock_use_the_whole_screen(self):
+        assert subtitle_module._macos_work_area(self.MONITOR, (1440, 900)) == (
+            0,
+            0,
+            1440,
+            900,
+        )
+
+    def test_monitor_origin_is_preserved(self):
+        assert subtitle_module._macos_work_area((100, 200, 1440, 900), (1440, 815)) == (
+            100,
+            225,
+            1440,
+            815,
+        )
+
+    def test_usable_size_larger_than_the_monitor_is_clamped(self):
+        # wm maxsize reports the union of every screen; never grow past ours.
+        assert subtitle_module._macos_work_area(self.MONITOR, (3000, 1600)) == (
+            0,
+            0,
+            1440,
+            900,
+        )

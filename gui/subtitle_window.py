@@ -125,6 +125,36 @@ _TALL_DIACRITIC_RE = re.compile(r"[À-ÖØ-ÞĀ-ɏ̀-ͯ]")
 # ink, which is (font ascent − ink top) and therefore font-specific: Segoe UI
 # has an unusually deep ascent (1.07 em), Arial/Helvetica-class fonts 0.90 em.
 # That is why _stack_overlap measures the ascent instead of assuming it.
+# A -topmost Tk window on macOS sits at kCGUtilityWindowLevel, which is BELOW
+# the Dock (kCGDockWindowLevel) and the menu bar (tkMacOSXWm.c) — unlike
+# Windows, where a topmost overlay paints over the taskbar. Covering the whole
+# screen there only hides the overlay's own edges: the disclaimer pill ends up
+# behind the Dock. So on macOS the overlay is laid out inside the usable area
+# instead. The menu bar is always the top inset and the Dock takes the rest
+# (bottom — or a side, in which case the usable *width* shrinks and the whole
+# height loss is the menu bar). Only the menu bar's exact height has to be
+# assumed: 24 pt classic, 25 pt since Big Sur, taller on notched displays.
+# Being a few pixels out just shifts the overlay; it can never push content
+# back under the Dock. A Dock on the LEFT is not distinguishable from one on
+# the right, so the overlay keeps the monitor's left edge either way.
+_MACOS_MENU_BAR_HEIGHT = 25
+
+
+def _macos_work_area(
+    monitor: tuple[int, int, int, int],
+    usable: tuple[int, int] | None,
+    menu_bar_height: int = _MACOS_MENU_BAR_HEIGHT,
+) -> tuple[int, int, int, int]:
+    """Fit a monitor rectangle into the usable size macOS reports for it."""
+    if usable is None:
+        return monitor
+    x, y, width, height = monitor
+    usable_w = max(1, min(usable[0], width))
+    usable_h = max(1, min(usable[1], height))
+    top = min(menu_bar_height, height - usable_h)
+    return (x, y + top, usable_w, usable_h)
+
+
 _INK_TOP_EM_ARABIC = 1.05  # marks reach the ascent line
 _INK_TOP_EM_TALL_DIACRITIC = 0.86
 _INK_TOP_EM_PLAIN = 0.70  # cap height
@@ -369,9 +399,13 @@ class SubtitleWindow(tk.Toplevel):
 
         self.configure(bg=self._bg_color)
 
-        # Configure window to be borderless but still visible to OBS/screen capture
-        # We avoid overrideredirect(True) because it makes the window invisible to
-        # OBS window capture on most platforms.
+        # Configure window to be borderless but still visible to OBS/screen
+        # capture. On Windows/Linux we avoid overrideredirect(True) because it
+        # makes the window invisible to OBS window capture there; macOS is the
+        # exception (see _setup_borderless_window), where it is the only way to
+        # drop the title bar and the window stays in the CoreGraphics window
+        # list regardless. Its side effect there: the overlay no longer takes
+        # keyboard focus, so the Escape shortcut below is Windows/Linux only.
         self._setup_borderless_window()
 
         # Esc stops the translation (like the Stop button) but never closes
@@ -554,22 +588,23 @@ class SubtitleWindow(tk.Toplevel):
                 self.overrideredirect(True)
 
         elif sys.platform == "darwin":
-            # macOS: Use transparent title bar approach or fullscreen
+            # macOS: overrideredirect is the only thing that actually removes
+            # the title bar here. ::tk::unsupported::MacWindowStyle only sets
+            # the window class, and Tk applies the resulting style mask when it
+            # CREATES the NSWindow — CustomTkinter has already mapped this one
+            # by then, so the "plain" call was a silent no-op and the overlay
+            # kept a draggable title bar that covered the first subtitle block.
+            # overrideredirect clears NSTitledWindowMask on the live window
+            # (tkMacOSXWm.c) and makes it non-activating, which is what an
+            # audience overlay wants — nothing here reacts to clicks.
+            # It also clears Tk's topmost flag (same function, no transient
+            # container), so _apply_topmost() must run afterwards; it does, at
+            # the end of the _set_screen_position() call below.
             try:
-                # Make the window borderless-looking while keeping it managed
-                # On macOS, we can use the "transparent" appearance
                 self.wm_attributes("-fullscreen", False)
-                # Remove title bar but keep window managed
-                self.tk.call(
-                    "::tk::unsupported::MacWindowStyle",
-                    "style",
-                    self._w,
-                    "plain",
-                    "none",
-                )
             except tk.TclError:
-                # Fallback for older Tk versions
-                self.overrideredirect(True)
+                pass
+            self.overrideredirect(True)
 
         else:
             # Linux/Other: Use EWMH hints to remove decorations
@@ -2154,11 +2189,32 @@ class SubtitleWindow(tk.Toplevel):
         self._live_feed_scroll_target = settled_scroll
         self._render_feed_positions()
 
+    def _macos_usable_size(self) -> tuple[int, int] | None:
+        """The usable screen size macOS reports, or None if it cannot be
+        attributed to a single screen.
+
+        Tk answers ``wm maxsize`` from the union of every screen's visibleFrame
+        (tkMacOSXXStubs.c) — the desktop minus the menu bar and the Dock. With
+        one monitor that union *is* that monitor's usable rectangle; with
+        several it says nothing about any one of them, so those setups keep the
+        full-monitor geometry they have today."""
+        try:
+            if len(get_monitors()) != 1:
+                return None
+            width, height = self.wm_maxsize()
+        except (tk.TclError, IndexError, OSError, ValueError):
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        return int(width), int(height)
+
     def _monitor_work_area(self, mon) -> tuple[int, int, int, int]:
         """Physical (x, y, w, h) work area — the monitor minus the taskbar —
         of the monitor ``mon`` lives on. Falls back to the full monitor bounds
-        off Windows or on any failure."""
+        off Windows/macOS or on any failure."""
         full = (mon.x, mon.y, mon.width, mon.height)
+        if sys.platform == "darwin":
+            return _macos_work_area(full, self._macos_usable_size())
         if sys.platform != "win32":
             return full
         try:
@@ -2217,7 +2273,12 @@ class SubtitleWindow(tk.Toplevel):
         # (monitor minus taskbar): as an ordinary window the topmost taskbar
         # would otherwise cover its bottom strip on screen. Topmost overlays
         # paint above the taskbar, so they never need the clamp.
-        if self._window_height_percent >= 100 or self._always_on_top:
+        # macOS is the exception to both: nothing Tk can do puts a window above
+        # the Dock or the menu bar there (see _MACOS_MENU_BAR_HEIGHT), so the
+        # overlay is always laid out inside the work area.
+        if sys.platform != "darwin" and (
+            self._window_height_percent >= 100 or self._always_on_top
+        ):
             base_x, base_y, base_w, base_h = mon.x, mon.y, mon.width, mon.height
         else:
             base_x, base_y, base_w, base_h = self._monitor_work_area(mon)
