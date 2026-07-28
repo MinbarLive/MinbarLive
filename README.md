@@ -74,14 +74,15 @@ Rough guide for an OpenAI setup (the default; segmented mode, Arabic → German)
 1. Download for your platform from the [latest release](https://github.com/MinbarLive/MinbarLive/releases/latest):
    - **Windows:** [`MinbarLive.exe`](https://github.com/MinbarLive/MinbarLive/releases/latest/download/MinbarLive.exe) — just run it.
    - **Linux:** [`MinbarLive-x86_64.AppImage`](https://github.com/MinbarLive/MinbarLive/releases/latest/download/MinbarLive-x86_64.AppImage) — `chmod +x` it, then double-click. No FUSE required.
-2. Follow the first-run wizard: interface language & appearance → spoken/subtitle language → microphone → AI provider & API key → disclaimer. Gemini API key tutorial: [EN](https://www.youtube.com/watch?v=Cl4XKgz6EJQ)/[DE](https://youtu.be/alNk5N-pv7Y), or create one directly at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys)
+   - **macOS (Apple Silicon):** [`MinbarLive-macos-arm64.zip`](https://github.com/MinbarLive/MinbarLive/releases/latest/download/MinbarLive-macos-arm64.zip) — unzip, move `MinbarLive.app` to Applications, then see the macOS note below for the first launch.
+2. Follow the first-run wizard
 3. It's Running!
 
 > **Windows SmartScreen:** You may see a warning because the EXE is not code-signed. Click "More info" → "Run anyway".
 
 > **Linux:** The AppImage runs on modern desktops without extra dependencies, but is still maturing: a few features are Windows-only (the OBS-visible borderless overlay, transparent static mode, and system-audio loopback capture), and API-key storage needs a Secret Service keychain (GNOME Keyring / KWallet) — without one, an OpenAI key falls back to plaintext and other providers are session-only. See [docs/ci.md](docs/ci.md).
 
-> **macOS:** There is no signed release yet. CI can build an experimental, unsigned Apple-Silicon `.app` on request, but it is **not** attached to releases (Gatekeeper would block it anyway). For now, run on macOS by building from source (Option B). A signed/notarized build is tracked as future work.
+> **macOS:** The `.app` is **experimental** and ships **unsigned** (Apple Silicon only — it will not run on Intel Macs). Because it is not signed or notarized, Gatekeeper blocks the first launch: **right-click the app → "Open" → "Open"**. If macOS refuses outright, open **System Settings → Privacy & Security** and click **"Open Anyway"** next to the MinbarLive message, then launch it again. This is the same "unknown developer" warning Windows shows for the EXE. Grant the microphone permission when asked, or there is no audio. Two platform limits: system-audio **loopback capture does not exist on macOS** (route audio through a virtual device such as [BlackHole](https://existential.audio/blackhole/), which then shows up as a normal input), and the subtitle overlay **cannot float above the Dock or the menu bar**, so it is laid out inside the usable screen area instead of covering them.
 
 ### Option B: Build it yourself (Python)
 
@@ -150,6 +151,8 @@ The **input device** dropdown lists two kinds of source:
 | `… (Loopback)` (Windows) | Whatever is **playing** on that output device | A live stream, a video call, a recording on the same PC |
 
 Loopback entries are the PC's speakers/headphones captured via WASAPI, so you can translate audio that is only playing on the computer **without a virtual audio cable** (VB-CABLE and similar are no longer needed). They appear automatically, marked `(Loopback)`, and are selected exactly like a microphone.
+
+> **macOS has no loopback.** CoreAudio offers no way to record an output device, so no `(Loopback)` entries are listed there. To translate audio playing on the Mac, install a virtual audio device ([BlackHole](https://existential.audio/blackhole/) or Loopback) and select it as an ordinary input.
 
 > **Mic quality matters more than any setting.** The AI engines need a healthy signal level: a very quiet input (a mic with the gain turned down) produces sporadic or missing transcripts, and no software setting can recover it. If recognition is poor, raise the input gain at the source (interface knob, Windows mic level) first. Loopback sources are digital and always at full level.
 

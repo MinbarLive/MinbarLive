@@ -26,6 +26,7 @@
   "screen": "Yakalama & yönlendirme",
   "subtitle_screen": "Altyazı Ekranı:",
   "input_device": "Giriş Cihazı:",
+  "macos_loopback_hint": "macOS: sistem sesi için BlackHole gerekir ↗",
   "translation_flow": "Çeviri akışı",
   "source": "Konuşulan dil:",
   "target": "Altyazı dili:",

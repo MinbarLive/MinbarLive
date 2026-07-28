@@ -26,6 +26,7 @@
   "screen": "التقاط وتوجيه",
   "subtitle_screen": "شاشة الترجمة:",
   "input_device": "جهاز الإدخال:",
+  "macos_loopback_hint": "macOS: صوت النظام يحتاج BlackHole ↗",
   "translation_flow": "تدفق الترجمة",
   "source": "اللغة المنطوقة:",
   "target": "لغة الترجمة النصية:",

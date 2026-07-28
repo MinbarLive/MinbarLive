@@ -33,7 +33,12 @@ from gui.control_state import (
     subtitle_mode_choices,
     visible_provider_choices,
 )
-from gui.device_list import find_input_device_position, get_input_devices
+from gui.device_list import (
+    BLACKHOLE_URL,
+    find_input_device_position,
+    get_input_devices,
+    loopback_supported,
+)
 from gui.dropdown import CustomDropdown
 from gui.history_view import HistoryViewMixin
 from gui.modal_host import ModalHost
@@ -1297,6 +1302,7 @@ class AppGUI(
                 selected_device = 0
             self.device_combo.current(selected_device)
         self.device_combo.pack(fill="x", pady=(8, 0))
+        self._build_loopback_hint(device_frame)
 
         # Full-width input-level row below both dropdowns (keeps the monitor and
         # input dropdowns the same height; the meter is one level, not stacked).
@@ -1370,6 +1376,27 @@ class AppGUI(
     # indicator), so it shows the new input working and then lets go again —
     # only an explicit "Test mic" keeps it open indefinitely.
     _INPUT_LEVEL_AUTO_SECONDS = 10
+
+    def _build_loopback_hint(self, parent: ctk.CTkFrame) -> None:
+        """Explain the missing "(Loopback)" entries where the platform has no
+        loopback capture (macOS). Created only there, so the card layout on
+        Windows/Linux is untouched. Clicking opens the BlackHole page."""
+        if loopback_supported():
+            return
+        label = ctk.CTkLabel(
+            parent,
+            text=self.gui_texts.get(
+                "macos_loopback_hint", "macOS: system audio needs BlackHole ↗"
+            ),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=self._colors["muted"],
+            anchor="w",
+            cursor="hand2",
+        )
+        label._text_key = "macos_loopback_hint"  # re-texted on language change
+        label.pack(fill="x", pady=(4, 0))
+        label.bind("<Button-1>", lambda _e: webbrowser.open(BLACKHOLE_URL))
+        self._muted_labels.append(label)
 
     def _build_input_level_meter(self, card: ctk.CTkFrame) -> None:
         """Full-width live input-level row below the monitor/input dropdowns.

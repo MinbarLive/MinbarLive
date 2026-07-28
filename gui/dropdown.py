@@ -18,9 +18,9 @@ def _display(text: str) -> str:
     Dropdown values that are Arabic (e.g. the language name "العربية") render
     with reversed, disconnected letters on Linux/X11, where Tk does not shape
     Arabic in standard widgets. Reuse the subtitle window's reshaper, which
-    already encodes the per-platform rule (logical text on Windows, where Tk
-    shapes natively; pre-shaped visual order elsewhere). Only the visible label
-    is shaped — the stored value stays logical for get()/set()/comparisons.
+    already encodes the per-platform rule (logical text on Windows and macOS,
+    where Tk shapes natively; pre-shaped visual order on X11). Only the visible
+    label is shaped — the stored value stays logical for get()/set()/comparisons.
     """
     try:
         from gui.subtitle_window import reshape_rtl  # noqa: PLC0415
@@ -409,6 +409,19 @@ class CustomDropdown(ctk.CTkFrame):
 
         popup_h = (visible if len(self._values) > 5 else len(self._values)) * item_h + 2
         popup.geometry(f"{w}x{popup_h}+{x}+{y}")
+        # Re-assert topmost once the native window really exists. macOS applies
+        # overrideredirect when it creates the window, and that path CLEARS Tk's
+        # topmost flag for any window without a transient container
+        # (ApplyContainerOverrideChanges in tkMacOSXWm.c) — undoing the
+        # attribute set above. The popup then sat at the normal window level
+        # while the subtitle overlay floats at kCGUtilityWindowLevel, so with
+        # the overlay open a dropdown opened *behind* it and looked dead; with
+        # the overlay hidden the same click worked. No-op elsewhere.
+        try:
+            popup.update_idletasks()
+            popup.wm_attributes("-topmost", True)
+        except tk.TclError:
+            pass
         popup.lift()
 
         self._popup = popup
