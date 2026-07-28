@@ -67,10 +67,9 @@ so it pulls them, but selectively, and never the raw JSON. See below.
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) builds the
 Windows EXE. Pushing a `v*` tag also publishes it; `workflow_dispatch` builds
 without publishing, for testing the build itself. Two more jobs cover the other
-platforms: `build-linux` packages an experimental Linux **AppImage** that _is_
-attached to tagged releases, and `build-macos` produces an experimental, unsigned
-macOS `.app` that stays a workflow artifact — see
-[below](#the-linux-and-macos-builds).
+platforms: `build-linux` packages an experimental Linux **AppImage** and
+`build-macos` an experimental, unsigned Apple-Silicon **`.app`**. Both are
+attached to tagged releases — see [below](#the-linux-and-macos-builds).
 
 It runs the suite before touching LFS, so the tests see the same pointer stubs
 the `test` job does, then pulls only the matrices:
@@ -96,12 +95,15 @@ marked latest (`--latest`, and never pre-release): the website's download
 buttons and the in-app update check both resolve
 `releases/latest/download/MinbarLive.exe`.
 
-Every release description starts with the download instructions:
+Every release description starts with the download instructions — one block per
+platform, German and English, including the Gatekeeper steps a macOS user needs
+for the unsigned `.app`:
 
 ```
 **Windows**
 - "MinbarLive.exe" herunterladen
 - Download "MinbarLive.exe"
+…
 ```
 
 `gh` prepends `--notes-file` to what `--generate-notes` produces, so the
@@ -156,26 +158,30 @@ sequence rather than in parallel.
 | Verify the binary       | A build that lost the `data/` bundle, which shows up as a far smaller file                        |
 | Smoke-launch the binary | A startup crash — a shared library the bundle missed, an X11 request the toolkit rejects. The binary is launched under `xvfb` with a 30-second `timeout`, so **exit 124 is the success case**: it means the app was still running when the timeout killed it, sitting in the onboarding wizard. Any other exit code means it died on its own |
 
-### macOS is a manual-only workflow artifact
+### The macOS build
 
-`build-macos` is **manual only** — it is gated with
-`if: github.event_name == 'workflow_dispatch'`, so it never runs on a tag push /
-release. Build or test it on demand from **Actions → Release → Run workflow**;
-that runs all three platform jobs but publishes nothing (the publish steps are
-tag-only). Gating it this way keeps an unverified, users-can't-use-it-yet `.app`
-from reddening a release run or spending release CI time. Remove the `if` once
-the `.app` is signed, notarized and real-Mac-verified and is ready to ship.
+`build-macos` runs on `macos-14` (Apple Silicon), builds the one-file binary,
+wraps it in a `.app` via the spec's `BUNDLE` step and, on tagged builds, attaches
+`MinbarLive-macos-arm64.zip` to the release. It was manual-only
+(`workflow_dispatch`) until a real Mac ran the `.app` in 2026-07 — the same bar
+the Linux AppImage had to clear before it shipped.
 
-When run, it builds (on `macos-14`, Apple Silicon) the one-file binary, wraps it
-in a `.app` via the spec's `BUNDLE` step, and uploads `MinbarLive-macos-arm64.zip`
-as the `MinbarLive-macos` artifact. It is **not** attached to any release, and
-there is no download link for it on the website — deliberately, for two reasons:
+It is **unsigned and un-notarized**: without an Apple Developer certificate
+Gatekeeper blocks the first launch, so the release notes tell users to
+right-click → Open (or Settings → Privacy & Security → "Open Anyway"). That is
+the same class of speed bump SmartScreen puts on the unsigned EXE. Signing and
+notarizing remains open work; see the code-signing status note.
 
-- **Unsigned.** Without an Apple Developer certificate and notarization,
-  Gatekeeper blocks the app on first launch ("damaged, cannot be opened"). A
-  release asset users cannot open without terminal gymnastics is worse than none.
-- **Unverified on real hardware.** The same bar the Linux AppImage had to clear
-  before it was published — nobody has run this `.app` on a Mac yet.
+**arm64 only.** `macos-14` is Apple Silicon and the artifact is named for it
+rather than pretending to be universal; Intel Macs are not covered.
+
+Platform limits that are real, not build bugs:
+
+| Feature | On macOS |
+| ------- | -------- |
+| Loopback capture ("what the speakers play") | CoreAudio cannot record an output device — `soundcard`'s backend warns and returns the real inputs, so `gui/device_list.py` lists no loopback entries there at all. Users route through BlackHole/Loopback, which appear as ordinary inputs |
+| Overlay above the Dock / menu bar | Tk's `-topmost` maps to `kCGUtilityWindowLevel` (19), below the Dock (20) and menu bar (24), so the overlay is laid out inside the usable area instead of covering them (`_macos_work_area`) |
+| Overlay title bar | `::tk::unsupported::MacWindowStyle` only applies at NSWindow creation, so the overlay uses `overrideredirect` instead — which also makes it non-activating, so its Escape shortcut is Windows/Linux only |
 
 Two build-time checks fail loudly: the bundled binary's size (a lost `data/`
 bundle shows up small) and `NSMicrophoneUsageDescription` being present in
@@ -183,9 +189,7 @@ bundle shows up small) and `NSMicrophoneUsageDescription` being present in
 without it, so the spec wires it in and CI asserts it with `PlistBuddy`. The GUI
 smoke-launch is best-effort (`continue-on-error`): whether a hosted runner's
 session can start a Tk window is not something this project has verified, so an
-early exit is reported as a warning, not a build failure. Promote the `.app` to a
-release asset only after signing, notarization, and a real-Mac run — until then,
-macOS users build from source.
+early exit is reported as a warning, not a build failure.
 
 ## Lint checks changed files only
 
