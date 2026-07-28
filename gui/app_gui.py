@@ -204,6 +204,15 @@ class AppGUI(
     # _reveal_control_window). A class default so any handler that runs before
     # _setup_window has set it treats the window as already visible.
     _reveal_pending = False
+    # Failsafe delay for that reveal, measured from the end of the build. The
+    # normal path is keyed to the root's first <Map>, which only CustomTkinter's
+    # *Windows-only* withdraw/deiconify dance reliably delivers after our bind
+    # exists — off Windows the root is already mapped by then, so without this
+    # backstop the panel stayed transparent forever (reported on macOS: present
+    # and clickable, its dropdowns visible, its own surface invisible).
+    # Comfortably later than the Windows path (~300 ms layout + settle), so it
+    # never pre-empts it.
+    _REVEAL_BACKSTOP_MS = 800
 
     def __init__(self, controller):
         self._saved_settings = load_settings()
@@ -438,7 +447,8 @@ class AppGUI(
         # The settle window has to start when the window is actually mapped
         # (an after() scheduled at the end of the build would already be overdue
         # by then — CTk's mainloop() spends ~300 ms laying the panel out before
-        # it deiconifies).
+        # it deiconifies). That deiconify is Windows-only, hence the
+        # _REVEAL_BACKSTOP_MS failsafe scheduled in _finalize_setup.
         self.bind("<Map>", self._reveal_control_window, add="+")
         # <FocusIn> only reaches the toplevel itself when no child widget holds
         # the Tk focus; <Activate> fires on the window whenever the OS makes it
@@ -2209,6 +2219,9 @@ class AppGUI(
         self.error_poll_job = self.after(250, self._poll_errors)
         self.after(300, lambda: self._setup_autohide_scrollbar(self.sidebar))
         self._start_update_check()
+        # Reveal the panel even if its first <Map> never reaches us (see
+        # _REVEAL_BACKSTOP_MS). A no-op once the <Map> path has run.
+        self.after(self._REVEAL_BACKSTOP_MS, self._reveal_control_window)
         log(self.gui_texts.get("stopped", "Ready"), level="INFO")
         if self._saved_settings.auto_start:
             self.after(700, self.on_start)

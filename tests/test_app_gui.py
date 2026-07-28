@@ -1648,6 +1648,23 @@ class TestPaintBeforeReveal:
         gui._reveal_control_window()
         assert scheduled == []
 
+    def test_build_schedules_a_reveal_backstop(self, make_gui):
+        """The <Map> the reveal is keyed to is delivered by CustomTkinter's
+        withdraw/deiconify in mainloop(), which is Windows-only — everywhere
+        else the root is mapped before our bind exists and the event never
+        arrives. Without this timer the panel stayed fully transparent for the
+        whole session (reported on macOS: clickable, its dropdowns visible, its
+        own surface not)."""
+        gui, _c, _s = make_gui()
+        scheduled = []
+        gui.after = lambda ms, fn=None, *a: scheduled.append((ms, fn))
+
+        gui._finalize_setup()
+
+        assert (gui._REVEAL_BACKSTOP_MS, gui._reveal_control_window) in scheduled
+        # Late enough that the <Map> path always wins on Windows.
+        assert gui._REVEAL_BACKSTOP_MS > gui._REVEAL_SETTLE_MS
+
 
 class _LevelSnapshot:
     def __init__(self, rms_dbfs: float, clipping_ratio: float = 0.0):
