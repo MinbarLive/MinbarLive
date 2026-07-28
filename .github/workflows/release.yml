@@ -131,15 +131,15 @@ jobs:
           - "MinbarLive.exe" herunterladen
           - Download "MinbarLive.exe"
 
-          **Linux** (experimentell / experimental)
-          - "MinbarLive-x86_64.AppImage" herunterladen, ausführbar machen (`chmod +x`), starten
-          - Download "MinbarLive-x86_64.AppImage", make it executable (`chmod +x`), run it
-
-          **macOS** (experimentell / experimental — Apple Silicon)
+          **macOS** (experimentell / experimental — nur Apple Silicon / Apple Silicon only)
           - "MinbarLive-macos-arm64.zip" herunterladen, entpacken, `MinbarLive.app` nach "Programme" ziehen
           - Die App ist nicht signiert: beim ersten Start Rechtsklick auf die App → "Öffnen", dann im Dialog auf "Öffnen". Falls macOS sie ganz blockiert: Systemeinstellungen → Datenschutz & Sicherheit → "Trotzdem öffnen"
           - Download "MinbarLive-macos-arm64.zip", unzip it, move `MinbarLive.app` to Applications
           - The app is unsigned: on first launch right-click it → "Open", then confirm "Open". If macOS blocks it outright: System Settings → Privacy & Security → "Open Anyway"
+
+          **Linux** (experimentell / experimental)
+          - "MinbarLive-x86_64.AppImage" herunterladen, ausführbar machen (`chmod +x`), starten
+          - Download "MinbarLive-x86_64.AppImage", make it executable (`chmod +x`), run it
           EOF
 
           if gh release view "$tag" >/dev/null 2>&1; then
