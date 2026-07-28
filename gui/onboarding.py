@@ -31,7 +31,7 @@ from gui.audio_level_bar import (
     AudioLevelBar,
     level_fill,
 )
-from gui.device_list import get_input_devices
+from gui.device_list import BLACKHOLE_URL, get_input_devices, loopback_supported
 from gui.dropdown import CustomDropdown
 from gui.mousewheel import install_x11_mousewheel
 from gui.scaling import apply_display_scaling
@@ -674,9 +674,25 @@ class OnboardingWizard(ctk.CTk):
             self._schedule_level_preview()
 
         combo.configure(command=_on_device)
+        self._build_loopback_hint()
 
         self._build_level_row()
         self._schedule_level_preview()
+
+    def _build_loopback_hint(self) -> None:
+        """Same note the control panel shows where the platform has no
+        loopback capture (macOS): the speakers are missing from the list on
+        purpose. Clicking opens the BlackHole page."""
+        if loopback_supported():
+            return
+        label = self._section_label(
+            self._container,
+            self._t("macos_loopback_hint", "macOS: system audio needs BlackHole ↗"),
+            muted=True,
+            pady=(8, 2),
+        )
+        label.configure(cursor="hand2")
+        label.bind("<Button-1>", lambda _e: webbrowser.open(BLACKHOLE_URL))
 
     # ── Input-level meter (audio step only) ────────────────────────────────
 

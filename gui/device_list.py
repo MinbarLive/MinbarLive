@@ -99,6 +99,20 @@ _SKIP_HOSTAPIS = {"Windows WDM-KS"}
 # in the enumeration above and need no special handling.
 _LOOPBACK_SUPPORTED = sys.platform != "darwin"
 
+# Where the GUI sends macOS users for system audio. Free and open source, and
+# it registers as an ordinary CoreAudio input, so it appears in the
+# enumeration above without any further handling on our side.
+BLACKHOLE_URL = "https://existential.audio/blackhole/"
+
+
+def loopback_supported() -> bool:
+    """Whether this platform can capture an output device at all.
+
+    False on macOS, where the enumeration below lists no ``(Loopback)``
+    entries — the GUI points at a virtual audio device instead of leaving the
+    user hunting for their speakers in the dropdown."""
+    return _LOOPBACK_SUPPORTED
+
 
 def find_input_device_position(
     saved_name: str | None,

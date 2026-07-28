@@ -26,6 +26,7 @@
   "screen": "Capture & routing",
   "subtitle_screen": "Subtitle Screen:",
   "input_device": "Input Device:",
+  "macos_loopback_hint": "macOS: system audio needs BlackHole ↗",
   "translation_flow": "Translation flow",
   "source": "Spoken language:",
   "target": "Subtitle language:",

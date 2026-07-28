@@ -1690,3 +1690,46 @@ class TestIdleMeterCosts:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestLoopbackHint:
+    """Where the platform has no loopback capture (macOS), the input-device
+    card explains where system audio comes from instead of leaving the user
+    hunting for their speakers in the list."""
+
+    @staticmethod
+    def _hints(gui):
+        return [
+            label
+            for label in gui._muted_labels
+            if getattr(label, "_text_key", None) == "macos_loopback_hint"
+        ]
+
+    def test_shown_where_the_platform_has_no_loopback(self, make_gui, monkeypatch):
+        import gui.app_gui as app_gui
+
+        monkeypatch.setattr(app_gui, "loopback_supported", lambda: False)
+        gui, _c, _s = make_gui()
+
+        hints = self._hints(gui)
+        assert len(hints) == 1
+        assert hints[0].cget("text").strip()  # a real string, not the raw key
+
+    def test_absent_where_loopback_works(self, make_gui, monkeypatch):
+        import gui.app_gui as app_gui
+
+        monkeypatch.setattr(app_gui, "loopback_supported", lambda: True)
+        gui, _c, _s = make_gui()
+
+        assert self._hints(gui) == []
+
+    def test_follows_a_gui_language_change(self, make_gui, monkeypatch):
+        import gui.app_gui as app_gui
+
+        monkeypatch.setattr(app_gui, "loopback_supported", lambda: False)
+        gui, _c, _s = make_gui()
+
+        gui.gui_texts["macos_loopback_hint"] = "Systemton via BlackHole"
+        gui._update_all_ui_texts()
+
+        assert self._hints(gui)[0].cget("text") == "Systemton via BlackHole"

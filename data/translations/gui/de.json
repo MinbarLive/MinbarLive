@@ -26,6 +26,7 @@
   "screen": "Aufnahme & Routing",
   "subtitle_screen": "Untertitel-Bildschirm:",
   "input_device": "Eingabegerät:",
+  "macos_loopback_hint": "macOS: Systemton benötigt BlackHole ↗",
   "translation_flow": "Übersetzungsfluss",
   "source": "Gesprochene Sprache:",
   "target": "Untertitelsprache:",

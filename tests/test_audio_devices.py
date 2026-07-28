@@ -274,3 +274,8 @@ def test_loopback_speakers_are_listed_where_the_platform_supports_them(monkeypat
     assert display_names[1] == "2. Speakers (Realtek) (Loopback)"
     assert indices[1] == -1
     assert loopback == [False, True]
+
+
+def test_loopback_support_is_reported_per_platform():
+    """The GUI asks this to decide whether to explain the missing entries."""
+    assert device_list.loopback_supported() == (sys.platform != "darwin")

@@ -26,6 +26,7 @@
   "screen": "Kapja & drejtimi",
   "subtitle_screen": "Ekrani i titrave:",
   "input_device": "Pajisja hyrëse:",
+  "macos_loopback_hint": "macOS: zëri i sistemit kërkon BlackHole ↗",
   "translation_flow": "Rrjedha e përkthimit",
   "source": "Gjuha e folur:",
   "target": "Gjuha e titrave:",

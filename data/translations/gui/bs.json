@@ -26,6 +26,7 @@
   "screen": "Snimanje & usmjeravanje",
   "subtitle_screen": "Ekran za titlove:",
   "input_device": "Ulazni uređaj:",
+  "macos_loopback_hint": "macOS: sistemski zvuk zahtijeva BlackHole ↗",
   "translation_flow": "Tok prijevoda",
   "source": "Govorni jezik:",
   "target": "Jezik titlova:",
