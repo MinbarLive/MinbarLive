@@ -259,12 +259,19 @@ def test_loopback_speakers_are_not_listed_where_the_platform_has_none(monkeypatc
 
 def test_loopback_speakers_are_listed_where_the_platform_supports_them(monkeypatch):
     _patch_single_microphone(monkeypatch)
+    # Serves both enumeration paths so the test is platform-independent:
+    # Windows reads all_speakers(), Linux the loopback-flagged entries of
+    # all_microphones(include_loopback=True). _linux_real_source_names() asks
+    # for the plain list, which stays empty -> no source filtering.
+    loopback = SimpleNamespace(name="Speakers (Realtek)", id="{0.0}", isloopback=True)
     monkeypatch.setitem(
         sys.modules,
         "soundcard",
         SimpleNamespace(
-            all_speakers=lambda: [SimpleNamespace(name="Speakers (Realtek)", id="{0.0}")],
-            all_microphones=lambda include_loopback=False: [],
+            all_speakers=lambda: [loopback],
+            all_microphones=lambda include_loopback=False: (
+                [loopback] if include_loopback else []
+            ),
         ),
     )
     monkeypatch.setattr(device_list, "_LOOPBACK_SUPPORTED", True)

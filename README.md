@@ -73,16 +73,16 @@ Rough guide for an OpenAI setup (the default; segmented mode, Arabic → German)
 
 1. Download for your platform from the [latest release](https://github.com/MinbarLive/MinbarLive/releases/latest):
    - **Windows:** [`MinbarLive.exe`](https://github.com/MinbarLive/MinbarLive/releases/latest/download/MinbarLive.exe) — just run it.
+   - **macOS (Apple Silicon only — M1 and newer):** [`MinbarLive-macos-arm64.zip`](https://github.com/MinbarLive/MinbarLive/releases/latest/download/MinbarLive-macos-arm64.zip) — unzip, move `MinbarLive.app` to Applications, then see the macOS note below for the first launch.
    - **Linux:** [`MinbarLive-x86_64.AppImage`](https://github.com/MinbarLive/MinbarLive/releases/latest/download/MinbarLive-x86_64.AppImage) — `chmod +x` it, then double-click. No FUSE required.
-   - **macOS (Apple Silicon):** [`MinbarLive-macos-arm64.zip`](https://github.com/MinbarLive/MinbarLive/releases/latest/download/MinbarLive-macos-arm64.zip) — unzip, move `MinbarLive.app` to Applications, then see the macOS note below for the first launch.
 2. Follow the first-run wizard
 3. It's Running!
 
 > **Windows SmartScreen:** You may see a warning because the EXE is not code-signed. Click "More info" → "Run anyway".
 
-> **Linux:** The AppImage runs on modern desktops without extra dependencies, but is still maturing: a few features are Windows-only (the OBS-visible borderless overlay, transparent static mode, and system-audio loopback capture), and API-key storage needs a Secret Service keychain (GNOME Keyring / KWallet) — without one, an OpenAI key falls back to plaintext and other providers are session-only. See [docs/ci.md](docs/ci.md).
+> **macOS:** The `.app` is **experimental** and ships **unsigned**. It is **Apple Silicon only (M1 and newer) — it will not run on Intel Macs**. Because it is not signed or notarized, Gatekeeper blocks the first launch: **right-click the app → "Open" → "Open"**. If macOS refuses outright, open **System Settings → Privacy & Security** and click **"Open Anyway"** next to the MinbarLive message, then launch it again. This is the same "unknown developer" warning Windows shows for the EXE. Grant the microphone permission when asked, or there is no audio. Two platform limits: system-audio **loopback capture does not exist on macOS** (route audio through a virtual device such as [BlackHole](https://existential.audio/blackhole/), which then shows up as a normal input), and the subtitle overlay **cannot float above the Dock or the menu bar**, so it is laid out inside the usable screen area instead of covering them.
 
-> **macOS:** The `.app` is **experimental** and ships **unsigned** (Apple Silicon only — it will not run on Intel Macs). Because it is not signed or notarized, Gatekeeper blocks the first launch: **right-click the app → "Open" → "Open"**. If macOS refuses outright, open **System Settings → Privacy & Security** and click **"Open Anyway"** next to the MinbarLive message, then launch it again. This is the same "unknown developer" warning Windows shows for the EXE. Grant the microphone permission when asked, or there is no audio. Two platform limits: system-audio **loopback capture does not exist on macOS** (route audio through a virtual device such as [BlackHole](https://existential.audio/blackhole/), which then shows up as a normal input), and the subtitle overlay **cannot float above the Dock or the menu bar**, so it is laid out inside the usable screen area instead of covering them.
+> **Linux:** The AppImage runs on modern desktops without extra dependencies, but is still maturing: a few features are Windows-only (the OBS-visible borderless overlay, transparent static mode), and API-key storage needs a Secret Service keychain (GNOME Keyring / KWallet) — without one, an OpenAI key falls back to plaintext and other providers are session-only. See [docs/ci.md](docs/ci.md).
 
 ### Option B: Build it yourself (Python)
 
