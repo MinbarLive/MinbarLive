@@ -88,6 +88,17 @@ _HOSTAPI_PRIORITY = {
 }
 _SKIP_HOSTAPIS = {"Windows WDM-KS"}
 
+# Loopback capture exists on Windows (WASAPI) and Linux (PulseAudio/PipeWire
+# monitor sources) only.  soundcard's CoreAudio backend has no such thing: it
+# warns "macOS does not support loopback recording functionality" and
+# all_microphones(include_loopback=True) simply returns the real inputs.  Every
+# speaker listed here on macOS was therefore selectable but unopenable — the
+# capture path's get_microphone(speaker.id) died with soundcard's
+# "no device with id <n>".  macOS users route system audio through a virtual
+# device instead (BlackHole, Loopback); those appear as ordinary input devices
+# in the enumeration above and need no special handling.
+_LOOPBACK_SUPPORTED = sys.platform != "darwin"
+
 
 def find_input_device_position(
     saved_name: str | None,
@@ -202,10 +213,13 @@ def get_input_devices() -> tuple[list[str], list[str], list[int], list[bool]]:
 
         # Loopback devices: capture whatever is playing through an output
         # device (speakers, headphones) via WASAPI loopback.  Requires the
-        # soundcard library; silently skipped if not installed.
+        # soundcard library; silently skipped if not installed, and skipped
+        # entirely where the platform has no loopback (_LOOPBACK_SUPPORTED).
         # Known soundcard limitation: recording a single channel on Windows
         # WASAPI produces garbage — the capture loops always use channels=2
         # and mix to mono.
+        if not _LOOPBACK_SUPPORTED:
+            return display_names, base_names, indices, loopback_flags
         try:
             import soundcard as sc  # noqa: PLC0415 (lazy import is intentional)
 

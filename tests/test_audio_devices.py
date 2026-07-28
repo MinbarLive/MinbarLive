@@ -217,3 +217,60 @@ def test_enumeration_failure_clears_stale_loopback_registry(monkeypatch):
 
     assert device_list.get_input_devices() == ([], [], [], [])
     assert get_speaker(-1) is None
+
+
+def _patch_single_microphone(monkeypatch) -> None:
+    monkeypatch.setattr(
+        device_list.sd,
+        "query_devices",
+        lambda: [
+            {"name": "MacBook Pro Microphone", "hostapi": 0, "max_input_channels": 1}
+        ],
+    )
+    monkeypatch.setattr(
+        device_list.sd, "query_hostapis", lambda: [{"name": "Core Audio"}]
+    )
+    monkeypatch.setattr(
+        device_list.sd, "check_input_settings", lambda **kwargs: None
+    )
+
+
+def test_loopback_speakers_are_not_listed_where_the_platform_has_none(monkeypatch):
+    """macOS: soundcard's CoreAudio backend cannot record loopback, so every
+    speaker offered here failed at open time with "no device with id <n>"."""
+    _patch_single_microphone(monkeypatch)
+    monkeypatch.setitem(
+        sys.modules,
+        "soundcard",
+        SimpleNamespace(
+            all_speakers=lambda: [SimpleNamespace(name="MacBook Pro Speakers", id=72)],
+            all_microphones=lambda include_loopback=False: [],
+        ),
+    )
+    monkeypatch.setattr(device_list, "_LOOPBACK_SUPPORTED", False)
+
+    display_names, base_names, indices, loopback = device_list.get_input_devices()
+
+    assert display_names == ["1. MacBook Pro Microphone"]
+    assert base_names == ["MacBook Pro Microphone"]
+    assert indices == [0]
+    assert loopback == [False]
+
+
+def test_loopback_speakers_are_listed_where_the_platform_supports_them(monkeypatch):
+    _patch_single_microphone(monkeypatch)
+    monkeypatch.setitem(
+        sys.modules,
+        "soundcard",
+        SimpleNamespace(
+            all_speakers=lambda: [SimpleNamespace(name="Speakers (Realtek)", id="{0.0}")],
+            all_microphones=lambda include_loopback=False: [],
+        ),
+    )
+    monkeypatch.setattr(device_list, "_LOOPBACK_SUPPORTED", True)
+
+    display_names, _, indices, loopback = device_list.get_input_devices()
+
+    assert display_names[1] == "2. Speakers (Realtek) (Loopback)"
+    assert indices[1] == -1
+    assert loopback == [False, True]
