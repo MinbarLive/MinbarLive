@@ -548,8 +548,8 @@ def get_default_model(provider: str, capability: str) -> str:
 # exposes the same surface (set_api_key, has_api_key, _load_stored_key with
 # keyring-then-environment lookup) — importing the module is cheap, the AI
 # SDKs inside stay lazily imported. OpenAI is the exception: its persistence
-# goes through utils.settings (legacy settings-file migration + the disclosed
-# plaintext fallback when no keyring backend exists).
+# goes through utils.settings, which also cleans up the plaintext key older
+# versions wrote when no keyring backend existed.
 _KEYED_PROVIDERS = ("openai", "gemini", "anthropic", "deepgram")
 
 # Env vars each provider's key lookup falls back to (get_stored_api_key above,
@@ -571,20 +571,8 @@ def _client_module(provider: str):
     return importlib.import_module(f"providers.{provider}.client")
 
 
-def has_insecure_key_fallback(provider: str) -> bool:
-    """True if this provider still persists its key when no keychain exists.
-
-    Only OpenAI does, via the legacy plaintext settings-file fallback. Every
-    other provider's key is session-only in that case — it is gone after a
-    restart. save_api_key() returns False for both outcomes, so callers that
-    report the result to the user need this to tell "saved, but in plaintext"
-    apart from "not saved at all".
-    """
-    return provider == "openai"
-
-
 def get_stored_api_key(provider: str) -> str | None:
-    """A provider's persisted key (keychain, legacy file, or environment)."""
+    """A provider's persisted key (keychain or environment)."""
     import os
 
     if provider == "openai":
@@ -608,7 +596,7 @@ def has_usable_key(provider: str) -> bool:
 
 def has_configured_key(provider: str) -> bool:
     """True if a key was explicitly saved for this provider through MinbarLive
-    (OS keychain, or the legacy openai settings-file fallback).
+    (OS keychain).
 
     Unlike has_usable_key()/get_stored_api_key(), this deliberately ignores
     the GEMINI_API_KEY/OPENAI_API_KEY/ANTHROPIC_API_KEY/DEEPGRAM_API_KEY
@@ -633,15 +621,15 @@ def save_api_key(provider: str, key: str) -> bool:
     """Persist a provider's API key and activate it for the session.
 
     Returns:
-        True if stored securely (keychain); False if only a fallback or
-        session-only storage was possible.
+        True if stored in the OS keychain; False if no keychain was available,
+        which makes the key session-only — it is never written to disk.
     """
     key = (key or "").strip()
     if not key or provider not in _KEYED_PROVIDERS:
         return False
 
     if provider == "openai":
-        # set_saved_api_key handles keyring + legacy settings-file fallback
+        # set_saved_api_key also cleans up any legacy plaintext key
         from utils.settings import set_saved_api_key
 
         stored_securely = set_saved_api_key(key)
@@ -666,7 +654,7 @@ def clear_api_key(provider: str) -> None:
     if provider == "openai":
         from utils.settings import delete_saved_api_key
 
-        delete_saved_api_key()  # keychain + legacy settings-file cleanup
+        delete_saved_api_key()  # keychain + legacy plaintext-file cleanup
     else:
         from utils.keyring_storage import delete_api_key_from_keyring
 

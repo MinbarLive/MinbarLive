@@ -82,7 +82,7 @@ Rough guide for an OpenAI setup (the default; segmented mode, Arabic → German)
 
 > **macOS:** The `.app` is **experimental** and ships **unsigned**. It is **Apple Silicon only (M1 and newer) — it will not run on Intel Macs**. Because it is not signed or notarized, Gatekeeper blocks the first launch: **right-click the app → "Open" → "Open"**. If macOS refuses outright, open **System Settings → Privacy & Security** and click **"Open Anyway"** next to the MinbarLive message, then launch it again. This is the same "unknown developer" warning Windows shows for the EXE. Grant the microphone permission when asked, or there is no audio. Two platform limits: system-audio **loopback capture does not exist on macOS** (route audio through a virtual device such as [BlackHole](https://existential.audio/blackhole/), which then shows up as a normal input), and the subtitle overlay **cannot float above the Dock or the menu bar**, so it is laid out inside the usable screen area instead of covering them.
 
-> **Linux:** The AppImage runs on modern desktops without extra dependencies, but is still maturing: a few features are Windows-only (the OBS-visible borderless overlay, transparent static mode), and API-key storage needs a Secret Service keychain (GNOME Keyring / KWallet) — without one, an OpenAI key falls back to plaintext and other providers are session-only. See [docs/ci.md](docs/ci.md).
+> **Linux:** The AppImage runs on modern desktops without extra dependencies, but is still maturing: a few features are Windows-only (the OBS-visible borderless overlay, transparent static mode), and API-key storage needs a Secret Service keychain (GNOME Keyring / KWallet) — without one, keys are never written to disk and apply to the running session only. See [docs/ci.md](docs/ci.md).
 
 ### Option B: Build it yourself (Python)
 
@@ -206,7 +206,7 @@ Runtime files are written to a per-user app data folder:
 - **macOS**: `~/Library/Application Support/MinbarLive/`
 - **Linux**: `~/.local/share/MinbarLive/`
 
-API keys live in the **OS keychain**, not in `settings.json`. The one exception is a machine with no keychain backend at all (typically Linux without GNOME Keyring/KWallet): there an OpenAI key falls back to plaintext in `settings.json` (the app warns you when this happens), while other providers keep the key for that session only. Using an environment variable or `.env` avoids both. See [docs/providers.md](docs/providers.md#api-keys).
+API keys live in the **OS keychain** and are **never written to `settings.json`**. On a machine with no keychain backend at all (typically Linux without GNOME Keyring/KWallet) nothing is persisted: the key applies to that session only and must be entered again after a restart — the app tells you when this happens. Set up a keychain, or use an environment variable or `.env`, to avoid re-entering it. See [docs/providers.md](docs/providers.md#api-keys).
 
 <br>
 

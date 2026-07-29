@@ -40,7 +40,6 @@ from providers import (
     get_default_model,
     get_stored_api_key,
     get_streaming_key_provider,
-    has_insecure_key_fallback,
     resolve_provider_by_keys,
     save_api_key,
 )
@@ -1136,33 +1135,25 @@ class OnboardingWizard(ctk.CTk):
         save_settings(settings)
 
         # Persist every provider key entered this session. Only the translation
-        # provider's key surfaces the insecure-storage warning (once) so several
+        # provider's key surfaces the session-only warning (once) so several
         # keys don't stack dialogs.
-        insecure = False
         session_only = False
         for pid, key in self._state.get("provider_keys", {}).items():
             if not key:
                 continue
             stored = save_api_key(pid, key)
             if pid == provider and not stored:
-                # Without a keychain, OpenAI falls back to the plaintext
-                # settings file while every other provider keeps the key for
-                # this session only — two different warnings.
-                if has_insecure_key_fallback(pid):
-                    insecure = True
-                else:
-                    session_only = True
-        if insecure or session_only:
+                # No keychain: keys are never written to disk, so this one
+                # lasts for the session only.
+                session_only = True
+        if session_only:
             messagebox.showwarning(
                 "MinbarLive",
                 self._t(
-                    "dlg_key_insecure_warning"
-                    if insecure
-                    else "dlg_key_saved_session_only",
-                    "Keyring unavailable — key will be stored unencrypted."
-                    if insecure
-                    else "No keyring available — the key works for this "
-                    "session only and must be entered again after a restart.",
+                    "dlg_key_saved_session_only",
+                    "No keyring available — the key works for this session "
+                    "only and must be entered again after a restart. Set up "
+                    "an OS keychain to store it permanently.",
                 ),
                 parent=self,
             )

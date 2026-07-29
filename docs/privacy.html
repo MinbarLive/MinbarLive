@@ -221,10 +221,10 @@
   <p>
     Provider API keys are stored in the operating system's own credential store
     (Windows Credential Manager, macOS Keychain, or the Linux Secret Service),
-    not in configuration files. On a Linux system with no credential store
-    available at all, MinbarLive falls back to storing an OpenAI key in its
-    settings file and tells you so; every other provider is kept in memory for
-    that session only.
+    not in configuration files. On a system with no credential store available
+    at all (typically Linux without GNOME Keyring or KWallet), the key is not
+    written to disk anywhere: it is kept in memory for that session only, must
+    be entered again after a restart, and MinbarLive tells you so.
   </p>
 
   <h3>Update check</h3>
