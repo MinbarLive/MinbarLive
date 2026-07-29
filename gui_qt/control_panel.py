@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.control_state import required_key_providers
-from gui.device_list import get_input_devices
+from gui.device_list import find_input_device_position, get_input_devices
 from gui_qt.api_keys import activate_stored_keys, ensure_keys
 from gui_qt.i18n import load_gui_translations
 from gui_qt.pipeline_bridge import PipelineBridge, streaming_enabled
@@ -79,9 +79,25 @@ class ControlPanel(QMainWindow):
         form.setContentsMargins(18, 18, 18, 18)
         form.setSpacing(12)
 
-        self.device_names, _, self.device_indices, _ = get_input_devices()
+        (
+            self.device_names,
+            self.device_base_names,
+            self.device_indices,
+            self.device_loopback_flags,
+        ) = get_input_devices()
         self.device_combo = QComboBox()
         self.device_combo.addItems(self.device_names or ["(no input devices)"])
+        # Restore the saved device by NAME, not position: indices shift when
+        # hardware is plugged in, and loopback entries carry synthetic negative
+        # indices. Without this the combo silently defaults to the first device,
+        # so a loopback setup captures a real microphone instead.
+        saved = self.settings.input_device_name
+        if saved:
+            pos = find_input_device_position(saved, self.device_base_names)
+            if pos is None and saved in self.device_names:
+                pos = self.device_names.index(saved)
+            if pos is not None:
+                self.device_combo.setCurrentIndex(pos)
 
         self.source_combo = QComboBox()
         # SOURCE_LANGUAGES is (display name, code) pairs; the settings field
@@ -293,6 +309,9 @@ class ControlPanel(QMainWindow):
         self.settings.subtitle_mode = self.mode_combo.currentText()
         self.settings.monitor_index = self.monitor_combo.currentIndex()
         self.settings.bilingual_mode = self.bilingual_check.isChecked()
+        pos = self.device_combo.currentIndex()
+        if 0 <= pos < len(self.device_base_names):
+            self.settings.input_device_name = self.device_base_names[pos]
         save_settings(self.settings)
 
     def closeEvent(self, event) -> None:

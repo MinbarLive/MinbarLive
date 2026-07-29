@@ -11,9 +11,15 @@ from pathlib import Path
 # plain Tk window before that point runs in a virtualized coordinate space.
 # Doing it here makes the awareness deterministic from process start; CTk's
 # later call is then a no-op (E_ACCESSDENIED, which ctypes ignores).
-from utils.windows_dpi import enable_windows_dpi_awareness
+#
+# Skipped for the Qt tree (#44): Qt sets its own per-monitor-aware-v2 context
+# and warns "SetProcessDpiAwarenessContext() failed: Access is denied." if the
+# process is already marked aware. Qt handles DPI natively, so this call is not
+# merely redundant there — it actively takes the setting away from Qt.
+if "--qt" not in sys.argv:
+    from utils.windows_dpi import enable_windows_dpi_awareness
 
-enable_windows_dpi_awareness()
+    enable_windows_dpi_awareness()
 
 # Set Windows taskbar icon (must be done before tkinter imports)
 # Note: sys.platform is always "win32" on Windows, even on 64-bit systems
