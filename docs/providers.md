@@ -60,7 +60,7 @@ Streaming replaces only the transcription side; translation still runs through y
 - The real-time engines don't have keys of their own: OpenAI Realtime uses the OpenAI key, Gemini Live uses the Gemini key.
 - The first-run wizard and the settings window manage keys per provider; switching to a provider without a stored key prompts for one.
 
-**Simplest setup:** one Google Gemini key covers translation, real-time transcription, and Quran verse matching.
+**Simplest setup:** one OpenAI key covers translation, real-time transcription, and Quran verse matching (the OpenAI verse matrix is the shipped default space). A Gemini-only setup covers the same three, using the Gemini verse matrix.
 
 ## Embeddings (Quran Verse Matching)
 

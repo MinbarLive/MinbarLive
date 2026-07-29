@@ -11,12 +11,12 @@ These settings are configurable from the control panel / settings window and sav
 | Source Language        | Automatic            | Spoken language (Arabic, Turkish, Urdu, …); real-time streaming requires an explicit language (no "Automatic") |
 | Target Language        | German               | Translation output (35+ languages)                                      |
 | Processing Strategy    | Real-time streaming  | Real-time streaming, Chunk-based, or Semantic buffering (Beta)          |
-| Transcription Engine   | Google Gemini (real-time) | STT engine + model; the real-time engines imply streaming mode     |
-| AI Provider            | Google Gemini        | Translation provider (Google Gemini, OpenAI, Anthropic Claude)          |
+| Transcription Engine   | OpenAI (real-time)   | STT engine + model; the real-time engines imply streaming mode          |
+| AI Provider            | OpenAI               | Translation provider (OpenAI, Google Gemini, Anthropic Claude)          |
 | Translation Model      | `gpt-5.2`               | Per-provider model list; "use default" recommended                    |
 | Subtitle Mode          | Realtime             | Realtime feed, Continuous (ticker), or Static (latest only); Realtime is only available while streaming |
 | Show original text     | On                   | Bilingual display: source text above the translation                    |
-| Show live transcript   | On                   | Realtime mode: show the in-progress transcript line while the speaker talks (independent of "Show original text") |
+| Show live transcript   | Off                  | Realtime mode: show the in-progress transcript line while the speaker talks (independent of "Show original text") |
 | Islamic mode           | On                   | Quran verse & Athan recognition + Islamic translation style; off = general translator (turning it off asks for confirmation) |
 | Noise filter           | On                   | Voice-activity gate: drops static/hum the loudness-based silence gate lets through |
 | Font Size              | 40                   | Subtitle font size                                                      |
@@ -29,10 +29,10 @@ These settings are configurable from the control panel / settings window and sav
 | Transparent            | Off                  | Transparent overlay for static mode                                     |
 | Input Device           | System default       | Microphone, or a Windows `(Loopback)` output device (system audio)      |
 | Subtitle Screen        | Monitor 1            | Monitor for subtitle display                                            |
-| Show subtitles while running | On             | Off = transcribe and translate to history only, no subtitle window       |
+| Hide subtitle window   | Never                | 3-way: **Never** (always shown) / **When stopped** / **Always** (no overlay at all — transcription and translation still run to history) |
 | Show footer            | On                   | AI-disclaimer pill on the subtitle window                               |
-| Hide subtitles on stop | Off                  | Hide the subtitle window while translation is stopped                   |
-| Keep windows always on top | On               | Control panel + subtitle window float above other windows               |
+| Windows on top         | When running         | 3-way: **Never** / **When running** / **Always**. The control panel is only ever topmost while a subtitle overlay is open |
+| Window style           | Windows              | **Windows** = separate OS windows; **Integrated** = secondary windows open inside the control panel over a dim overlay. Integrated is Windows-only (see below) |
 | Hide announcement when stopped | On           | Clears an "until stopped" announcement when the session is stopped      |
 | Auto start             | Off                  | Start translating as soon as the app launches                           |
 | Auto stop when idle    | On                   | Stop a running session after 10 min without any transcription (cost guard) |
@@ -63,19 +63,34 @@ Select your preferred language from the dropdown in the top-right corner. Change
 - **Chunk-based**: translates each 12 s audio segment immediately (~4–14 s latency). No streaming connection needed.
 - **Semantic buffering** (Beta): waits for complete sentences before translating. Best sentence quality, highest latency; heuristics tuned for Arabic.
 
+### Window behaviour
+
+Two of the settings above are 3-way selectors that replaced four older checkboxes; a `settings.json` written by an older version migrates automatically on load:
+
+| Stored setting       | Values                          | Replaces                                          |
+| -------------------- | ------------------------------- | ------------------------------------------------- |
+| `subtitle_hide_mode` | `never` / `stopped` / `always`  | `subtitle_output_enabled` + `hide_subtitle_on_stop` |
+| `always_on_top_mode` | `never` / `running` / `always`  | `always_on_top` (a boolean)                        |
+
+**Window style** (`window_style`, default `windowed`) chooses between separate OS windows and Discord-style panels that open inside the control panel over a live dimmed backdrop (Esc or a click on the backdrop closes the topmost panel; dialogs are never closed by a stray click). Integrated mode is **Windows-only**: X11 without a compositor ignores per-window opacity, so the backdrop would render as solid black. On Linux and macOS the selector is disabled and separate windows are always used, even if `window_style` says otherwise.
+
+The control panel also remembers whether it was **maximized** (`window_maximized`), which a `WxH+X+Y` geometry string cannot express. `window_geometry` keeps the last restored-down size, so un-maximizing after start-up lands somewhere sensible instead of filling the screen again.
+
 ## AI Models
 
 Model selection is **user-configurable in the GUI** and lives in `utils/settings.py` (OpenAI lists) and `providers/<provider>/` (Gemini, Anthropic, streaming engines), not in `config.py`. Each provider has a default plus a fallback chain that is tried automatically when a model fails:
 
 | Capability                    | Default                  | Fallback chain                                    |
 | ----------------------------- | ------------------------ | ------------------------------------------------- |
+| Translation (OpenAI, default) | `gpt-5.2`                | `gpt-5.2` → `gpt-5.1` → `gpt-4.1` → `gpt-4o-mini` |
 | Translation (Gemini)          | `gemini-3.1-flash-lite`  | `gemini-3.1-flash-lite` → `gemini-3.5-flash`      |
-| Translation (OpenAI)          | `gpt-5.2`                | `gpt-5.2` → `gpt-5.1` → `gpt-4.1` → `gpt-4o-mini` |
 | Translation (Anthropic)       | `claude-sonnet-5`        | `claude-sonnet-5` → `claude-haiku-4-5`            |
-| Transcription (Gemini)          | `gemini-3.5-flash`     | n/a (segmented; audio sent inline)                  |
 | Transcription (OpenAI)        | `gpt-4o-transcribe`      | `gpt-4o-transcribe` → `gpt-4o-mini-transcribe` → `whisper-1` |
+| Transcription (Gemini)          | `gemini-3.5-flash`     | n/a (segmented; audio sent inline)                  |
+| Real-time STT (OpenAI, default) | `gpt-4o-transcribe`    | n/a (Realtime API; captures at 24 kHz)              |
 | Real-time STT (Gemini)          | `gemini-2.5-flash-native-audio-latest` | n/a (whitelisted Live models only)|
-| Embeddings (RAG)              | `gemini-embedding-001` / `text-embedding-3-large` | n/a (must match the precomputed verse matrix of the active space) |
+| Real-time STT (Deepgram)        | `nova-3`               | n/a (own Deepgram key)                              |
+| Embeddings (RAG)              | `text-embedding-3-large` / `gemini-embedding-001` | n/a (must match the precomputed verse matrix of the active space) |
 
 See [providers.md](providers.md) for the Gemini/Anthropic/streaming model catalogs.
 
