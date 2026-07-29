@@ -1477,6 +1477,64 @@ class TestCardGridReflow:
         assert (gui._min_width, gui._min_height) == (gui._MIN_W, gui._MIN_H)
 
 
+class TestWindowIcon:
+    """CustomTkinter withdraws and deiconifies the window ~200 ms after
+    start-up to repaint the titlebar, which recreates the Windows taskbar
+    button and drops an icon set before it — the taskbar showed the Tk
+    feather about half the time. The icon is therefore re-asserted on <Map>,
+    which means it runs often and must stay cheap on every platform.
+    """
+
+    def test_map_reasserts_the_icon(self, make_gui, monkeypatch):
+        """bind() captures the bound method, so this asserts the effect —
+        that mapping the window reaches Tk's icon call — not the attribute."""
+        import gui.app_gui as app_gui
+
+        gui, _c, _s = make_gui()
+        calls = []
+        monkeypatch.setattr(app_gui, "apply_dark_titlebar", lambda *a, **k: None)
+        for name in ("iconbitmap", "iconphoto"):
+            monkeypatch.setattr(
+                gui, name, lambda *a, **k: calls.append(1), raising=False
+            )
+        gui.event_generate("<Map>")
+        gui.update_idletasks()
+        assert calls, "the <Map> binding no longer re-applies the icon"
+
+    def test_a_child_widgets_map_is_ignored(self, make_gui):
+        """<Map> reaches this bindtag for every descendant widget too."""
+        gui, _c, _s = make_gui()
+
+        class _Event:
+            widget = "not-the-toplevel"
+
+        before = gui._window_icon_photo
+        gui._apply_window_icon(_Event())
+        assert gui._window_icon_photo is before
+
+    def test_the_png_icon_is_built_once(self, make_gui, monkeypatch):
+        """The non-Windows branch: scaled_icon_photo() returns a fresh
+        PhotoImage each call, so repeating it per <Map> would leak Tk images.
+        """
+        import gui.app_gui as app_gui
+
+        gui, _c, _s = make_gui()
+        monkeypatch.setattr(app_gui, "ICO_SUPPORTED", False)
+        monkeypatch.setattr(app_gui.os.path, "exists", lambda _p: True)
+        built = []
+
+        def _fake_photo(_path):
+            built.append(1)
+            return "photo"
+
+        monkeypatch.setattr(app_gui, "scaled_icon_photo", _fake_photo)
+        monkeypatch.setattr(gui, "iconphoto", lambda *a: None, raising=False)
+        gui._window_icon_photo = None
+        for _ in range(5):
+            gui._apply_window_icon()
+        assert len(built) == 1, f"rebuilt the icon {len(built)}x"
+
+
 class _AlignGroup:
     """A card group whose rendered position answers to the current gap.
 

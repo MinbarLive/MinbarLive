@@ -455,16 +455,14 @@ class AppGUI(
         # the active window, which is what the restore actually cares about.
         self.bind("<Activate>", self._schedule_control_window_surface_restore)
 
-        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
-            try:
-                self.iconbitmap(ICON_PATH)
-            except Exception:
-                pass
-        elif os.path.exists(ICON_PATH_PNG):
-            try:
-                self.iconphoto(False, scaled_icon_photo(ICON_PATH_PNG))
-            except Exception:
-                pass
+        self._window_icon_photo: tk.Image | None = None
+        self._apply_window_icon()
+        # CustomTkinter withdraws and deiconifies this window ~200 ms after
+        # start-up to repaint the titlebar (_windows_set_titlebar_color), which
+        # recreates the Windows taskbar button and drops an icon set before it —
+        # that race is why the taskbar showed the Tk feather about half the
+        # time. Re-assert whenever the window is (re)mapped.
+        self.bind("<Map>", self._apply_window_icon, add="+")
 
         if self._log_collapsed:
             self.grid_columnconfigure(0, weight=1, minsize=self._MIN_W)
@@ -473,6 +471,44 @@ class AppGUI(
             self.grid_columnconfigure(0, weight=0, minsize=500)
             self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
+
+    def _apply_window_icon(self, _event: object | None = None) -> None:
+        """(Re)apply the window and taskbar icon.
+
+        ``default=`` registers it as the *application's* icon rather than this
+        one window's: Tk re-applies that form itself when a window surface is
+        recreated, and every toplevel inherits it. The plain call covers this
+        window right now. Idempotent, so the <Map> binding can simply repeat
+        it — the surface is recreated on a theme switch and on a restore from
+        the taskbar too, not only during start-up.
+
+        Both branches are allocation-free after the first call, because <Map>
+        fires often and this runs on every one of them. The .ico branch is
+        Windows-only (Linux Tk expects an XBM there and raises — see
+        utils/icons); the PNG branch everywhere else.
+        """
+        # <Map> reaches this bindtag for every descendant widget as well.
+        if _event is not None and str(getattr(_event, "widget", "")) != str(self):
+            return
+        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
+            try:
+                self.iconbitmap(default=ICON_PATH)
+                self.iconbitmap(ICON_PATH)
+            except Exception:
+                return
+            # iconbitmap() resets the DWM titlebar to the light default. A
+            # no-op off Windows, where nothing above ran either.
+            apply_dark_titlebar(self, dark=self._theme_mode == "dark")
+        elif os.path.exists(ICON_PATH_PNG):
+            try:
+                # Kept on the instance: scaled_icon_photo() caches the decoded
+                # bytes but returns a FRESH PhotoImage, so rebuilding it per
+                # <Map> would pile up Tk image objects for the session.
+                if self._window_icon_photo is None:
+                    self._window_icon_photo = scaled_icon_photo(ICON_PATH_PNG)
+                self.iconphoto(False, self._window_icon_photo)
+            except Exception:
+                pass
 
     def _schedule_control_window_surface_restore(
         self, _event: object | None = None
