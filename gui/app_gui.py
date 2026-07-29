@@ -527,6 +527,37 @@ class AppGUI(
             120, self._restore_control_window_surface
         )
 
+    def _is_maximized(self) -> bool:
+        """True if the window is currently maximized, on any platform.
+
+        Windows (and Tk on macOS) report it as the "zoomed" window state; X11
+        has no such state and uses a -zoomed attribute instead. Each raises
+        TclError where it does not apply, so both are tried.
+        """
+        try:
+            if self.state() == "zoomed":
+                return True
+        except tk.TclError:
+            pass
+        try:
+            return bool(self.attributes("-zoomed"))
+        except tk.TclError:
+            return False
+
+    def _restore_maximized_state(self) -> None:
+        """Maximize the window again if it was closed maximized."""
+        if not getattr(self._saved_settings, "window_maximized", False):
+            return
+        try:
+            self.state("zoomed")
+            return
+        except tk.TclError:
+            pass
+        try:
+            self.attributes("-zoomed", True)
+        except tk.TclError:
+            pass
+
     def _reveal_control_window(self, _event: object | None = None) -> None:
         """Fade the control panel in once it has painted (first <Map> only).
 
@@ -540,6 +571,12 @@ class AppGUI(
 
         def _show() -> None:
             self._reveal_pending = False
+            # Re-maximize here rather than in _setup_window: CustomTkinter
+            # withdraws and deiconifies the window on its way through
+            # _windows_set_titlebar_color, and it only deiconifies again when
+            # the state it saved was "normal" — maximizing before that could
+            # leave the window withdrawn. By the first <Map> that dance is done.
+            self._restore_maximized_state()
             try:
                 self.attributes("-alpha", 1.0)
             except tk.TclError:
@@ -4341,7 +4378,13 @@ class AppGUI(
         # jobs behind the cancel-everything pass below.
         self._closing = True
         try:
-            self._saved_settings.window_geometry = self.geometry()
+            maximized = self._is_maximized()
+            self._saved_settings.window_maximized = maximized
+            # While maximized, geometry() reports the maximized box. Storing it
+            # would reopen a screen-sized *normal* window and leave nothing to
+            # restore down to, so the last restored-down geometry is kept.
+            if not maximized:
+                self._saved_settings.window_geometry = self.geometry()
             self._save_current_settings()
         except Exception:
             pass

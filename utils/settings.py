@@ -425,6 +425,11 @@ class Settings:
     auto_cleanup_content: bool = False  # Purge old history + batch files at startup
     log_panel_collapsed: bool = True  # Log panel hidden by default (AV volunteers)
     window_geometry: str = ""  # Last window geometry (WxH+X+Y), empty = use default
+    # Maximized is a window *state*, which a WxH+X+Y string cannot express —
+    # restoring the geometry alone reopened a screen-sized window that was not
+    # actually maximized. window_geometry keeps the last restored-down size, so
+    # un-maximizing after start-up still lands somewhere sensible.
+    window_maximized: bool = False
     auto_start: bool = False  # Start translation automatically when app launches
     # Stop a running session automatically after 10 min without any
     # transcription (AUTO_STOP_INACTIVITY_SECONDS) — cost guard for
@@ -655,6 +660,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             ),
             log_panel_collapsed=data.get("log_panel_collapsed", True),
             window_geometry=data.get("window_geometry", ""),
+            window_maximized=bool(data.get("window_maximized", False)),
             auto_start=data.get("auto_start", False),
             auto_stop_inactivity=data.get("auto_stop_inactivity", True),
             check_for_updates=data.get("check_for_updates", True),
@@ -720,6 +726,7 @@ def save_settings(settings: Settings) -> None:
         "auto_cleanup_content": settings.auto_cleanup_content,
         "log_panel_collapsed": settings.log_panel_collapsed,
         "window_geometry": settings.window_geometry,
+        "window_maximized": settings.window_maximized,
         "auto_start": settings.auto_start,
         "auto_stop_inactivity": settings.auto_stop_inactivity,
         "check_for_updates": settings.check_for_updates,
