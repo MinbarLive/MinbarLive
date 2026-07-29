@@ -16,6 +16,7 @@ text appearance would not.
 from __future__ import annotations
 
 import queue
+import threading
 
 import pytest
 
@@ -569,6 +570,98 @@ class TestHistoryWindow:
         monkeypatch.setattr(hw, "parse_history_file", boom)
         w = make()  # must build and select without propagating the error
         assert w.transcript.toPlainText() != ""
+
+
+class TestBatchWindow:
+    """The pipeline is batch/processor.py; these cover the window around it."""
+
+    @pytest.fixture
+    def batch(self, qt_app, monkeypatch):
+        import sys
+        import types
+
+        import gui_qt.batch_window as bw
+        from utils.settings import load_settings
+
+        calls: dict = {}
+
+        def fake_process_file(
+            input_path, progress_callback=None, cancel_event=None, **kwargs
+        ):
+            calls.update(kwargs)
+            calls["input_path"] = input_path
+            for i in range(1, 4):
+                if cancel_event is not None and cancel_event.is_set():
+                    return None
+                if progress_callback:
+                    progress_callback(i, 3)
+            return input_path + ".de.srt"
+
+        # Stub the module the worker imports lazily, so no ffmpeg or API is hit.
+        monkeypatch.setitem(
+            sys.modules,
+            "batch.processor",
+            types.SimpleNamespace(process_file=fake_process_file),
+        )
+        w = bw.BatchWindow(lambda k, f="": f, load_settings())
+        yield w, calls
+        w.close()
+
+    def test_start_is_disabled_until_a_file_is_chosen(self, batch):
+        w, _ = batch
+        assert not w.start_btn.isEnabled()
+
+    def test_output_format_maps_from_the_segment(self, batch):
+        w, _ = batch
+        for index, expected in enumerate(("srt", "txt", "both")):
+            w.output_segment._buttons[index].click()
+            assert w._output_format() == expected
+
+    def test_options_reach_the_processor(self, batch, qt_app):
+        w, calls = batch
+        w._input_path = "khutbah.mp3"
+        w.output_segment._buttons[2].click()
+        w.bilingual_check.setChecked(True)
+        w._on_start()
+        # The worker runs on its own thread; wait for it rather than sleeping.
+        w.worker._thread.join(timeout=5)
+        assert calls["input_path"] == "khutbah.mp3"
+        assert calls["output_format"] == "both"
+        assert calls["bilingual_srt"] is True
+
+    def test_cancel_sets_the_event(self, batch):
+        w, _ = batch
+        w._input_path = "khutbah.mp3"
+        w._on_start()
+        w._on_cancel()
+        assert w.worker.cancel_event.is_set()
+
+    def test_closing_cancels_a_running_job(self, batch, monkeypatch):
+        # Otherwise the run continues and writes files after the window is gone.
+        # Needs a job that is still running when close() lands, so this stub
+        # blocks until cancelled rather than returning immediately.
+        import sys
+        import types
+
+        w, _ = batch
+        started = threading.Event()
+
+        def blocking_process_file(input_path, progress_callback=None,
+                                  cancel_event=None, **kwargs):
+            started.set()
+            cancel_event.wait(timeout=5)
+            return None
+
+        monkeypatch.setitem(
+            sys.modules,
+            "batch.processor",
+            types.SimpleNamespace(process_file=blocking_process_file),
+        )
+        w._input_path = "khutbah.mp3"
+        w._on_start()
+        assert started.wait(timeout=5), "worker never started"
+        w.close()
+        assert w.worker.cancel_event.is_set()
 
 
 class TestPipelineBridge:

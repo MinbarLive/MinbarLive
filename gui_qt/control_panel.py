@@ -137,8 +137,11 @@ class ControlPanel(QMainWindow):
         self.settings_btn.clicked.connect(self.open_settings)
         self.history_btn = QPushButton("⟲  " + self._t("history_title", "History"))
         self.history_btn.clicked.connect(self.open_history)
+        self.batch_btn = QPushButton("▦  " + self._t("batch_file", "File / Batch"))
+        self.batch_btn.clicked.connect(self.open_batch)
         tools.addWidget(self.settings_btn)
         tools.addWidget(self.history_btn)
+        tools.addWidget(self.batch_btn)
         outer.addLayout(tools)
 
         buttons = QHBoxLayout()
@@ -249,6 +252,22 @@ class ControlPanel(QMainWindow):
 
         self._history_window = HistoryWindow(self._t, self)
         self._history_window.show()
+
+    def open_batch(self) -> None:
+        """Open the batch/file window, reusing it if already open.
+
+        Kept alive rather than rebuilt so an in-flight run survives the window
+        losing focus; closing it cancels the run.
+        """
+        existing = getattr(self, "_batch_window", None)
+        if existing is not None and existing.isVisible():
+            existing.raise_()
+            existing.activateWindow()
+            return
+        from gui_qt.batch_window import BatchWindow
+
+        self._batch_window = BatchWindow(self._t, self.settings, self)
+        self._batch_window.show()
 
     def apply_theme_mode(self, theme_mode: str) -> None:
         """Re-theme the whole application.
