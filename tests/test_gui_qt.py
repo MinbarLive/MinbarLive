@@ -773,6 +773,121 @@ class TestAnnounceWindow:
         assert "Doppelt" not in labels
 
 
+class TestOnboardingWizard:
+    """First-run setup. Everything runs against a temp settings file."""
+
+    @pytest.fixture
+    def wizard(self, qt_app, tmp_path, monkeypatch):
+        import gui_qt.onboarding as ob
+        import providers
+        import utils.settings as S
+
+        monkeypatch.setattr(S, "_settings_path", lambda: tmp_path / "settings.json")
+        # resolve_provider_by_keys consults the real keyring, so on a machine
+        # with keys stored the default always wins and the test proves nothing.
+        monkeypatch.setattr(providers, "has_configured_key", lambda pid: False)
+        monkeypatch.setattr(providers, "has_usable_key", lambda pid: False)
+        monkeypatch.setattr(ob, "get_stored_api_key", lambda pid: None)
+        saved: dict[str, str] = {}
+        monkeypatch.setattr(
+            ob, "save_api_key", lambda pid, key: saved.setdefault(pid, key) or True
+        )
+
+        w = ob.OnboardingWizard(qt_app)
+        yield w, saved, S
+        w.close()
+
+    @staticmethod
+    def _complete(w, provider_id=None, key=None):
+        """Walk every step, optionally entering a key for one provider."""
+        w.stack.setCurrentIndex(3)
+        if provider_id:
+            idx = w.provider_combo.findData(provider_id)
+            w.provider_combo.setCurrentIndex(idx)
+            w.key_edit.setText(key or "")
+        w.stack.setCurrentIndex(4)
+        w.disclaimer_check.setChecked(True)
+        w._finish()
+
+    def test_finish_is_blocked_until_the_disclaimer_is_accepted(self, wizard):
+        w, _, _ = wizard
+        w.stack.setCurrentIndex(w.stack.count() - 1)
+        w._sync_nav()
+        assert not w.next_btn.isEnabled()
+        w.disclaimer_check.setChecked(True)
+        assert w.next_btn.isEnabled()
+
+    def test_completing_writes_the_flags(self, wizard):
+        w, _, S = wizard
+        self._complete(w)
+        s = S.load_settings(use_cache=False)
+        assert s.onboarding_completed is True
+        assert s.disclaimer_accepted is True
+
+    def test_one_appearance_answer_drives_both_windows(self, wizard):
+        from utils.settings import THEME_MODES
+
+        w, _, S = wizard
+        w.theme_segment._buttons[THEME_MODES.index("light")].click()
+        self._complete(w)
+        s = S.load_settings(use_cache=False)
+        assert s.theme_mode == "light"
+        assert s.subtitle_theme_mode == "light"
+
+    def test_lands_on_realtime_streaming(self, wizard):
+        from utils.settings import PIPELINE_MODE_STREAMING
+
+        w, _, S = wizard
+        self._complete(w)
+        assert S.load_settings(use_cache=False).pipeline_mode == PIPELINE_MODE_STREAMING
+
+    def test_keys_decide_the_provider_not_the_dropdown(self, wizard):
+        # Browsing to a provider without entering its key must not select it.
+        w, _, S = wizard
+        self._complete(w, provider_id="anthropic", key="sk-ant-test")
+        s = S.load_settings(use_cache=False)
+        assert s.ai_provider == "anthropic"
+        # A non-default provider must not sit behind a ticked "Standard".
+        assert s.use_default_translation_model is False
+
+    def test_default_provider_when_no_key_is_entered(self, wizard):
+        from utils.settings import DEFAULT_AI_PROVIDER
+
+        w, _, S = wizard
+        self._complete(w)
+        s = S.load_settings(use_cache=False)
+        assert s.ai_provider == DEFAULT_AI_PROVIDER
+        assert s.use_default_translation_model is True
+
+    def test_realtime_engine_follows_the_chosen_provider(self, wizard):
+        # The key just entered must be the one the pipeline authenticates with.
+        w, _, S = wizard
+        self._complete(w, provider_id="openai", key="sk-openai-test")
+        s = S.load_settings(use_cache=False)
+        assert s.transcription_provider == "openai_realtime"
+
+    def test_anthropic_falls_back_to_a_streaming_engine(self, wizard):
+        from utils.settings import STREAMING_TRANSCRIPTION_PROVIDERS
+
+        # Anthropic has no realtime engine of its own.
+        w, _, S = wizard
+        self._complete(w, provider_id="anthropic", key="sk-ant-test")
+        s = S.load_settings(use_cache=False)
+        assert s.transcription_provider in STREAMING_TRANSCRIPTION_PROVIDERS
+
+    def test_entered_key_is_persisted(self, wizard):
+        w, saved, _ = wizard
+        self._complete(w, provider_id="anthropic", key="sk-ant-test")
+        assert saved.get("anthropic") == "sk-ant-test"
+
+    def test_run_onboarding_no_ops_once_completed(self, wizard, qt_app):
+        import gui_qt.onboarding as ob
+
+        w, _, _ = wizard
+        self._complete(w)
+        assert ob.run_onboarding(qt_app) is True
+
+
 class TestPipelineBridge:
     def test_queue_items_become_qt_signals(self, qt_app):
         from PySide6.QtCore import QTimer

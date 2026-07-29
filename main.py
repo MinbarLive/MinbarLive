@@ -312,19 +312,9 @@ def main() -> None:
 
     # The GUI trees are imported lazily and never together: Tk and Qt each want
     # their own mainloop, and merely importing both into one process leaves a
-    # live Tcl interpreter beside the Qt one. The onboarding wizard is still
-    # Tk-only, so under --qt it is not run at all — a first-run user is told to
-    # launch once without the flag instead. Removed with the Tk tree (#44).
-    if args.qt:
-        if not load_settings().onboarding_completed:
-            print(
-                "First-run setup has not been completed, and the setup wizard is "
-                "not ported to Qt yet.\nRun MinbarLive once without --qt, then "
-                "retry with --qt.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-    else:
+    # live Tcl interpreter beside the Qt one. Each tree runs its own onboarding
+    # wizard — the Qt one from inside gui_qt.app.run, on its QApplication.
+    if not args.qt:
         from gui.onboarding import run_onboarding
 
         # First-run setup wizard (own Tk root, before the main window so the

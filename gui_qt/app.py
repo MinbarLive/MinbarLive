@@ -16,6 +16,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from gui_qt.control_panel import ControlPanel
+from gui_qt.onboarding import run_onboarding
 from gui_qt.theme import apply_theme
 from utils.settings import load_settings
 
@@ -25,6 +26,14 @@ def run(controller) -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("MinbarLive")
 
+    apply_theme(app, load_settings().theme_mode)
+
+    # First-run setup, on the same QApplication and before the control panel,
+    # so the chosen language and theme apply from the start.
+    if not run_onboarding(app):
+        return 0
+
+    # Re-read: the wizard writes language, theme, provider and device.
     settings = load_settings()
     apply_theme(app, settings.theme_mode)
 
