@@ -839,8 +839,17 @@ class AppGUI(
         if abs(delta) < 2:  # deadband, so rounding cannot make this oscillate
             return
         # delta is real pixels; the padding is a logical value CustomTkinter
-        # multiplies by the widget scaling on its way into grid().
-        gap = max(0, self._advanced_gap + round(delta / max(self._responsive_scale, 0.1)))
+        # multiplies by the widget scaling on its way into grid(). That factor
+        # is the window scaling (DPI × the design clamp), NOT the clamp alone:
+        # dividing by _responsive_scale overshot every correction by the DPI
+        # factor, and round() then locked the gap into a two-value cycle
+        # (34↔37 at 1.5× DPI) that re-queued this pass forever and froze the
+        # control panel — reported after collapsing the log panel.
+        try:
+            scaling = self._get_window_scaling()
+        except Exception:  # noqa: BLE001 — cosmetic alignment must never crash
+            return
+        gap = max(0, self._advanced_gap + round(delta / max(scaling, 0.1)))
         if gap == self._advanced_gap:
             return
         self._advanced_gap = gap
