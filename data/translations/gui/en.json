@@ -242,5 +242,8 @@
   "control_panel": "Control panel:",
   "scroll_speed_label": "Scroll speed:",
   "adaptive_catchup": "Speed up when subtitles fall behind",
-  "backdrop_opacity": "Background opacity:"
+  "backdrop_opacity": "Background opacity:",
+  "history_summary_heading": "Summary",
+  "history_has_summary": "Has a saved summary",
+  "history_read_error": "Could not read this session."
 }

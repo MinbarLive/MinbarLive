@@ -453,6 +453,124 @@ class TestDeviceHotSwap:
         assert controller.restarts == [p.device_indices[target]]
 
 
+class TestHistoryWindow:
+    """Rendering only — parsing is utils/history.py and already covered."""
+
+    @pytest.fixture
+    def history(self, qt_app, monkeypatch):
+        import gui_qt.history_window as hw
+        from utils.history import HistoryEntry, HistorySession
+
+        sessions = [
+            HistorySession(
+                date="2026-07-30",
+                path="a.txt",
+                start_time="10:00",
+                end_time="10:30",
+                duration_minutes=30,
+                active_seconds=1200,
+                language_pair="AR → GE",
+                entry_count=2,
+                has_summary=True,
+            ),
+            HistorySession(
+                date="2026-07-29",
+                path="b.txt",
+                start_time="11:00",
+                end_time="11:05",
+                duration_minutes=5,
+                active_seconds=120,
+                language_pair="AR → EN",
+                entry_count=1,
+            ),
+        ]
+        files = {
+            "a.txt": [
+                HistoryEntry("10:00:01", "AR", "بسم الله"),
+                HistoryEntry("10:00:02", "GE", "Im Namen Allahs"),
+            ],
+            # Same-language run: the pair is identical and must render once.
+            "b.txt": [
+                HistoryEntry("11:00:01", "AR", "الحمد لله"),
+                HistoryEntry("11:00:02", "AR", "الحمد لله"),
+            ],
+        }
+        monkeypatch.setattr(hw, "list_history_sessions", lambda: sessions)
+        monkeypatch.setattr(hw, "parse_history_file", lambda p: files[p])
+        monkeypatch.setattr(
+            hw, "read_summary", lambda p: "Kurzfassung." if p == "a.txt" else None
+        )
+
+        made = []
+
+        def _make():
+            w = hw.HistoryWindow(lambda key, fallback="": fallback)
+            made.append(w)
+            return w
+
+        yield _make, sessions
+        for w in made:
+            w.close()
+
+    def test_lists_one_row_per_session(self, history):
+        make, sessions = history
+        w = make()
+        assert w.session_list.count() == len(sessions)
+        assert "2026-07-30" in w.session_list.item(0).text()
+
+    def test_first_session_is_selected_and_rendered(self, history):
+        make, _ = history
+        w = make()
+        assert w.session_list.currentRow() == 0
+        text = w.transcript.toPlainText()
+        assert "بسم الله" in text and "Im Namen Allahs" in text
+
+    def test_summary_is_shown_above_the_transcript(self, history):
+        make, _ = history
+        w = make()
+        text = w.transcript.toPlainText()
+        assert text.index("Kurzfassung.") < text.index("بسم الله")
+
+    def test_identical_pair_renders_once(self, history):
+        # Same-language runs log transcription and translation identically;
+        # showing both would read as the text being duplicated.
+        make, _ = history
+        w = make()
+        w.session_list.setCurrentRow(1)
+        assert w.transcript.toPlainText().count("الحمد لله") == 1
+
+    def test_selecting_another_session_switches_the_transcript(self, history):
+        make, _ = history
+        w = make()
+        first = w.transcript.toPlainText()
+        w.session_list.setCurrentRow(1)
+        assert w.transcript.toPlainText() != first
+
+    def test_empty_state(self, qt_app, monkeypatch):
+        import gui_qt.history_window as hw
+
+        monkeypatch.setattr(hw, "list_history_sessions", lambda: [])
+
+        w = hw.HistoryWindow(lambda key, fallback="": fallback)
+        try:
+            assert w.session_list.count() == 0
+            assert w.transcript.toPlainText() == ""
+        finally:
+            w.close()
+
+    def test_unreadable_session_does_not_raise(self, history, monkeypatch):
+        import gui_qt.history_window as hw
+
+        make, _ = history
+
+        def boom(path):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(hw, "parse_history_file", boom)
+        w = make()  # must build and select without propagating the error
+        assert w.transcript.toPlainText() != ""
+
+
 class TestPipelineBridge:
     def test_queue_items_become_qt_signals(self, qt_app):
         from PySide6.QtCore import QTimer

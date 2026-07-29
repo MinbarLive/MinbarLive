@@ -131,9 +131,15 @@ class ControlPanel(QMainWindow):
         outer.addWidget(card)
         outer.addWidget(self._display_card())
 
+        # ⚙ / ⟲ pair, mirroring the Tk sidebar header.
+        tools = QHBoxLayout()
         self.settings_btn = QPushButton("⚙  " + self._t("settings_title", "Settings"))
         self.settings_btn.clicked.connect(self.open_settings)
-        outer.addWidget(self.settings_btn)
+        self.history_btn = QPushButton("⟲  " + self._t("history_title", "History"))
+        self.history_btn.clicked.connect(self.open_history)
+        tools.addWidget(self.settings_btn)
+        tools.addWidget(self.history_btn)
+        outer.addLayout(tools)
 
         buttons = QHBoxLayout()
         self.start_btn = QPushButton(self._t("start", "Start"))
@@ -227,6 +233,22 @@ class ControlPanel(QMainWindow):
 
         self._settings_window = SettingsWindow(self)
         self._settings_window.show()
+
+    def open_history(self) -> None:
+        """Open the session history viewer, reusing it if already open.
+
+        Rebuilt on each open rather than refreshed, so a session recorded
+        while it was closed always appears.
+        """
+        existing = getattr(self, "_history_window", None)
+        if existing is not None and existing.isVisible():
+            existing.raise_()
+            existing.activateWindow()
+            return
+        from gui_qt.history_window import HistoryWindow
+
+        self._history_window = HistoryWindow(self._t, self)
+        self._history_window.show()
 
     def apply_theme_mode(self, theme_mode: str) -> None:
         """Re-theme the whole application.
