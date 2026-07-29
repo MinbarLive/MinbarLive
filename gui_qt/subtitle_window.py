@@ -92,6 +92,7 @@ class SubtitleWindow(QWidget):
         theme_mode: str = "dark",
         bilingual_mode: bool = False,
         always_on_top: bool = True,
+        adaptive_catchup: bool = False,
         on_stop=None,
     ):
         super().__init__()
@@ -117,6 +118,8 @@ class SubtitleWindow(QWidget):
         self._announcement: str | None = None
         self._stopped_hint = False
         self._scroll_offset = 0.0
+        self._adaptive_catchup = adaptive_catchup
+        self._effective_scroll_speed = scroll_speed
 
         self.setWindowFlag(Qt.FramelessWindowHint, True)
         self.setWindowFlag(Qt.Tool, True)
@@ -142,12 +145,18 @@ class SubtitleWindow(QWidget):
     def _source_qcolor(self) -> QColor:
         return QColor(self._source_color or self._colors["muted"])
 
+    def _transparent_static_active(self) -> bool:
+        """Transparent backdrop is a static-mode option only."""
+        return self._mode == SUBTITLE_MODE_STATIC and self._transparent_static
+
     def _backdrop(self) -> QColor:
-        """Window backdrop. Static mode can be fully transparent by request."""
-        if self._mode == SUBTITLE_MODE_STATIC and self._transparent_static:
+        """Window backdrop, drawn behind everything else."""
+        if self._transparent_static_active():
+            # Fully transparent: contrast comes from per-line cards instead, so
+            # the text stays readable over arbitrary video.
             return QColor(0, 0, 0, 0)
         base = QColor(self._colors["app_bg"])
-        base.setAlpha(0 if self._transparent_static else 190)
+        base.setAlpha(190)
         return base
 
     # ── geometry ─────────────────────────────────────────────────────────
@@ -216,26 +225,46 @@ class SubtitleWindow(QWidget):
             h += self._measure(block.source, src_font) + PAIR_GAP
         return h
 
+    def _draw_card(self, p: QPainter, text: str, font: QFont, rect: QRect) -> None:
+        """Rounded backing card behind one line, sized to the text it holds.
+
+        Only used when the backdrop is transparent: without it the subtitle
+        would have to compete with whatever video is underneath.
+        """
+        fm = QFontMetrics(font)
+        tw = min(fm.horizontalAdvance(text), rect.width())
+        pad_x, pad_y = 20, 8
+        cw = min(rect.width(), tw + pad_x * 2)
+        cx = rect.x() + (rect.width() - cw) // 2
+        path = QPainterPath()
+        path.addRoundedRect(cx, rect.y() - pad_y, cw, rect.height() + pad_y * 2, 14, 14)
+        p.fillPath(path, QColor(0, 0, 0, 150))
+
     def _draw_block(self, p: QPainter, block: Block, x: int, y: int) -> int:
         """Draw ``block`` with its top edge at ``y``; return the height used."""
         trans_font, src_font = self._block_fonts(block)
         w = self._content_width()
+        cards = self._transparent_static_active()
         used = 0
         if src_font is not None and block.source:
             sh = self._measure(block.source, src_font)
+            rect = QRect(x, y, w, sh)
+            if cards:
+                self._draw_card(p, block.source, src_font, rect)
             p.setFont(src_font)
             p.setPen(self._source_qcolor())
             p.drawText(
-                QRect(x, y, w, sh),
-                int(Qt.TextWordWrap | Qt.AlignHCenter | Qt.AlignTop),
-                block.source,
+                rect, int(Qt.TextWordWrap | Qt.AlignHCenter | Qt.AlignTop), block.source
             )
             used += sh + PAIR_GAP
         th = self._measure(block.translation, trans_font)
+        rect = QRect(x, y + used, w, th)
+        if cards:
+            self._draw_card(p, block.translation, trans_font, rect)
         p.setFont(trans_font)
         p.setPen(self._translation_qcolor())
         p.drawText(
-            QRect(x, y + used, w, th),
+            rect,
             int(Qt.TextWordWrap | Qt.AlignHCenter | Qt.AlignTop),
             block.translation,
         )
@@ -272,33 +301,41 @@ class SubtitleWindow(QWidget):
         if self._live_text:
             self._draw_live_line(p, x, y)
 
-    def _paint_continuous(self, p: QPainter) -> None:
-        """Bottom-anchored feed that scrolls steadily upward.
+    def _continuous_positions(self) -> list[tuple[Block, int, int]]:
+        """(block, height, y) for continuous mode, in feed order.
 
-        Blocks are laid out from the bottom edge up, then shifted by the running
-        scroll offset. Anything scrolled fully past the top is dropped, and the
-        offset is reduced by the same extent so the remaining blocks do not jump.
+        Each block enters from just below the visible area and rises as the
+        scroll offset grows, so text waiting behind the viewport is genuinely
+        queued rather than re-anchored to the bottom every frame. That queue is
+        what ``get_subtitle_backlog_count`` measures and adaptive catch-up drains.
         """
+        out: list[tuple[Block, int, int]] = []
+        y = self._content_height() - int(self._scroll_offset)
+        for block in self._blocks:
+            h = self._measure_block(block)
+            out.append((block, h, y))
+            y += h + REALTIME_BLOCK_SPACING
+        return out
+
+    def _paint_continuous(self, p: QPainter) -> None:
+        """Steady upward scroll; new text enters from the bottom edge."""
         x = int(self.width() * SIDE_MARGIN_RATIO)
-        heights = [self._measure_block(b) for b in self._blocks]
-        total = sum(h + REALTIME_BLOCK_SPACING for h in heights)
-        y = self._content_height() - total + int(self._scroll_offset)
+        positions = self._continuous_positions()
+        limit = self._content_height()
 
         evicted = 0
-        for block, h in zip(self._blocks, heights, strict=False):
-            if y + h < 0:  # fully above the top edge
+        for block, h, y in positions:
+            if y + h < 0:  # scrolled fully past the top edge
                 evicted += 1
-                y += h + REALTIME_BLOCK_SPACING
                 continue
-            if y > self._content_height():
+            if y > limit:  # still queued below the viewport
                 break
             self._draw_block(p, block, x, y)
-            y += h + REALTIME_BLOCK_SPACING
 
         if evicted:
-            drop = sum(
-                heights[i] + REALTIME_BLOCK_SPACING for i in range(evicted)
-            )
+            # Drop off-screen blocks and shorten the offset by exactly the
+            # extent removed, so the survivors do not jump.
+            drop = sum(h + REALTIME_BLOCK_SPACING for _, h, _ in positions[:evicted])
             del self._blocks[:evicted]
             self._scroll_offset -= drop
 
@@ -405,8 +442,33 @@ class SubtitleWindow(QWidget):
         else:
             self._scroll_timer.stop()
 
+    def get_subtitle_backlog_count(self) -> int:
+        """How many blocks are queued below the visible anchor line.
+
+        Continuous mode only — the other modes do not queue.
+        """
+        if self._mode != SUBTITLE_MODE_CONTINUOUS:
+            return 0
+        limit = self._content_height()
+        return sum(1 for _, _, y in self._continuous_positions() if y > limit)
+
+    def _current_scroll_speed(self) -> float:
+        """Smoothed scroll speed, with optional readability-first catch-up.
+
+        Accelerates gently and caps at 2x so a backlog is worked off without
+        the text becoming unreadable, then EMA-smoothed so the speed change
+        itself is not visible as a jolt.
+        """
+        target = self._scroll_speed
+        if self._adaptive_catchup and self._mode == SUBTITLE_MODE_CONTINUOUS:
+            target *= min(2.0, 1.0 + 0.25 * self.get_subtitle_backlog_count())
+        self._effective_scroll_speed = (
+            0.85 * self._effective_scroll_speed + 0.15 * target
+        )
+        return self._effective_scroll_speed
+
     def _advance_scroll(self) -> None:
-        self._scroll_offset += SCROLL_PIXELS_PER_FRAME * self._scroll_speed
+        self._scroll_offset += SCROLL_PIXELS_PER_FRAME * self._current_scroll_speed()
         self.update()
 
     # ── public API ───────────────────────────────────────────────────────
@@ -548,11 +610,36 @@ class SubtitleWindow(QWidget):
         self._scroll_speed = max(0.25, self._scroll_speed - 0.25)
         return self._scroll_speed
 
+    def set_adaptive_catchup(self, enabled: bool) -> None:
+        self._adaptive_catchup = enabled
+
     def clear(self) -> None:
         self._blocks.clear()
         self._live_text = None
         self._scroll_offset = 0.0
+        self._effective_scroll_speed = self._scroll_speed
         self.update()
+
+    def hide(self) -> None:
+        """Hide the overlay and stop animating.
+
+        The live line is dropped: no further interims will arrive to correct
+        it, so leaving it on screen would strand a half-finished sentence.
+        """
+        self._scroll_timer.stop()
+        self._live_text = None
+        super().hide()
+
+    def show(self) -> None:
+        super().show()
+        self._apply_geometry()
+        self._sync_scroll_timer()
+
+    def destroy(self) -> None:
+        """Tear the overlay down. Named to match the Tk window's API."""
+        self._scroll_timer.stop()
+        self.close()
+        self.deleteLater()
 
     def closeEvent(self, event) -> None:
         # Closing the overlay stops the session; it never quits the app. The Tk
