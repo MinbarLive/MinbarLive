@@ -647,6 +647,10 @@ class SubtitleWindow(QWidget):
     def get_current_source_font_size(self) -> int:
         return self._source_px()
 
+    def set_scroll_speed(self, speed: float) -> None:
+        """Set the scroll speed directly (the settings stepper drives this)."""
+        self._scroll_speed = max(0.25, min(5.0, float(speed)))
+
     def increase_scroll_speed(self) -> float:
         self._scroll_speed = min(5.0, self._scroll_speed + 0.25)
         return self._scroll_speed

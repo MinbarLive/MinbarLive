@@ -14,7 +14,6 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QFormLayout,
     QFrame,
@@ -25,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui_qt.widgets import LabelledSlider, SegmentedControl, Stepper
 from utils.settings import (
     ALWAYS_ON_TOP_MODES,
     SUBTITLE_HIDE_MODES,
@@ -34,8 +34,9 @@ from utils.settings import (
 
 # Window height is a percentage of the screen; the overlay clamps to 5-100.
 _HEIGHT_MIN, _HEIGHT_MAX = 5, 100
-# Scroll speed range mirrors the Tk stepper bounds.
+# Scroll speed range and step mirror the Tk stepper bounds.
 _SPEED_MIN, _SPEED_MAX = 0.25, 5.0
+_SPEED_STEP = 0.25
 
 # Translation keys for the 3-way selectors, in the order of the mode tuples.
 # Both tuples start with "never" but diverge after it, so they need separate
@@ -104,49 +105,54 @@ class SettingsWindow(QDialog):
     def _appearance_card(self) -> QFrame:
         card, form = self._card(self._t("settings_appearance", "Appearance"))
 
-        self.theme_combo = QComboBox()
-        self.theme_combo.addItems(
-            [self._t(f"theme_{m}", m.title()) for m in THEME_MODES]
-        )
-        if self.settings.theme_mode in THEME_MODES:
-            self.theme_combo.setCurrentIndex(THEME_MODES.index(self.settings.theme_mode))
-        self.theme_combo.currentIndexChanged.connect(self._on_theme)
+        # Segmented buttons, matching the Tk settings window (CTkSegmentedButton)
+        # rather than dropdowns.
+        theme_labels = [self._t(f"theme_{m}", m.title()) for m in THEME_MODES]
 
-        self.subtitle_theme_combo = QComboBox()
-        self.subtitle_theme_combo.addItems(
-            [self._t(f"theme_{m}", m.title()) for m in THEME_MODES]
+        self.theme_segment = SegmentedControl(
+            theme_labels,
+            THEME_MODES.index(self.settings.theme_mode)
+            if self.settings.theme_mode in THEME_MODES
+            else 0,
         )
-        if self.settings.subtitle_theme_mode in THEME_MODES:
-            self.subtitle_theme_combo.setCurrentIndex(
-                THEME_MODES.index(self.settings.subtitle_theme_mode)
-            )
-        self.subtitle_theme_combo.currentIndexChanged.connect(self._on_subtitle_theme)
+        self.theme_segment.changed.connect(self._on_theme)
+
+        self.subtitle_theme_segment = SegmentedControl(
+            theme_labels,
+            THEME_MODES.index(self.settings.subtitle_theme_mode)
+            if self.settings.subtitle_theme_mode in THEME_MODES
+            else 0,
+        )
+        self.subtitle_theme_segment.changed.connect(self._on_subtitle_theme)
 
         # Row labels must not repeat the card heading, so these are plain
         # descriptive fallbacks rather than the section keys.
-        form.addRow(QLabel(self._t("control_panel", "Control panel:")), self.theme_combo)
-        form.addRow(QLabel(self._t("subtitles", "Subtitles:")), self.subtitle_theme_combo)
+        form.addRow(QLabel(self._t("control_panel", "Control panel:")), self.theme_segment)
+        form.addRow(QLabel(self._t("subtitles", "Subtitles:")), self.subtitle_theme_segment)
         return card
 
     def _subtitle_card(self) -> QFrame:
         card, form = self._card(self._t("subtitle_appearance", "Subtitles"))
 
+        # Height stays a slider (the Tk panel uses CTkSlider), with its value
+        # label ABOVE the track, left-aligned, as there.
         self.height_slider = QSlider(Qt.Horizontal)
         self.height_slider.setRange(_HEIGHT_MIN, _HEIGHT_MAX)
         self.height_slider.setValue(
             max(_HEIGHT_MIN, min(_HEIGHT_MAX, self.settings.window_height_percent))
         )
-        self.height_label = QLabel(f"{self.height_slider.value()} %")
-        self.height_label.setObjectName("muted")
         self.height_slider.valueChanged.connect(self._on_height)
+        self.height_control = LabelledSlider(
+            self.height_slider, f"{self.height_slider.value()} %"
+        )
 
-        self.speed_slider = QSlider(Qt.Horizontal)
-        # Sliders are integral: store speed in hundredths.
-        self.speed_slider.setRange(int(_SPEED_MIN * 100), int(_SPEED_MAX * 100))
-        self.speed_slider.setValue(int(self.settings.scroll_speed * 100))
-        self.speed_label = QLabel(f"{self.settings.scroll_speed:.2f}x")
-        self.speed_label.setObjectName("muted")
-        self.speed_slider.valueChanged.connect(self._on_speed)
+        # Scroll speed is a -/+ stepper in the Tk panel, not a slider: an
+        # operator wants a predictable step mid-session, not a drag.
+        self.speed_stepper = Stepper(
+            lambda: self._step_speed(-_SPEED_STEP),
+            lambda: self._step_speed(+_SPEED_STEP),
+            f"{self.settings.scroll_speed:.2f}x",
+        )
 
         self.transparent_check = QCheckBox(self._t("transparent", "Transparent"))
         self.transparent_check.setChecked(self.settings.transparent_static)
@@ -168,41 +174,33 @@ class SettingsWindow(QDialog):
         self.interim_check.setChecked(self.settings.show_interim_transcript)
         self.interim_check.toggled.connect(self._on_interim)
 
-        self.hide_combo = QComboBox()
-        self.hide_combo.addItems(
-            [self._t(*_HIDE_MODE_KEYS[m]) for m in SUBTITLE_HIDE_MODES]
-        )
-        self.hide_combo.setCurrentIndex(
+        # The two 3-way selectors are segmented buttons (PR #22), not dropdowns.
+        self.hide_segment = SegmentedControl(
+            [self._t(*_HIDE_MODE_KEYS[m]) for m in SUBTITLE_HIDE_MODES],
             SUBTITLE_HIDE_MODES.index(self.settings.subtitle_hide_mode)
             if self.settings.subtitle_hide_mode in SUBTITLE_HIDE_MODES
-            else 0
+            else 0,
         )
-        self.hide_combo.currentIndexChanged.connect(self._on_hide_mode)
+        self.hide_segment.changed.connect(self._on_hide_mode)
 
-        self.aot_combo = QComboBox()
-        self.aot_combo.addItems(
-            [self._t(*_AOT_MODE_KEYS[m]) for m in ALWAYS_ON_TOP_MODES]
-        )
-        self.aot_combo.setCurrentIndex(
+        self.aot_segment = SegmentedControl(
+            [self._t(*_AOT_MODE_KEYS[m]) for m in ALWAYS_ON_TOP_MODES],
             ALWAYS_ON_TOP_MODES.index(self.settings.always_on_top_mode)
             if self.settings.always_on_top_mode in ALWAYS_ON_TOP_MODES
-            else 0
+            else 0,
         )
-        self.aot_combo.currentIndexChanged.connect(self._on_aot_mode)
+        self.aot_segment.changed.connect(self._on_aot_mode)
 
+        form.addRow(QLabel(self._t("height", "Height:")), self.height_control)
         form.addRow(
-            QLabel(self._t("height", "Height:")),
-            self._with(self.height_slider, self.height_label),
+            QLabel(self._t("scroll_speed_label", "Scroll speed:")), self.speed_stepper
         )
-        # No dedicated key exists for a scroll-speed LABEL — only the log
-        # message "Scroll-Geschwindigkeit geaendert zu: {speed}", which reads
-        # wrong as a form label. Plain fallback until a key is added.
         form.addRow(
-            QLabel(self._t("scroll_speed_label", "Scroll speed:")),
-            self._with(self.speed_slider, self.speed_label),
+            QLabel(self._t("hide_subtitle_label", "Hide subtitles:")), self.hide_segment
         )
-        form.addRow(QLabel(self._t("hide_subtitle_label", "Hide subtitles:")), self.hide_combo)
-        form.addRow(QLabel(self._t("window_on_top_label", "Always on top:")), self.aot_combo)
+        form.addRow(
+            QLabel(self._t("window_on_top_label", "Always on top:")), self.aot_segment
+        )
         form.addRow(QLabel(""), self.transparent_check)
         form.addRow(QLabel(""), self.footer_check)
         form.addRow(QLabel(""), self.catchup_check)
@@ -231,16 +229,6 @@ class SettingsWindow(QDialog):
         form.addRow(QLabel(""), self.updates_check)
         return card
 
-    @staticmethod
-    def _with(slider: QSlider, label: QLabel) -> QWidget:
-        box = QWidget()
-        lay = QVBoxLayout(box)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(2)
-        lay.addWidget(slider)
-        lay.addWidget(label)
-        return box
-
     # ── handlers ─────────────────────────────────────────────────────────
     def _on_theme(self, index: int) -> None:
         self.settings.theme_mode = THEME_MODES[index]
@@ -255,17 +243,19 @@ class SettingsWindow(QDialog):
 
     def _on_height(self, value: int) -> None:
         self.settings.window_height_percent = value
-        self.height_label.setText(f"{value} %")
+        self.height_control.set_value_text(f"{value} %")
         if self._overlay():
             self._overlay().set_window_height_percent(value)
         self._save()
 
-    def _on_speed(self, value: int) -> None:
-        speed = value / 100.0
+    def _step_speed(self, delta: float) -> None:
+        speed = round(
+            max(_SPEED_MIN, min(_SPEED_MAX, self.settings.scroll_speed + delta)), 2
+        )
         self.settings.scroll_speed = speed
-        self.speed_label.setText(f"{speed:.2f}x")
+        self.speed_stepper.set_value_text(f"{speed:.2f}x")
         if self._overlay():
-            self._overlay()._scroll_speed = speed
+            self._overlay().set_scroll_speed(speed)
         self._save()
 
     def _on_transparent(self, checked: bool) -> None:

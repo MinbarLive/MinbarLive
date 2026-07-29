@@ -28,6 +28,7 @@ from utils.settings import (  # noqa: E402
     SUBTITLE_MODE_CONTINUOUS,
     SUBTITLE_MODE_REALTIME,
     SUBTITLE_MODE_STATIC,
+    SUBTITLE_MODES,
 )
 
 PAIRS = [
@@ -248,6 +249,77 @@ class TestNoTextShapingLayer:
         arabic = "هل من خالق غير الله؟"
         w.add_subtitle("Gibt es einen Schoepfer?", source_text=arabic)
         assert w._blocks[0].source == arabic
+
+
+class TestSegmentedControl:
+    """The Tk panel uses CTkSegmentedButton for every either/or choice."""
+
+    def test_exclusive_selection_and_signal(self, qt_app):
+        from gui_qt.widgets import SegmentedControl
+
+        seg = SegmentedControl(["Nie", "Wenn gestoppt", "Immer"], current=0)
+        picked: list[int] = []
+        seg.changed.connect(picked.append)
+        assert seg.current_index() == 0
+
+        seg._buttons[2].click()
+        assert picked == [2]
+        assert seg.current_index() == 2
+        # Exclusive: selecting one must clear the others.
+        assert [b.isChecked() for b in seg._buttons] == [False, False, True]
+
+    def test_corner_rounding_property_marks_the_ends(self, qt_app):
+        from gui_qt.widgets import SegmentedControl
+
+        seg = SegmentedControl(["a", "b", "c"])
+        assert [b.property("seg") for b in seg._buttons] == ["first", "middle", "last"]
+        # Keep a reference: an unreferenced widget is collected and its C++
+        # object deleted before the assertion runs.
+        single = SegmentedControl(["only"])
+        assert single._buttons[0].property("seg") == "only"
+
+    def test_programmatic_set_does_not_emit(self, qt_app):
+        # set_current_index is used to sync state; emitting would risk a loop
+        # with handlers that write back.
+        from gui_qt.widgets import SegmentedControl
+
+        seg = SegmentedControl(["a", "b"])
+        fired: list[int] = []
+        seg.changed.connect(fired.append)
+        seg.set_current_index(1)
+        assert seg.current_index() == 1
+        assert fired == []
+
+
+class TestSubtitleModeLabels:
+    def test_translated_label_never_leaks_into_settings(self, qt_app, monkeypatch):
+        # Regression guard: the combo shows "Echtzeit" but Settings must
+        # receive "realtime".
+        import gui_qt.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+
+        class FakeController:
+            pass
+
+        panel = cp.ControlPanel(FakeController())
+        try:
+            labels = [
+                panel.mode_combo.itemText(i) for i in range(panel.mode_combo.count())
+            ]
+            values = [
+                panel.mode_combo.itemData(i) for i in range(panel.mode_combo.count())
+            ]
+            assert values == list(SUBTITLE_MODES)
+            for i, mode in enumerate(SUBTITLE_MODES):
+                panel.mode_combo.setCurrentIndex(i)
+                panel._persist()
+                assert panel.settings.subtitle_mode == mode
+            # Labels only differ from raw values when a translation exists;
+            # at minimum they must round-trip by data, not text.
+            assert len(labels) == len(SUBTITLE_MODES)
+        finally:
+            panel.close()
 
 
 class TestPipelineBridge:

@@ -34,6 +34,7 @@ from gui_qt.api_keys import activate_stored_keys, ensure_keys
 from gui_qt.i18n import load_gui_translations
 from gui_qt.pipeline_bridge import PipelineBridge, streaming_enabled
 from gui_qt.subtitle_window import SubtitleWindow
+from gui_qt.widgets import Stepper
 from utils.logging import log
 from utils.settings import (
     SOURCE_LANGUAGES,
@@ -109,10 +110,16 @@ class ControlPanel(QMainWindow):
         self.target_combo.addItems(TARGET_LANGUAGE_NAMES)
         self._select(self.target_combo, self.settings.target_language)
 
+        # Display translated mode names but keep the raw values for storage:
+        # "realtime" must never reach the user, and must never be replaced by
+        # its label on the way back into Settings.
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(SUBTITLE_MODES)
-        self._select(self.mode_combo, self.settings.subtitle_mode)
-        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
+        for mode in SUBTITLE_MODES:
+            self.mode_combo.addItem(self._t(f"subtitle_mode_{mode}", mode), mode)
+        idx = self.mode_combo.findData(self.settings.subtitle_mode)
+        if idx >= 0:
+            self.mode_combo.setCurrentIndex(idx)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
 
         form.addRow(QLabel(self._t("input_device", "Input device:")), self.device_combo)
         form.addRow(QLabel(self._t("source", "Spoken language:")), self.source_combo)
@@ -163,16 +170,12 @@ class ControlPanel(QMainWindow):
         )
         self.monitor_combo.currentIndexChanged.connect(self._on_monitor_changed)
 
-        font_row = QWidget()
-        font_layout = QHBoxLayout(font_row)
-        font_layout.setContentsMargins(0, 0, 0, 0)
-        minus = QPushButton("−")
-        plus = QPushButton("+")
-        minus.clicked.connect(lambda: self._step_font(smaller=True))
-        plus.clicked.connect(lambda: self._step_font(smaller=False))
-        font_layout.addWidget(minus)
-        font_layout.addWidget(plus)
-        font_layout.addStretch(1)
+        # Stepper with a visible value, matching the Tk font/scroll rows.
+        self.font_stepper = Stepper(
+            lambda: self._step_font(smaller=True),
+            lambda: self._step_font(smaller=False),
+            self._font_value_text(),
+        )
 
         self.bilingual_check = QCheckBox(
             self._t("bilingual_mode", "Show original text")
@@ -181,7 +184,7 @@ class ControlPanel(QMainWindow):
         self.bilingual_check.toggled.connect(self._on_bilingual_toggled)
 
         form.addRow(QLabel(self._t("subtitle_monitor", "Monitor:")), self.monitor_combo)
-        form.addRow(QLabel(self._t("font", "Font size:")), font_row)
+        form.addRow(QLabel(self._t("font", "Font size:")), self.font_stepper)
         form.addRow(QLabel(""), self.bilingual_check)
         return card
 
@@ -190,14 +193,25 @@ class ControlPanel(QMainWindow):
         if self.subtitle_window:
             self.subtitle_window.set_monitor(index)
 
+    def _font_value_text(self) -> str:
+        # font_size_base is a DIVISOR, so a smaller base is a larger font.
+        # Showing the raw divisor would read backwards; show the step instead.
+        return f"{self.settings.font_size_base}"
+
     def _step_font(self, *, smaller: bool) -> None:
-        if not self.subtitle_window:
-            return
-        if smaller:
-            self.subtitle_window.decrease_font()
-        else:
-            self.subtitle_window.increase_font()
-        self.settings.font_size_base = self.subtitle_window.get_font_size_base()
+        base = self.settings.font_size_base
+        # Mirrors SubtitleWindow.increase_font/decrease_font so the stepper
+        # works before an overlay exists (settings still persist).
+        self.settings.font_size_base = (
+            min(80, base + 5) if smaller else max(20, base - 5)
+        )
+        if self.subtitle_window:
+            if smaller:
+                self.subtitle_window.decrease_font()
+            else:
+                self.subtitle_window.increase_font()
+            self.settings.font_size_base = self.subtitle_window.get_font_size_base()
+        self.font_stepper.set_value_text(self._font_value_text())
 
     def open_settings(self) -> None:
         """Open the settings window, reusing it if already open."""
@@ -317,9 +331,12 @@ class ControlPanel(QMainWindow):
             self.subtitle_window.destroy()
             self.subtitle_window = None
 
-    def _on_mode_changed(self, mode: str) -> None:
+    def _current_mode(self) -> str:
+        return self.mode_combo.currentData() or SUBTITLE_MODES[0]
+
+    def _on_mode_changed(self, _index: int) -> None:
         if self.subtitle_window:
-            self.subtitle_window.set_subtitle_mode(mode)
+            self.subtitle_window.set_subtitle_mode(self._current_mode())
 
     # ── pipeline signals (already on the GUI thread) ─────────────────────
     def _on_translation(self, text: str, source_text) -> None:
@@ -334,7 +351,7 @@ class ControlPanel(QMainWindow):
     def _persist(self) -> None:
         self.settings.source_language = self.source_combo.currentText()
         self.settings.target_language = self.target_combo.currentText()
-        self.settings.subtitle_mode = self.mode_combo.currentText()
+        self.settings.subtitle_mode = self._current_mode()
         self.settings.monitor_index = self.monitor_combo.currentIndex()
         self.settings.bilingual_mode = self.bilingual_check.isChecked()
         pos = self.device_combo.currentIndex()

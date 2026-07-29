@@ -99,6 +99,55 @@ QCheckBox::indicator:unchecked {{
     border-radius: 4px;
 }}
 
+/* Segmented control (CTkSegmentedButton equivalent). Corner rounding comes
+   from the `seg` property so the row reads as one pill, and the rules are
+   placed after the generic QPushButton block so they win. */
+QPushButton#segment {{
+    background-color: {c["button"]};
+    color: {c["text"]};
+    border: none;
+    border-radius: 0;
+    padding: 9px 14px;
+    font-weight: 600;
+}}
+QPushButton#segment:hover {{ background-color: {c["button_hover"]}; }}
+QPushButton#segment:checked {{ background-color: {c["accent"]}; color: #ffffff; }}
+QPushButton#segment[seg="first"] {{ border-top-left-radius: 12px; border-bottom-left-radius: 12px; }}
+QPushButton#segment[seg="last"] {{ border-top-right-radius: 12px; border-bottom-right-radius: 12px; }}
+QPushButton#segment[seg="only"] {{ border-radius: 12px; }}
+QFrame#card QPushButton#segment {{ background-color: {c["button"]}; }}
+QFrame#card QPushButton#segment:checked {{ background-color: {c["accent"]}; }}
+
+/* Stepper (-/+) pairs, as used for font size and scroll speed. */
+QPushButton#stepper {{
+    background-color: {c["button"]};
+    border-radius: 14px;
+    font-size: 18px;
+    font-weight: 600;
+    padding: 0;
+}}
+QPushButton#stepper:hover {{ background-color: {c["button_hover"]}; }}
+QFrame#card QPushButton#stepper {{ background-color: {c["button"]}; }}
+QLabel#stepper_value, QLabel#slider_value {{
+    font-size: 15px;
+    font-weight: 600;
+    background: transparent;
+}}
+
+QSlider::groove:horizontal {{
+    background: {c["button"]};
+    height: 6px;
+    border-radius: 3px;
+}}
+QSlider::sub-page:horizontal {{ background: {c["accent"]}; border-radius: 3px; }}
+QSlider::handle:horizontal {{
+    background: {c["accent"]};
+    width: 16px;
+    margin: -6px 0;
+    border-radius: 8px;
+}}
+QSlider::handle:horizontal:hover {{ background: {c["accent_hover"]}; }}
+
 QProgressBar {{
     background-color: {c["panel_soft"]};
     border: none;
