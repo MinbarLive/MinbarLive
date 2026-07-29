@@ -68,8 +68,10 @@ class Block:
 
     translation: str
     source: str | None = None
-    # Filled in by the layout pass; pixel height of the whole block.
-    height: int = field(default=0, repr=False)
+    # Absolute top edge in content coordinates. Continuous mode only: assigned
+    # when the block is added and decremented every frame as it scrolls up.
+    # Realtime and static lay out from scratch each paint and ignore it.
+    y: float = field(default=0.0, repr=False)
 
 
 class SubtitleWindow(QWidget):
@@ -292,52 +294,73 @@ class SubtitleWindow(QWidget):
         self._paint_pills(p)
 
     def _paint_realtime(self, p: QPainter) -> None:
-        """Top-down feed: settled blocks stack from the top, live line below."""
+        """Top-down feed: settled blocks stack from the top, live line below.
+
+        Once the feed reaches the bottom it shifts up chat-style so the newest
+        line stays visible. The shift only ever grows — content must never
+        slide back down, which would read as the text jumping around.
+        """
         x = int(self.width() * SIDE_MARGIN_RATIO)
-        y = int(self.height() * 0.06 - self._scroll_offset)
-        for block in self._blocks:
-            h = self._draw_block(p, block, x, y)
+        top = int(self.height() * 0.06)
+        heights = [self._measure_block(b) for b in self._blocks]
+
+        total = sum(h + REALTIME_BLOCK_SPACING for h in heights)
+        if self._live_text:
+            total += self._live_line_height()
+        overflow = top + total - self._content_height()
+        if overflow > self._scroll_offset:
+            self._scroll_offset = overflow
+
+        y = top - self._scroll_offset
+        evicted = 0
+        for block, h in zip(self._blocks, heights, strict=True):
+            if y + h < 0:  # scrolled off the top edge
+                evicted += 1
+            else:
+                self._draw_block(p, block, x, int(y))
             y += h + REALTIME_BLOCK_SPACING
         if self._live_text:
-            self._draw_live_line(p, x, y)
-
-    def _continuous_positions(self) -> list[tuple[Block, int, int]]:
-        """(block, height, y) for continuous mode, in feed order.
-
-        Each block enters from just below the visible area and rises as the
-        scroll offset grows, so text waiting behind the viewport is genuinely
-        queued rather than re-anchored to the bottom every frame. That queue is
-        what ``get_subtitle_backlog_count`` measures and adaptive catch-up drains.
-        """
-        out: list[tuple[Block, int, int]] = []
-        y = self._content_height() - int(self._scroll_offset)
-        for block in self._blocks:
-            h = self._measure_block(block)
-            out.append((block, h, y))
-            y += h + REALTIME_BLOCK_SPACING
-        return out
-
-    def _paint_continuous(self, p: QPainter) -> None:
-        """Steady upward scroll; new text enters from the bottom edge."""
-        x = int(self.width() * SIDE_MARGIN_RATIO)
-        positions = self._continuous_positions()
-        limit = self._content_height()
-
-        evicted = 0
-        for block, h, y in positions:
-            if y + h < 0:  # scrolled fully past the top edge
-                evicted += 1
-                continue
-            if y > limit:  # still queued below the viewport
-                break
-            self._draw_block(p, block, x, y)
+            self._draw_live_line(p, x, int(y))
 
         if evicted:
-            # Drop off-screen blocks and shorten the offset by exactly the
-            # extent removed, so the survivors do not jump.
-            drop = sum(h + REALTIME_BLOCK_SPACING for _, h, _ in positions[:evicted])
+            # Drop what is off-screen and shorten the shift by the same extent,
+            # so the remaining blocks do not jump (eviction-compensated).
+            drop = sum(h + REALTIME_BLOCK_SPACING for h in heights[:evicted])
             del self._blocks[:evicted]
             self._scroll_offset -= drop
+
+    def _place_continuous(self, block: Block) -> None:
+        """Assign a new block's absolute y so it is visible straight away.
+
+        Anchored so its bottom sits at the bottom of the content area — a
+        subtitle must appear the moment it arrives, not after scrolling up
+        into view. It is pushed lower only when the previous block still
+        occupies that space, which is what creates a genuine backlog for
+        ``get_subtitle_backlog_count`` and adaptive catch-up to drain.
+        """
+        anchor = self._content_height() - self._measure_block(block)
+        if self._blocks:
+            last = self._blocks[-1]
+            stacked = last.y + self._measure_block(last) + REALTIME_BLOCK_SPACING
+            block.y = max(anchor, stacked)
+        else:
+            block.y = anchor
+
+    def _paint_continuous(self, p: QPainter) -> None:
+        """Steady upward scroll; new text appears at the bottom."""
+        x = int(self.width() * SIDE_MARGIN_RATIO)
+        limit = self._content_height()
+        survivors: list[Block] = []
+        for block in self._blocks:
+            h = self._measure_block(block)
+            if block.y + h < 0:  # scrolled fully past the top edge
+                continue
+            survivors.append(block)
+            if block.y <= limit:  # otherwise still queued below the viewport
+                self._draw_block(p, block, x, int(block.y))
+        # Each block carries its own absolute y, so dropping off-screen blocks
+        # cannot shift the survivors — no offset compensation needed.
+        self._blocks = survivors
 
     def _paint_static(self, p: QPainter) -> None:
         """Only the newest block, vertically centred."""
@@ -347,6 +370,10 @@ class SubtitleWindow(QWidget):
         x = int(self.width() * SIDE_MARGIN_RATIO)
         h = self._measure_block(block)
         self._draw_block(p, block, x, max(0, (self._content_height() - h) // 2))
+
+    def _live_line_height(self) -> int:
+        font = source_font(self._translation_px(), self._live_text or "")
+        return QFontMetrics(font).lineSpacing() * REALTIME_LIVE_MAX_ROWS
 
     def _draw_live_line(self, p: QPainter, x: int, y: int) -> None:
         """In-progress transcript: muted while speaking, primary once settled."""
@@ -450,7 +477,7 @@ class SubtitleWindow(QWidget):
         if self._mode != SUBTITLE_MODE_CONTINUOUS:
             return 0
         limit = self._content_height()
-        return sum(1 for _, _, y in self._continuous_positions() if y > limit)
+        return sum(1 for b in self._blocks if b.y > limit)
 
     def _current_scroll_speed(self) -> float:
         """Smoothed scroll speed, with optional readability-first catch-up.
@@ -468,7 +495,9 @@ class SubtitleWindow(QWidget):
         return self._effective_scroll_speed
 
     def _advance_scroll(self) -> None:
-        self._scroll_offset += SCROLL_PIXELS_PER_FRAME * self._current_scroll_speed()
+        step = SCROLL_PIXELS_PER_FRAME * self._current_scroll_speed()
+        for block in self._blocks:
+            block.y -= step
         self.update()
 
     # ── public API ───────────────────────────────────────────────────────
@@ -489,7 +518,10 @@ class SubtitleWindow(QWidget):
         else:
             chunks = [text]
         for i, chunk in enumerate(chunks):
-            self._blocks.append(Block(chunk, source_text if i == 0 else None))
+            block = Block(chunk, source_text if i == 0 else None)
+            if self._mode == SUBTITLE_MODE_CONTINUOUS:
+                self._place_continuous(block)
+            self._blocks.append(block)
         self.update()
 
     def set_live_text(self, text: str | None, settled: bool = False) -> None:
@@ -500,8 +532,21 @@ class SubtitleWindow(QWidget):
     def set_subtitle_mode(self, mode: str) -> None:
         self._mode = mode
         self._scroll_offset = 0.0
+        if mode == SUBTITLE_MODE_CONTINUOUS:
+            # Blocks carried over from another mode have no meaningful y yet:
+            # re-stack them from the bottom so the newest stays visible.
+            self._restack_continuous()
         self._sync_scroll_timer()
         self.update()
+
+    def _restack_continuous(self) -> None:
+        """Re-place every block bottom-up, newest anchored at the bottom edge."""
+        y = self._content_height()
+        for block in reversed(self._blocks):
+            h = self._measure_block(block)
+            y -= h
+            block.y = y
+            y -= REALTIME_BLOCK_SPACING
 
     def get_subtitle_mode(self) -> str:
         return self._mode
