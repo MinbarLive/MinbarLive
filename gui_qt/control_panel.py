@@ -26,7 +26,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui.control_state import required_key_providers
 from gui.device_list import get_input_devices
+from gui_qt.api_keys import activate_stored_keys, ensure_keys
 from gui_qt.i18n import load_gui_translations
 from gui_qt.pipeline_bridge import PipelineBridge, streaming_enabled
 from gui_qt.subtitle_window import SubtitleWindow
@@ -48,6 +50,7 @@ class ControlPanel(QMainWindow):
         self.texts = load_gui_translations(self.settings.gui_language)
         self.subtitle_window: SubtitleWindow | None = None
         self._running = False
+        activate_stored_keys()
 
         self.bridge = PipelineBridge(controller, self)
         self.bridge.translation.connect(self._on_translation)
@@ -130,6 +133,10 @@ class ControlPanel(QMainWindow):
         if self._running:
             return
         self._persist()
+        # Prompt for anything missing before touching the pipeline, so a
+        # missing key is a dialog rather than a failure from inside start().
+        if not ensure_keys(required_key_providers(self.settings), self.texts, self):
+            return
         try:
             device = (
                 self.device_indices[self.device_combo.currentIndex()]
