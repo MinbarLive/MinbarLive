@@ -664,6 +664,115 @@ class TestBatchWindow:
         assert w.worker.cancel_event.is_set()
 
 
+class TestAnnounceWindow:
+    @pytest.fixture
+    def announce(self, qt_app, monkeypatch):
+        import gui_qt.announce_window as aw
+        from utils.settings import load_settings
+
+        monkeypatch.setattr(aw, "save_settings", lambda s: None)
+
+        class FakeOverlay:
+            def __init__(self):
+                self.text = None
+
+            def set_announcement(self, t):
+                self.text = t
+
+            def clear_announcement(self):
+                self.text = None
+
+        settings = load_settings()
+        settings.announcement_history = ["Zweite Nachricht."]
+        settings.announcement_favorites = ["Bitte Handys stummschalten."]
+        overlay = FakeOverlay()
+        w = aw.AnnounceWindow(lambda k, f="": f, settings, lambda: overlay)
+        yield w, settings, overlay
+        w.close()
+
+    def test_send_reaches_the_overlay_and_is_remembered(self, announce):
+        w, settings, overlay = announce
+        w.text.setPlainText("Test-Ankuendigung")
+        w.send_announcement()
+        assert overlay.text == "Test-Ankuendigung"
+        assert settings.announcement_history[0] == "Test-Ankuendigung"
+
+    def test_history_is_capped_and_deduplicated(self, announce):
+        from config import ANNOUNCEMENT_HISTORY_MAX
+
+        w, settings, _ = announce
+        for i in range(ANNOUNCEMENT_HISTORY_MAX + 3):
+            w.text.setPlainText(f"Nachricht {i}")
+            w.send_announcement()
+        assert len(settings.announcement_history) == ANNOUNCEMENT_HISTORY_MAX
+        w.text.setPlainText("Nachricht 0")
+        w.send_announcement()
+        assert settings.announcement_history.count("Nachricht 0") == 1
+
+    def test_empty_text_sends_nothing(self, announce):
+        w, _, overlay = announce
+        w.text.setPlainText("   ")
+        w.send_announcement()
+        assert overlay.text is None
+
+    def test_until_stopped_arms_no_timer(self, announce):
+        from config import ANNOUNCEMENT_DURATIONS_SECONDS
+
+        w, _, _ = announce
+        last = len(ANNOUNCEMENT_DURATIONS_SECONDS) - 1
+        assert ANNOUNCEMENT_DURATIONS_SECONDS[last] == 0
+        w.duration_segment._buttons[last].click()
+        w.text.setPlainText("Bleibt stehen")
+        w.send_announcement()
+        assert not w._auto_clear.isActive()
+
+    def test_timed_announcement_arms_the_timer(self, announce):
+        w, settings, _ = announce
+        w.duration_segment._buttons[0].click()
+        w.text.setPlainText("Kurz")
+        w.send_announcement()
+        assert w._auto_clear.isActive()
+        assert settings.announcement_duration_index == 0
+
+    def test_stop_clears_the_overlay_and_the_timer(self, announce):
+        w, _, overlay = announce
+        w.duration_segment._buttons[0].click()
+        w.text.setPlainText("Kurz")
+        w.send_announcement()
+        w.stop_announcement()
+        assert overlay.text is None
+        assert not w._auto_clear.isActive()
+
+    def test_favorites_toggle_and_cap(self, announce, monkeypatch):
+        from config import ANNOUNCEMENT_FAVORITES_MAX
+
+        w, settings, _ = announce
+        monkeypatch.setattr(w, "_notice", lambda msg: None)
+        settings.announcement_favorites = []
+        for i in range(ANNOUNCEMENT_FAVORITES_MAX):
+            w._toggle_favorite(f"Favorit {i}")
+        assert len(settings.announcement_favorites) == ANNOUNCEMENT_FAVORITES_MAX
+        w._toggle_favorite("Einer zu viel")  # refused at the cap
+        assert "Einer zu viel" not in settings.announcement_favorites
+        w._toggle_favorite("Favorit 0")  # second toggle removes
+        assert "Favorit 0" not in settings.announcement_favorites
+
+    def test_favorites_are_excluded_from_recents(self, announce):
+        # A favourite would otherwise occupy both lists.
+        w, settings, _ = announce
+        settings.announcement_favorites = ["Doppelt"]
+        settings.announcement_history = ["Doppelt", "Einmalig"]
+        w._refresh_lists()
+        rows = w.recent_box._rows
+        labels = []
+        for i in range(rows.count()):
+            item = rows.itemAt(i)
+            layout = item.layout()
+            if layout is not None and layout.count():
+                labels.append(layout.itemAt(0).widget().toolTip())
+        assert "Doppelt" not in labels
+
+
 class TestPipelineBridge:
     def test_queue_items_become_qt_signals(self, qt_app):
         from PySide6.QtCore import QTimer

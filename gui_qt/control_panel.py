@@ -139,9 +139,12 @@ class ControlPanel(QMainWindow):
         self.history_btn.clicked.connect(self.open_history)
         self.batch_btn = QPushButton("▦  " + self._t("batch_file", "File / Batch"))
         self.batch_btn.clicked.connect(self.open_batch)
+        self.announce_btn = QPushButton("⚑  " + self._t("announce_title", "Announcement"))
+        self.announce_btn.clicked.connect(self.open_announce)
         tools.addWidget(self.settings_btn)
         tools.addWidget(self.history_btn)
         tools.addWidget(self.batch_btn)
+        tools.addWidget(self.announce_btn)
         outer.addLayout(tools)
 
         buttons = QHBoxLayout()
@@ -269,6 +272,25 @@ class ControlPanel(QMainWindow):
         self._batch_window = BatchWindow(self._t, self.settings, self)
         self._batch_window.show()
 
+    def open_announce(self) -> None:
+        """Open the announcement window, reusing it if already open.
+
+        Kept alive rather than rebuilt: it owns the auto-clear timer for a
+        timed announcement, which must keep running while the window is shut.
+        """
+        existing = getattr(self, "_announce_window", None)
+        if existing is not None:
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
+        from gui_qt.announce_window import AnnounceWindow
+
+        self._announce_window = AnnounceWindow(
+            self._t, self.settings, lambda: self.subtitle_window, self
+        )
+        self._announce_window.show()
+
     def apply_theme_mode(self, theme_mode: str) -> None:
         """Re-theme the whole application.
 
@@ -334,6 +356,15 @@ class ControlPanel(QMainWindow):
         if self.subtitle_window:
             self.subtitle_window.set_live_text(None)
             self.subtitle_window.set_stopped_hint(True)
+        # An announcement left on screen after the session ends is usually
+        # stale ("starts in 10 minutes"), so clear it unless the operator
+        # asked for it to persist.
+        if self.settings.stop_announcement_on_live_stop:
+            announce = getattr(self, "_announce_window", None)
+            if announce is not None:
+                announce.stop_announcement()
+            elif self.subtitle_window:
+                self.subtitle_window.clear_announcement()
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.status.setText(self._t("status_stopped", "Stopped"))
