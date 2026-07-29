@@ -36,6 +36,9 @@ QFrame#card, QFrame#panel {{
     border: 1px solid {c["border"]};
     border-radius: 14px;
 }}
+/* Labels must not paint their own background: the QWidget rule above would
+   otherwise stamp an app_bg rectangle around every label sitting on a card. */
+QLabel {{ background: transparent; }}
 QLabel#muted {{ color: {c["muted"]}; }}
 QLabel#heading {{ font-size: 15px; font-weight: 600; }}
 
@@ -47,11 +50,18 @@ QPushButton {{
     padding: 10px 16px;
 }}
 QPushButton:hover {{ background-color: {c["button_hover"]}; }}
-QPushButton:disabled {{ color: {c["muted"]}; }}
 QPushButton#accent {{ background-color: {c["accent"]}; color: #ffffff; font-weight: 600; }}
 QPushButton#accent:hover {{ background-color: {c["accent_hover"]}; }}
 QPushButton#danger {{ background-color: {c["danger"]}; color: #ffffff; font-weight: 600; }}
 QPushButton#danger:hover {{ background-color: {c["danger_hover"]}; }}
+/* Disabled must win over the #accent / #danger colours, so it comes last and
+   names the ids explicitly — otherwise a disabled Stop still reads as live. */
+QPushButton:disabled,
+QPushButton#accent:disabled,
+QPushButton#danger:disabled {{
+    background-color: {c["button"]};
+    color: {c["muted"]};
+}}
 
 QComboBox, QLineEdit, QSpinBox {{
     background-color: {c["entry"]};

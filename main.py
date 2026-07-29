@@ -270,6 +270,11 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="MinbarLive - Real-time translation")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--qt",
+        action="store_true",
+        help="Run the PySide6 GUI instead of CustomTkinter (issue #44, in progress)",
+    )
     args = parser.parse_args()
 
     # Set log level BEFORE importing modules that use logging
@@ -289,8 +294,6 @@ def main() -> None:
 
     from app_controller import AppController
     from config import ensure_directories
-    from gui.app_gui import AppGUI
-    from gui.onboarding import run_onboarding
     from utils.cleanup import run_cleanup
     from utils.settings import load_settings
 
@@ -301,10 +304,27 @@ def main() -> None:
     # input-level meter (constructing it starts no threads).
     controller = AppController()
 
-    # First-run setup wizard (own Tk root, before the main window so the
-    # chosen GUI language/theme applies from the start)
-    if not run_onboarding(controller):
-        sys.exit(0)
+    # The GUI trees are imported lazily and never together: Tk and Qt each want
+    # their own mainloop, and merely importing both into one process leaves a
+    # live Tcl interpreter beside the Qt one. The onboarding wizard is still
+    # Tk-only, so under --qt it is not run at all — a first-run user is told to
+    # launch once without the flag instead. Removed with the Tk tree (#44).
+    if args.qt:
+        if not load_settings().onboarding_completed:
+            print(
+                "First-run setup has not been completed, and the setup wizard is "
+                "not ported to Qt yet.\nRun MinbarLive once without --qt, then "
+                "retry with --qt.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        from gui.onboarding import run_onboarding
+
+        # First-run setup wizard (own Tk root, before the main window so the
+        # chosen GUI language/theme applies from the start)
+        if not run_onboarding(controller):
+            sys.exit(0)
 
     # Purge stale files (logs and user content gated separately)
     _s = load_settings()
@@ -312,6 +332,13 @@ def main() -> None:
         run_cleanup(
             clean_logs=_s.auto_cleanup_logs, clean_content=_s.auto_cleanup_content
         )
+
+    if args.qt:
+        from gui_qt.app import run as run_qt
+
+        sys.exit(run_qt(controller))
+
+    from gui.app_gui import AppGUI
 
     gui = AppGUI(controller)
     gui.mainloop()
