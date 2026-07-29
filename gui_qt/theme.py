@@ -36,9 +36,14 @@ QFrame#card, QFrame#panel {{
     border: 1px solid {c["border"]};
     border-radius: 14px;
 }}
-/* Labels must not paint their own background: the QWidget rule above would
-   otherwise stamp an app_bg rectangle around every label sitting on a card. */
-QLabel {{ background: transparent; }}
+/* Widgets that draw no surface of their own must not paint a background: the
+   QWidget rule above would otherwise stamp an app_bg rectangle around every
+   label, checkbox and plain layout container sitting on a card. */
+QLabel, QCheckBox, QRadioButton {{ background: transparent; }}
+QFrame#card QWidget {{ background: transparent; }}
+QFrame#card QComboBox, QFrame#card QLineEdit, QFrame#card QSpinBox,
+QFrame#card QPushButton {{ background-color: {c["entry"]}; }}
+QFrame#card QPushButton {{ background-color: {c["button"]}; }}
 QLabel#muted {{ color: {c["muted"]}; }}
 QLabel#heading {{ font-size: 15px; font-weight: 600; }}
 

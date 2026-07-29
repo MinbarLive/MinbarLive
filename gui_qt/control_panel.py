@@ -13,7 +13,9 @@ scale factor and froze the panel in PR #43), no ``window_work_area`` clamp.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QFrame,
@@ -101,6 +103,7 @@ class ControlPanel(QMainWindow):
         form.addRow(QLabel(self._t("target", "Subtitle language:")), self.target_combo)
         form.addRow(QLabel(self._t("subtitles", "Subtitles:")), self.mode_combo)
         outer.addWidget(card)
+        outer.addWidget(self._display_card())
 
         buttons = QHBoxLayout()
         self.start_btn = QPushButton(self._t("start", "Start"))
@@ -121,6 +124,65 @@ class ControlPanel(QMainWindow):
         outer.addStretch(1)
 
         self.setCentralWidget(root)
+
+    def _display_card(self) -> QFrame:
+        """Controls that take effect on the live overlay mid-session."""
+        card = QFrame()
+        card.setObjectName("card")
+        form = QFormLayout(card)
+        form.setContentsMargins(18, 18, 18, 18)
+        form.setSpacing(12)
+
+        # Monitors come straight from Qt, already in logical coordinates.
+        self.monitor_combo = QComboBox()
+        for i, screen in enumerate(QGuiApplication.screens()):
+            g = screen.geometry()
+            self.monitor_combo.addItem(f"{i + 1}. {screen.name()} ({g.width()}x{g.height()})")
+        self.monitor_combo.setCurrentIndex(
+            min(self.settings.monitor_index, self.monitor_combo.count() - 1)
+        )
+        self.monitor_combo.currentIndexChanged.connect(self._on_monitor_changed)
+
+        font_row = QWidget()
+        font_layout = QHBoxLayout(font_row)
+        font_layout.setContentsMargins(0, 0, 0, 0)
+        minus = QPushButton("−")
+        plus = QPushButton("+")
+        minus.clicked.connect(lambda: self._step_font(smaller=True))
+        plus.clicked.connect(lambda: self._step_font(smaller=False))
+        font_layout.addWidget(minus)
+        font_layout.addWidget(plus)
+        font_layout.addStretch(1)
+
+        self.bilingual_check = QCheckBox(
+            self._t("bilingual_mode", "Show original text")
+        )
+        self.bilingual_check.setChecked(self.settings.bilingual_mode)
+        self.bilingual_check.toggled.connect(self._on_bilingual_toggled)
+
+        form.addRow(QLabel(self._t("subtitle_monitor", "Monitor:")), self.monitor_combo)
+        form.addRow(QLabel(self._t("font", "Font size:")), font_row)
+        form.addRow(QLabel(""), self.bilingual_check)
+        return card
+
+    def _on_monitor_changed(self, index: int) -> None:
+        self.settings.monitor_index = index
+        if self.subtitle_window:
+            self.subtitle_window.set_monitor(index)
+
+    def _step_font(self, *, smaller: bool) -> None:
+        if not self.subtitle_window:
+            return
+        if smaller:
+            self.subtitle_window.decrease_font()
+        else:
+            self.subtitle_window.increase_font()
+        self.settings.font_size_base = self.subtitle_window.get_font_size_base()
+
+    def _on_bilingual_toggled(self, checked: bool) -> None:
+        self.settings.bilingual_mode = checked
+        if self.subtitle_window:
+            self.subtitle_window.set_bilingual_mode(checked)
 
     @staticmethod
     def _select(combo: QComboBox, value: str) -> None:
@@ -229,6 +291,8 @@ class ControlPanel(QMainWindow):
         self.settings.source_language = self.source_combo.currentText()
         self.settings.target_language = self.target_combo.currentText()
         self.settings.subtitle_mode = self.mode_combo.currentText()
+        self.settings.monitor_index = self.monitor_combo.currentIndex()
+        self.settings.bilingual_mode = self.bilingual_check.isChecked()
         save_settings(self.settings)
 
     def closeEvent(self, event) -> None:
