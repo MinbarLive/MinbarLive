@@ -121,6 +121,10 @@ class ControlPanel(QMainWindow):
         outer.addWidget(card)
         outer.addWidget(self._display_card())
 
+        self.settings_btn = QPushButton("⚙  " + self._t("settings_title", "Settings"))
+        self.settings_btn.clicked.connect(self.open_settings)
+        outer.addWidget(self.settings_btn)
+
         buttons = QHBoxLayout()
         self.start_btn = QPushButton(self._t("start", "Start"))
         self.start_btn.setObjectName("accent")
@@ -194,6 +198,30 @@ class ControlPanel(QMainWindow):
         else:
             self.subtitle_window.increase_font()
         self.settings.font_size_base = self.subtitle_window.get_font_size_base()
+
+    def open_settings(self) -> None:
+        """Open the settings window, reusing it if already open."""
+        existing = getattr(self, "_settings_window", None)
+        if existing is not None and existing.isVisible():
+            existing.raise_()
+            existing.activateWindow()
+            return
+        from gui_qt.settings_window import SettingsWindow
+
+        self._settings_window = SettingsWindow(self)
+        self._settings_window.show()
+
+    def apply_theme_mode(self, theme_mode: str) -> None:
+        """Re-theme the whole application.
+
+        One stylesheet call — the Tk tree walks per-widget registries
+        (_cards, _labels, _buttons, _combos, ...) to recolour every widget.
+        """
+        from PySide6.QtWidgets import QApplication
+
+        from gui_qt.theme import apply_theme
+
+        apply_theme(QApplication.instance(), theme_mode)
 
     def _on_bilingual_toggled(self, checked: bool) -> None:
         self.settings.bilingual_mode = checked

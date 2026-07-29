@@ -238,5 +238,8 @@
   "cost_estimate_note": "Schätzung – öffentliche Listenpreise",
   "cost_unpriced": "ohne Preis",
   "cost_requests": "Anfragen",
-  "cost_last_30_days": "Letzte 30 Tage: {total} · {count} Sitzungen"
+  "cost_last_30_days": "Letzte 30 Tage: {total} · {count} Sitzungen",
+  "control_panel": "Steuerung:",
+  "scroll_speed_label": "Scroll-Geschwindigkeit:",
+  "adaptive_catchup": "Beschleunigen, wenn Untertitel zurückfallen"
 }
