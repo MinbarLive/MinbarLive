@@ -19,6 +19,7 @@ import customtkinter as ctk
 
 from config import ICON_PATH, ICON_PATH_PNG
 from gui.dropdown import CustomDropdown
+from gui_qt.palette import palette as qt_palette
 from utils.api_key_manager import apply_dark_titlebar, show_message
 from utils.icons import ICO_SUPPORTED, scaled_icon_photo
 
@@ -42,55 +43,10 @@ class WidgetFactoryMixin:
     _CARD_HEADER_PADY = (18, 10)
 
     def _palette(self, theme_mode: str) -> dict[str, str]:
-        if theme_mode == "light":
-            return {
-                "app_bg": "#edf2f7",
-                "sidebar": "#f8fafc",
-                "card": "#ffffff",
-                "panel": "#ffffff",
-                "panel_soft": "#f1f5f9",
-                "border": "#d7dee8",
-                "shadow": "#cbd5e1",
-                "text": "#111827",
-                "muted": "#64748b",
-                "log_bg": "#fbfdff",
-                "log_text": "#172033",
-                "accent": "#15803d",
-                "accent_hover": "#166534",
-                "accent_soft": "#dcfce7",
-                "danger": "#dc2626",
-                "danger_hover": "#b91c1c",
-                "danger_soft": "#fee2e2",
-                "warning": "#d97706",
-                "button": "#e2e8f0",
-                "button_hover": "#cbd5e1",
-                "entry": "#f8fafc",
-                "entry_border": "#cbd5e1",
-            }
-        return {
-            "app_bg": "#0b1020",
-            "sidebar": "#0f172a",
-            "card": "#111827",
-            "panel": "#111827",
-            "panel_soft": "#182235",
-            "border": "#263449",
-            "shadow": "#050817",
-            "text": "#f8fafc",
-            "muted": "#9ca3af",
-            "log_bg": "#0a0f1d",
-            "log_text": "#d8e3f0",
-            "accent": "#16a34a",
-            "accent_hover": "#15803d",
-            "accent_soft": "#163821",
-            "danger": "#dc2626",
-            "danger_hover": "#b91c1c",
-            "danger_soft": "#421719",
-            "warning": "#f59e0b",
-            "button": "#1f2a44",
-            "button_hover": "#263654",
-            "entry": "#0f172a",
-            "entry_border": "#334155",
-        }
+        # Colours live in gui_qt/palette.py so the Tk and Qt trees share one
+        # source of truth while the migration is in progress (issue #44).
+        # That module imports no GUI toolkit.
+        return qt_palette(theme_mode)
 
     # How long a fully built window stays transparent before it is revealed.
     # CTk widgets do not paint at construction: each one redraws when the

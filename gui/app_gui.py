@@ -9,7 +9,6 @@ from screeninfo import get_monitors
 
 from config import (
     AUTO_STOP_INACTIVITY_SECONDS,
-    GUI_TRANSLATIONS_DIR,
     ICON_PATH,
     ICON_PATH_PNG,
     ICON_PATH_PNG_ON_DARK,
@@ -48,6 +47,7 @@ from gui.settings_view import SettingsViewMixin
 from gui.subtitle_window import SubtitleWindow
 from gui.typography import SubtitleTypographyMixin
 from gui.widgets import WidgetFactoryMixin
+from gui_qt.i18n import load_gui_translations as _load_gui_translations
 from providers import (
     PROVIDER_CHOICES,
     TRANSCRIPTION_PROVIDER_CHOICES,
@@ -69,7 +69,6 @@ from utils.cost_tracking import (
     flush_cost_history,
 )
 from utils.icons import ICO_SUPPORTED, logo_photo, scaled_icon_photo
-from utils.json_helpers import load_json
 from utils.logging import log, log_queue
 from utils.settings import (
     ALWAYS_ON_TOP_MODES,
@@ -97,22 +96,10 @@ from utils.settings import (
 from utils.update_check import UpdateInfo, check_for_update
 from version import __version__
 
-
-def load_gui_translations(language: str) -> dict:
-    en_path = os.path.join(GUI_TRANSLATIONS_DIR, "en.json")
-    try:
-        base = load_json(en_path)
-    except Exception:
-        base = {}
-
-    if language == "en" or language not in GUI_LANGUAGE_CODES:
-        return base
-
-    path = os.path.join(GUI_TRANSLATIONS_DIR, f"{language}.json")
-    try:
-        return {**base, **load_json(path)}
-    except Exception:
-        return base
+# Implementation lives in gui_qt/i18n.py (no GUI toolkit imported) so both the
+# Tk and Qt trees load GUI strings identically during the migration (issue #44).
+# Re-exported here because gui/onboarding.py imports it from this module.
+load_gui_translations = _load_gui_translations
 
 
 def _clear_stale_scaling_windows(force: bool = False) -> None:
