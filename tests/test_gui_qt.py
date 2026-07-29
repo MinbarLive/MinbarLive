@@ -322,6 +322,78 @@ class TestSubtitleModeLabels:
             panel.close()
 
 
+class TestDeviceHotSwap:
+    """Changing the device mid-session must swap it, not silently do nothing."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui_qt.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        # Keyring access is machine-dependent; keep the test hermetic.
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+
+        class FakeController:
+            def __init__(self):
+                self.swaps: list[int] = []
+                self.restarts: list[int] = []
+                self.refuse = False
+
+            def change_input_device(self, idx):
+                self.swaps.append(idx)
+                return not self.refuse
+
+            def restart(self, input_device=None):
+                self.restarts.append(input_device)
+
+        controller = FakeController()
+        p = cp.ControlPanel(controller)
+        yield p, controller
+        p.close()
+
+    def test_restoring_the_saved_device_is_not_a_user_change(self, panel):
+        p, controller = panel
+        assert controller.swaps == []
+        assert controller.restarts == []
+
+    @staticmethod
+    def _other_index(p) -> int:
+        """An index that differs from the current one.
+
+        The saved device is restored at construction, so a hardcoded index can
+        already be selected — setCurrentIndex would then be a no-op and emit
+        nothing, which looks like the feature is broken.
+        """
+        return 0 if p.device_combo.currentIndex() != 0 else 1
+
+    def test_no_swap_while_stopped(self, panel):
+        p, controller = panel
+        if p.device_combo.count() < 2:
+            pytest.skip("needs at least two input devices")
+        p.device_combo.setCurrentIndex(self._other_index(p))
+        assert controller.swaps == []
+
+    def test_hot_swaps_while_running(self, panel):
+        p, controller = panel
+        if p.device_combo.count() < 2:
+            pytest.skip("needs at least two input devices")
+        p._running = True
+        target = self._other_index(p)
+        p.device_combo.setCurrentIndex(target)
+        assert controller.swaps == [p.device_indices[target]]
+        assert controller.restarts == []
+
+    def test_refused_swap_falls_back_to_restart(self, panel):
+        p, controller = panel
+        if p.device_combo.count() < 2:
+            pytest.skip("needs at least two input devices")
+        p._running = True
+        controller.refuse = True
+        target = self._other_index(p)
+        p.device_combo.setCurrentIndex(target)
+        assert controller.restarts == [p.device_indices[target]]
+
+
 class TestPipelineBridge:
     def test_queue_items_become_qt_signals(self, qt_app):
         from PySide6.QtCore import QTimer

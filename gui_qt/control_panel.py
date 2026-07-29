@@ -99,6 +99,9 @@ class ControlPanel(QMainWindow):
                 pos = self.device_names.index(saved)
             if pos is not None:
                 self.device_combo.setCurrentIndex(pos)
+        # Connected AFTER restoring, so restoring the saved device does not
+        # itself count as a user change and trigger a swap.
+        self.device_combo.currentIndexChanged.connect(self._on_device_changed)
 
         self.source_combo = QComboBox()
         # SOURCE_LANGUAGES is (display name, code) pairs; the settings field
@@ -258,11 +261,7 @@ class ControlPanel(QMainWindow):
         if not ensure_keys(required_key_providers(self.settings), self.texts, self):
             return
         try:
-            device = (
-                self.device_indices[self.device_combo.currentIndex()]
-                if self.device_indices
-                else None
-            )
+            device = self._selected_device()
             self._ensure_subtitle_window()
             self.controller.start(input_device=device)
         except Exception as exc:  # noqa: BLE001 - surfaced to the operator
@@ -301,6 +300,36 @@ class ControlPanel(QMainWindow):
     def _on_device_lost(self) -> None:
         if self._running:
             self.on_stop()
+
+    def _selected_device(self) -> int | None:
+        pos = self.device_combo.currentIndex()
+        if not self.device_indices or not (0 <= pos < len(self.device_indices)):
+            return None
+        return self.device_indices[pos]
+
+    def _on_device_changed(self, _index: int) -> None:
+        """Swap the capture device without stopping the session.
+
+        Both pipeline modes only need the capture thread replaced, so this is
+        a hot-swap rather than a restart. Persisted either way so the choice
+        survives a restart even when nothing is running.
+        """
+        self._persist()
+        device = self._selected_device()
+        if not self._running or device is None:
+            return
+        try:
+            if not self.controller.change_input_device(device):
+                # Refused (e.g. the stream would not release the old device):
+                # fall back to a full restart, which always applies.
+                self.controller.restart(input_device=device)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the operator
+            log(f"Device switch failed: {exc}", level="ERROR")
+            self._running = False
+            self.start_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            self.status.setText(self._t("status_stopped", "Stopped"))
+            QMessageBox.critical(self, "MinbarLive", str(exc))
 
     # ── subtitle window ──────────────────────────────────────────────────
     def _ensure_subtitle_window(self) -> None:
