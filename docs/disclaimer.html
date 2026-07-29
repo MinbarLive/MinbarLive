@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Disclaimer | MinbarLive</title>
+<meta name="description" content="MinbarLive is provided as-is and used at your own risk. What the software is intended for, what it is not, and where responsibility sits.">
+<link rel="icon" href="favicon.ico">
+<link rel="canonical" href="https://minbarlive.info/disclaimer.html">
+<style>
+  /* Palette and type mirror index.html. Kept self-contained on purpose: the
+     landing page carries its CSS inline, and extracting a shared stylesheet
+     out of it is a refactor this page does not justify. */
+  :root {
+    --navy: #1d4a6b;
+    --navy-soft: #2b6a97;
+    --ink: #24384a;
+    --ink-muted: #5b7188;
+    --card-solid: #ffffff;
+    --border: rgba(29, 74, 107, 0.14);
+    --shadow: 0 10px 30px rgba(29, 74, 107, 0.10);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: "Inter", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    color: var(--ink);
+    line-height: 1.65;
+    background:
+      radial-gradient(1200px 800px at 0% 0%, rgba(253, 244, 224, 0.9), transparent 60%),
+      linear-gradient(180deg, #f7fafc 0%, #eef4f8 100%);
+    min-height: 100vh;
+  }
+
+  .wrap { max-width: 780px; margin: 0 auto; padding: 0 24px; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    padding: 18px 0;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    background: rgba(255, 255, 255, 0.55);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar-inner {
+    max-width: 780px; margin: 0 auto; padding: 0 24px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--navy); font-weight: 700; }
+  .brand img { height: 40px; width: auto; }
+  .topbar a.back { color: var(--navy-soft); text-decoration: none; font-size: 0.9rem; font-weight: 600; }
+  .topbar a.back:hover { text-decoration: underline; }
+
+  main { padding: 56px 0 72px; }
+
+  h1 { font-size: 2rem; color: var(--navy); line-height: 1.25; }
+  .lede { color: var(--ink-muted); margin-top: 10px; }
+
+  h2 {
+    font-size: 1.15rem; color: var(--navy); margin-top: 40px; padding-top: 26px;
+    border-top: 1px solid var(--border);
+  }
+  h3 { font-size: 1rem; color: var(--navy); margin-top: 26px; }
+
+  p, ul { margin-top: 14px; }
+  ul { padding-left: 22px; }
+  li { margin-top: 6px; }
+
+  a { color: var(--navy-soft); }
+
+  code {
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 0.88em; background: rgba(29, 74, 107, 0.07);
+    padding: 1px 5px; border-radius: 5px;
+    overflow-wrap: anywhere;
+  }
+
+  .note {
+    margin-top: 24px; padding: 16px 18px; border-radius: 14px;
+    background: var(--card-solid); border: 1px solid var(--border);
+    box-shadow: var(--shadow); font-size: 0.95rem;
+  }
+  .note strong { color: var(--navy); }
+
+  footer {
+    border-top: 1px solid var(--border); padding: 34px 0 60px;
+    text-align: center; color: var(--ink-muted); font-size: 0.86rem;
+  }
+  footer a { text-decoration: none; font-weight: 600; }
+  footer a:hover { text-decoration: underline; }
+
+  @media (max-width: 640px) {
+    h1 { font-size: 1.6rem; }
+    main { padding: 40px 0 56px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">
+      <img src="assets/MinbarLive_white_stroke.png" alt="MinbarLive">
+      <span>MinbarLive</span>
+    </a>
+    <a class="back" href="/">← Back to the site</a>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <h1>Disclaimer and responsible use</h1>
+  <p class="lede">
+    What MinbarLive is intended for, what it is not, and who carries
+    responsibility for a running installation.
+  </p>
+
+  <div class="note">
+    <strong>In short:</strong> MinbarLive is free software provided as-is and
+    used at your own risk. It carries no warranty, and the project accepts no
+    liability for how it is used or for what it produces. Whoever installs and
+    runs it decides what is recorded, where that audio is sent, and who sees the
+    result, and is responsible for those decisions.
+  </div>
+
+  <h2>No warranty, no liability</h2>
+  <p>
+    MinbarLive is distributed under the
+    <a href="https://github.com/MinbarLive/MinbarLive/blob/main/LICENSE">GNU Affero General Public License v3</a>.
+    Sections 15 and 16 of that licence are the binding terms: the software comes
+    with no warranty of any kind, and neither the project nor its contributors
+    are liable for any damage, loss or claim arising from its use. Nothing on
+    this website, in the documentation or in the application creates a support
+    obligation, a service level, or a guarantee that the software is fit for any
+    particular purpose.
+  </p>
+  <p>
+    That exclusion applies as far as the applicable law allows, and no further.
+    Most legal systems keep certain liability in place whatever a licence says:
+    it does not apply to damage caused intentionally or through gross
+    negligence, to injury to life, body or health, or to any other liability
+    that cannot be excluded by agreement. Within those limits it applies in
+    full.
+  </p>
+
+  <h2>Intended use</h2>
+
+  <h3>What MinbarLive is for</h3>
+  <p>
+    Making a spoken lecture understandable to listeners who do not speak the
+    language of the speaker, with the knowledge and agreement of the people being
+    recorded. In practice that means a mosque, an institution or an individual
+    running it openly on their own premises, on their own hardware, with their
+    own API key, to display subtitles for an audience that is present.
+  </p>
+
+  <h3>What it is not for</h3>
+  <ul>
+    <li>
+      Recording people who have not been told that a recording is taking place,
+      or who have no realistic opportunity to object.
+    </li>
+    <li>
+      Surveillance, covert monitoring, or capturing conversations the operator
+      has no legal right to capture.
+    </li>
+    <li>
+      Any deployment where transmitting the audio to a third-party AI provider
+      would breach the law, a contract, or a duty of confidentiality that binds
+      the operator.
+    </li>
+    <li>
+      Presenting the output as an authoritative translation of the Quran, of
+      hadith, or of any religious ruling.
+    </li>
+  </ul>
+  <p>
+    These uses are outside what this project is built for and outside what it
+    endorses. The software has no technical means of preventing them, which is
+    exactly why they are stated here.
+  </p>
+
+  <h2>Responsibility sits with the operator</h2>
+  <p>
+    MinbarLive runs entirely on the computer of the person using it. The project
+    operates no servers and receives no data, so it has no visibility into any
+    installation and no ability to supervise one. Every decision that matters is
+    made locally: which microphone is opened, which AI provider receives the
+    audio, whether recordings are kept, and who the subtitles are shown to.
+  </p>
+  <p>
+    The person or organisation running the software is therefore responsible for
+    informing those present, for obtaining any consent required, for complying
+    with the data protection and recording law that applies to them, and for the
+    terms of the AI provider they have chosen. The
+    <a href="privacy.html">privacy policy</a> sets out exactly what leaves the
+    machine, so that this assessment can be made with full knowledge of it.
+  </p>
+
+  <h3>A note for operators in Germany</h3>
+  <p>
+    Two points deserve particular attention here, and neither is a formality.
+    First, recording the spoken word that is not publicly spoken, without the
+    consent of the speaker, is a criminal offence under § 201 StGB. A sermon
+    delivered to an open congregation is usually a different case from a lesson
+    in a closed room or a conversation before and after it, and the microphone
+    does not distinguish between them. Second, a mosque that runs MinbarLive is
+    the controller (<em>Verantwortlicher</em>) within the meaning of the GDPR,
+    and the AI provider it sends audio to is a processor
+    (<em>Auftragsverarbeiter</em>): a data processing agreement under Art. 28
+    GDPR is required with that provider, and OpenAI, Google, Anthropic and
+    Deepgram each offer one. Depending on the circumstances, an entry in the
+    record of processing activities and a data protection impact assessment may
+    also be necessary.
+  </p>
+  <p>
+    This is a description of the questions that arise, not legal advice, and the
+    people behind MinbarLive are not lawyers. An institution that intends to run
+    the software regularly should get its own advice.
+  </p>
+
+  <h2>Accuracy of the output</h2>
+  <p>
+    Transcription and translation are produced by AI models. They can mishear,
+    omit, invent, or subtly change meaning, and this risk is highest with
+    religious content, where a small error is not a small error. Verified Quranic
+    verse translations are inserted from a fixed reference text where a verse is
+    recognised with high confidence, but everything else is machine output and
+    should be treated as an aid to understanding, never as a source to rely on or
+    to quote. The application asks every new user to acknowledge this before the
+    first session; that acknowledgement is not a formality.
+  </p>
+
+  <h2>Support and misuse</h2>
+  <p>
+    MinbarLive is a volunteer open-source project. Bug reports, questions and
+    contributions are welcome at
+    <a href="https://github.com/MinbarLive/MinbarLive/issues">github.com/MinbarLive/MinbarLive/issues</a>,
+    and are answered when time allows. Assistance with a deployment that is
+    unlawful, that conceals the recording from the people being recorded, or that
+    falls under "what it is not for" above will not be provided, and such use is
+    neither supported nor condoned by this project. Modified versions remain the
+    responsibility of whoever distributes them, as the licence requires.
+  </p>
+
+  <h2>External links</h2>
+  <p>
+    This website and the application link to pages operated by others: GitHub,
+    the AI providers, gyan.dev for ffmpeg builds, YouTube tutorials, Linktree.
+    Those pages were checked for obvious problems when the link was added, but
+    their content is outside this project's control and can change at any time.
+    Responsibility for them rests with their respective operators. If a link
+    here leads somewhere it should not, please report it and it will be removed.
+  </p>
+
+  <h2>Questions</h2>
+  <p>
+    See also the <a href="privacy.html">privacy policy</a> for what data is sent
+    and stored, and the <a href="code-signing.html">code signing policy</a> for
+    how released binaries are built and authorised.
+  </p>
+
+</main>
+
+<footer>
+  <p>© 2026 MinbarLive · <a href="/">minbarlive.info</a></p>
+</footer>
+
+</body>
+</html>
