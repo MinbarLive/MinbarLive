@@ -348,6 +348,7 @@ class ControlPanel(QMainWindow):
             scroll_speed=s.scroll_speed,
             transparent_static=s.transparent_static,
             window_height_percent=s.window_height_percent,
+            backdrop_opacity=s.subtitle_backdrop_opacity,
             show_footer=s.show_footer,
             theme_mode=s.subtitle_theme_mode,
             bilingual_mode=s.bilingual_mode,

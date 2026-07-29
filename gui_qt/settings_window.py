@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
 from gui_qt.widgets import LabelledSlider, SegmentedControl, Stepper
 from utils.settings import (
     ALWAYS_ON_TOP_MODES,
+    BACKDROP_OPACITY_MAX,
+    BACKDROP_OPACITY_MIN,
     SUBTITLE_HIDE_MODES,
     THEME_MODES,
     save_settings,
@@ -146,6 +148,16 @@ class SettingsWindow(QDialog):
             self.height_slider, f"{self.height_slider.value()} %"
         )
 
+        # Backdrop opacity: only meaningful because Qt composites per-pixel
+        # alpha. 0 leaves the video fully visible behind the subtitles.
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(BACKDROP_OPACITY_MIN, BACKDROP_OPACITY_MAX)
+        self.opacity_slider.setValue(self.settings.subtitle_backdrop_opacity)
+        self.opacity_slider.valueChanged.connect(self._on_opacity)
+        self.opacity_control = LabelledSlider(
+            self.opacity_slider, f"{self.opacity_slider.value()} %"
+        )
+
         # Scroll speed is a -/+ stepper in the Tk panel, not a slider: an
         # operator wants a predictable step mid-session, not a drag.
         self.speed_stepper = Stepper(
@@ -192,6 +204,10 @@ class SettingsWindow(QDialog):
         self.aot_segment.changed.connect(self._on_aot_mode)
 
         form.addRow(QLabel(self._t("height", "Height:")), self.height_control)
+        form.addRow(
+            QLabel(self._t("backdrop_opacity", "Background opacity:")),
+            self.opacity_control,
+        )
         form.addRow(
             QLabel(self._t("scroll_speed_label", "Scroll speed:")), self.speed_stepper
         )
@@ -246,6 +262,13 @@ class SettingsWindow(QDialog):
         self.height_control.set_value_text(f"{value} %")
         if self._overlay():
             self._overlay().set_window_height_percent(value)
+        self._save()
+
+    def _on_opacity(self, value: int) -> None:
+        self.settings.subtitle_backdrop_opacity = value
+        self.opacity_control.set_value_text(f"{value} %")
+        if self._overlay():
+            self._overlay().set_backdrop_opacity(value)
         self._save()
 
     def _step_speed(self, delta: float) -> None:

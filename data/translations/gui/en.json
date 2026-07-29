@@ -241,5 +241,6 @@
   "cost_last_30_days": "Last 30 days: {total} · {count} sessions",
   "control_panel": "Control panel:",
   "scroll_speed_label": "Scroll speed:",
-  "adaptive_catchup": "Speed up when subtitles fall behind"
+  "adaptive_catchup": "Speed up when subtitles fall behind",
+  "backdrop_opacity": "Background opacity:"
 }

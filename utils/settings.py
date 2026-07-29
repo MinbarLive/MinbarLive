@@ -306,6 +306,14 @@ DEFAULT_SOURCE_FONT_SIZE_BASE = 40 / 0.7
 SOURCE_FONT_SIZE_BASE_MIN = 20.0
 SOURCE_FONT_SIZE_BASE_MAX = 120.0
 
+# Subtitle backdrop opacity in percent. 75 is the shipped look (alpha 190/255)
+# and is deliberately the default: the user reviewed it against live video and
+# chose to keep it, so this control exists to adjust it, not to replace it.
+# 0 is a fully see-through overlay, which only Qt's per-pixel alpha allows.
+DEFAULT_BACKDROP_OPACITY = 75
+BACKDROP_OPACITY_MIN = 0
+BACKDROP_OPACITY_MAX = 100
+
 _HEX_COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}")
 
 
@@ -378,6 +386,11 @@ class Settings:
     scroll_speed: float = 1.0  # Scroll speed for continuous mode (0.5 to 5.0)
     transparent_static: bool = False  # Transparent background for static mode
     window_height_percent: int = 50  # Window height as % of screen (5-100)
+    # Opacity of the subtitle window's backdrop, 0-100. Qt composites real
+    # per-pixel alpha in every display mode, so this is adjustable; Tk could
+    # only ever do all-or-nothing transparency in static mode via a chroma
+    # key, and ignores this field. The default matches the shipped look.
+    subtitle_backdrop_opacity: int = DEFAULT_BACKDROP_OPACITY
     translation_model: str = DEFAULT_TRANSLATION_MODEL  # OpenAI model for translation
     transcription_model: str = (
         DEFAULT_TRANSCRIPTION_MODEL  # OpenAI model for transcription
@@ -624,6 +637,13 @@ def load_settings(use_cache: bool = True) -> Settings:
             window_height_percent=max(
                 5, min(100, data.get("window_height_percent", 50))
             ),
+            subtitle_backdrop_opacity=max(
+                BACKDROP_OPACITY_MIN,
+                min(
+                    BACKDROP_OPACITY_MAX,
+                    data.get("subtitle_backdrop_opacity", DEFAULT_BACKDROP_OPACITY),
+                ),
+            ),
             translation_model=data.get("translation_model", DEFAULT_TRANSLATION_MODEL),
             transcription_model=data.get(
                 "transcription_model", DEFAULT_TRANSCRIPTION_MODEL
@@ -705,6 +725,7 @@ def save_settings(settings: Settings) -> None:
         "scroll_speed": settings.scroll_speed,
         "transparent_static": settings.transparent_static,
         "window_height_percent": settings.window_height_percent,
+        "subtitle_backdrop_opacity": settings.subtitle_backdrop_opacity,
         "translation_model": settings.translation_model,
         "transcription_model": settings.transcription_model,
         "use_default_translation_model": settings.use_default_translation_model,

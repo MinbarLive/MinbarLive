@@ -241,5 +241,6 @@
   "cost_last_30_days": "Letzte 30 Tage: {total} · {count} Sitzungen",
   "control_panel": "Steuerung:",
   "scroll_speed_label": "Scroll-Geschwindigkeit:",
-  "adaptive_catchup": "Beschleunigen, wenn Untertitel zurückfallen"
+  "adaptive_catchup": "Beschleunigen, wenn Untertitel zurückfallen",
+  "backdrop_opacity": "Hintergrund-Deckkraft:"
 }

@@ -44,6 +44,9 @@ from config import (
 from gui_qt.fonts import source_font, subtitle_font
 from gui_qt.palette import palette
 from utils.settings import (
+    BACKDROP_OPACITY_MAX,
+    BACKDROP_OPACITY_MIN,
+    DEFAULT_BACKDROP_OPACITY,
     SUBTITLE_MODE_CONTINUOUS,
     SUBTITLE_MODE_REALTIME,
     SUBTITLE_MODE_STATIC,
@@ -90,6 +93,7 @@ class SubtitleWindow(QWidget):
         scroll_speed: float = 1.0,
         transparent_static: bool = False,
         window_height_percent: int = 100,
+        backdrop_opacity: int = DEFAULT_BACKDROP_OPACITY,
         show_footer: bool = True,
         theme_mode: str = "dark",
         bilingual_mode: bool = False,
@@ -106,6 +110,7 @@ class SubtitleWindow(QWidget):
         self._scroll_speed = scroll_speed
         self._transparent_static = transparent_static
         self._height_percent = window_height_percent
+        self._backdrop_opacity = backdrop_opacity
         self._show_footer = show_footer
         self._theme_mode = theme_mode
         self._bilingual = bilingual_mode
@@ -158,7 +163,7 @@ class SubtitleWindow(QWidget):
             # the text stays readable over arbitrary video.
             return QColor(0, 0, 0, 0)
         base = QColor(self._colors["app_bg"])
-        base.setAlpha(190)
+        base.setAlpha(round(self._backdrop_opacity * 255 / 100))
         return base
 
     # ── geometry ─────────────────────────────────────────────────────────
@@ -593,6 +598,20 @@ class SubtitleWindow(QWidget):
         self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
         if self.isVisible():
             self.show()  # re-apply flags without losing visibility
+
+    def set_backdrop_opacity(self, percent: int) -> None:
+        """Set backdrop opacity 0-100. 0 leaves the video fully visible.
+
+        Only possible because Qt composites real per-pixel alpha; the Tk
+        window could not do this outside static mode's chroma key.
+        """
+        self._backdrop_opacity = max(
+            BACKDROP_OPACITY_MIN, min(BACKDROP_OPACITY_MAX, int(percent))
+        )
+        self.update()
+
+    def get_backdrop_opacity(self) -> int:
+        return self._backdrop_opacity
 
     def set_transparent_static(self, enabled: bool) -> None:
         self._transparent_static = enabled

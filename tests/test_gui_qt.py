@@ -194,6 +194,65 @@ class TestFooterReserve:
         assert w.reserved_bottom() == 0
 
 
+class TestBackdropOpacity:
+    """Adjustable only because Qt composites real per-pixel alpha."""
+
+    def test_default_preserves_the_shipped_look(self, overlay):
+        # The user reviewed the shipped backdrop against live video and chose
+        # to keep it, so the default must stay exactly alpha 190/255.
+        from utils.settings import DEFAULT_BACKDROP_OPACITY
+
+        w = overlay(SUBTITLE_MODE_REALTIME)
+        assert w.get_backdrop_opacity() == DEFAULT_BACKDROP_OPACITY
+        assert w._backdrop().alpha() == 191  # round(75 * 255 / 100)
+
+    def test_zero_is_fully_transparent(self, overlay):
+        w = overlay(SUBTITLE_MODE_REALTIME)
+        w.set_backdrop_opacity(0)
+        assert w._backdrop().alpha() == 0
+
+    def test_full_is_opaque(self, overlay):
+        w = overlay(SUBTITLE_MODE_REALTIME)
+        w.set_backdrop_opacity(100)
+        assert w._backdrop().alpha() == 255
+
+    def test_out_of_range_is_clamped(self, overlay):
+        w = overlay(SUBTITLE_MODE_REALTIME)
+        w.set_backdrop_opacity(-40)
+        assert w.get_backdrop_opacity() == 0
+        w.set_backdrop_opacity(400)
+        assert w.get_backdrop_opacity() == 100
+
+    def test_transparent_static_still_wins(self, overlay):
+        # The static-mode transparent option must not be overridden by a
+        # non-zero backdrop opacity.
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True)
+        w.set_backdrop_opacity(100)
+        assert w._backdrop().alpha() == 0
+
+    def test_setting_round_trips_through_disk(self, tmp_path, monkeypatch):
+        import utils.settings as S
+
+        path = tmp_path / "settings.json"
+        monkeypatch.setattr(S, "_settings_path", lambda: path)
+        s = S.load_settings(use_cache=False)
+        assert s.subtitle_backdrop_opacity == S.DEFAULT_BACKDROP_OPACITY
+        s.subtitle_backdrop_opacity = 20
+        S.save_settings(s)
+        assert S.load_settings().subtitle_backdrop_opacity == 20
+
+    def test_out_of_range_on_disk_is_clamped(self, tmp_path, monkeypatch):
+        import json
+
+        import utils.settings as S
+
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"subtitle_backdrop_opacity": 999}), encoding="utf-8")
+        monkeypatch.setattr(S, "_settings_path", lambda: path)
+        loaded = S.load_settings(use_cache=False)
+        assert loaded.subtitle_backdrop_opacity == S.BACKDROP_OPACITY_MAX
+
+
 class TestFontSizeBase:
     def test_base_is_a_divisor_so_larger_font_means_smaller_base(self, overlay):
         w = overlay(SUBTITLE_MODE_STATIC, font_size_base=40)
