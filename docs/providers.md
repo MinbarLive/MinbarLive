@@ -52,12 +52,11 @@ Streaming replaces only the transcription side; translation still runs through y
 - Keys are stored in the **OS keychain** (service `MinbarLive`, one entry per provider: `<provider>_api_key`). On a normal Windows/macOS install this is always what happens, and nothing is written to `settings.json`.
 - Environment variables work as a fallback and are read at startup (a `.env` file in the app directory is loaded too): `OPENAI_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPGRAM_API_KEY`.
 
-> **If no keychain backend exists** (typically Linux without a Secret Service provider such as GNOME Keyring or KWallet), the two providers behave differently and the app says so in the dialog:
+> **If no keychain backend exists** (typically Linux without a Secret Service provider such as GNOME Keyring or KWallet), the key is **never written to disk**. Every provider then keeps it for the **current session only** — it is gone after a restart and must be re-entered. The dialog tells you so when it happens.
 >
-> - **OpenAI** falls back to storing the key **in plaintext in `settings.json`**, a legacy path kept so existing setups keep working. You are warned when it happens.
-> - **Gemini / Anthropic / Deepgram** keep the key for the **current session only**; it is gone after a restart and must be re-entered.
+> A key an older version had already stored in plaintext in `settings.json` is moved into the keychain on the next start, or deleted if there is no keychain to move it into — that fallback was removed for security reasons.
 >
-> To avoid both on a keyring-less machine, pass the key via an environment variable or `.env` instead; then nothing is persisted by the app at all.
+> To avoid re-entering it on a keyring-less machine, set up a Secret Service provider, or pass the key via an environment variable or `.env` instead; then nothing is persisted by the app at all.
 - The real-time engines don't have keys of their own: OpenAI Realtime uses the OpenAI key, Gemini Live uses the Gemini key.
 - The first-run wizard and the settings window manage keys per provider; switching to a provider without a stored key prompts for one.
 

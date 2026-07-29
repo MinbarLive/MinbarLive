@@ -5,8 +5,8 @@ Uses the `keyring` library to store API keys securely:
 - macOS: Keychain
 - Linux: Secret Service API (GNOME Keyring, KWallet, etc.)
 
-Falls back to plaintext settings.json storage if keyring is unavailable,
-with a warning to the user.
+There is no fallback: without a keyring backend the key is never written to
+disk, it applies to the running session only, and the user is told so.
 """
 
 from __future__ import annotations
@@ -50,23 +50,26 @@ def _check_keyring_available() -> bool:
         except NoKeyringError:
             _keyring_available = False
             log(
-                "No keyring backend available. API key will be stored in settings file.",
+                "No keyring backend available. API keys apply to this session only.",
                 level="WARNING",
             )
         except KeyringError as e:
             _keyring_available = False
-            log(f"Keyring error: {e}. Falling back to settings file.", level="WARNING")
+            log(
+                f"Keyring error: {e}. API keys apply to this session only.",
+                level="WARNING",
+            )
         except Exception as e:
             _keyring_available = False
             log(
-                f"Keyring check failed: {e}. Falling back to settings file.",
+                f"Keyring check failed: {e}. API keys apply to this session only.",
                 level="WARNING",
             )
 
     except ImportError:
         _keyring_available = False
         log(
-            "keyring library not installed. API key will be stored in settings file.",
+            "keyring library not installed. API keys apply to this session only.",
             level="WARNING",
         )
 

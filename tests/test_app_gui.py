@@ -1405,8 +1405,12 @@ class TestCardGridReflow:
 
     def _pin_bottoms(self, gui, monkeypatch, display_bottom, advanced_bottom):
         """Fake the two columns' rendered bottom edges (nothing is mapped in a
-        test, so _align_advanced_card would bail out before measuring)."""
-        monkeypatch.setattr(gui, "_responsive_scale", 1.0, raising=False)
+        test, so _align_advanced_card would bail out before measuring).
+
+        The window scaling is pinned to 1.0 so one logical unit is one pixel
+        and the arithmetic below reads plainly — that is the factor the pixel
+        delta is divided by (see TestAdvancedAlignConvergence)."""
+        monkeypatch.setattr(gui, "_get_window_scaling", lambda: 1.0, raising=False)
         for group, bottom in (
             (gui._col_a, display_bottom),
             (gui._col_c, advanced_bottom),
@@ -1471,6 +1475,175 @@ class TestCardGridReflow:
         # CTk's minsize() has no query form (it would compare against None) —
         # read back what _setup_window stored on the window instead.
         assert (gui._min_width, gui._min_height) == (gui._MIN_W, gui._MIN_H)
+
+
+class TestWindowIcon:
+    """CustomTkinter withdraws and deiconifies the window ~200 ms after
+    start-up to repaint the titlebar, which recreates the Windows taskbar
+    button and drops an icon set before it — the taskbar showed the Tk
+    feather about half the time. The icon is therefore re-asserted on <Map>,
+    which means it runs often and must stay cheap on every platform.
+    """
+
+    def test_map_reasserts_the_icon(self, make_gui, monkeypatch):
+        """bind() captures the bound method, so this asserts the effect —
+        that mapping the window reaches Tk's icon call — not the attribute."""
+        import gui.app_gui as app_gui
+
+        gui, _c, _s = make_gui()
+        calls = []
+        monkeypatch.setattr(app_gui, "apply_dark_titlebar", lambda *a, **k: None)
+        for name in ("iconbitmap", "iconphoto"):
+            monkeypatch.setattr(
+                gui, name, lambda *a, **k: calls.append(1), raising=False
+            )
+        gui.event_generate("<Map>")
+        gui.update_idletasks()
+        assert calls, "the <Map> binding no longer re-applies the icon"
+
+    def test_a_child_widgets_map_is_ignored(self, make_gui):
+        """<Map> reaches this bindtag for every descendant widget too."""
+        gui, _c, _s = make_gui()
+
+        class _Event:
+            widget = "not-the-toplevel"
+
+        before = gui._window_icon_photo
+        gui._apply_window_icon(_Event())
+        assert gui._window_icon_photo is before
+
+    def test_the_png_icon_is_built_once(self, make_gui, monkeypatch):
+        """The non-Windows branch: scaled_icon_photo() returns a fresh
+        PhotoImage each call, so repeating it per <Map> would leak Tk images.
+        """
+        import gui.app_gui as app_gui
+
+        gui, _c, _s = make_gui()
+        monkeypatch.setattr(app_gui, "ICO_SUPPORTED", False)
+        monkeypatch.setattr(app_gui.os.path, "exists", lambda _p: True)
+        built = []
+
+        def _fake_photo(_path):
+            built.append(1)
+            return "photo"
+
+        monkeypatch.setattr(app_gui, "scaled_icon_photo", _fake_photo)
+        monkeypatch.setattr(gui, "iconphoto", lambda *a: None, raising=False)
+        gui._window_icon_photo = None
+        for _ in range(5):
+            gui._apply_window_icon()
+        assert len(built) == 1, f"rebuilt the icon {len(built)}x"
+
+
+class _AlignGroup:
+    """A card group whose rendered position answers to the current gap.
+
+    Only the four geometry calls _align_advanced_card makes are implemented,
+    plus the no-op grid() _layout_sidebar_cards performs on it.
+    """
+
+    def __init__(self, rooty, height, gui=None, scaling=1.0, base=0):
+        self._rooty = rooty
+        self._height = height
+        self._gui = gui
+        self._scaling = scaling
+        self._base = base
+
+    def winfo_ismapped(self):
+        return True
+
+    def winfo_rooty(self):
+        if self._gui is None:
+            return self._rooty
+        # Padding above Advanced pushes it down by gap × the widget scaling —
+        # exactly what CustomTkinter does with a logical pady on its way into
+        # grid(). This is the feedback path the alignment loop closes over.
+        return self._base + round(self._gui._advanced_gap * self._scaling)
+
+    def winfo_height(self):
+        return self._height
+
+    def grid(self, **_kwargs):
+        pass
+
+
+class TestAdvancedAlignConvergence:
+    """_align_advanced_card is a feedback loop: it measures the rendered
+    bottom-edge delta, re-pads Advanced, and the resulting <Configure> queues
+    another pass. The delta is real pixels and the padding is logical, so the
+    divisor must be the WINDOW scaling (DPI × design clamp). Dividing by
+    _responsive_scale (the clamp alone) overshot every correction by the DPI
+    factor and round() locked the gap into a two-value cycle, which re-queued
+    this pass forever and froze the control panel — reported 2026-07-29 after
+    collapsing the log panel on a 1.5× DPI screen.
+    """
+
+    _SCALING = 1.5  # a real 150% display, deliberately != _responsive_scale
+
+    def _rig(self, gui, monkeypatch):
+        """Two columns, Advanced 40px short of the display column's bottom."""
+        monkeypatch.setattr(
+            gui, "_get_window_scaling", lambda: self._SCALING, raising=False
+        )
+        monkeypatch.setattr(
+            gui.sidebar,
+            "winfo_width",
+            lambda: int(gui._COL2_MIN_W * self._SCALING),
+            raising=False,
+        )
+        gui._log_collapsed = True
+        gui._typography_open = False
+        gui._applied_columns = 2
+        gui._advanced_gap = 0
+        monkeypatch.setattr(gui, "_col_a", _AlignGroup(100, 400), raising=False)
+        monkeypatch.setattr(
+            gui,
+            "_col_c",
+            _AlignGroup(0, 200, gui=gui, scaling=self._SCALING, base=260),
+            raising=False,
+        )
+
+    def _run(self, gui, passes=25):
+        """Drive the loop by hand: after_idle never fires without a mainloop."""
+        history = []
+        for _ in range(passes):
+            gui._advanced_align_pending = False
+            gui._align_advanced_card()
+            history.append(gui._advanced_gap)
+            if len(history) >= 2 and history[-1] == history[-2]:
+                break  # reached a fixed point
+        return history
+
+    def test_the_gap_reaches_a_fixed_point(self, make_gui, monkeypatch):
+        gui, _c, _s = make_gui()
+        self._rig(gui, monkeypatch)
+        history = self._run(gui)
+        assert history[-1] == history[-2], f"never settled: {history}"
+
+    def test_the_gap_never_cycles_between_two_values(self, make_gui, monkeypatch):
+        """The exact freeze signature: [34, 37, 34, 37, ...] forever."""
+        gui, _c, _s = make_gui()
+        self._rig(gui, monkeypatch)
+        history = self._run(gui)
+        settled = history[-1]
+        assert history.count(settled) >= 2
+        # No value may reappear after the run has moved past it — a repeat is
+        # a limit cycle, which is what starved the idle queue.
+        for index, gap in enumerate(history[:-2]):
+            assert gap not in history[index + 1 : -1], f"cycle in {history}"
+
+    def test_the_correction_divides_by_the_window_scaling(
+        self, make_gui, monkeypatch
+    ):
+        """One pass over a known delta, so a wrong divisor is unambiguous."""
+        gui, _c, _s = make_gui()
+        self._rig(gui, monkeypatch)
+        # Static column C: the delta is a fixed 40px regardless of the gap.
+        monkeypatch.setattr(gui, "_col_c", _AlignGroup(260, 200), raising=False)
+        gui._responsive_scale = 0.86  # what the buggy divisor used
+        gui._advanced_align_pending = False
+        gui._align_advanced_card()
+        assert gui._advanced_gap == round(40 / self._SCALING)  # 27, not 47
 
 
 class _Configure:

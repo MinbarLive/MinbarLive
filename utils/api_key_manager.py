@@ -12,7 +12,6 @@ from config import ICON_PATH, ICON_PATH_PNG
 from providers import (
     PROVIDER_CHOICES,
     clear_api_key,
-    has_insecure_key_fallback,
     save_api_key,
 )
 from utils.icons import ICO_SUPPORTED, scaled_icon_photo
@@ -573,7 +572,8 @@ def prompt_for_api_key(
 
     result: dict[str, str | None] = {"key": None}
 
-    # Keyring unavailable warning — only shown when secure storage is not available
+    # Keyring unavailable warning — the key is never written to disk, so
+    # without a keychain it only lasts for this session.
     if _keyring_missing:
         warn_row = ctk.CTkFrame(card, fg_color="transparent")
         warn_row.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 4))
@@ -588,8 +588,8 @@ def prompt_for_api_key(
         ctk.CTkLabel(
             warn_row,
             text=t.get(
-                "dlg_key_insecure_warning",
-                "Keyring unavailable — key will be stored unencrypted.",
+                "dlg_key_session_only_warning",
+                "No keyring — the key applies to this session only.",
             ),
             font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color=c.get("warning", "#d97706"),
@@ -733,30 +733,17 @@ def prompt_for_api_key(
             ok_label=t.get("dlg_ok", "OK"),
             modal_host=modal_host,
         )
-    elif has_insecure_key_fallback(provider):
-        _ctk_msgbox(
-            root,
-            "Saved",
-            t.get(
-                "dlg_key_saved_insecure",
-                "API key saved (stored in settings file, not keyring).",
-            ),
-            c,
-            icon="⚠",
-            icon_color=c.get("warning", "#d97706"),
-            ok_label=t.get("dlg_ok", "OK"),
-            modal_host=modal_host,
-        )
     else:
-        # No keychain and no file fallback for this provider: the key works
-        # now but is gone after a restart. Saying "saved" here would be a lie.
+        # No keychain: the key is never written to disk, so it works now but
+        # is gone after a restart. Saying "saved" here would be a lie.
         _ctk_msgbox(
             root,
-            "Saved",
+            "Session only",
             t.get(
                 "dlg_key_saved_session_only",
                 "No keyring available — the key works for this session only "
-                "and must be entered again after a restart.",
+                "and must be entered again after a restart. Set up an OS "
+                "keychain to store it permanently.",
             ),
             c,
             icon="⚠",

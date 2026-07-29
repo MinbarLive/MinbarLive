@@ -128,7 +128,7 @@ These features are Windows-only on Linux today:
 | Borderless overlay visible to OBS    | The `WS_EX_APPWINDOW` styling in `gui/subtitle_window.py` is Win32; Linux falls back to a bare `overrideredirect` window |
 | Transparent static mode              | `wm attributes -transparentcolor` does not exist outside Windows          |
 | Loopback capture ("what the speakers play") | WASAPI-only by design, so Linux has microphone input only          |
-| OS keychain                          | Without a Secret Service backend, `utils/settings.set_saved_api_key` falls back to plaintext for OpenAI and to session-only for every other provider — a Gemini key is lost on restart |
+| OS keychain                          | Without a Secret Service backend, `utils/settings.set_saved_api_key` persists nothing — every provider's key is session-only and lost on restart |
 | ffmpeg download-on-first-use         | Windows-only; batch mode expects ffmpeg from the package manager          |
 
 They ship as documented gaps (see the README's Linux note), not blockers — fix,

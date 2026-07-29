@@ -455,16 +455,14 @@ class AppGUI(
         # the active window, which is what the restore actually cares about.
         self.bind("<Activate>", self._schedule_control_window_surface_restore)
 
-        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
-            try:
-                self.iconbitmap(ICON_PATH)
-            except Exception:
-                pass
-        elif os.path.exists(ICON_PATH_PNG):
-            try:
-                self.iconphoto(False, scaled_icon_photo(ICON_PATH_PNG))
-            except Exception:
-                pass
+        self._window_icon_photo: tk.Image | None = None
+        self._apply_window_icon()
+        # CustomTkinter withdraws and deiconifies this window ~200 ms after
+        # start-up to repaint the titlebar (_windows_set_titlebar_color), which
+        # recreates the Windows taskbar button and drops an icon set before it —
+        # that race is why the taskbar showed the Tk feather about half the
+        # time. Re-assert whenever the window is (re)mapped.
+        self.bind("<Map>", self._apply_window_icon, add="+")
 
         if self._log_collapsed:
             self.grid_columnconfigure(0, weight=1, minsize=self._MIN_W)
@@ -473,6 +471,44 @@ class AppGUI(
             self.grid_columnconfigure(0, weight=0, minsize=500)
             self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
+
+    def _apply_window_icon(self, _event: object | None = None) -> None:
+        """(Re)apply the window and taskbar icon.
+
+        ``default=`` registers it as the *application's* icon rather than this
+        one window's: Tk re-applies that form itself when a window surface is
+        recreated, and every toplevel inherits it. The plain call covers this
+        window right now. Idempotent, so the <Map> binding can simply repeat
+        it — the surface is recreated on a theme switch and on a restore from
+        the taskbar too, not only during start-up.
+
+        Both branches are allocation-free after the first call, because <Map>
+        fires often and this runs on every one of them. The .ico branch is
+        Windows-only (Linux Tk expects an XBM there and raises — see
+        utils/icons); the PNG branch everywhere else.
+        """
+        # <Map> reaches this bindtag for every descendant widget as well.
+        if _event is not None and str(getattr(_event, "widget", "")) != str(self):
+            return
+        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
+            try:
+                self.iconbitmap(default=ICON_PATH)
+                self.iconbitmap(ICON_PATH)
+            except Exception:
+                return
+            # iconbitmap() resets the DWM titlebar to the light default. A
+            # no-op off Windows, where nothing above ran either.
+            apply_dark_titlebar(self, dark=self._theme_mode == "dark")
+        elif os.path.exists(ICON_PATH_PNG):
+            try:
+                # Kept on the instance: scaled_icon_photo() caches the decoded
+                # bytes but returns a FRESH PhotoImage, so rebuilding it per
+                # <Map> would pile up Tk image objects for the session.
+                if self._window_icon_photo is None:
+                    self._window_icon_photo = scaled_icon_photo(ICON_PATH_PNG)
+                self.iconphoto(False, self._window_icon_photo)
+            except Exception:
+                pass
 
     def _schedule_control_window_surface_restore(
         self, _event: object | None = None
@@ -491,6 +527,37 @@ class AppGUI(
             120, self._restore_control_window_surface
         )
 
+    def _is_maximized(self) -> bool:
+        """True if the window is currently maximized, on any platform.
+
+        Windows (and Tk on macOS) report it as the "zoomed" window state; X11
+        has no such state and uses a -zoomed attribute instead. Each raises
+        TclError where it does not apply, so both are tried.
+        """
+        try:
+            if self.state() == "zoomed":
+                return True
+        except tk.TclError:
+            pass
+        try:
+            return bool(self.attributes("-zoomed"))
+        except tk.TclError:
+            return False
+
+    def _restore_maximized_state(self) -> None:
+        """Maximize the window again if it was closed maximized."""
+        if not getattr(self._saved_settings, "window_maximized", False):
+            return
+        try:
+            self.state("zoomed")
+            return
+        except tk.TclError:
+            pass
+        try:
+            self.attributes("-zoomed", True)
+        except tk.TclError:
+            pass
+
     def _reveal_control_window(self, _event: object | None = None) -> None:
         """Fade the control panel in once it has painted (first <Map> only).
 
@@ -504,6 +571,12 @@ class AppGUI(
 
         def _show() -> None:
             self._reveal_pending = False
+            # Re-maximize here rather than in _setup_window: CustomTkinter
+            # withdraws and deiconifies the window on its way through
+            # _windows_set_titlebar_color, and it only deiconifies again when
+            # the state it saved was "normal" — maximizing before that could
+            # leave the window withdrawn. By the first <Map> that dance is done.
+            self._restore_maximized_state()
             try:
                 self.attributes("-alpha", 1.0)
             except tk.TclError:
@@ -791,7 +864,68 @@ class AppGUI(
                 padx=half_gap,
                 pady=(top_pad, self._CARD_GAP),
             )
+        self._apply_translation_card_stretch(cols)
         self._schedule_advanced_align()
+
+    def _apply_translation_card_stretch(self, cols: int) -> None:
+        """Three columns: run the middle card down to the LEFT column's height.
+
+        The middle group holds a single card while the left holds two, so the
+        centre of a wide window stopped halfway down. Filling the grid row
+        instead was wrong: that row is as tall as the tallest group, which is
+        the Advanced card on the right, and the surplus collected into one
+        hole in the middle of the card.
+
+        The left column's height is therefore matched explicitly, via a
+        minsize on the middle group's row. No feedback loop is possible: the
+        left column's height does not depend on the middle one's, so this
+        settles in a single pass (unlike _align_advanced_card, which measures
+        a delta it also moves).
+        """
+        stretch = cols == 3
+        self.language_card.grid_configure(sticky="nsew" if stretch else "new")
+        # Share the surplus out over every row that holds something, so the
+        # extra height becomes a little more air between the dropdowns rather
+        # than one hole in the middle of the card. Row 0 is the card header,
+        # which stays put. Rows whose widget is grid_remove()d report no
+        # slaves and are skipped, so a hidden control cannot leave a phantom
+        # gap behind. Weightless outside the three-column grid, where the card
+        # keeps its natural height exactly as before.
+        rows = self.language_card.grid_size()[1]
+        occupied = [r for r in range(1, rows) if self.language_card.grid_slaves(row=r)]
+        # The last occupied row carries the toggles and the selector bar. It is
+        # left at its natural height and pushed onto the card's bottom edge by
+        # the expanded rows above, so no share of the surplus opens up directly
+        # above the checkboxes — they stay tucked under the dropdown.
+        spread = set(occupied[:-1])
+        for row in range(1, rows):
+            self.language_card.grid_rowconfigure(
+                row, weight=1 if (stretch and row in spread) else 0
+            )
+        selector = getattr(self, "subtitle_hide_segment", None)
+        if selector is not None:
+            self._set_mode_selector_inline(selector.master, not stretch)
+        if not stretch:
+            self._col_b.grid_rowconfigure(0, minsize=0)
+            self._matched_translation_height = 0
+            return
+        self._match_translation_card_height()
+
+    def _match_translation_card_height(self) -> None:
+        """Give the middle group the left column's rendered height."""
+        if self._applied_columns != 3:
+            return
+        try:
+            target = self._col_a.winfo_height()
+        except tk.TclError:
+            return
+        if target <= 1:  # not laid out yet — a later <Configure> retries
+            return
+        # Deadband, so a pixel of grid rounding cannot make this churn.
+        if abs(target - getattr(self, "_matched_translation_height", 0)) < 2:
+            return
+        self._matched_translation_height = target
+        self._col_b.grid_rowconfigure(0, minsize=target)
 
     def _schedule_advanced_align(self, _event: object | None = None) -> None:
         """Queue one bottom-alignment pass for the next idle moment.
@@ -823,6 +957,11 @@ class AppGUI(
         was consistently a few pixels out (grid rounding, the cards' borders),
         and what has to line up is what the operator sees."""
         self._advanced_align_pending = False
+        # Three columns: the middle card follows the left column's height, and
+        # heights are only known once rendered — so retry from the same idle
+        # pass the column <Configure> bindings already schedule.
+        if self._applied_columns == 3:
+            self._match_translation_card_height()
         if self._applied_columns != 2 or getattr(self, "_typography_open", False):
             return
         try:
@@ -839,8 +978,17 @@ class AppGUI(
         if abs(delta) < 2:  # deadband, so rounding cannot make this oscillate
             return
         # delta is real pixels; the padding is a logical value CustomTkinter
-        # multiplies by the widget scaling on its way into grid().
-        gap = max(0, self._advanced_gap + round(delta / max(self._responsive_scale, 0.1)))
+        # multiplies by the widget scaling on its way into grid(). That factor
+        # is the window scaling (DPI × the design clamp), NOT the clamp alone:
+        # dividing by _responsive_scale overshot every correction by the DPI
+        # factor, and round() then locked the gap into a two-value cycle
+        # (34↔37 at 1.5× DPI) that re-queued this pass forever and froze the
+        # control panel — reported after collapsing the log panel.
+        try:
+            scaling = self._get_window_scaling()
+        except Exception:  # noqa: BLE001 — cosmetic alignment must never crash
+            return
+        gap = max(0, self._advanced_gap + round(delta / max(scaling, 0.1)))
         if gap == self._advanced_gap:
             return
         self._advanced_gap = gap
@@ -3395,30 +3543,61 @@ class AppGUI(
             text_color=self._colors["text"],
         )
         seg.set(current_label)
+        # Both parts are recorded whichever way they start out: the subtitle
+        # selector switches between the two layouts at runtime so it can match
+        # the stacked one in the third column (see _set_mode_selector_inline).
+        frame._selector_parts = (title, seg)  # type: ignore[attr-defined]
+        # Keep the one-line layout at every card width by printing smaller when
+        # it gets tight (see _fit_inline_mode_selector). Measuring copies, so
+        # the live fonts are set once, to the winning size.
+        frame._fit_probes = (  # type: ignore[attr-defined]
+            ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+        )
+        frame.bind(
+            "<Configure>",
+            lambda e, f=frame: self._fit_inline_mode_selector(f, e.width),
+            add="+",
+        )
+        self._set_mode_selector_inline(frame, inline)
+        self._segments.append(seg)
+        return seg
+
+    # Font sizes the stacked layout always uses — the inline fitter may have
+    # stepped them down while the selector was sharing a row with its title.
+    _SEG_STACKED_SIZES = (14, 13)
+
+    def _set_mode_selector_inline(self, frame, inline: bool) -> None:
+        """Lay a mode selector out beside its title, or stacked below it.
+
+        Inline keeps the control as short as the checkbox it replaced, which
+        is what the two-column bottom alignment needs. In the three-column
+        grid the middle card is stretched to the left column's height and its
+        selector becomes a full-width bar at the bottom, matching the stacked
+        one in the third column — so this is switched per column count rather
+        than fixed when the widget is built.
+        """
+        if getattr(frame, "_inline", None) is inline:
+            return  # already in this layout — never re-grid on every reflow
+        frame._inline = inline  # type: ignore[attr-defined]
+        title, seg = frame._selector_parts
+        # columnspan is always stated: grid() retains the options of a previous
+        # placement, so the stacked layout's span would survive the switch back
+        # and drop the title into the segment's cell, hidden behind it.
         if inline:
             frame.grid_columnconfigure(0, weight=0)
             frame.grid_columnconfigure(1, weight=1)
-            title.grid(row=0, column=0, sticky="w", padx=(2, 12))
-            seg.grid(row=0, column=1, sticky="ew")
-            # Keep the one-line layout at every card width by printing smaller
-            # when it gets tight (see _fit_inline_mode_selector). Measuring
-            # copies, so the live fonts are set once, to the winning size.
-            frame._selector_parts = (title, seg)  # type: ignore[attr-defined]
-            frame._fit_probes = (  # type: ignore[attr-defined]
-                ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
-                ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            )
-            frame.bind(
-                "<Configure>",
-                lambda e, f=frame: self._fit_inline_mode_selector(f, e.width),
-                add="+",
-            )
-        else:
-            frame.grid_columnconfigure(0, weight=1)
-            title.grid(row=0, column=0, sticky="w", padx=2, pady=(0, 4))
-            seg.grid(row=1, column=0, sticky="ew")
-        self._segments.append(seg)
-        return seg
+            title.grid(row=0, column=0, columnspan=1, sticky="w", padx=(2, 12), pady=0)
+            seg.grid(row=0, column=1, columnspan=1, sticky="ew", pady=0)
+            return
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_columnconfigure(1, weight=0)
+        title.grid(row=0, column=0, columnspan=2, sticky="w", padx=2, pady=(0, 4))
+        seg.grid(row=1, column=0, columnspan=2, sticky="ew")
+        # The inline fitter shrinks to fit a shared row; a full-width bar has
+        # the whole card to itself, so restore the intended sizes.
+        title.cget("font").configure(size=self._SEG_STACKED_SIZES[0])
+        seg.cget("font").configure(size=self._SEG_STACKED_SIZES[1])
 
     def _fit_inline_mode_selector(self, frame, width: int | None = None) -> None:
         """Shrink an inline selector's text until the title and all of its
@@ -3435,6 +3614,8 @@ class AppGUI(
         frame's own new size is known while its children are still laid out
         for the previous one, so nothing here reads a child's position.
         """
+        if not getattr(frame, "_inline", True):
+            return  # stacked: the bar owns the full width, nothing to fit
         title, seg = frame._selector_parts
         try:
             scale = ctk.ScalingTracker.get_widget_scaling(frame) or 1.0
@@ -4197,7 +4378,13 @@ class AppGUI(
         # jobs behind the cancel-everything pass below.
         self._closing = True
         try:
-            self._saved_settings.window_geometry = self.geometry()
+            maximized = self._is_maximized()
+            self._saved_settings.window_maximized = maximized
+            # While maximized, geometry() reports the maximized box. Storing it
+            # would reopen a screen-sized *normal* window and leave nothing to
+            # restore down to, so the last restored-down geometry is kept.
+            if not maximized:
+                self._saved_settings.window_geometry = self.geometry()
             self._save_current_settings()
         except Exception:
             pass

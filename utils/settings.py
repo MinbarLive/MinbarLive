@@ -425,6 +425,11 @@ class Settings:
     auto_cleanup_content: bool = False  # Purge old history + batch files at startup
     log_panel_collapsed: bool = True  # Log panel hidden by default (AV volunteers)
     window_geometry: str = ""  # Last window geometry (WxH+X+Y), empty = use default
+    # Maximized is a window *state*, which a WxH+X+Y string cannot express —
+    # restoring the geometry alone reopened a screen-sized window that was not
+    # actually maximized. window_geometry keeps the last restored-down size, so
+    # un-maximizing after start-up still lands somewhere sensible.
+    window_maximized: bool = False
     auto_start: bool = False  # Start translation automatically when app launches
     # Stop a running session automatically after 10 min without any
     # transcription (AUTO_STOP_INACTIVITY_SECONDS) — cost guard for
@@ -655,6 +660,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             ),
             log_panel_collapsed=data.get("log_panel_collapsed", True),
             window_geometry=data.get("window_geometry", ""),
+            window_maximized=bool(data.get("window_maximized", False)),
             auto_start=data.get("auto_start", False),
             auto_stop_inactivity=data.get("auto_stop_inactivity", True),
             check_for_updates=data.get("check_for_updates", True),
@@ -720,6 +726,7 @@ def save_settings(settings: Settings) -> None:
         "auto_cleanup_content": settings.auto_cleanup_content,
         "log_panel_collapsed": settings.log_panel_collapsed,
         "window_geometry": settings.window_geometry,
+        "window_maximized": settings.window_maximized,
         "auto_start": settings.auto_start,
         "auto_stop_inactivity": settings.auto_stop_inactivity,
         "check_for_updates": settings.check_for_updates,
@@ -744,35 +751,48 @@ def save_settings(settings: Settings) -> None:
 
 
 def get_saved_api_key() -> str | None:
-    """Get the API key from secure storage (keyring) or legacy settings."""
-    from utils.keyring_storage import get_api_key_from_keyring, is_keyring_available
+    """Get the API key from the OS keychain, migrating a legacy plaintext key.
 
-    # Try keyring first (secure storage)
+    Older versions stored the OpenAI key in ``settings.json`` when no keychain
+    backend was available. That fallback is gone: a legacy key found here is
+    moved into the keychain and deleted from the file — and when there is no
+    keychain to move it to, it is deleted anyway rather than kept in plaintext.
+    The user then re-enters it (session-only, with a notice) as on any other
+    keychain-less machine.
+    """
+    from utils.keyring_storage import get_api_key_from_keyring, is_keyring_available
+    from utils.logging import log
+
     if is_keyring_available():
         key = get_api_key_from_keyring()
         if key:
             return key
 
-    # Fallback: check for legacy key in settings file and migrate it
     path = _settings_path()
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             legacy_key = data.get("openai_api_key")
-            if legacy_key:
-                # Migrate to secure storage
-                set_saved_api_key(legacy_key)
-                # Remove from settings file
-                _remove_legacy_api_key_from_file()
-                return legacy_key
         except Exception:
-            pass
+            legacy_key = None
+        if legacy_key:
+            migrated = set_saved_api_key(legacy_key)
+            _remove_legacy_api_key_from_file()
+            if migrated:
+                log("Legacy API key migrated to secure storage.", level="INFO")
+                return legacy_key
+            log(
+                "Removed the plaintext API key from settings.json — that "
+                "storage is no longer supported. Enter the key again; set up "
+                "an OS keychain to keep it across restarts.",
+                level="WARNING",
+            )
 
     return None
 
 
 def _remove_legacy_api_key_from_file() -> None:
-    """Remove legacy API key from settings.json after migration to keyring."""
+    """Remove the legacy plaintext API key from settings.json."""
     path = _settings_path()
     if not path.exists():
         return
@@ -793,8 +813,12 @@ def _remove_legacy_api_key_from_file() -> None:
 def set_saved_api_key(key: str) -> bool:
     """Save the API key to secure storage (keyring).
 
+    There is deliberately no plaintext fallback: without a keychain the key is
+    never written to disk, and the caller tells the user it applies to this
+    session only.
+
     Returns:
-        True if stored securely, False if fell back to settings file.
+        True if stored in the keychain, False if it could not be persisted.
     """
     from utils.keyring_storage import is_keyring_available, set_api_key_in_keyring
 
@@ -802,26 +826,7 @@ def set_saved_api_key(key: str) -> bool:
     if not key:
         return False
 
-    if is_keyring_available():
-        if set_api_key_in_keyring(key):
-            return True
-
-    # Fallback: store in settings file (with warning logged in keyring_storage)
-    path = _settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-        else:
-            data = {}
-        data["openai_api_key"] = key
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
-        return False  # Stored but not securely
-    except Exception:
-        return False
+    return is_keyring_available() and set_api_key_in_keyring(key)
 
 
 def delete_saved_api_key() -> None:

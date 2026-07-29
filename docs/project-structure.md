@@ -120,4 +120,4 @@ Contents:
 - `bin/` - ffmpeg, if downloaded via the batch card (Windows)
 - `settings.json` - All user preferences (NOT the API keys)
 
-> **Note:** API keys are stored in your OS keychain, not in settings.json. The one exception is a machine with no keychain backend at all; see [providers.md](providers.md#api-keys).
+> **Note:** API keys are stored in your OS keychain, never in settings.json. On a machine with no keychain backend at all they are kept for the running session only; see [providers.md](providers.md#api-keys).
