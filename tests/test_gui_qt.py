@@ -26,6 +26,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from gui_qt.subtitle_window import SubtitleWindow  # noqa: E402
 from utils.settings import (  # noqa: E402
+    PIPELINE_MODE_STREAMING,
     SUBTITLE_MODE_CONTINUOUS,
     SUBTITLE_MODE_REALTIME,
     SUBTITLE_MODE_STATIC,
@@ -364,6 +365,10 @@ class TestSubtitleModeLabels:
 
         panel = cp.ControlPanel(FakeController())
         try:
+            # Realtime is offered only under the real-time strategy, so put the
+            # panel there before asserting the full list.
+            panel.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+            panel._refresh_mode_combo()
             labels = [
                 panel.mode_combo.itemText(i) for i in range(panel.mode_combo.count())
             ]
@@ -454,6 +459,292 @@ class TestDeviceHotSwap:
         assert controller.restarts == [p.device_indices[target]]
 
 
+class TestControlPanelLayout:
+    """The panel-parity fixes: card grid, log panel, chrome, free resizing."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui_qt.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        # The default hide policy opens the overlay even while stopped; a real
+        # frameless always-on-top window in a test run is neither needed here
+        # nor welcome.
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        p.resize(1200, 800)
+        qt_app.processEvents()
+        yield p
+        p.close()
+
+    def test_card_grid_reflows_with_the_window(self, panel, qt_app):
+        # 1 / 2 / 3 columns, at the same thresholds the Tk panel uses.
+        # A hidden widget never receives resizeEvent, so the reflow is driven
+        # directly — that is exactly what the handler does, and showing a real
+        # control-panel window during a test run is not worth the parity.
+        for width, expected in ((1200, 3), (860, 2), (520, 1)):
+            panel.resize(width, 800)
+            panel._relayout_columns()
+            assert panel._columns == expected, f"{width}px should give {expected}"
+
+    def test_each_card_group_is_placed_exactly_once(self, panel):
+        panel.resize(1200, 800)
+        panel._relayout_columns()
+        placed = {
+            panel.grid.itemAt(i).widget() for i in range(panel.grid.count())
+        }
+        assert placed == {panel.col_a, panel.col_b, panel.col_c}
+
+    def test_window_can_shrink_below_the_cards_natural_width(self, panel, qt_app):
+        # Combos otherwise demand their longest entry and pin the window open.
+        panel.resize(430, 460)
+        qt_app.processEvents()
+        assert panel.width() == 430
+
+    def test_log_panel_toggles_and_persists(self, panel):
+        start = panel._log_collapsed
+        panel._toggle_log_panel()
+        assert panel._log_collapsed is not start
+        assert panel.log_panel.isVisible() is not start
+        assert panel.settings.log_panel_collapsed is panel._log_collapsed
+
+    def test_log_lines_reach_the_panel(self, panel):
+        from utils.logging import log_queue
+
+        log_queue.put("PROBE LINE")
+        panel._drain_logs()
+        assert "PROBE LINE" in panel.log_text.toPlainText()
+
+    def test_window_and_header_carry_the_logo(self, panel):
+        assert not panel.windowIcon().isNull()
+        pixmap = panel.logo_label.pixmap()
+        assert pixmap is not None and not pixmap.isNull()
+
+    def test_action_labels_do_not_double_their_glyph(self, panel):
+        assert panel.start_btn.text().count("\u25b6") == 1
+
+    def test_input_meter_reads_the_controller(self, panel):
+        class Snapshot:
+            rms_dbfs = -12.0
+            clipping_ratio = 0.0
+
+        panel.controller.get_input_level = lambda: Snapshot()
+        panel._poll_input_level()
+        assert panel.level_bar.value() > 0.5
+        assert "dBFS" in panel.level_value.text()
+
+
+class TestSourceLanguageChoices:
+    """Real-time transcription cannot auto-detect, so "Automatic" must go."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui_qt.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        yield p
+        p.close()
+
+    @staticmethod
+    def _entries(panel) -> list[str]:
+        from utils.settings import language_canonical_name
+
+        return [
+            language_canonical_name(panel.source_combo.itemText(i))
+            for i in range(panel.source_combo.count())
+        ]
+
+    def test_streaming_hides_automatic(self, panel):
+        panel.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+        panel._refresh_source_combo()
+        assert "Automatic" not in self._entries(panel)
+
+    def test_segmented_offers_automatic(self, panel):
+        from utils.settings import PIPELINE_MODE_SEGMENTED
+
+        panel.settings.pipeline_mode = PIPELINE_MODE_SEGMENTED
+        panel._refresh_source_combo()
+        assert "Automatic" in self._entries(panel)
+
+    def test_a_stored_automatic_is_replaced_when_streaming(self, panel):
+        panel.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+        panel.settings.source_language = "Automatic"
+        panel._refresh_source_combo()
+        assert panel.settings.source_language != "Automatic"
+
+
+class TestSubtitleHideMode:
+    """The 3-way policy has to actually open and close the overlay."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui_qt.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+
+        class FakeOverlay:
+            def __init__(self):
+                self.text = None
+                self.destroyed = False
+
+            def set_stopped_hint(self, visible):
+                pass
+
+            def set_always_on_top(self, enabled):
+                pass
+
+            def set_live_text(self, text, settled=False):
+                pass
+
+            def set_announcement(self, text):
+                self.text = text
+
+            def clear_announcement(self):
+                self.text = None
+
+            def destroy(self):
+                self.destroyed = True
+
+        def fake_ensure(self):
+            if self.subtitle_window is None:
+                self.subtitle_window = FakeOverlay()
+
+        monkeypatch.setattr(cp.ControlPanel, "_ensure_subtitle_window", fake_ensure)
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        yield p
+        p.close()
+
+    def test_never_keeps_the_overlay_open_while_stopped(self, panel):
+        panel.settings.subtitle_hide_mode = "never"
+        panel._apply_subtitle_hide_mode()
+        assert panel.subtitle_window is not None
+
+    def test_always_closes_it(self, panel):
+        panel.settings.subtitle_hide_mode = "always"
+        panel._apply_subtitle_hide_mode()
+        assert panel.subtitle_window is None
+
+    def test_stopped_closes_it_only_while_stopped(self, panel):
+        panel.settings.subtitle_hide_mode = "stopped"
+        panel._running = False
+        panel._apply_subtitle_hide_mode()
+        assert panel.subtitle_window is None
+        panel._running = True
+        panel._apply_subtitle_hide_mode()
+        assert panel.subtitle_window is not None
+
+    def test_an_announcement_can_be_shown_while_stopped(self, panel):
+        # "The talk starts in 10 minutes" is exactly the message you want
+        # BEFORE starting, so the overlay is created on demand.
+        panel.settings.subtitle_hide_mode = "always"
+        panel._apply_subtitle_hide_mode()
+        panel.show_announcement("Beginnt in 10 Minuten")
+        assert panel.subtitle_window is not None
+        assert panel.subtitle_window.text == "Beginnt in 10 Minuten"
+
+    def test_clearing_it_closes_the_overlay_again(self, panel):
+        panel.settings.subtitle_hide_mode = "always"
+        panel._apply_subtitle_hide_mode()
+        panel.show_announcement("Kurz")
+        panel.clear_announcement()
+        assert panel.subtitle_window is None
+
+
+class TestControlChrome:
+    """Check marks and dropdown chevrons are painted, not stylesheet shapes."""
+
+    @staticmethod
+    def _accent_pixels(image, limit: int = 34) -> int:
+        count = 0
+        for x in range(min(image.width(), limit)):
+            for y in range(image.height()):
+                c = image.pixelColor(x, y)
+                if (
+                    abs(c.red() - 0x15) < 30
+                    and abs(c.green() - 0x80) < 30
+                    and abs(c.blue() - 0x3D) < 30
+                ):
+                    count += 1
+        return count
+
+    def test_a_checked_box_draws_a_white_tick_on_accent(self, qt_app):
+        from PySide6.QtWidgets import QCheckBox
+
+        from gui_qt.theme import apply_theme
+
+        apply_theme(qt_app, "light")
+        box = QCheckBox("Originaltext anzeigen")
+        box.setChecked(True)
+        box.resize(240, 30)
+        image = box.grab().toImage()
+        white = sum(
+            1
+            for x in range(min(image.width(), 34))
+            for y in range(image.height())
+            if image.pixelColor(x, y).red() > 240
+            and image.pixelColor(x, y).green() > 240
+            and image.pixelColor(x, y).blue() > 240
+        )
+        assert self._accent_pixels(image) > 100, "indicator is not accent-filled"
+        assert white > 15, "no check mark inside the indicator"
+
+    def test_an_unchecked_box_is_not_filled(self, qt_app):
+        from PySide6.QtWidgets import QCheckBox
+
+        from gui_qt.theme import apply_theme
+
+        apply_theme(qt_app, "light")
+        box = QCheckBox("Aus")
+        box.resize(240, 30)
+        assert self._accent_pixels(box.grab().toImage()) < 20
+
+    def test_the_dropdown_paints_a_chevron_not_a_block(self, qt_app):
+        from gui_qt.theme import apply_theme
+        from gui_qt.widgets import Dropdown
+
+        apply_theme(qt_app, "light")
+        combo = Dropdown(["Deutsch", "English"])
+        combo.resize(240, 44)
+        image = combo.grab().toImage()
+        # Row widths across the arrow: a chevron narrows towards its point; the
+        # CSS border-triangle this replaced rendered as a solid rectangle.
+        rows: dict[int, int] = {}
+        for x in range(image.width() - 34, image.width()):
+            for y in range(image.height()):
+                c = image.pixelColor(x, y)
+                if (
+                    c.red() < 190
+                    and c.green() < 190
+                    and c.blue() < 200
+                    and c.alpha() > 200
+                ):
+                    rows[y] = rows.get(y, 0) + 1
+        assert rows, "no arrow drawn at all"
+        widths = [rows[y] for y in sorted(rows)]
+        assert min(widths) < max(widths), f"arrow is a solid block: {widths}"
+
+
 class TestHistoryWindow:
     """Rendering only — parsing is utils/history.py and already covered."""
 
@@ -516,20 +807,20 @@ class TestHistoryWindow:
     def test_lists_one_row_per_session(self, history):
         make, sessions = history
         w = make()
-        assert w.session_list.count() == len(sessions)
-        assert "2026-07-30" in w.session_list.item(0).text()
+        assert w.entry_list.count() == len(sessions)
+        assert "2026-07-30" in w.entry_list.item(0).text()
 
     def test_first_session_is_selected_and_rendered(self, history):
         make, _ = history
         w = make()
-        assert w.session_list.currentRow() == 0
-        text = w.transcript.toPlainText()
+        assert w.entry_list.currentRow() == 0
+        text = w.detail.toPlainText()
         assert "بسم الله" in text and "Im Namen Allahs" in text
 
     def test_summary_is_shown_above_the_transcript(self, history):
         make, _ = history
         w = make()
-        text = w.transcript.toPlainText()
+        text = w.detail.toPlainText()
         assert text.index("Kurzfassung.") < text.index("بسم الله")
 
     def test_identical_pair_renders_once(self, history):
@@ -537,15 +828,15 @@ class TestHistoryWindow:
         # showing both would read as the text being duplicated.
         make, _ = history
         w = make()
-        w.session_list.setCurrentRow(1)
-        assert w.transcript.toPlainText().count("الحمد لله") == 1
+        w.entry_list.setCurrentRow(1)
+        assert w.detail.toPlainText().count("الحمد لله") == 1
 
     def test_selecting_another_session_switches_the_transcript(self, history):
         make, _ = history
         w = make()
-        first = w.transcript.toPlainText()
-        w.session_list.setCurrentRow(1)
-        assert w.transcript.toPlainText() != first
+        first = w.detail.toPlainText()
+        w.entry_list.setCurrentRow(1)
+        assert w.detail.toPlainText() != first
 
     def test_empty_state(self, qt_app, monkeypatch):
         import gui_qt.history_window as hw
@@ -554,8 +845,8 @@ class TestHistoryWindow:
 
         w = hw.HistoryWindow(lambda key, fallback="": fallback)
         try:
-            assert w.session_list.count() == 0
-            assert w.transcript.toPlainText() == ""
+            assert w.entry_list.count() == 0
+            assert w.detail.toPlainText() == ""
         finally:
             w.close()
 
@@ -569,7 +860,7 @@ class TestHistoryWindow:
 
         monkeypatch.setattr(hw, "parse_history_file", boom)
         w = make()  # must build and select without propagating the error
-        assert w.transcript.toPlainText() != ""
+        assert w.detail.toPlainText() != ""
 
 
 class TestBatchWindow:
@@ -614,13 +905,13 @@ class TestBatchWindow:
     def test_output_format_maps_from_the_segment(self, batch):
         w, _ = batch
         for index, expected in enumerate(("srt", "txt", "both")):
-            w.output_segment._buttons[index].click()
+            w.output_combo.setCurrentIndex(index)
             assert w._output_format() == expected
 
     def test_options_reach_the_processor(self, batch, qt_app):
         w, calls = batch
         w._input_path = "khutbah.mp3"
-        w.output_segment._buttons[2].click()
+        w.output_combo.setCurrentIndex(2)
         w.bilingual_check.setChecked(True)
         w._on_start()
         # The worker runs on its own thread; wait for it rather than sleeping.
@@ -672,21 +963,27 @@ class TestAnnounceWindow:
 
         monkeypatch.setattr(aw, "save_settings", lambda s: None)
 
-        class FakeOverlay:
+        class FakePanel:
+            """Stands in for the control panel: it owns the overlay's
+            lifecycle, so the window asks it rather than holding one."""
+
             def __init__(self):
                 self.text = None
 
-            def set_announcement(self, t):
+            def show_announcement(self, t):
                 self.text = t
 
             def clear_announcement(self):
                 self.text = None
 
+            def has_active_announcement(self):
+                return bool(self.text)
+
         settings = load_settings()
         settings.announcement_history = ["Zweite Nachricht."]
         settings.announcement_favorites = ["Bitte Handys stummschalten."]
-        overlay = FakeOverlay()
-        w = aw.AnnounceWindow(lambda k, f="": f, settings, lambda: overlay)
+        overlay = FakePanel()
+        w = aw.AnnounceWindow(lambda k, f="": f, settings, overlay)
         yield w, settings, overlay
         w.close()
 
@@ -721,14 +1018,14 @@ class TestAnnounceWindow:
         w, _, _ = announce
         last = len(ANNOUNCEMENT_DURATIONS_SECONDS) - 1
         assert ANNOUNCEMENT_DURATIONS_SECONDS[last] == 0
-        w.duration_segment._buttons[last].click()
+        w.duration_combo.setCurrentIndex(last)
         w.text.setPlainText("Bleibt stehen")
         w.send_announcement()
         assert not w._auto_clear.isActive()
 
     def test_timed_announcement_arms_the_timer(self, announce):
         w, settings, _ = announce
-        w.duration_segment._buttons[0].click()
+        w.duration_combo.setCurrentIndex(0)
         w.text.setPlainText("Kurz")
         w.send_announcement()
         assert w._auto_clear.isActive()
@@ -736,7 +1033,7 @@ class TestAnnounceWindow:
 
     def test_stop_clears_the_overlay_and_the_timer(self, announce):
         w, _, overlay = announce
-        w.duration_segment._buttons[0].click()
+        w.duration_combo.setCurrentIndex(0)
         w.text.setPlainText("Kurz")
         w.send_announcement()
         w.stop_announcement()
@@ -744,18 +1041,42 @@ class TestAnnounceWindow:
         assert not w._auto_clear.isActive()
 
     def test_favorites_toggle_and_cap(self, announce, monkeypatch):
+        import gui_qt.announce_window as aw
         from config import ANNOUNCEMENT_FAVORITES_MAX
 
         w, settings, _ = announce
-        monkeypatch.setattr(w, "_notice", lambda msg: None)
+        monkeypatch.setattr(aw.QMessageBox, "information", lambda *a, **k: None)
         settings.announcement_favorites = []
         for i in range(ANNOUNCEMENT_FAVORITES_MAX):
-            w._toggle_favorite(f"Favorit {i}")
+            w._favorite(f"Favorit {i}")
         assert len(settings.announcement_favorites) == ANNOUNCEMENT_FAVORITES_MAX
-        w._toggle_favorite("Einer zu viel")  # refused at the cap
+        w._favorite("Einer zu viel")  # refused at the cap
         assert "Einer zu viel" not in settings.announcement_favorites
-        w._toggle_favorite("Favorit 0")  # second toggle removes
+        w._unfavorite("Favorit 0")
         assert "Favorit 0" not in settings.announcement_favorites
+
+    def test_favoriting_removes_the_recent_copy(self, announce):
+        # Otherwise the same text is pinned AND rotating in Recent, which is
+        # what "it's double there" was.
+        w, settings, _ = announce
+        settings.announcement_history = ["Bitte Handys stummschalten.", "Andere"]
+        settings.announcement_favorites = []
+        w._favorite("Bitte Handys stummschalten.")
+        assert settings.announcement_history == ["Andere"]
+
+    def test_deleting_a_recent_drops_it(self, announce):
+        w, settings, _ = announce
+        settings.announcement_history = ["Weg damit", "Bleibt"]
+        w._delete_recent("Weg damit")
+        assert settings.announcement_history == ["Bleibt"]
+
+    def test_sending_a_favorite_does_not_add_it_to_recents(self, announce):
+        w, settings, _ = announce
+        settings.announcement_favorites = ["Gepinnt"]
+        settings.announcement_history = []
+        w.text.setPlainText("Gepinnt")
+        w.send_announcement()
+        assert settings.announcement_history == []
 
     def test_favorites_are_excluded_from_recents(self, announce):
         # A favourite would otherwise occupy both lists.
@@ -763,14 +1084,17 @@ class TestAnnounceWindow:
         settings.announcement_favorites = ["Doppelt"]
         settings.announcement_history = ["Doppelt", "Einmalig"]
         w._refresh_lists()
-        rows = w.recent_box._rows
+        # Each row is a widget holding [text button, star, delete]; the text
+        # button carries the full message as its tooltip.
+        rows = w._recent_rows
         labels = []
         for i in range(rows.count()):
-            item = rows.itemAt(i)
-            layout = item.layout()
+            widget = rows.itemAt(i).widget()
+            layout = widget.layout() if widget is not None else None
             if layout is not None and layout.count():
                 labels.append(layout.itemAt(0).widget().toolTip())
         assert "Doppelt" not in labels
+        assert "Einmalig" in labels
 
 
 class TestOnboardingWizard:
@@ -886,6 +1210,149 @@ class TestOnboardingWizard:
         w, _, _ = wizard
         self._complete(w)
         assert ob.run_onboarding(qt_app) is True
+
+
+class TestWizardInputMeter:
+    """The device step carries the control panel's level meter.
+
+    A dead or far too quiet microphone should be caught during setup, not
+    during the first sermon — the same reason the Tk wizard has one.
+    """
+
+    class FakeSnapshot:
+        rms_dbfs = -18.0
+        clipping_ratio = 0.0
+
+    class FakeController:
+        def __init__(self):
+            self.started: list = []
+            self.stopped = 0
+            self.running = False
+
+        def get_input_level(self):
+            return TestWizardInputMeter.FakeSnapshot()
+
+        def is_input_level_test_running(self):
+            return self.running
+
+        def start_input_level_test(self, index=None):
+            self.started.append(index)
+            self.running = True
+
+        def stop_input_level_test(self):
+            self.stopped += 1
+            self.running = False
+
+    @pytest.fixture
+    def wizard(self, qt_app, monkeypatch):
+        import gui_qt.onboarding as ob
+
+        monkeypatch.setattr(ob, "save_settings", lambda s: None)
+        controller = self.FakeController()
+        w = ob.OnboardingWizard(qt_app, controller)
+        yield w, controller
+        w.close()
+
+    def test_the_meter_reads_the_controller(self, wizard):
+        w, _ = wizard
+        w._poll_level()
+        assert w.level_bar.value() > 0.5
+        assert "dBFS" in w.level_value.text()
+
+    def test_entering_the_device_step_starts_a_preview(self, wizard):
+        import gui_qt.onboarding as ob
+
+        w, controller = wizard
+        w.stack.setCurrentIndex(ob._DEVICE_STEP)
+        assert controller.started, "no preview started on the device step"
+
+    def test_leaving_the_step_releases_the_device(self, wizard):
+        import gui_qt.onboarding as ob
+
+        w, controller = wizard
+        w.stack.setCurrentIndex(ob._DEVICE_STEP)
+        w.stack.setCurrentIndex(ob._DEVICE_STEP + 1)
+        assert controller.stopped >= 1, "preview kept the input device open"
+
+    def test_the_test_button_toggles_the_preview(self, wizard):
+        w, controller = wizard
+        w._toggle_level_test()
+        assert controller.running
+        w._toggle_level_test()
+        assert not controller.running
+
+    def test_a_failing_device_does_not_break_browsing(self, wizard, monkeypatch):
+        # Auto-previews must stay silent: the user is only picking from a list.
+        w, controller = wizard
+
+        def boom(index=None):
+            raise RuntimeError("device busy")
+
+        monkeypatch.setattr(controller, "start_input_level_test", boom)
+        w._start_level_preview(auto=True)  # must not raise or dialog
+
+    def test_it_builds_without_a_controller(self, qt_app, monkeypatch):
+        import gui_qt.onboarding as ob
+
+        monkeypatch.setattr(ob, "save_settings", lambda s: None)
+        w = ob.OnboardingWizard(qt_app)
+        try:
+            w._start_level_preview(auto=True)  # no controller: a no-op
+            w._stop_level_capture()
+        finally:
+            w.close()
+
+
+class TestWizardProviderList:
+    @pytest.fixture
+    def wizard(self, qt_app, monkeypatch):
+        import gui_qt.onboarding as ob
+
+        monkeypatch.setattr(ob, "save_settings", lambda s: None)
+        w = ob.OnboardingWizard(qt_app)
+        yield w
+        w.close()
+
+    def test_deepgram_is_offered_so_its_key_can_be_entered(self, wizard):
+        # It has no translation capability, so it is not in PROVIDER_CHOICES —
+        # but it IS a real-time transcription engine, and the wizard is where
+        # keys are entered.
+        ids = [
+            wizard.provider_combo.itemData(i)
+            for i in range(wizard.provider_combo.count())
+        ]
+        assert "deepgram" in ids
+
+    def test_only_the_shipped_default_is_tagged(self, wizard):
+        from utils.settings import DEFAULT_AI_PROVIDER
+
+        tagged = [
+            wizard.provider_combo.itemData(i)
+            for i in range(wizard.provider_combo.count())
+            if "(" in wizard.provider_combo.itemText(i)
+        ]
+        assert tagged == [DEFAULT_AI_PROVIDER]
+
+    def test_a_deepgram_key_never_becomes_the_translation_provider(self, wizard):
+        # Deepgram cannot translate; picking it must only store its key.
+        from utils.settings import DEFAULT_AI_PROVIDER
+
+        index = wizard.provider_combo.findData("deepgram")
+        wizard.provider_combo.setCurrentIndex(index)
+        wizard.key_edit.setText("dg-test-key")
+        wizard._capture_current_key()
+        assert wizard._provider_keys["deepgram"] == "dg-test-key"
+        from providers import resolve_provider_by_keys
+
+        assert resolve_provider_by_keys({"deepgram": "dg-test-key"}) == (
+            DEFAULT_AI_PROVIDER
+        )
+
+    def test_deepgram_has_key_help_links(self, wizard):
+        index = wizard.provider_combo.findData("deepgram")
+        wizard.provider_combo.setCurrentIndex(index)
+        assert wizard.key_help_btn.isEnabled()
+        assert wizard.key_site_btn.isEnabled()
 
 
 class TestPipelineBridge:
