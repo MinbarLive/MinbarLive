@@ -118,7 +118,9 @@ class Stepper(QWidget):
         layout.addWidget(self.minus)
         layout.addWidget(self.value)
         layout.addWidget(self.plus)
-        layout.addStretch(1)
+        # No trailing stretch: every caller puts the stepper at the right-hand
+        # end of a row, so an internal stretch would only pad it away from the
+        # edge it is meant to sit against.
 
     def set_value_text(self, text: str) -> None:
         self.value.setText(text)
@@ -293,45 +295,175 @@ class AudioLevelBar(QWidget):
         return path
 
 
+class _ClickableRow(QWidget):
+    """A plain row that reports clicks — the header of a collapsible card."""
+
+    clicked = Signal()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
 class Card(QFrame):
     """A titled section card — the Qt twin of ``WidgetFactoryMixin._section_card``.
 
-    ``body`` is the layout callers fill; the symbol + title row above it is
-    built here so every card in the panel shares one look.
+    ``body`` is the layout callers fill; the symbol badge + title row above it
+    is built here so every card in the panel shares one look. The symbol sits
+    in its own rounded accent-coloured tile rather than being glued in front of
+    the title, which is what makes the Tk cards readable at a glance.
+
+    ``collapsible=True`` adds the ▾/▴ arrow and makes the whole header a toggle
+    (the Advanced card).
     """
 
-    def __init__(self, symbol: str, title: str, parent=None):
+    toggled = Signal(bool)
+
+    # Padding on all four sides, plus the gap the header keeps to the body.
+    # Qt drops that gap along with the hidden body, so a collapsed card is
+    # symmetric without any margin juggling.
+    _PAD = 16
+    _BODY_GAP = 10
+
+    def __init__(
+        self,
+        symbol: str,
+        title: str,
+        parent=None,
+        *,
+        collapsible: bool = False,
+        expanded: bool = True,
+    ):
         super().__init__(parent)
         self.setObjectName("card")
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 14, 16, 16)
-        outer.setSpacing(10)
+        outer.setContentsMargins(self._PAD, self._PAD, self._PAD, self._PAD)
+        outer.setSpacing(self._BODY_GAP)
 
-        header = QHBoxLayout()
-        header.setSpacing(8)
-        self.title_label = QLabel(f"{symbol}  {title}" if symbol else title)
+        header = _ClickableRow()
+        header_row = QHBoxLayout(header)
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(12)
+
+        self.symbol_label = QLabel(symbol)
+        self.symbol_label.setObjectName("card_symbol")
+        self.symbol_label.setFixedSize(44, 44)
+        self.symbol_label.setAlignment(Qt.AlignCenter)
+        # setVisible AFTER the widget has a parent, always: a parentless widget
+        # shown is a TOP-LEVEL WINDOW, which is what the little boxes flashing
+        # across the screen before the panel opened were.
+        header_row.addWidget(self.symbol_label)
+        self.symbol_label.setVisible(bool(symbol))
+
+        self.title_label = QLabel(title)
         self.title_label.setObjectName("card_title")
-        header.addWidget(self.title_label)
-        header.addStretch(1)
-        self.header = header
-        outer.addLayout(header)
+        header_row.addWidget(self.title_label)
+        header_row.addStretch(1)
 
-        self.body = QVBoxLayout()
+        self.arrow_label = QLabel("▾")
+        self.arrow_label.setObjectName("card_arrow")
+        header_row.addWidget(self.arrow_label)
+        self.arrow_label.setVisible(collapsible)
+
+        self.header = header_row
+        outer.addWidget(header)
+
+        self.content = QWidget()
+        self.body = QVBoxLayout(self.content)
+        self.body.setContentsMargins(0, 0, 0, 0)
         self.body.setSpacing(10)
-        outer.addLayout(self.body)
+        outer.addWidget(self.content)
         self._outer = outer
+        self._collapsible = collapsible
+        self._expanded = True
+
+        if collapsible:
+            header.setCursor(Qt.PointingHandCursor)
+            header.clicked.connect(lambda: self.set_expanded(not self._expanded))
+            self.set_expanded(expanded)
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def set_expanded(self, expanded: bool) -> None:
+        if not self._collapsible:
+            return
+        self._expanded = expanded
+        self.content.setVisible(expanded)
+        self.arrow_label.setText("▴" if expanded else "▾")
+        self.toggled.emit(expanded)
 
     def add_stretch(self) -> None:
+        """Absorb any height the card is given beyond its content.
+
+        Without it, a card stretched to match its neighbours spreads its own
+        rows apart; with it the content stays top-aligned and the slack sits at
+        the bottom.
+        """
         self._outer.addStretch(1)
 
 
-def field(label_text: str, widget: QWidget, spacing: int = 4) -> QWidget:
-    """A bold caption above its control, as every Tk card field is laid out."""
+class Expander(QWidget):
+    """A full-width toggle button with a panel that opens under it.
+
+    The Tk panel uses this shape for the subtitle-appearance controls: set-once
+    values that would otherwise make the Display card twice as tall.
+    """
+
+    def __init__(self, title: str, parent=None, *, expanded: bool = False):
+        super().__init__(parent)
+        box = QVBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(8)
+
+        self._title = title
+        self.button = QPushButton()
+        self.button.setObjectName("expander")
+        self.button.setCursor(Qt.PointingHandCursor)
+        self.button.clicked.connect(lambda: self.set_expanded(not self._expanded))
+        box.addWidget(self.button)
+
+        self.panel = QFrame()
+        self.panel.setObjectName("mini")
+        self.body = QVBoxLayout(self.panel)
+        self.body.setContentsMargins(12, 12, 12, 12)
+        self.body.setSpacing(10)
+        box.addWidget(self.panel)
+
+        self._expanded = not expanded  # so set_expanded always applies
+        self.set_expanded(expanded)
+
+    def set_title(self, title: str) -> None:
+        self._title = title
+        self._refresh_button()
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._expanded = expanded
+        self.panel.setVisible(expanded)
+        self._refresh_button()
+
+    def _refresh_button(self) -> None:
+        self.button.setText(f"{'▾' if self._expanded else '▸'}  {self._title}")
+
+
+def field(
+    label_text: str, widget: QWidget, spacing: int = 4, symbol: str | None = None
+) -> QWidget:
+    """A bold caption above its control, as every Tk card field is laid out.
+
+    ``symbol`` prefixes the small glyph the Tk labels carry (▣ ◉ ⌁ → …); it is
+    part of the caption text rather than a second widget so the pair wraps and
+    aligns as one label.
+    """
     holder = QWidget()
     box = QVBoxLayout(holder)
     box.setContentsMargins(0, 0, 0, 0)
     box.setSpacing(spacing)
-    caption = QLabel(label_text)
+    caption = QLabel(f"{symbol}  {label_text}" if symbol else label_text)
     caption.setObjectName("field")
     box.addWidget(caption)
     box.addWidget(widget)
@@ -351,21 +483,3 @@ def warning_box(text: str) -> QFrame:
     layout.addWidget(label)
     box.label = label
     return box
-
-
-class LabelledSlider(QWidget):
-    """A slider with its value label ABOVE it, as the Tk height control is."""
-
-    def __init__(self, slider, value_text: str = "", parent=None):
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        self.value = QLabel(value_text)
-        self.value.setObjectName("slider_value")
-        self.value.setAlignment(Qt.AlignLeft)
-        layout.addWidget(self.value)
-        layout.addWidget(slider)
-
-    def set_value_text(self, text: str) -> None:
-        self.value.setText(text)

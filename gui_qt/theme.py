@@ -37,6 +37,17 @@ _INDICATOR_PX = 20
 _BASE_POINT_SIZE = 9.75
 
 
+def _soft(hex_color: str, alpha: float = 0.18) -> str:
+    """A translucent wash of ``hex_color`` for pill fills.
+
+    The palette ships ``accent_soft``/``danger_soft`` but no warning twin, and
+    a fill that composites over whatever card is behind it works in both themes
+    without adding a second constant to keep in step.
+    """
+    c = QColor(hex_color)
+    return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha:.2f})"
+
+
 def qcolor(hex_color: str, alpha: int | None = None) -> QColor:
     """QColor from a palette hex string, optionally with an alpha 0-255."""
     c = QColor(hex_color)
@@ -169,7 +180,7 @@ def stylesheet(theme_mode: str) -> str:
    QFont::setPointSize, which warns on every dropdown open. */
 QWidget {{
     color: {c["text"]};
-    font-family: "Segoe UI", "Noto Sans", sans-serif;
+    font-family: "Segoe UI", "Noto Sans", "Segoe UI Symbol", sans-serif;
 }}
 QMainWindow, QDialog, QMessageBox {{ background-color: {c["app_bg"]}; }}
 QWidget#sidebar {{ background-color: {c["sidebar"]}; }}
@@ -185,7 +196,18 @@ QFrame#mini {{
 }}
 QLabel#muted {{ color: {c["muted"]}; }}
 QLabel#heading {{ font-size: 15px; font-weight: 600; }}
-QLabel#card_title {{ font-size: 15px; font-weight: 700; }}
+/* Card headers: a big title beside a rounded accent tile holding the section's
+   glyph — the Tk look. The tile is a QLabel with a background, which only
+   paints because an id rule gives it WA_StyledBackground. */
+QLabel#card_title {{ font-size: 20px; font-weight: 700; }}
+QLabel#card_symbol {{
+    background-color: {c["panel_soft"]};
+    color: {c["accent"]};
+    border-radius: 15px;
+    font-size: 19px;
+    font-weight: 700;
+}}
+QLabel#card_arrow {{ color: {c["muted"]}; font-size: 17px; }}
 QLabel#field {{ font-size: 13px; font-weight: 600; }}
 QLabel#section {{ font-size: 14px; font-weight: 700; }}
 QLabel#value {{ font-size: 17px; font-weight: 700; }}
@@ -222,6 +244,18 @@ QLabel#pill_stopped {{
     font-size: 14px;
     font-weight: 700;
 }}
+/* Shown while a Start is in flight. The provider handshake can run for tens of
+   seconds, and "Stopped" for that whole time reads as "the button did
+   nothing". Amber, not the accent: green for "connecting" and green again for
+   "running" is one glance too many to tell apart. */
+QLabel#pill_connecting {{
+    background-color: {_soft(c["warning"])};
+    color: {c["warning"]};
+    border-radius: 14px;
+    padding: 7px 14px;
+    font-size: 14px;
+    font-weight: 700;
+}}
 
 QPushButton {{
     background-color: {c["button"]};
@@ -237,6 +271,8 @@ QPushButton#danger {{ background-color: {c["danger"]}; color: #ffffff; font-weig
 QPushButton#danger:hover {{ background-color: {c["danger_hover"]}; }}
 QPushButton#big {{ font-size: 16px; font-weight: 700; border-radius: 18px; padding: 14px 16px; }}
 QPushButton#icon {{ border-radius: 14px; padding: 0; font-size: 17px; }}
+/* Small inline button (the input meter's Test/Stop), sized to its label. */
+QPushButton#compact {{ padding: 6px 10px; border-radius: 12px; font-size: 12px; }}
 QPushButton#link {{
     background: transparent;
     color: {c["accent"]};
@@ -245,6 +281,13 @@ QPushButton#link {{
 }}
 QPushButton#link:hover {{ background: transparent; color: {c["accent_hover"]}; }}
 QPushButton#row {{ text-align: left; padding: 8px 12px; border-radius: 12px; }}
+/* Expander header (subtitle appearance): a full-width, left-aligned toggle. */
+QPushButton#expander {{
+    text-align: left;
+    padding: 9px 14px;
+    border-radius: 12px;
+    font-weight: 700;
+}}
 /* Disabled must win over the #accent / #danger colours, so it comes last and
    names the ids explicitly — otherwise a disabled Stop still reads as live. */
 QPushButton:disabled,
@@ -457,7 +500,10 @@ def _apply_app_font(app) -> None:
     combo boxes.
     """
     font = app.font()
-    font.setFamilies(["Segoe UI", "Noto Sans"])
+    # "Segoe UI Symbol" last, as a glyph fallback: the field captions and card
+    # badges carry symbols (▣ ◉ ⌁ ⇶ ≋) the text families do not cover, and Qt
+    # substitutes per character rather than per label.
+    font.setFamilies(["Segoe UI", "Noto Sans", "Segoe UI Symbol"])
     font.setPointSizeF(_BASE_POINT_SIZE)
     app.setFont(font)
 
