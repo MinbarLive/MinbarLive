@@ -13,7 +13,6 @@ to the live overlay where it can, which is how the Tk window behaves.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -23,12 +22,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
 
-from gui_qt.widgets import Dropdown, LabelledSlider, SegmentedControl
+from gui_qt.widgets import Dropdown, SegmentedControl
 from providers import (
     PROVIDER_CHOICES,
     clear_api_key,
@@ -36,8 +34,6 @@ from providers import (
     save_api_key,
 )
 from utils.settings import (
-    BACKDROP_OPACITY_MAX,
-    BACKDROP_OPACITY_MIN,
     GUI_LANGUAGE_CODES,
     GUI_LANGUAGES,
     THEME_MODES,
@@ -166,18 +162,8 @@ class SettingsWindow(QDialog):
         box.addWidget(self._caption(self._t("subtitle_theme_mode", "Subtitles")))
         box.addWidget(self.subtitle_theme_segment)
 
-        # Backdrop opacity has no Tk counterpart: Tk could only chroma-key the
-        # static mode, so a partly transparent backdrop was impossible there.
-        # Qt composites per-pixel alpha, so 0% leaves video fully visible.
-        self.opacity_slider = QSlider(Qt.Horizontal)
-        self.opacity_slider.setRange(BACKDROP_OPACITY_MIN, BACKDROP_OPACITY_MAX)
-        self.opacity_slider.setValue(self.settings.subtitle_backdrop_opacity)
-        self.opacity_slider.valueChanged.connect(self._on_opacity)
-        self.opacity_control = LabelledSlider(
-            self.opacity_slider, f"{self.opacity_slider.value()} %"
-        )
-        box.addWidget(self._caption(self._t("backdrop_opacity", "Background opacity")))
-        box.addWidget(self.opacity_control)
+        # Backdrop opacity lives in the control panel's Display & audio card,
+        # beside the height and font-size controls it belongs with.
         return card
 
     def _islamic_card(self) -> QFrame:
@@ -252,13 +238,6 @@ class SettingsWindow(QDialog):
         self.settings.subtitle_theme_mode = THEME_MODES[index]
         if self._overlay():
             self._overlay().set_theme(self.settings.subtitle_theme_mode)
-        self._save()
-
-    def _on_opacity(self, value: int) -> None:
-        self.settings.subtitle_backdrop_opacity = value
-        self.opacity_control.set_value_text(f"{value} %")
-        if self._overlay():
-            self._overlay().set_backdrop_opacity(value)
         self._save()
 
     def _on_islamic(self, checked: bool) -> None:

@@ -15,11 +15,13 @@ that arithmetic; only the column count is ours to decide.
 from __future__ import annotations
 
 import os
+import threading
 
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer
-from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QFrame,
     QGridLayout,
@@ -57,6 +59,7 @@ from gui_qt.widgets import (
     AudioLevelBar,
     Card,
     Dropdown,
+    Expander,
     SegmentedControl,
     Stepper,
     field,
@@ -70,7 +73,12 @@ from providers import (
 from utils.logging import log, log_queue
 from utils.settings import (
     ALWAYS_ON_TOP_MODES,
+    BACKDROP_OPACITY_MAX,
+    BACKDROP_OPACITY_MIN,
+    DEFAULT_SOURCE_FONT_SIZE_BASE,
     PIPELINE_MODE_STREAMING,
+    SOURCE_FONT_SIZE_BASE_MAX,
+    SOURCE_FONT_SIZE_BASE_MIN,
     SOURCE_LANGUAGES,
     STREAMING_TRANSCRIPTION_PROVIDERS,
     SUBTITLE_HIDE_MODES,
@@ -82,13 +90,36 @@ from utils.settings import (
     save_settings,
 )
 
-# Logical widths at which the card grid gains a column. Same thresholds as the
-# Tk panel's _COL2_MIN_W / _COL3_MIN_W, so a window that showed three columns
-# there shows three here.
-_COL2_MIN_W = 700
-_COL3_MIN_W = 1060
-# Width the log panel claims when it is opened.
-_LOG_PANEL_W = 420
+# Logical widths at which the card grid gains a column, measured from what the
+# columns actually need (352 / 365 / 204 plus the grid's margins and spacing)
+# with a little headroom for a wordier GUI language. The horizontal scrollbar
+# is off, so a threshold that lets a column below its minimum does not scroll —
+# it clips.
+_COL2_MIN_W = 800
+_COL3_MIN_W = 1030
+# With the log open the sidebar keeps this width and the log takes the rest —
+# the Tk arrangement. The window is only widened when it cannot hold both.
+_SIDEBAR_W_WITH_LOG = 500
+_LOG_PANEL_MIN_W = 340
+# Edge length of the round "?" / swap buttons. Matches the stepper buttons they
+# sit beside so a control row reads as one row.
+_HELP_BTN_PX = 46
+# Breathing room above each section heading inside the Advanced card, so its
+# three groups read as groups rather than one long list.
+_SECTION_GAP = 8
+
+# Step applied to the original-text divisor per −/+ click, as in gui/typography.
+_SOURCE_FONT_STEP = 5.0
+
+def _readable_on(hex_color: str) -> str:
+    """Black or white label text, whichever stays legible on ``hex_color``."""
+    try:
+        r, g, b = (int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
+    except (IndexError, ValueError):
+        return "#000000"
+    # Rec. 601 luma — good enough to pick a contrasting label colour.
+    return "#000000" if (0.299 * r + 0.587 * g + 0.114 * b) > 150 else "#ffffff"
+
 
 _HIDE_MODE_KEYS = {
     "never": ("mode_never", "Never"),
@@ -116,6 +147,11 @@ class ControlPanel(QMainWindow):
         self.texts = load_gui_translations(self.settings.gui_language)
         self.subtitle_window: SubtitleWindow | None = None
         self._running = False
+        # A Start/Stop in flight on a worker thread (see on_start/on_stop).
+        self._starting = False
+        self._stopping = False
+        self._start_error: Exception | None = None
+        self._stop_error: Exception | None = None
         self._announcement_active = False
         self._log_collapsed = self.settings.log_panel_collapsed
         self._columns: int | None = None
@@ -132,7 +168,12 @@ class ControlPanel(QMainWindow):
         # Small enough that the panel can be dragged down to a corner of the
         # screen; everything above it scrolls.
         self.setMinimumSize(QSize(420, 420))
-        self.resize(880 + (_LOG_PANEL_W if not self._log_collapsed else 0), 640)
+        self.resize(
+            max(880, _SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W)
+            if not self._log_collapsed
+            else 880,
+            640,
+        )
         # _build() laid the grid out against the pre-resize size; redo it now
         # that the window has its real width, so the first paint is already
         # right instead of one <Configure> behind.
@@ -149,6 +190,9 @@ class ControlPanel(QMainWindow):
         # stopped — that is what makes the stopped hint and a stopped-session
         # announcement possible at all.
         self._apply_subtitle_hide_mode()
+        # Before the first show(), so an "always" panel comes up on top rather
+        # than being recreated a frame later.
+        self._apply_always_on_top()
 
     def _t(self, key: str, fallback: str) -> str:
         return self.texts.get(key, fallback)
@@ -229,24 +273,44 @@ class ControlPanel(QMainWindow):
         self.col_a, box_a = self._column()
         self.col_b, box_b = self._column()
         self.col_c, box_c = self._column()
+        display_card = self._display_card()
+        language_card = self._language_card()
+        advanced_card = self._advanced_card()
+        # A spacer above and below each column's cards: side by side the
+        # columns should end level, and which of the two spacers (or the card
+        # itself) absorbs the slack is what decides how. See
+        # _set_equal_column_heights.
+        for box in (box_a, box_b, box_c):
+            box.addStretch(0)
         box_a.addWidget(self._control_card())
-        box_a.addWidget(self._display_card())
-        box_a.addStretch(1)
-        box_b.addWidget(self._language_card())
-        box_b.addStretch(1)
-        box_c.addWidget(self._advanced_card())
-        box_c.addStretch(1)
+        box_a.addWidget(display_card)
+        box_b.addWidget(language_card)
+        box_c.addWidget(advanced_card)
+        for box in (box_a, box_b, box_c):
+            box.addStretch(1)
+        self._column_tails = [
+            (box_a, display_card),
+            (box_b, language_card),
+            (box_c, advanced_card),
+        ]
+        for _box, card in self._column_tails:
+            card.add_stretch()
 
         self.card_area.setWidget(self.cards_host)
         self.card_area.viewport().installEventFilter(self)
         side.addWidget(self.card_area, 1)
+        self.sidebar = sidebar
         row.addWidget(sidebar, 1)
 
         self.log_panel = self._log_panel()
+        # Parented first: setVisible on a parentless widget opens a top-level
+        # window, which flashed on screen before the panel appeared.
+        row.addWidget(self.log_panel, 1)
         self.log_panel.setVisible(not self._log_collapsed)
-        row.addWidget(self.log_panel)
+        self._row_layout = row
 
         self.setCentralWidget(root)
+        self._apply_log_panel_widths()
         self._relayout_columns()
         self._sync_mode_controls()
         self._sync_running_state()
@@ -361,21 +425,30 @@ class ControlPanel(QMainWindow):
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
 
         top = QHBoxLayout()
-        top.setSpacing(10)
+        top.setSpacing(12)
         top.addWidget(
-            field(self._t("subtitle_screen", "Subtitle screen"), self.monitor_combo), 1
+            field(
+                self._t("subtitle_screen", "Subtitle screen"),
+                self.monitor_combo,
+                symbol="▣",
+            ),
+            1,
         )
         top.addWidget(
-            field(self._t("input_device", "Input device"), self.device_combo), 1
+            field(self._t("input_device", "Input device"), self.device_combo, symbol="◉"),
+            1,
         )
         card.body.addLayout(top)
+        card.body.addSpacing(2)
         card.body.addWidget(self._input_level_row())
+        card.body.addSpacing(2)
 
-        controls = QHBoxLayout()
-        controls.setSpacing(10)
-        controls.addWidget(self._font_panel(), 1)
-        controls.addWidget(self._height_panel(), 1)
-        card.body.addLayout(controls)
+        # One control per row — the two side-by-side tiles left the sliders too
+        # short to aim with. Font size lives in the appearance expander below,
+        # next to the colour it applies to.
+        card.body.addWidget(self._height_panel())
+        card.body.addWidget(self._opacity_panel())
+        card.body.addWidget(self._typography_expander())
         return card
 
     def _input_level_row(self) -> QWidget:
@@ -393,7 +466,24 @@ class ControlPanel(QMainWindow):
         self.level_value.setMinimumWidth(78)
         self.level_bar = AudioLevelBar()
         self.level_test_btn = QPushButton(self._t("input_level_test", "Test mic"))
-        self.level_test_btn.setMinimumHeight(28)
+        self.level_test_btn.setObjectName("compact")
+        # Fixed, so the meter beside it gives way instead: with the default
+        # policy the row squeezed the button below its text and clipped the
+        # label at both ends. Its two captions differ in length, so the width
+        # is pinned to the longer one and does not jump on Start/Stop.
+        self.level_test_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.level_test_btn.setFixedWidth(
+            max(
+                self.level_test_btn.fontMetrics().horizontalAdvance(
+                    self._t(key, fallback)
+                )
+                for key, fallback in (
+                    ("input_level_test", "Test mic"),
+                    ("input_level_stop_test", "Stop"),
+                )
+            )
+            + 28
+        )
         self.level_test_btn.clicked.connect(self._toggle_input_level_test)
 
         row.addWidget(self.level_value)
@@ -403,38 +493,215 @@ class ControlPanel(QMainWindow):
         self._level_button_state: tuple[bool, bool] | None = None
         return holder
 
-    def _mini(self, title: str) -> tuple[QFrame, QVBoxLayout]:
+    @staticmethod
+    def _mini_row(title: str) -> tuple[QFrame, QHBoxLayout, QLabel]:
+        """A soft tile holding one labelled control on a single row."""
         frame = QFrame()
         frame.setObjectName("mini")
-        box = QVBoxLayout(frame)
-        box.setContentsMargins(12, 10, 12, 12)
-        box.setSpacing(4)
+        box = QHBoxLayout(frame)
+        box.setContentsMargins(12, 8, 12, 8)
+        box.setSpacing(10)
         label = QLabel(title)
         label.setObjectName("field")
+        label.setMinimumWidth(112)
         box.addWidget(label)
-        return frame, box
+        return frame, box, label
 
-    def _font_panel(self) -> QFrame:
-        frame, box = self._mini(self._t("font", "Font size"))
+    def _slider_panel(
+        self, title: str, minimum: int, maximum: int, value: int, on_change
+    ) -> tuple[QFrame, QSlider, QLabel]:
+        frame, box, caption = self._mini_row(title)
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(minimum, maximum)
+        slider.setValue(max(minimum, min(maximum, value)))
+        slider.valueChanged.connect(on_change)
+        readout = QLabel(f"{slider.value()}%")
+        readout.setObjectName("value")
+        readout.setMinimumWidth(56)
+        readout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        box.addWidget(slider, 1)
+        box.addWidget(readout)
+        frame.caption = caption
+        return frame, slider, readout
+
+    def _height_panel(self) -> QFrame:
+        frame, self.height_slider, self.height_value = self._slider_panel(
+            self._t("height", "Window height"),
+            5,
+            100,
+            self.settings.window_height_percent,
+            self._on_height_changed,
+        )
+        self.height_caption = frame.caption
+        return frame
+
+    def _opacity_panel(self) -> QFrame:
+        """Backdrop opacity, moved here from the Settings window.
+
+        It belongs with the other two things that decide how much of the screen
+        the overlay takes — height and font size — not two windows away.
+        """
+        frame, self.opacity_slider, self.opacity_value = self._slider_panel(
+            self._t("backdrop_opacity", "Background opacity"),
+            BACKDROP_OPACITY_MIN,
+            BACKDROP_OPACITY_MAX,
+            self.settings.subtitle_backdrop_opacity,
+            self._on_opacity_changed,
+        )
+        self.opacity_caption = frame.caption
+        return frame
+
+    # ── subtitle appearance (collapsible) ────────────────────────────────
+    def _typography_expander(self) -> Expander:
+        """Original-text size and the two colour overrides.
+
+        Collapsed by default, like the Tk expander: these are set-once values,
+        not something an operator reaches for mid-session.
+        """
+        self.typography = Expander(
+            self._t("subtitle_appearance", "Subtitle appearance")
+        )
+        self._color_pick_btns: dict[str, QPushButton] = {}
+        self._color_reset_btns: dict[str, QPushButton] = {}
+
+        # Grouped by the line each control affects: the translation's size and
+        # colour, then the original's. Hunting for "the other size" three rows
+        # away is what the flat order cost.
         self.font_stepper = Stepper(
             lambda: self._step_font(smaller=True),
             lambda: self._step_font(smaller=False),
             str(self.settings.font_size_base),
         )
-        box.addWidget(self.font_stepper)
-        return frame
+        self.source_font_stepper = Stepper(
+            lambda: self._step_source_font(+_SOURCE_FONT_STEP),
+            lambda: self._step_source_font(-_SOURCE_FONT_STEP),
+            self._source_font_percent_text(),
+        )
+        self._typography_row(self._t("font", "Font size"), self.font_stepper)
+        self._color_row("translation_text_color")
+        self.typography.body.addSpacing(_SECTION_GAP)
+        self._typography_row(
+            self._t("source_text_size", "Original text size"),
+            self.source_font_stepper,
+        )
+        self._color_row("source_text_color")
 
-    def _height_panel(self) -> QFrame:
-        frame, box = self._mini(self._t("height", "Window height"))
-        self.height_value = QLabel(f"{self.settings.window_height_percent}%")
-        self.height_value.setObjectName("value")
-        self.height_slider = QSlider(Qt.Horizontal)
-        self.height_slider.setRange(5, 100)
-        self.height_slider.setValue(max(5, min(100, self.settings.window_height_percent)))
-        self.height_slider.valueChanged.connect(self._on_height_changed)
-        box.addWidget(self.height_value)
-        box.addWidget(self.height_slider)
-        return frame
+        self._refresh_typography()
+        return self.typography
+
+    def _typography_row(self, caption: str, control: QWidget) -> None:
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(QLabel(caption))
+        row.addStretch(1)
+        row.addWidget(control)
+        self.typography.body.addLayout(row)
+
+    def _color_row(self, attribute: str) -> None:
+        pick = QPushButton()
+        pick.setMinimumWidth(104)
+        pick.setCursor(Qt.PointingHandCursor)
+        pick.clicked.connect(lambda _c=False, a=attribute: self._pick_color(a))
+        reset = QPushButton(self._t("color_default", "Default"))
+        reset.clicked.connect(lambda _c=False, a=attribute: self._reset_color(a))
+        buttons = QWidget()
+        box = QHBoxLayout(buttons)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(8)
+        box.addWidget(pick)
+        box.addWidget(reset)
+        self._color_pick_btns[attribute] = pick
+        self._color_reset_btns[attribute] = reset
+        self._typography_row(self._t(attribute, attribute), buttons)
+
+    def _source_font_percent_text(self) -> str:
+        """Original size as a percentage OF the translation size.
+
+        Both values are divisors, so the ratio is translation/source. Measuring
+        against the translation stays truthful when the subtitle font is
+        resized; against a fixed constant it would drift.
+        """
+        base = getattr(
+            self.settings, "source_font_size_base", DEFAULT_SOURCE_FONT_SIZE_BASE
+        )
+        try:
+            percent = round(float(self.settings.font_size_base) / float(base) * 100)
+        except (TypeError, ValueError, ZeroDivisionError):
+            percent = 70
+        return f"{percent}%"
+
+    def _refresh_typography(self) -> None:
+        """Repaint the colour buttons from the stored values."""
+        self.source_font_stepper.set_value_text(self._source_font_percent_text())
+        colors = current_colors()
+        for attribute, pick in self._color_pick_btns.items():
+            color = getattr(self.settings, attribute, "") or ""
+            if color:
+                pick.setText(color.upper())
+                # The button carries the operator's own colour, so it is styled
+                # per widget rather than by the app stylesheet.
+                pick.setStyleSheet(
+                    f"background-color: {color}; color: {_readable_on(color)};"
+                    f" border: 1px solid {colors['border']}; font-weight: 600;"
+                )
+            else:
+                pick.setText(self._t("color_choose", "Choose…"))
+                pick.setStyleSheet("")
+            reset = self._color_reset_btns.get(attribute)
+            if reset is not None:
+                # Nothing to reset while the theme colour is already in use.
+                reset.setEnabled(bool(color))
+
+    def _step_source_font(self, delta: float) -> None:
+        """Step the divisor. Positive delta = larger divisor = smaller text."""
+        current = getattr(
+            self.settings, "source_font_size_base", DEFAULT_SOURCE_FONT_SIZE_BASE
+        )
+        new_base = max(
+            SOURCE_FONT_SIZE_BASE_MIN, min(SOURCE_FONT_SIZE_BASE_MAX, current + delta)
+        )
+        if new_base == current:
+            return
+        self.settings.source_font_size_base = new_base
+        if self.subtitle_window:
+            self.subtitle_window.set_source_font_size_base(new_base)
+        self._refresh_typography()
+        save_settings(self.settings)
+
+    def _pick_color(self, attribute: str) -> None:
+        current = getattr(self.settings, attribute, "") or ""
+        chosen = QColorDialog.getColor(
+            QColor(current) if current else QColor("#ffffff"),
+            self,
+            self._t("subtitle_appearance", "Subtitle appearance"),
+        )
+        if not chosen.isValid():
+            return
+        setattr(self.settings, attribute, chosen.name().upper())
+        self._apply_typography_to_window()
+        self._refresh_typography()
+        save_settings(self.settings)
+        log(f"Subtitle {attribute} set to {chosen.name()}", level="INFO")
+
+    def _reset_color(self, attribute: str) -> None:
+        if not getattr(self.settings, attribute, ""):
+            return
+        setattr(self.settings, attribute, "")
+        self._apply_typography_to_window()
+        self._refresh_typography()
+        save_settings(self.settings)
+        log(f"Subtitle {attribute} reset to theme default", level="INFO")
+
+    def _apply_typography_to_window(self) -> None:
+        if not self.subtitle_window:
+            return
+        self.subtitle_window.set_source_font_size_base(
+            self.settings.source_font_size_base
+        )
+        self.subtitle_window.set_translation_text_color(
+            self.settings.translation_text_color
+        )
+        self.subtitle_window.set_source_text_color(self.settings.source_text_color)
 
     # ── card: translation flow ───────────────────────────────────────────
     def _language_card(self) -> Card:
@@ -454,25 +721,28 @@ class ControlPanel(QMainWindow):
 
         pair = QHBoxLayout()
         pair.setSpacing(6)
-        pair.addWidget(field(self._t("source", "Spoken language"), self.source_combo), 1)
+        pair.addWidget(
+            field(self._t("source", "Spoken language"), self.source_combo, symbol="⌁"), 1
+        )
         swap = QPushButton("⇄")
         swap.setObjectName("icon")
-        swap.setFixedSize(42, 42)
+        swap.setFixedSize(_HELP_BTN_PX, _HELP_BTN_PX)
         swap.setCursor(Qt.PointingHandCursor)
         swap.clicked.connect(self._on_swap_languages)
         swap_holder = QVBoxLayout()
-        swap_holder.addSpacing(20)
+        swap_holder.addSpacing(22)
         swap_holder.addWidget(swap)
         pair.addLayout(swap_holder)
         pair.addWidget(
-            field(self._t("target", "Subtitle language"), self.target_combo), 1
+            field(self._t("target", "Subtitle language"), self.target_combo, symbol="→"),
+            1,
         )
         card.body.addLayout(pair)
 
         # Processing strategy — the master switch, above the Subtitles picker
         # it feeds (Realtime is streaming-only).
         strat_head = QHBoxLayout()
-        strat_label = QLabel(self._t("processing_strategy", "Processing"))
+        strat_label = QLabel("⇶  " + self._t("processing_strategy", "Processing"))
         strat_label.setObjectName("field")
         self.strategy_hint = QLabel(
             self._t("hint_stop_to_change", "⚠ Stop to change")
@@ -492,34 +762,29 @@ class ControlPanel(QMainWindow):
         self.strategy_combo.currentIndexChanged.connect(self._on_strategy_changed)
         card.body.addWidget(self._with_help(self.strategy_combo, "strategy"))
 
-        # Subtitles mode + its mode-specific control (speed / transparent).
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(10)
+        # Subtitles mode, its "?" and the mode-specific control all on ONE row,
+        # as in the Tk card — the stepper is not a second column there.
         self.mode_combo = self._combo()
         self._refresh_mode_combo()
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        mode_left = QVBoxLayout()
-        mode_left.setSpacing(4)
-        mode_caption = QLabel(self._t("subtitles", "Subtitles"))
+        mode_caption = QLabel("≋  " + self._t("subtitles", "Subtitles"))
         mode_caption.setObjectName("field")
-        mode_left.addWidget(mode_caption)
-        mode_left.addWidget(self._with_help(self.mode_combo, "subtitle"))
-        mode_row.addLayout(mode_left, 1)
+        card.body.addWidget(mode_caption)
+
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(8)
+        mode_row.addWidget(self._with_help(self.mode_combo, "subtitle"), 1)
 
         self.speed_stepper = Stepper(
             lambda: self._step_speed(-0.25),
             lambda: self._step_speed(+0.25),
             f"{self.settings.scroll_speed:.1f}x",
         )
-        self.transparent_check = QCheckBox(self._t("transparent", "Transparent"))
-        self.transparent_check.setChecked(self.settings.transparent_static)
-        self.transparent_check.toggled.connect(self._on_transparent_changed)
         self.mode_controls = QWidget()
-        mc = QVBoxLayout(self.mode_controls)
-        mc.setContentsMargins(0, 20, 0, 0)
-        mc.setSpacing(4)
+        mc = QHBoxLayout(self.mode_controls)
+        mc.setContentsMargins(0, 0, 0, 0)
+        mc.setSpacing(8)
         mc.addWidget(self.speed_stepper)
-        mc.addWidget(self.transparent_check)
         mode_row.addWidget(self.mode_controls)
         card.body.addLayout(mode_row)
 
@@ -536,6 +801,11 @@ class ControlPanel(QMainWindow):
         )
         self.interim_check.setChecked(self.settings.show_interim_transcript)
         self.interim_check.toggled.connect(self._on_interim_changed)
+        # Transparent belongs with the other display toggles, not off to the
+        # right of the mode dropdown.
+        self.transparent_check = QCheckBox(self._t("transparent", "Transparent"))
+        self.transparent_check.setChecked(self.settings.transparent_static)
+        self.transparent_check.toggled.connect(self._on_transparent_changed)
         self.bilingual_check = QCheckBox(
             self._t("bilingual_mode", "Show original text")
         )
@@ -543,6 +813,7 @@ class ControlPanel(QMainWindow):
         self.bilingual_check.toggled.connect(self._on_bilingual_toggled)
         card.body.addWidget(self.catchup_check)
         card.body.addWidget(self.interim_check)
+        card.body.addWidget(self.transparent_check)
         card.body.addWidget(self.bilingual_check)
 
         hide_caption = QLabel(self._t("hide_subtitle_label", "Hide subtitle window"))
@@ -567,7 +838,9 @@ class ControlPanel(QMainWindow):
         row.addWidget(widget, 1)
         help_btn = QPushButton("?")
         help_btn.setObjectName("icon")
-        help_btn.setFixedSize(38, 38)
+        # Same edge length as the −/+ steppers it shares a row with; at 38 px it
+        # read as a different class of control.
+        help_btn.setFixedSize(_HELP_BTN_PX, _HELP_BTN_PX)
         help_btn.setCursor(Qt.PointingHandCursor)
         help_btn.clicked.connect(lambda: self._show_help(kind))
         row.addWidget(help_btn)
@@ -587,11 +860,33 @@ class ControlPanel(QMainWindow):
         body = "\n\n".join(
             f"{name}\n{self._t(key, '')}" for name, key in zip(names, keys, strict=False)
         )
-        QMessageBox.information(self, title, body)
+        self._info(title, body)
+
+    def _info(self, title: str, body: str) -> None:
+        """A silent information dialog.
+
+        ``QMessageBox.information`` plays the system's "asterisk" sound on
+        Windows — the icon is what triggers it. Reading a dropdown's help is not
+        an alert, so the icon (and with it the sound) is dropped.
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.NoIcon)
+        box.setWindowTitle(title)
+        box.setText(body)
+        box.exec()
 
     # ── card: advanced ───────────────────────────────────────────────────
     def _advanced_card(self) -> Card:
-        card = Card("⚙", self._t("advanced_settings", "Advanced"))
+        # Collapsible, and collapsed on a narrow panel: the whole card is
+        # set-up-once configuration, and open it is most of the scroll length.
+        card = Card(
+            "⚙",
+            self._t("advanced_settings", "Advanced"),
+            collapsible=True,
+            expanded=False,
+        )
+        self.advanced_card = card
+        card.toggled.connect(lambda _open: self._relayout_columns(force=True))
 
         # Transcription first, then translation — the Tk order.
         card.body.addWidget(self._section(self._t("section_transcription", "Transcription")))
@@ -599,7 +894,6 @@ class ControlPanel(QMainWindow):
         self.transcription_provider_combo.currentIndexChanged.connect(
             self._on_transcription_provider_changed
         )
-        card.body.addWidget(self.transcription_provider_combo)
         self.transcription_model_combo = self._combo()
         self.transcription_model_combo.currentIndexChanged.connect(
             self._on_transcription_model_changed
@@ -612,13 +906,17 @@ class ControlPanel(QMainWindow):
             self._on_use_default_transcription
         )
         card.body.addLayout(
-            self._model_row(self.transcription_model_combo, self.use_default_transcription)
+            self._engine_block(
+                self.transcription_provider_combo,
+                self.transcription_model_combo,
+                self.use_default_transcription,
+            )
         )
 
+        card.body.addSpacing(_SECTION_GAP)
         card.body.addWidget(self._section(self._t("section_translation", "Translation")))
         self.provider_combo = self._combo()
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
-        card.body.addWidget(self.provider_combo)
         self.model_combo = self._combo()
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         self.use_default_translation = QCheckBox(self._t("use_default", "Default"))
@@ -627,9 +925,16 @@ class ControlPanel(QMainWindow):
         )
         self.use_default_translation.toggled.connect(self._on_use_default_translation)
         card.body.addLayout(
-            self._model_row(self.model_combo, self.use_default_translation)
+            self._engine_block(
+                self.provider_combo, self.model_combo, self.use_default_translation
+            )
         )
 
+        card.body.addSpacing(_SECTION_GAP)
+        card.body.addWidget(self._section(self._t("other_settings", "Other settings")))
+
+        # Directly under the heading, above the checkboxes: it is a window
+        # behaviour, not one of the pipeline toggles below it.
         aot_caption = QLabel(self._t("window_on_top_label", "Window always on top"))
         aot_caption.setObjectName("field")
         self.aot_segment = SegmentedControl(
@@ -642,7 +947,6 @@ class ControlPanel(QMainWindow):
         card.body.addWidget(aot_caption)
         card.body.addWidget(self.aot_segment)
 
-        card.body.addWidget(self._section(self._t("other_settings", "Other settings")))
         self._other_checks: dict[str, QCheckBox] = {}
         for attribute, key, fallback in (
             ("show_footer", "show_footer", "Show disclaimer"),
@@ -669,12 +973,24 @@ class ControlPanel(QMainWindow):
         return label
 
     @staticmethod
-    def _model_row(combo: QComboBox, check: QCheckBox) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        row.addWidget(combo, 1)
-        row.addWidget(check)
-        return row
+    def _engine_block(
+        provider: QComboBox, model: QComboBox, check: QCheckBox
+    ) -> QGridLayout:
+        """Provider above model, with "Default" beside the model.
+
+        A grid rather than two rows so both combos end at the same edge: laid
+        out as rows the provider ran the card's full width and passed behind the
+        checkbox, which reads as a misaligned overhang.
+        """
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+        grid.addWidget(provider, 0, 0)
+        grid.addWidget(model, 1, 0)
+        grid.addWidget(check, 1, 1)
+        grid.setColumnStretch(0, 1)
+        return grid
 
     # ── log panel ────────────────────────────────────────────────────────
     def _log_panel(self) -> QWidget:
@@ -701,17 +1017,40 @@ class ControlPanel(QMainWindow):
         box.addWidget(self.log_text, 1)
         return panel
 
+    def _apply_log_panel_widths(self) -> None:
+        """Let the log share the window instead of being bolted onto it.
+
+        Open, the sidebar is pinned to ``_SIDEBAR_W_WITH_LOG`` and the log takes
+        whatever is left — the Tk arrangement, and the reason the card grid
+        drops to a single column while the log is up. Closed, the sidebar takes
+        the whole width back.
+        """
+        if self._log_collapsed:
+            self.sidebar.setMinimumWidth(0)
+            self.sidebar.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX
+            self._row_layout.setStretch(0, 1)
+        else:
+            self.sidebar.setFixedWidth(_SIDEBAR_W_WITH_LOG)
+            self._row_layout.setStretch(0, 0)
+
     def _toggle_log_panel(self) -> None:
         self._log_collapsed = not self._log_collapsed
         self.log_panel.setVisible(not self._log_collapsed)
         self.log_toggle.setText("▶" if self._log_collapsed else "◀")
         self.settings.log_panel_collapsed = self._log_collapsed
         save_settings(self.settings)
-        # Grow/shrink by the panel's width so opening the log does not squeeze
-        # the cards into one column on an otherwise wide window.
-        if not self.isMaximized():
-            delta = -_LOG_PANEL_W if self._log_collapsed else _LOG_PANEL_W
-            self.resize(max(self.minimumWidth(), self.width() + delta), self.height())
+        self._apply_log_panel_widths()
+        # The log opens INSIDE the current window; it only widens one that
+        # cannot hold both, which would otherwise give the log a column a
+        # character wide. Never past the screen it is on.
+        if not self._log_collapsed and not self.isMaximized():
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            available = screen.availableGeometry().width() if screen else 0
+            wanted = _SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W
+            if available:
+                wanted = min(wanted, available)
+            if self.width() < wanted:
+                self.resize(wanted, self.height())
         self._relayout_columns()
 
     def _drain_logs(self) -> None:
@@ -738,9 +1077,15 @@ class ControlPanel(QMainWindow):
         viewport = self.card_area.viewport().width()
         if self.isVisible() and viewport > 1:
             return viewport
-        return max(0, self.width() - (0 if self._log_collapsed else _LOG_PANEL_W))
+        return max(
+            0, self.width() - (0 if self._log_collapsed else _SIDEBAR_W_WITH_LOG)
+        )
 
     def _column_count(self) -> int:
+        # With the log open the sidebar is pinned narrow, so the cards get one
+        # column — the same trade the Tk panel makes.
+        if not self._log_collapsed:
+            return 1
         width = self._available_width()
         if width <= 1:
             return 2  # nothing to measure yet; the default window shows two
@@ -761,10 +1106,11 @@ class ControlPanel(QMainWindow):
             self._relayout_columns()
         return super().eventFilter(watched, event)
 
-    def _relayout_columns(self) -> None:
+    def _relayout_columns(self, force: bool = False) -> None:
         cols = self._column_count()
-        if cols == self._columns:
+        if cols == self._columns and not force:
             return
+        changed = cols != self._columns
         self._columns = cols
         for widget in (self.col_a, self.col_b, self.col_c):
             self.grid.removeWidget(widget)
@@ -788,6 +1134,57 @@ class ControlPanel(QMainWindow):
                 self.grid.setColumnStretch(i, 1)
         for widget in (self.col_a, self.col_b, self.col_c):
             widget.setVisible(True)
+        # The scroll area makes cards_host at least viewport-tall, and without
+        # somewhere for that surplus to go the card row swallowed it — the
+        # cards grew to the bottom of the window instead of stopping at the
+        # tallest one. An empty stretch row below the content absorbs it.
+        used_rows = {1: 3, 2: 2}.get(cols, 1)
+        for row in range(4):
+            self.grid.setRowStretch(row, 1 if row == used_rows else 0)
+        self._set_equal_column_heights(cols >= 2)
+        # Last, so the re-entrant _relayout_columns its toggle triggers finds a
+        # grid that is already consistent.
+        if changed:
+            self._sync_advanced_for_columns(cols)
+
+    def _set_equal_column_heights(self, equal: bool) -> None:
+        """Side by side, the cards should end level.
+
+        Applies from two columns up: three ragged bottom edges read as
+        unfinished, and in the L-shaped 2-column layout it is what pulls
+        Advanced down to the same baseline as Display & audio beside it.
+        Stacked in one column each card keeps its natural height instead.
+
+        An OPEN card takes the slack itself (its own trailing stretch keeps its
+        content top-aligned). A COLLAPSED one must not — stretching a header
+        strip into a tall empty box is worse than a ragged edge — so the spacer
+        ABOVE it takes the slack instead and the strip sits on the baseline.
+
+        Every stretch factor has to be set explicitly: a spacer from
+        ``addStretch`` is expansive whatever its factor, so zeroing one alone
+        still let it swallow the height and the card grew by nothing.
+        """
+        for box, card in self._column_tails:
+            fill = equal and card.is_expanded()
+            lead = 1 if (equal and not fill) else 0
+            box.setStretch(0, lead)  # leading spacer: bottom-aligns the card
+            box.setStretch(box.indexOf(card), 1 if fill else 0)
+            box.setStretch(box.count() - 1, 0 if equal else 1)
+            card.setSizePolicy(
+                QSizePolicy.Preferred,
+                QSizePolicy.Expanding if fill else QSizePolicy.Preferred,
+            )
+
+    def _sync_advanced_for_columns(self, cols: int) -> None:
+        """Open Advanced once the grid is wide enough to give it its own column.
+
+        In the 3-column layout column C holds nothing else, so a collapsed
+        Advanced is an empty column; narrower, an open one is most of the
+        scroll length. A manual toggle stands until the column count changes.
+        """
+        card = getattr(self, "advanced_card", None)
+        if card is not None and card.is_expanded() != (cols >= 3):
+            card.set_expanded(cols >= 3)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
         super().resizeEvent(event)
@@ -901,34 +1298,40 @@ class ControlPanel(QMainWindow):
     def _sync_default_model_states(self) -> None:
         """A model dropdown is disabled while its "Default" box is ticked —
         that is what the tick means."""
-        self.transcription_model_combo.setEnabled(
-            not self.use_default_transcription.isChecked()
-        )
-        self.model_combo.setEnabled(not self.use_default_translation.isChecked())
-        # Provider choice is locked while "Default" is on, mirroring Tk.
-        self.provider_combo.setEnabled(not self.use_default_translation.isChecked())
+        # Provider choice is locked with the model: "Default" means the shipped
+        # engine AND its shipped model, so leaving the engine changeable let a
+        # ticked box sit above a non-default provider.
+        transcription_free = not self.use_default_transcription.isChecked()
+        translation_free = not self.use_default_translation.isChecked()
+        self.transcription_model_combo.setEnabled(transcription_free)
+        self.transcription_provider_combo.setEnabled(transcription_free)
+        self.model_combo.setEnabled(translation_free)
+        self.provider_combo.setEnabled(translation_free)
 
     def _sync_mode_controls(self) -> None:
         """Show only the control the current subtitle mode actually uses."""
         mode = self._current_mode()
         self.speed_stepper.setVisible(mode == "continuous")
         self.transparent_check.setVisible(mode == "static")
-        self.mode_controls.setVisible(mode in ("continuous", "static"))
+        self.mode_controls.setVisible(mode == "continuous")
         self.catchup_check.setVisible(mode == "continuous")
         self.interim_check.setVisible(mode == "realtime")
 
     def _sync_running_state(self) -> None:
-        self.start_btn.setEnabled(not self._running)
-        self.stop_btn.setEnabled(self._running)
-        text = self._t("running", "Running") if self._running else self._t(
-            "stopped", "Stopped"
-        )
-        for label, name in (
-            (self.status_pill, "pill_running" if self._running else "pill_stopped"),
-            (self.log_status, "pill_running" if self._running else "pill_stopped"),
-        ):
+        # Both buttons are inert while a Start is in flight: Start would queue a
+        # second session and there is nothing to stop until the pipeline is up.
+        self.start_btn.setEnabled(not self._running and not self._starting)
+        self.stop_btn.setEnabled(self._running and not self._stopping)
+        if self._starting:
+            text = self._clean_label("connecting", "Connecting…")
+            pill = "pill_connecting"
+        elif self._running:
+            text, pill = self._t("running", "Running"), "pill_running"
+        else:
+            text, pill = self._t("stopped", "Stopped"), "pill_stopped"
+        for label in (self.status_pill, self.log_status):
             label.setText(text)
-            label.setObjectName(name)
+            label.setObjectName(pill)
             label.style().unpolish(label)
             label.style().polish(label)
         # Strategy and engine cannot change mid-run: the pipeline reads them
@@ -950,6 +1353,13 @@ class ControlPanel(QMainWindow):
         if self.subtitle_window:
             self.subtitle_window.set_window_height_percent(value)
 
+    def _on_opacity_changed(self, value: int) -> None:
+        self.settings.subtitle_backdrop_opacity = value
+        self.opacity_value.setText(f"{value}%")
+        save_settings(self.settings)
+        if self.subtitle_window:
+            self.subtitle_window.set_backdrop_opacity(value)
+
     def _step_font(self, *, smaller: bool) -> None:
         # font_size_base is a DIVISOR, so a bigger base is a smaller font.
         base = self.settings.font_size_base
@@ -960,8 +1370,34 @@ class ControlPanel(QMainWindow):
             else:
                 self.subtitle_window.increase_font()
             self.settings.font_size_base = self.subtitle_window.get_font_size_base()
+        self._scale_source_font_with_translation(base, self.settings.font_size_base)
         self.font_stepper.set_value_text(str(self.settings.font_size_base))
         save_settings(self.settings)
+
+    def _scale_source_font_with_translation(
+        self, old_base: float, new_base: float
+    ) -> None:
+        """Keep the original-text size proportional when the translation size
+        changes, so the ratio set in the appearance expander survives a −/+."""
+        try:
+            old_base, new_base = float(old_base), float(new_base)
+        except (TypeError, ValueError):
+            return
+        if not old_base or old_base == new_base:
+            return
+        source_base = getattr(
+            self.settings, "source_font_size_base", DEFAULT_SOURCE_FONT_SIZE_BASE
+        )
+        scaled = max(
+            SOURCE_FONT_SIZE_BASE_MIN,
+            min(SOURCE_FONT_SIZE_BASE_MAX, float(source_base) * (new_base / old_base)),
+        )
+        if scaled == source_base:
+            return
+        self.settings.source_font_size_base = scaled
+        if self.subtitle_window:
+            self.subtitle_window.set_source_font_size_base(scaled)
+        self._refresh_typography()
 
     def _step_speed(self, delta: float) -> None:
         speed = round(max(0.25, min(5.0, self.settings.scroll_speed + delta)), 2)
@@ -1050,8 +1486,51 @@ class ControlPanel(QMainWindow):
     def _on_aot_changed(self, index: int) -> None:
         self.settings.always_on_top_mode = ALWAYS_ON_TOP_MODES[index]
         save_settings(self.settings)
+        self._apply_always_on_top()
+
+    def _apply_always_on_top(self) -> None:
+        """Apply the always-on-top mode to EVERY window the app owns.
+
+        The overlay is the obvious one, but the control panel is what an
+        operator alt-tabs away from and needs back — and a secondary window is
+        only reliably above other applications if it carries the flag itself,
+        being a child of a topmost parent is not enough.
+        """
+        on_top = self._effective_always_on_top()
         if self.subtitle_window:
-            self.subtitle_window.set_always_on_top(self._effective_always_on_top())
+            self.subtitle_window.set_always_on_top(on_top)
+        windows = [self, *self._open_secondary_windows()]
+        for window in windows:
+            if bool(window.windowFlags() & Qt.WindowStaysOnTopHint) == on_top:
+                continue
+            # Same trap as the overlay: setWindowFlag recreates the native
+            # window and hides the widget, so read visibility first.
+            was_visible = window.isVisible()
+            window.setWindowFlag(Qt.WindowStaysOnTopHint, on_top)
+            if was_visible:
+                window.show()
+
+    def _show_secondary(self, window: QWidget) -> None:
+        """Show a secondary window carrying the current always-on-top mode.
+
+        Set before the first show(): applying it afterwards would recreate the
+        native window and flash it.
+        """
+        if self._effective_always_on_top():
+            window.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        window.show()
+
+    def _open_secondary_windows(self) -> list[QWidget]:
+        return [
+            window
+            for name in (
+                "_settings_window",
+                "_history_window",
+                "_batch_window",
+                "_announce_window",
+            )
+            if (window := getattr(self, name, None)) is not None and window.isVisible()
+        ]
 
     def _on_simple_setting(self, attribute: str, checked: bool) -> None:
         setattr(self.settings, attribute, checked)
@@ -1208,7 +1687,7 @@ class ControlPanel(QMainWindow):
         from gui_qt.settings_window import SettingsWindow
 
         self._settings_window = SettingsWindow(self)
-        self._settings_window.show()
+        self._show_secondary(self._settings_window)
 
     def open_history(self) -> None:
         """Rebuilt on each open rather than refreshed, so a session recorded
@@ -1221,7 +1700,7 @@ class ControlPanel(QMainWindow):
         from gui_qt.history_window import HistoryWindow
 
         self._history_window = HistoryWindow(self._t, self)
-        self._history_window.show()
+        self._show_secondary(self._history_window)
 
     def open_batch(self) -> None:
         """Kept alive rather than rebuilt so an in-flight run survives the
@@ -1234,7 +1713,7 @@ class ControlPanel(QMainWindow):
         from gui_qt.batch_window import BatchWindow
 
         self._batch_window = BatchWindow(self._t, self.settings, self)
-        self._batch_window.show()
+        self._show_secondary(self._batch_window)
 
     def open_announce(self) -> None:
         """Kept alive rather than rebuilt: it owns the auto-clear timer for a
@@ -1248,7 +1727,7 @@ class ControlPanel(QMainWindow):
         from gui_qt.announce_window import AnnounceWindow
 
         self._announce_window = AnnounceWindow(self._t, self.settings, self)
-        self._announce_window.show()
+        self._show_secondary(self._announce_window)
 
     def apply_theme_mode(self, theme_mode: str) -> None:
         """Re-theme the whole application — one stylesheet call, where the Tk
@@ -1284,47 +1763,112 @@ class ControlPanel(QMainWindow):
 
     # ── session ──────────────────────────────────────────────────────────
     def on_start(self) -> None:
-        if self._running:
+        """Start the pipeline off the GUI thread.
+
+        Opening a streaming session waits for the provider's session
+        confirmation, measured at 30+ seconds on the first connect after an API
+        key changes. Run inline and the window is frozen ("Not responding") for
+        that whole time with no sign that Start did anything — hence the worker
+        thread and the "Connecting…" pill while it runs.
+        """
+        if self._running or self._starting:
             return
         self._persist()
         # Prompt for anything missing before touching the pipeline, so a
         # missing key is a dialog rather than a failure from inside start().
         if not ensure_keys(required_key_providers(self.settings), self.texts, self):
             return
-        try:
-            device = self._selected_device()
-            self._ensure_subtitle_window()
-            self.controller.start(input_device=device)
-        except Exception as exc:  # noqa: BLE001 - surfaced to the operator
-            log(f"Start failed: {exc}", level="ERROR")
-            QMessageBox.critical(self, "MinbarLive", str(exc))
+        device = self._selected_device()
+        self._ensure_subtitle_window()
+
+        self._start_error: Exception | None = None
+        done = threading.Event()
+
+        def _work() -> None:
+            try:
+                self.controller.start(input_device=device)
+            except Exception as exc:  # noqa: BLE001 - applied on the GUI thread
+                self._start_error = exc
+            finally:
+                done.set()
+
+        self._starting = True
+        self._sync_running_state()
+        threading.Thread(target=_work, daemon=True, name="pipeline-start").start()
+        self._await(done, self._finish_start)
+
+    def _finish_start(self) -> None:
+        """Apply the outcome of a Start once its worker thread is done."""
+        self._starting = False
+        error, self._start_error = self._start_error, None
+        if error is not None:
+            log(f"Start failed: {error}", level="ERROR")
+            self._sync_running_state()
+            QMessageBox.critical(self, "MinbarLive", str(error))
             self._apply_subtitle_hide_mode()
             return
 
         self._running = True
+        # Buttons and pill first: the pipeline IS up, and anything below that
+        # raises must not leave the panel reading "Connecting…" forever.
+        self._sync_running_state()
         if self.subtitle_window:
             self.subtitle_window.set_stopped_hint(False)
-            self.subtitle_window.set_always_on_top(self._effective_always_on_top())
+        self._apply_always_on_top()
         self.bridge.start(
             streaming=streaming_enabled(self.settings),
             show_interim=self.settings.show_interim_transcript,
         )
-        self._sync_running_state()
         self._refresh_provider_combos()
 
+    def _await(self, done: threading.Event, then, interval_ms: int = 100) -> None:
+        """Call ``then`` on the GUI thread once ``done`` is set.
+
+        A timer rather than a queued signal so the whole start/stop flow stays
+        in plain Python objects — nothing Qt-owned crosses the thread boundary.
+        """
+
+        def _poll() -> None:
+            if done.is_set():
+                then()
+            else:
+                QTimer.singleShot(interval_ms, _poll)
+
+        QTimer.singleShot(interval_ms, _poll)
+
     def on_stop(self) -> None:
-        if not self._running:
+        """Stop the pipeline off the GUI thread — closing a streaming session
+        takes the connection lock, which a reconnect blocked in a slow
+        ``open_stream()`` can hold for tens of seconds."""
+        if not self._running or self._stopping:
             return
-        self._running = False
+        self._stopping = True
+        self._sync_running_state()
+        done = threading.Event()
+
+        def _work() -> None:
+            try:
+                self.controller.stop()
+            except Exception as exc:  # noqa: BLE001 - logged on the GUI thread
+                self._stop_error = exc
+            finally:
+                done.set()
+
+        self._stop_error: Exception | None = None
         self.bridge.stop()
-        try:
-            self.controller.stop()
-        except Exception as exc:  # noqa: BLE001
-            log(f"Stop failed: {exc}", level="ERROR")
+        threading.Thread(target=_work, daemon=True, name="pipeline-stop").start()
+        self._await(done, self._finish_stop)
+
+    def _finish_stop(self) -> None:
+        self._stopping = False
+        self._running = False
+        error, self._stop_error = self._stop_error, None
+        if error is not None:
+            log(f"Stop failed: {error}", level="ERROR")
         if self.subtitle_window:
             self.subtitle_window.set_live_text(None)
             self.subtitle_window.set_stopped_hint(True)
-            self.subtitle_window.set_always_on_top(self._effective_always_on_top())
+        self._apply_always_on_top()
         # An announcement left on screen after the session ends is usually
         # stale ("starts in 10 minutes"), so clear it unless the operator
         # asked for it to persist.
@@ -1476,8 +2020,16 @@ class ControlPanel(QMainWindow):
         save_settings(self.settings)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
-        if self._running:
-            self.on_stop()
+        # Stopped inline, not through on_stop(): its worker thread reports back
+        # through a timer that will never fire once the window is gone, so the
+        # pipeline would outlive the app.
+        if self._running or self._starting:
+            self._running = self._starting = False
+            self.bridge.stop()
+            try:
+                self.controller.stop()
+            except Exception as exc:  # noqa: BLE001 - shutting down anyway
+                log(f"Stop failed: {exc}", level="ERROR")
         self._log_timer.stop()
         self._level_timer.stop()
         self._teardown_subtitle_window()
