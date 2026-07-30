@@ -66,6 +66,15 @@ class SegmentedControl(QWidget):
             self._buttons[current].setChecked(True)
         self._group.idClicked.connect(self.changed.emit)
 
+    def set_labels(self, labels: list[str]) -> None:
+        """Re-label the segments in place (a GUI-language switch).
+
+        Rebuilding the control instead would drop the selection and every
+        connection to it.
+        """
+        for btn, label in zip(self._buttons, labels, strict=False):
+            btn.setText(label)
+
     def current_index(self) -> int:
         return self._group.checkedId()
 
@@ -131,6 +140,10 @@ class Dropdown(QComboBox):
     """
 
     _ARROW_BOX = 26  # must match the drop-down width in the stylesheet
+    # Longest popup before it scrolls. The language, model and device lists run
+    # to a dozen-plus entries, and a popup that tall covers the window it
+    # belongs to.
+    _MAX_VISIBLE_ITEMS = 6
 
     def __init__(self, items: list[str] | None = None, parent=None):
         super().__init__(parent)
@@ -138,6 +151,23 @@ class Dropdown(QComboBox):
             self.addItems(items)
         self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.setMinimumContentsLength(8)
+        self.setMaxVisibleItems(self._MAX_VISIBLE_ITEMS)
+        # Picking an entry ends the interaction; keeping the accent focus ring
+        # afterwards reads as "still editing".
+        self.activated.connect(lambda _index: self.clearFocus())
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt API
+        """Never change the selection by scrolling over a closed combo.
+
+        Qt's default silently switches language, model or audio device when the
+        wheel passes over one — trivial to do while scrolling the panel, and
+        the setting it changes is not obviously connected to the gesture.
+
+        Ignoring the event hands the gesture to the scroll area behind, so the
+        page scrolls instead (verified with a real OS wheel). The open popup is
+        a separate widget and keeps its own wheel scrolling.
+        """
+        event.ignore()
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
         super().paintEvent(event)
@@ -181,6 +211,11 @@ class AudioLevelBar(QWidget):
     WARNING = "#F08C00"
     DANGER = "#E03131"
 
+    # The zones are also washed faintly across the EMPTY part of the track, so
+    # someone sitting in the green can see how much headroom is left before
+    # amber and red rather than discovering the boundaries by clipping.
+    ZONE_GHOST_ALPHA = 60
+
     def __init__(self, height: int = 12, parent=None):
         super().__init__(parent)
         self._value = 0.0
@@ -214,8 +249,6 @@ class AudioLevelBar(QWidget):
         painter.setBrush(QBrush(QColor(colors["panel_soft"])))
         painter.drawRoundedRect(rect, radius, radius)
 
-        if self._value <= 0.0:
-            return
         painter.setClipPath(self._rounded_path(rect, radius))
         painter.setPen(Qt.NoPen)
         zones = (
@@ -223,14 +256,33 @@ class AudioLevelBar(QWidget):
             (self.GREEN_END, self.RED_START, self.WARNING),
             (self.RED_START, 1.0, self.DANGER),
         )
+
+        def band(start: float, end: float, colour: QColor) -> None:
+            x0 = rect.left() + rect.width() * start
+            x1 = rect.left() + rect.width() * end
+            painter.setBrush(QBrush(colour))
+            painter.drawRect(round(x0), rect.top(), round(x1 - x0) + 1, rect.height())
+
+        # The zone map first, at low opacity. Only amber and red are ghosted:
+        # washing the green zone too made a silent meter read as an already
+        # 70%-full bar, which is worse than showing no map at all.
+        for start, end, colour in zones[1:]:
+            ghost = QColor(colour)
+            ghost.setAlpha(self.ZONE_GHOST_ALPHA)
+            band(start, end, ghost)
+
+        # ...then the live level on top, at full strength.
         for start, end, colour in zones:
             filled = min(self._value, end)
             if filled <= start:
                 break
-            x0 = rect.left() + rect.width() * start
-            x1 = rect.left() + rect.width() * filled
-            painter.setBrush(QBrush(QColor(colour)))
-            painter.drawRect(round(x0), rect.top(), round(x1 - x0) + 1, rect.height())
+            band(start, filled, QColor(colour))
+
+        # The bands are drawn over the rounded outline, so restore it.
+        painter.setClipping(False)
+        painter.setPen(QColor(colors["border"]))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, radius, radius)
 
     @staticmethod
     def _rounded_path(rect, radius):

@@ -32,6 +32,10 @@ from gui_qt.palette import palette
 # Indicator edge length in logical px, for both check boxes and radio buttons.
 _INDICATOR_PX = 20
 
+# Base UI text size. 9.75pt == 13px at Qt's 96 logical DPI — the size the
+# stylesheet used to carry. See _apply_app_font for why it is points.
+_BASE_POINT_SIZE = 9.75
+
 
 def qcolor(hex_color: str, alpha: int | None = None) -> QColor:
     """QColor from a palette hex string, optionally with an alpha 0-255."""
@@ -159,10 +163,13 @@ def stylesheet(theme_mode: str) -> str:
    the descendant overrides needed to undo that (`QFrame#card QWidget`) then
    outrank `QPushButton#accent`, quietly greying out Start and the status pill.
    Only real surfaces get a background; everything else shows its parent. */
+/* No font-size here either — it is set as the application font in
+   apply_theme(). A stylesheet "font-size: Npx" leaves QFont.pointSize() at -1,
+   and QComboBox::showPopup feeds the combo's point size straight back into
+   QFont::setPointSize, which warns on every dropdown open. */
 QWidget {{
     color: {c["text"]};
     font-family: "Segoe UI", "Noto Sans", sans-serif;
-    font-size: 13px;
 }}
 QMainWindow, QDialog, QMessageBox {{ background-color: {c["app_bg"]}; }}
 QWidget#sidebar {{ background-color: {c["sidebar"]}; }}
@@ -184,6 +191,11 @@ QLabel#section {{ font-size: 14px; font-weight: 700; }}
 QLabel#value {{ font-size: 17px; font-weight: 700; }}
 QLabel#warning_text {{ color: {c["warning"]}; font-weight: 600; }}
 QLabel#hero {{ font-size: 17px; font-weight: 700; }}
+/* Onboarding chrome: the centred welcome title, and the sub-lines/field
+   captions inside each step card (a touch larger than the generic muted rule,
+   matching the wizard the users already know). */
+QLabel#wizard_title {{ font-size: 22px; font-weight: 700; }}
+QLabel#wizard_sub {{ color: {c["muted"]}; font-size: 14px; }}
 
 /* Warning callout: bordered, warning-coloured — the wizard's provider caveats
    and the AI-accuracy disclaimer, which must not read as another grey note. */
@@ -250,7 +262,19 @@ QComboBox, QLineEdit, QSpinBox {{
     padding: 8px 12px;
     min-height: 20px;
 }}
-QComboBox:focus, QLineEdit:focus {{ border-color: {c["accent"]}; }}
+/* Hover feedback: a dropdown should look clickable before it is clicked.
+   ":enabled" so a greyed-out combo stays inert. */
+QComboBox:enabled:hover {{
+    background-color: {c["panel_soft"]};
+    border-color: {c["muted"]};
+}}
+/* Focus must outrank hover, or pointing at the focused combo erases its ring.
+   Qt follows CSS specificity, so the two-pseudo-state hover rule above beats a
+   plain ":focus" — hence the ":enabled:focus" twin, which ties on specificity
+   and wins by coming later. */
+QComboBox:focus, QComboBox:enabled:focus, QLineEdit:focus {{
+    border-color: {c["accent"]};
+}}
 QComboBox:disabled, QLineEdit:disabled {{ color: {c["muted"]}; }}
 /* The native drop-down button is a sunken bevelled box with a raised arrow —
    the "1998" frame. Flattening it removes the arrow along with the bevel, and
@@ -273,7 +297,23 @@ QComboBox QAbstractItemView {{
     padding: 4px;
     outline: none;
 }}
-QComboBox QAbstractItemView::item {{ min-height: 26px; padding: 4px 8px; }}
+/* The popup needs its own hover/selection rules. Declaring ::item at all makes
+   QStyleSheetStyle paint the rows, and it then ignores the view's
+   selection-background-color — which is why the open list had no highlight of
+   any kind under the pointer. */
+QComboBox QAbstractItemView::item {{
+    min-height: 26px;
+    padding: 4px 8px;
+    border-radius: 8px;
+}}
+QComboBox QAbstractItemView::item:hover {{
+    background-color: {c["accent_soft"]};
+    color: {c["text"]};
+}}
+QComboBox QAbstractItemView::item:selected {{
+    background-color: {c["accent"]};
+    color: #ffffff;
+}}
 
 QPlainTextEdit, QTextEdit {{
     background-color: {c["log_bg"]};
@@ -403,9 +443,29 @@ QToolTip {{
 """
 
 
+def _apply_app_font(app) -> None:
+    """Set the base UI font as a real point size.
+
+    The size lived in the stylesheet as ``font-size: 13px`` until a pixel size
+    leaves ``QFont.pointSize()`` at -1, and ``QComboBox::showPopup`` passes the
+    combo's point size back into ``QFont::setPointSize`` — one
+    "Point size <= 0 (-1)" warning per dropdown opened. Setting it as the
+    application font keeps the rendered size identical (Qt converts points at
+    96 logical DPI, so 9.75pt is exactly the 13px it replaces, with high-DPI
+    scaling applied on top as before) while giving every widget a valid point
+    size. Per-widget sizes elsewhere in the sheet stay in px: none of them are
+    combo boxes.
+    """
+    font = app.font()
+    font.setFamilies(["Segoe UI", "Noto Sans"])
+    font.setPointSizeF(_BASE_POINT_SIZE)
+    app.setFont(font)
+
+
 def apply_theme(app, theme_mode: str) -> None:
     """Apply ``theme_mode`` to the whole application."""
     global _STYLE, _CURRENT
+    _apply_app_font(app)
     colors = palette(theme_mode)
     _CURRENT = colors
     if _STYLE is None:
