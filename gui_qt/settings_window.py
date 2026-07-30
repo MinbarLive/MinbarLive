@@ -1,12 +1,14 @@
 """Qt settings window.
 
-Port of the controls in ``gui/settings_view.py`` that affect a running
-session. Every control applies to the live overlay immediately where that is
-possible, and writes through to ``Settings`` — there is no Save/Cancel, which
-matches how the Tk settings window behaves.
+Card order and contents follow ``gui/settings_view.py`` exactly — hero, then
+General, Appearance, Islamic mode, API keys. That is deliberate: everything
+about a *running session* (subtitle mode, height, hide policy, providers,
+models) lives on the control panel in the Tk tree, and moving half of it in
+here would leave operators hunting for controls that used to be one glance
+away.
 
-Reuses the existing GUI translation keys rather than inventing new ones, so
-this needs no additions to data/translations/gui/*.json.
+There is no Save/Cancel: every control writes through immediately and applies
+to the live overlay where it can, which is how the Tk window behaves.
 """
 
 from __future__ import annotations
@@ -15,44 +17,37 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
-    QFormLayout,
     QFrame,
+    QHBoxLayout,
     QLabel,
+    QMessageBox,
+    QPushButton,
     QScrollArea,
     QSlider,
     QVBoxLayout,
     QWidget,
 )
 
-from gui_qt.widgets import LabelledSlider, SegmentedControl, Stepper
+from gui_qt.widgets import Dropdown, LabelledSlider, SegmentedControl
+from providers import (
+    PROVIDER_CHOICES,
+    clear_api_key,
+    get_stored_api_key,
+    save_api_key,
+)
 from utils.settings import (
-    ALWAYS_ON_TOP_MODES,
     BACKDROP_OPACITY_MAX,
     BACKDROP_OPACITY_MIN,
-    SUBTITLE_HIDE_MODES,
+    GUI_LANGUAGE_CODES,
+    GUI_LANGUAGES,
     THEME_MODES,
     save_settings,
 )
+from version import __version__
 
-# Window height is a percentage of the screen; the overlay clamps to 5-100.
-_HEIGHT_MIN, _HEIGHT_MAX = 5, 100
-# Scroll speed range and step mirror the Tk stepper bounds.
-_SPEED_MIN, _SPEED_MAX = 0.25, 5.0
-_SPEED_STEP = 0.25
-
-# Translation keys for the 3-way selectors, in the order of the mode tuples.
-# Both tuples start with "never" but diverge after it, so they need separate
-# maps rather than one shared list.
-_HIDE_MODE_KEYS = {
-    "never": ("mode_never", "Never"),
-    "stopped": ("mode_when_stopped", "When stopped"),
-    "always": ("mode_always", "Always"),
-}
-_AOT_MODE_KEYS = {
-    "never": ("mode_never", "Never"),
-    "running": ("mode_when_running", "While running"),
-    "always": ("mode_always", "Always"),
-}
+# Deepgram has no translation capability so it is absent from PROVIDER_CHOICES,
+# but it can still hold a streaming-transcription key that needs managing.
+_KEY_PROVIDERS = [*PROVIDER_CHOICES, ("Deepgram", "deepgram")]
 
 
 class SettingsWindow(QDialog):
@@ -62,7 +57,8 @@ class SettingsWindow(QDialog):
         self.settings = panel.settings
         self._t = panel._t
         self.setWindowTitle(self._t("settings_title", "Settings"))
-        self.resize(560, 680)
+        self.setWindowIcon(panel.windowIcon())
+        self.resize(560, 720)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -75,27 +71,52 @@ class SettingsWindow(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
 
-        layout.addWidget(self._appearance_card())
-        layout.addWidget(self._subtitle_card())
+        hero = QLabel(f"MinbarLive  —  v{__version__}")
+        hero.setObjectName("hero")
+        subtitle = QLabel(self._t("hero_subtitle", "Live translation control centre"))
+        subtitle.setObjectName("muted")
+        layout.addWidget(hero)
+        layout.addWidget(subtitle)
+
         layout.addWidget(self._general_card())
+        layout.addWidget(self._appearance_card())
+        layout.addWidget(self._islamic_card())
+        layout.addWidget(self._api_key_card())
         layout.addStretch(1)
 
         scroll.setWidget(body)
         outer.addWidget(scroll)
 
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(18, 10, 18, 14)
+        bottom.addStretch(1)
+        close_btn = QPushButton(self._t("dlg_cancel", "Close"))
+        close_btn.clicked.connect(self.close)
+        bottom.addWidget(close_btn)
+        outer.addLayout(bottom)
+
     # ── helpers ──────────────────────────────────────────────────────────
-    def _card(self, title: str) -> tuple[QFrame, QFormLayout]:
+    def _card(self, symbol: str, title: str) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
         card.setObjectName("card")
         box = QVBoxLayout(card)
         box.setContentsMargins(18, 16, 18, 16)
-        heading = QLabel(title)
-        heading.setObjectName("heading")
+        box.setSpacing(10)
+        heading = QLabel(f"{symbol}  {title}")
+        heading.setObjectName("card_title")
         box.addWidget(heading)
-        form = QFormLayout()
-        form.setSpacing(12)
-        box.addLayout(form)
-        return card, form
+        return card, box
+
+    def _caption(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("field")
+        return label
+
+    def _hint(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("muted")
+        label.setWordWrap(True)
+        return label
 
     def _overlay(self):
         return self._panel.subtitle_window
@@ -104,52 +125,50 @@ class SettingsWindow(QDialog):
         save_settings(self.settings)
 
     # ── cards ────────────────────────────────────────────────────────────
-    def _appearance_card(self) -> QFrame:
-        card, form = self._card(self._t("settings_appearance", "Appearance"))
+    def _general_card(self) -> QFrame:
+        card, box = self._card("◎", self._t("settings_general", "General"))
 
-        # Segmented buttons, matching the Tk settings window (CTkSegmentedButton)
-        # rather than dropdowns.
-        theme_labels = [self._t(f"theme_{m}", m.title()) for m in THEME_MODES]
+        self.gui_lang_combo = Dropdown()
+        for code, name in GUI_LANGUAGES:
+            self.gui_lang_combo.addItem(name, code)
+        if self.settings.gui_language in GUI_LANGUAGE_CODES:
+            self.gui_lang_combo.setCurrentIndex(
+                GUI_LANGUAGE_CODES.index(self.settings.gui_language)
+            )
+        self.gui_lang_combo.currentIndexChanged.connect(self._on_gui_language)
+        box.addWidget(self._caption(self._t("language", "Language")))
+        box.addWidget(self.gui_lang_combo)
 
-        self.theme_segment = SegmentedControl(
-            theme_labels,
-            THEME_MODES.index(self.settings.theme_mode)
-            if self.settings.theme_mode in THEME_MODES
-            else 0,
+        box.addWidget(self._caption(self._t("updates_section", "Updates")))
+        self.updates_check = QCheckBox(
+            self._t("check_updates_on_launch", "Check for updates on launch")
         )
-        self.theme_segment.changed.connect(self._on_theme)
-
-        self.subtitle_theme_segment = SegmentedControl(
-            theme_labels,
-            THEME_MODES.index(self.settings.subtitle_theme_mode)
-            if self.settings.subtitle_theme_mode in THEME_MODES
-            else 0,
-        )
-        self.subtitle_theme_segment.changed.connect(self._on_subtitle_theme)
-
-        # Row labels must not repeat the card heading, so these are plain
-        # descriptive fallbacks rather than the section keys.
-        form.addRow(QLabel(self._t("control_panel", "Control panel:")), self.theme_segment)
-        form.addRow(QLabel(self._t("subtitles", "Subtitles:")), self.subtitle_theme_segment)
+        self.updates_check.setChecked(self.settings.check_for_updates)
+        self.updates_check.toggled.connect(self._on_updates)
+        box.addWidget(self.updates_check)
         return card
 
-    def _subtitle_card(self) -> QFrame:
-        card, form = self._card(self._t("subtitle_appearance", "Subtitles"))
+    def _appearance_card(self) -> QFrame:
+        card, box = self._card("☾", self._t("settings_appearance", "Appearance"))
 
-        # Height stays a slider (the Tk panel uses CTkSlider), with its value
-        # label ABOVE the track, left-aligned, as there.
-        self.height_slider = QSlider(Qt.Horizontal)
-        self.height_slider.setRange(_HEIGHT_MIN, _HEIGHT_MAX)
-        self.height_slider.setValue(
-            max(_HEIGHT_MIN, min(_HEIGHT_MAX, self.settings.window_height_percent))
+        theme_labels = [self._t(f"theme_{m}", m.title()) for m in THEME_MODES]
+        self.theme_segment = SegmentedControl(
+            theme_labels, self._theme_index(self.settings.theme_mode)
         )
-        self.height_slider.valueChanged.connect(self._on_height)
-        self.height_control = LabelledSlider(
-            self.height_slider, f"{self.height_slider.value()} %"
-        )
+        self.theme_segment.changed.connect(self._on_theme)
+        box.addWidget(self._caption(self._t("theme_mode", "Control panel")))
+        box.addWidget(self.theme_segment)
 
-        # Backdrop opacity: only meaningful because Qt composites per-pixel
-        # alpha. 0 leaves the video fully visible behind the subtitles.
+        self.subtitle_theme_segment = SegmentedControl(
+            theme_labels, self._theme_index(self.settings.subtitle_theme_mode)
+        )
+        self.subtitle_theme_segment.changed.connect(self._on_subtitle_theme)
+        box.addWidget(self._caption(self._t("subtitle_theme_mode", "Subtitles")))
+        box.addWidget(self.subtitle_theme_segment)
+
+        # Backdrop opacity has no Tk counterpart: Tk could only chroma-key the
+        # static mode, so a partly transparent backdrop was impossible there.
+        # Qt composites per-pixel alpha, so 0% leaves video fully visible.
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(BACKDROP_OPACITY_MIN, BACKDROP_OPACITY_MAX)
         self.opacity_slider.setValue(self.settings.subtitle_backdrop_opacity)
@@ -157,95 +176,73 @@ class SettingsWindow(QDialog):
         self.opacity_control = LabelledSlider(
             self.opacity_slider, f"{self.opacity_slider.value()} %"
         )
-
-        # Scroll speed is a -/+ stepper in the Tk panel, not a slider: an
-        # operator wants a predictable step mid-session, not a drag.
-        self.speed_stepper = Stepper(
-            lambda: self._step_speed(-_SPEED_STEP),
-            lambda: self._step_speed(+_SPEED_STEP),
-            f"{self.settings.scroll_speed:.2f}x",
-        )
-
-        self.transparent_check = QCheckBox(self._t("transparent", "Transparent"))
-        self.transparent_check.setChecked(self.settings.transparent_static)
-        self.transparent_check.toggled.connect(self._on_transparent)
-
-        self.footer_check = QCheckBox(self._t("show_footer", "Footer"))
-        self.footer_check.setChecked(self.settings.show_footer)
-        self.footer_check.toggled.connect(self._on_footer)
-
-        self.catchup_check = QCheckBox(
-            self._t("adaptive_catchup", "Speed up when subtitles fall behind")
-        )
-        self.catchup_check.setChecked(self.settings.adaptive_subtitle_catchup)
-        self.catchup_check.toggled.connect(self._on_catchup)
-
-        self.interim_check = QCheckBox(
-            self._t("show_interim_transcript", "Show live transcript")
-        )
-        self.interim_check.setChecked(self.settings.show_interim_transcript)
-        self.interim_check.toggled.connect(self._on_interim)
-
-        # The two 3-way selectors are segmented buttons (PR #22), not dropdowns.
-        self.hide_segment = SegmentedControl(
-            [self._t(*_HIDE_MODE_KEYS[m]) for m in SUBTITLE_HIDE_MODES],
-            SUBTITLE_HIDE_MODES.index(self.settings.subtitle_hide_mode)
-            if self.settings.subtitle_hide_mode in SUBTITLE_HIDE_MODES
-            else 0,
-        )
-        self.hide_segment.changed.connect(self._on_hide_mode)
-
-        self.aot_segment = SegmentedControl(
-            [self._t(*_AOT_MODE_KEYS[m]) for m in ALWAYS_ON_TOP_MODES],
-            ALWAYS_ON_TOP_MODES.index(self.settings.always_on_top_mode)
-            if self.settings.always_on_top_mode in ALWAYS_ON_TOP_MODES
-            else 0,
-        )
-        self.aot_segment.changed.connect(self._on_aot_mode)
-
-        form.addRow(QLabel(self._t("height", "Height:")), self.height_control)
-        form.addRow(
-            QLabel(self._t("backdrop_opacity", "Background opacity:")),
-            self.opacity_control,
-        )
-        form.addRow(
-            QLabel(self._t("scroll_speed_label", "Scroll speed:")), self.speed_stepper
-        )
-        form.addRow(
-            QLabel(self._t("hide_subtitle_label", "Hide subtitles:")), self.hide_segment
-        )
-        form.addRow(
-            QLabel(self._t("window_on_top_label", "Always on top:")), self.aot_segment
-        )
-        form.addRow(QLabel(""), self.transparent_check)
-        form.addRow(QLabel(""), self.footer_check)
-        form.addRow(QLabel(""), self.catchup_check)
-        form.addRow(QLabel(""), self.interim_check)
+        box.addWidget(self._caption(self._t("backdrop_opacity", "Background opacity")))
+        box.addWidget(self.opacity_control)
         return card
 
-    def _general_card(self) -> QFrame:
-        card, form = self._card(self._t("settings_general", "General"))
-
-        self.islamic_check = QCheckBox(self._t("islamic_mode", "Islamic mode"))
+    def _islamic_card(self) -> QFrame:
+        card, box = self._card("☪", self._t("islamic_mode", "Islamic mode"))
+        self.islamic_check = QCheckBox(self._t("islamic_mode_enabled", "Enabled"))
         self.islamic_check.setChecked(self.settings.islamic_mode)
         self.islamic_check.toggled.connect(self._on_islamic)
-
-        self.noise_check = QCheckBox(self._t("noise_filter", "Noise filter"))
-        self.noise_check.setChecked(self.settings.noise_filter)
-        self.noise_check.toggled.connect(self._on_noise)
-
-        self.updates_check = QCheckBox(
-            self._t("check_updates_on_launch", "Check for updates on launch")
+        box.addWidget(self.islamic_check)
+        box.addWidget(
+            self._hint(
+                self._t(
+                    "islamic_mode_hint",
+                    "Quran verse & Athan recognition and Islamic translation "
+                    "style. Off = general translator for any content.",
+                )
+            )
         )
-        self.updates_check.setChecked(self.settings.check_for_updates)
-        self.updates_check.toggled.connect(self._on_updates)
-
-        form.addRow(QLabel(""), self.islamic_check)
-        form.addRow(QLabel(""), self.noise_check)
-        form.addRow(QLabel(""), self.updates_check)
         return card
 
+    def _api_key_card(self) -> QFrame:
+        card, box = self._card("⚿", self._t("api_key_section", "API key"))
+
+        self.key_provider_combo = Dropdown()
+        # Starts unselected: Change/Remove act on the chosen provider, and a
+        # pre-selected one invites removing the wrong key.
+        self.key_provider_combo.addItem(
+            self._t("api_key_select_provider", "Please select"), ""
+        )
+        for name, pid in _KEY_PROVIDERS:
+            self.key_provider_combo.addItem(name, pid)
+        self.key_provider_combo.currentIndexChanged.connect(self._refresh_key_status)
+        box.addWidget(self.key_provider_combo)
+
+        self.key_status = QLabel("—")
+        self.key_status.setObjectName("muted")
+        box.addWidget(self.key_status)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        self.change_key_btn = QPushButton("⚿  " + self._t("change_key", "Change key"))
+        self.change_key_btn.clicked.connect(self._on_change_key)
+        self.remove_key_btn = QPushButton("✕  " + self._t("remove_key", "Remove key"))
+        self.remove_key_btn.clicked.connect(self._on_remove_key)
+        buttons.addWidget(self.change_key_btn)
+        buttons.addWidget(self.remove_key_btn)
+        box.addLayout(buttons)
+        self._refresh_key_status()
+        return card
+
+    @staticmethod
+    def _theme_index(mode: str) -> int:
+        return THEME_MODES.index(mode) if mode in THEME_MODES else 0
+
     # ── handlers ─────────────────────────────────────────────────────────
+    def _on_gui_language(self, _index: int) -> None:
+        code = self.gui_lang_combo.currentData()
+        if not code or code == self.settings.gui_language:
+            return
+        # Rebuilding the panel closes this window, so read nothing after it.
+        self._panel.apply_gui_language(code)
+
+    def _on_updates(self, checked: bool) -> None:
+        self.settings.check_for_updates = checked
+        self._save()
+
     def _on_theme(self, index: int) -> None:
         self.settings.theme_mode = THEME_MODES[index]
         self._panel.apply_theme_mode(self.settings.theme_mode)
@@ -257,13 +254,6 @@ class SettingsWindow(QDialog):
             self._overlay().set_theme(self.settings.subtitle_theme_mode)
         self._save()
 
-    def _on_height(self, value: int) -> None:
-        self.settings.window_height_percent = value
-        self.height_control.set_value_text(f"{value} %")
-        if self._overlay():
-            self._overlay().set_window_height_percent(value)
-        self._save()
-
     def _on_opacity(self, value: int) -> None:
         self.settings.subtitle_backdrop_opacity = value
         self.opacity_control.set_value_text(f"{value} %")
@@ -271,61 +261,95 @@ class SettingsWindow(QDialog):
             self._overlay().set_backdrop_opacity(value)
         self._save()
 
-    def _step_speed(self, delta: float) -> None:
-        speed = round(
-            max(_SPEED_MIN, min(_SPEED_MAX, self.settings.scroll_speed + delta)), 2
-        )
-        self.settings.scroll_speed = speed
-        self.speed_stepper.set_value_text(f"{speed:.2f}x")
-        if self._overlay():
-            self._overlay().set_scroll_speed(speed)
-        self._save()
-
-    def _on_transparent(self, checked: bool) -> None:
-        self.settings.transparent_static = checked
-        if self._overlay():
-            self._overlay().set_transparent_static(checked)
-        self._save()
-
-    def _on_footer(self, checked: bool) -> None:
-        self.settings.show_footer = checked
-        if self._overlay():
-            self._overlay().set_show_footer(checked)
-        self._save()
-
-    def _on_catchup(self, checked: bool) -> None:
-        self.settings.adaptive_subtitle_catchup = checked
-        if self._overlay():
-            self._overlay().set_adaptive_catchup(checked)
-        self._save()
-
-    def _on_interim(self, checked: bool) -> None:
-        # Takes effect on the next Start: the bridge decides at start time
-        # whether to sample the live transcript at all.
-        self.settings.show_interim_transcript = checked
-        self._save()
-
-    def _on_hide_mode(self, index: int) -> None:
-        self.settings.subtitle_hide_mode = SUBTITLE_HIDE_MODES[index]
-        self._save()
-
-    def _on_aot_mode(self, index: int) -> None:
-        self.settings.always_on_top_mode = ALWAYS_ON_TOP_MODES[index]
-        if self._overlay():
-            self._overlay().set_always_on_top(
-                self.settings.always_on_top_mode != "never"
-            )
-        self._save()
-
     def _on_islamic(self, checked: bool) -> None:
+        # Turning it OFF asks for confirmation (it changes what the pipeline
+        # does with every segment); turning it ON is instant.
+        if not checked:
+            answer = QMessageBox.question(
+                self,
+                self._t("islamic_mode", "Islamic mode"),
+                self._t(
+                    "islamic_mode_off_confirm",
+                    "Turn off Quran and Athan recognition?",
+                ),
+            )
+            if answer != QMessageBox.Yes:
+                self.islamic_check.blockSignals(True)
+                self.islamic_check.setChecked(True)
+                self.islamic_check.blockSignals(False)
+                return
         self.settings.islamic_mode = checked
         self._save()
 
-    def _on_noise(self, checked: bool) -> None:
-        # Read per segment/chunk by both pipelines, so this applies live.
-        self.settings.noise_filter = checked
-        self._save()
+    # ── API keys ─────────────────────────────────────────────────────────
+    def _selected_key_provider(self) -> str:
+        return self.key_provider_combo.currentData() or ""
 
-    def _on_updates(self, checked: bool) -> None:
-        self.settings.check_for_updates = checked
-        self._save()
+    def _refresh_key_status(self) -> None:
+        provider = self._selected_key_provider()
+        enabled = bool(provider)
+        self.change_key_btn.setEnabled(enabled)
+        self.remove_key_btn.setEnabled(enabled)
+        if not enabled:
+            self.key_status.setText("—")
+            return
+        stored = bool(get_stored_api_key(provider))
+        self.key_status.setText(
+            self._t("api_key_status_saved", "A key is saved.")
+            if stored
+            else self._t("api_key_status_none", "No key saved.")
+        )
+
+    def _on_change_key(self) -> None:
+        provider = self._selected_key_provider()
+        if not provider:
+            return
+        if self._panel._running:
+            QMessageBox.information(
+                self,
+                self._t("api_key_section", "API key"),
+                self._t(
+                    "dlg_stop_before_change_key", "Stop the session before changing keys."
+                ),
+            )
+            return
+        from gui_qt.api_keys import ApiKeyDialog
+
+        dialog = ApiKeyDialog(provider, self._panel.texts, self)
+        if dialog.exec() != QDialog.Accepted or not dialog.key():
+            return
+        if not save_api_key(provider, dialog.key()):
+            QMessageBox.warning(
+                self,
+                "MinbarLive",
+                self._t(
+                    "dlg_key_session_only_warning",
+                    "No system keychain was available, so this key is only "
+                    "active until you close MinbarLive.",
+                ),
+            )
+        self._refresh_key_status()
+
+    def _on_remove_key(self) -> None:
+        provider = self._selected_key_provider()
+        if not provider:
+            return
+        if self._panel._running:
+            QMessageBox.information(
+                self,
+                self._t("api_key_section", "API key"),
+                self._t("dlg_stop_before_remove", "Stop the session before removing keys."),
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            self._t("remove_key", "Remove key"),
+            self._t("dlg_remove_key_question", "Remove the stored API key?"),
+        )
+        if answer != QMessageBox.Yes:
+            return
+        clear_api_key(provider)
+        QMessageBox.information(
+            self, "MinbarLive", self._t("dlg_key_removed", "API key removed.")
+        )
+        self._refresh_key_status()
