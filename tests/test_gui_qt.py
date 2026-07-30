@@ -744,6 +744,189 @@ class TestControlChrome:
         widths = [rows[y] for y in sorted(rows)]
         assert min(widths) < max(widths), f"arrow is a solid block: {widths}"
 
+    @staticmethod
+    def _fill(combo) -> str:
+        """The dropdown's own fill colour, sampled clear of text and chevron."""
+        image = combo.grab().toImage()
+        # Fractions of the image, so the device pixel ratio cannot shift the
+        # sample off the widget (it silently did during development).
+        return image.pixelColor(
+            int(image.width() * 0.68), image.height() // 2
+        ).name()
+
+    @staticmethod
+    def _set_hover(widget, on: bool) -> None:
+        # Qt derives :hover from WA_UnderMouse; setting it beats moving the
+        # real cursor in a test.
+        from PySide6.QtCore import Qt
+
+        widget.setAttribute(Qt.WA_UnderMouse, on)
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
+    def test_a_hovered_dropdown_lights_up(self, qt_app):
+        from gui_qt.theme import apply_theme, current_colors
+        from gui_qt.widgets import Dropdown
+
+        apply_theme(qt_app, "light")
+        combo = Dropdown(["Deutsch", "English"])
+        combo.resize(240, 44)
+        assert self._fill(combo) == current_colors()["entry"]
+        self._set_hover(combo, True)
+        assert self._fill(combo) == current_colors()["panel_soft"]
+
+    def test_a_disabled_dropdown_stays_inert(self, qt_app):
+        from gui_qt.theme import apply_theme, current_colors
+        from gui_qt.widgets import Dropdown
+
+        apply_theme(qt_app, "light")
+        combo = Dropdown(["Deutsch"])
+        combo.setEnabled(False)
+        combo.resize(240, 44)
+        self._set_hover(combo, True)
+        assert self._fill(combo) == current_colors()["entry"]
+
+    def test_the_level_meter_shows_its_zones_while_silent(self, qt_app):
+        # The operator needs to see how much headroom is left before amber and
+        # red, not discover the boundaries by clipping.
+        from gui_qt.theme import apply_theme, current_colors
+        from gui_qt.widgets import AudioLevelBar
+
+        apply_theme(qt_app, "light")
+        bar = AudioLevelBar(height=14)
+        bar.resize(300, 14)
+        bar.set_value(0.0)
+        image = bar.grab().toImage()
+        dpr = image.devicePixelRatio()
+
+        def at(fraction: float) -> str:
+            return image.pixelColor(
+                int(300 * fraction * dpr), int(7 * dpr)
+            ).name()
+
+        track = current_colors()["panel_soft"]
+        # Green is deliberately NOT washed: doing so made a silent meter read
+        # as an already 70%-full bar.
+        assert at(0.20) == track
+        assert at(0.78) != track, "amber zone is invisible until reached"
+        assert at(0.95) != track, "red zone is invisible until reached"
+        assert at(0.78) != at(0.95), "amber and red are indistinguishable"
+
+    def test_scrolling_over_a_closed_combo_changes_nothing(self, qt_app):
+        # Qt's default switches the selection on wheel, so scrolling the panel
+        # past a dropdown silently changed the language, model or input device.
+        from PySide6.QtCore import QPoint, QPointF, Qt
+        from PySide6.QtGui import QWheelEvent
+
+        from gui_qt.theme import apply_theme
+        from gui_qt.widgets import Dropdown
+
+        apply_theme(qt_app, "light")
+        combo = Dropdown([f"Sprache {i}" for i in range(8)])
+        combo.setCurrentIndex(3)
+        for delta in (-120, 120):
+            event = QWheelEvent(
+                QPointF(10, 10),
+                QPointF(10, 10),
+                QPoint(0, 0),
+                QPoint(0, delta),
+                Qt.NoButton,
+                Qt.NoModifier,
+                Qt.NoScrollPhase,
+                False,
+            )
+            qt_app.sendEvent(combo, event)
+            assert combo.currentIndex() == 3
+            # Ignored, so the scroll area behind receives it and the page moves.
+            assert not event.isAccepted()
+
+    def test_picking_an_entry_releases_the_focus_ring(self, qt_app):
+        from gui_qt.theme import apply_theme
+        from gui_qt.widgets import Dropdown
+
+        apply_theme(qt_app, "light")
+        combo = Dropdown(["Deutsch", "English"])
+        combo.show()
+        combo.setFocus()
+        try:
+            assert combo.hasFocus()
+            combo.activated.emit(1)  # what a real pick emits
+            assert not combo.hasFocus()
+        finally:
+            combo.close()
+
+    def test_the_popup_caps_how_many_rows_it_shows(self, qt_app):
+        # A dozen-plus languages/models/devices otherwise open a popup taller
+        # than the window it belongs to.
+        from gui_qt.theme import apply_theme
+        from gui_qt.widgets import Dropdown
+
+        apply_theme(qt_app, "light")
+        combo = Dropdown([f"Sprache {i}" for i in range(14)])
+        combo.resize(240, 44)
+        combo.show()
+        try:
+            combo.showPopup()
+            view = combo.view()
+            rows = view.viewport().height() / view.sizeHintForRow(0)
+            assert rows <= Dropdown._MAX_VISIBLE_ITEMS + 0.35, (
+                f"popup shows {rows:.1f} rows"
+            )
+        finally:
+            combo.hidePopup()
+            combo.close()
+
+    def test_opening_a_popup_emits_no_font_warning(self, qt_app):
+        # A stylesheet "font-size: Npx" leaves QFont.pointSize() at -1, and
+        # QComboBox::showPopup feeds that back into QFont::setPointSize. The
+        # base size therefore lives in the application font, in points.
+        from PySide6.QtCore import qInstallMessageHandler
+
+        from gui_qt.theme import apply_theme
+        from gui_qt.widgets import Dropdown
+
+        apply_theme(qt_app, "light")
+        assert qt_app.font().pointSizeF() > 0, "base font is not point-sized"
+
+        messages: list[str] = []
+        previous = qInstallMessageHandler(
+            lambda mode, ctx, msg: messages.append(msg)
+        )
+        combo = Dropdown(["Deutsch", "English"])
+        combo.resize(240, 44)
+        combo.show()
+        try:
+            combo.showPopup()
+        finally:
+            combo.hidePopup()
+            combo.close()
+            qInstallMessageHandler(previous)
+        assert not [m for m in messages if "PointSize" in m], messages
+
+    def test_the_popup_styles_hover_and_selection(self):
+        # Declaring ::item at all makes QStyleSheetStyle paint the rows, and it
+        # then ignores the view's selection-background-color — so both states
+        # need explicit rules or the open list has no highlight at all.
+        from gui_qt.theme import stylesheet
+
+        sheet = stylesheet("light")
+        hover = sheet.index("QComboBox QAbstractItemView::item:hover")
+        selected = sheet.index("QComboBox QAbstractItemView::item:selected")
+        # Equal specificity, so the later rule wins: the selected row must keep
+        # its accent fill while the pointer is over it.
+        assert selected > hover
+
+    def test_focus_outranks_hover_on_dropdowns(self):
+        # Qt follows CSS specificity, so the two-pseudo-state hover rule beats a
+        # plain ":focus" and pointing at a focused combo erased its accent ring.
+        # The ":enabled:focus" twin ties on specificity and must come LATER.
+        from gui_qt.theme import stylesheet
+
+        sheet = stylesheet("light")
+        assert sheet.index("QComboBox:enabled:focus") > sheet.index(
+            "QComboBox:enabled:hover"
+        )
+
 
 class TestHistoryWindow:
     """Rendering only — parsing is utils/history.py and already covered."""
@@ -1302,6 +1485,35 @@ class TestWizardInputMeter:
         finally:
             w.close()
 
+    def test_the_preview_runs_until_it_is_stopped(self, wizard):
+        # Unlike the control panel's meter, this one is never on a timer:
+        # setup is when someone talks into the mic to watch the bar move.
+        w, controller = wizard
+        w._start_level_preview(auto=True)
+        assert controller.running
+        assert w._level_timer.isActive()
+        assert not hasattr(w, "_level_auto_stop"), "an auto-stop timer is back"
+
+    def test_switching_device_keeps_the_preview_on_the_new_one(self, wizard):
+        w, controller = wizard
+        if w.device_combo.count() < 2:
+            pytest.skip("needs two input devices")
+        w._start_level_preview(auto=True)
+        before = len(controller.started)
+        w.device_combo.setCurrentIndex(1)
+        assert len(controller.started) == before + 1
+        assert controller.running
+
+    def test_switching_device_does_not_reopen_a_stopped_preview(self, wizard):
+        w, controller = wizard
+        if w.device_combo.count() < 2:
+            pytest.skip("needs two input devices")
+        w._stop_level_capture()
+        before = len(controller.started)
+        w.device_combo.setCurrentIndex(1)
+        assert len(controller.started) == before
+        assert not controller.running
+
 
 class TestWizardProviderList:
     @pytest.fixture
@@ -1353,6 +1565,95 @@ class TestWizardProviderList:
         wizard.provider_combo.setCurrentIndex(index)
         assert wizard.key_help_btn.isEnabled()
         assert wizard.key_site_btn.isEnabled()
+
+    def _note_texts(self, wizard) -> list[str]:
+        layout = wizard._notes_layout
+        return [
+            layout.itemAt(i).widget().label.text() for i in range(layout.count())
+        ]
+
+    def test_deepgram_warns_that_it_only_transcribes(self, wizard):
+        # A Deepgram key alone is never a working setup: no translation model
+        # and no embedding model, so the caveat has to be on this step.
+        wizard.provider_combo.setCurrentIndex(
+            wizard.provider_combo.findData("deepgram")
+        )
+        notes = self._note_texts(wizard)
+        assert len(notes) == 1
+        assert "Deepgram" in notes[0]
+
+    def test_notes_follow_the_selected_provider(self, wizard):
+        wizard.provider_combo.setCurrentIndex(
+            wizard.provider_combo.findData("deepgram")
+        )
+        wizard.provider_combo.setCurrentIndex(
+            wizard.provider_combo.findData("anthropic")
+        )
+        notes = self._note_texts(wizard)
+        assert len(notes) == 2, "the Deepgram note outlived its selection"
+        assert not any("Deepgram" in note for note in notes)
+
+    def test_every_provider_hints_at_its_key_format(self, wizard):
+        # Only OpenAI used to show one, so the other fields looked like they
+        # wanted something different.
+        from providers import KEY_PLACEHOLDERS
+
+        for pid, expected in KEY_PLACEHOLDERS.items():
+            index = wizard.provider_combo.findData(pid)
+            if index < 0:
+                continue
+            wizard.provider_combo.setCurrentIndex(index)
+            assert wizard.key_edit.placeholderText() == expected, pid
+
+    def test_the_show_toggle_reveals_the_key(self, wizard):
+        from PySide6.QtWidgets import QLineEdit
+
+        assert wizard.key_edit.echoMode() == QLineEdit.Password
+        wizard.show_key_check.setChecked(True)
+        assert wizard.key_edit.echoMode() == QLineEdit.Normal
+        wizard.show_key_check.setChecked(False)
+        assert wizard.key_edit.echoMode() == QLineEdit.Password
+
+
+class TestWizardLanguageSwitch:
+    """Step 1 changes the GUI language, so every later step must follow it."""
+
+    @pytest.fixture
+    def wizard(self, qt_app, monkeypatch):
+        import gui_qt.onboarding as ob
+
+        monkeypatch.setattr(ob, "save_settings", lambda s: None)
+        w = ob.OnboardingWizard(qt_app)
+        w.gui_lang_combo.setCurrentIndex(w.gui_lang_combo.findData("en"))
+        yield w
+        w.close()
+
+    def test_later_steps_are_relabelled(self, wizard):
+        from gui_qt.i18n import load_gui_translations
+
+        de = load_gui_translations("de")
+        wizard.gui_lang_combo.setCurrentIndex(wizard.gui_lang_combo.findData("de"))
+        # A label from a step the user has not reached yet.
+        assert wizard.disclaimer_check.text() == de["wizard_disclaimer_accept"]
+        assert wizard.title_label.text() == de["wizard_title"]
+        assert wizard.next_btn.text() == de["wizard_next"]
+
+    def test_the_theme_segment_is_relabelled(self, wizard):
+        from gui_qt.i18n import load_gui_translations
+        from utils.settings import THEME_MODES
+
+        de = load_gui_translations("de")
+        wizard.gui_lang_combo.setCurrentIndex(wizard.gui_lang_combo.findData("de"))
+        labels = [btn.text() for btn in wizard.theme_segment._buttons]
+        assert labels == [de[f"theme_{m}"] for m in THEME_MODES]
+
+    def test_a_typed_key_survives_the_switch(self, wizard):
+        # Re-labelling must not be a rebuild: Back from the key step is a
+        # normal way to reach the language step.
+        wizard.stack.setCurrentIndex(3)
+        wizard.key_edit.setText("sk-typed")
+        wizard.gui_lang_combo.setCurrentIndex(wizard.gui_lang_combo.findData("de"))
+        assert wizard.key_edit.text() == "sk-typed"
 
 
 class TestPipelineBridge:
