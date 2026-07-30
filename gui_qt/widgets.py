@@ -22,6 +22,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+# Height of a dropdown, and with it of every small button that shares a row
+# with one (the −/+ steppers, "?", the language swap, the colour pickers).
+# Mirrors the QComboBox metrics in theme.py: 8px padding top and bottom, a
+# 20px minimum content height and a 1px border on each side.
+CONTROL_H = 38
+
 
 class SegmentedControl(QWidget):
     """A joined row of mutually exclusive buttons — a CTkSegmentedButton.
@@ -48,6 +54,9 @@ class SegmentedControl(QWidget):
             btn = QPushButton(label)
             btn.setObjectName("segment")
             btn.setCheckable(True)
+            # A full-width row control like a dropdown, so it keeps the same
+            # height — two pixels short read as a slightly different control.
+            btn.setFixedHeight(CONTROL_H)
             btn.setCursor(Qt.PointingHandCursor)
             if len(labels) == 1:
                 seg = "only"
@@ -105,7 +114,9 @@ class Stepper(QWidget):
         self.plus = QPushButton("+")
         for btn in (self.minus, self.plus):
             btn.setObjectName("stepper")
-            btn.setFixedSize(46, 46)
+            # Square, at the height of the dropdown it shares a row with —
+            # taller read as a different class of control.
+            btn.setFixedSize(CONTROL_H, CONTROL_H)
             btn.setCursor(Qt.PointingHandCursor)
         self.minus.clicked.connect(on_decrease)
         self.plus.clicked.connect(on_increase)
@@ -380,6 +391,7 @@ class Card(QFrame):
         self.arrow_label.setVisible(collapsible)
 
         self.header = header_row
+        self._header_widget = header
         outer.addWidget(header)
 
         self.content = QWidget()
@@ -391,21 +403,47 @@ class Card(QFrame):
         self._collapsible = collapsible
         self._expanded = True
 
+        # Connected whatever the current mode: set_expanded coerces a
+        # non-collapsible card back open, so the click is inert rather than
+        # needing the connection to be made and broken with set_collapsible.
+        header.clicked.connect(lambda: self.set_expanded(not self._expanded))
         if collapsible:
             header.setCursor(Qt.PointingHandCursor)
-            header.clicked.connect(lambda: self.set_expanded(not self._expanded))
             self.set_expanded(expanded)
 
     def is_expanded(self) -> bool:
         return self._expanded
 
+    def is_collapsible(self) -> bool:
+        return self._collapsible
+
     def set_expanded(self, expanded: bool) -> None:
-        if not self._collapsible:
+        # A card that cannot be collapsed is always open, so a header click
+        # (which asks for the opposite of the current state) is inert without
+        # needing a guard of its own.
+        expanded = bool(expanded) or not self._collapsible
+        if expanded == self._expanded:
             return
         self._expanded = expanded
         self.content.setVisible(expanded)
         self.arrow_label.setText("▴" if expanded else "▾")
         self.toggled.emit(expanded)
+
+    def set_collapsible(self, collapsible: bool) -> None:
+        """Turn the header toggle on or off.
+
+        Not collapsible means always open: when the card is the only thing in
+        its column, a collapsed header strip would leave that column empty.
+        """
+        if collapsible == self._collapsible:
+            return
+        self._collapsible = collapsible
+        self.arrow_label.setVisible(collapsible)
+        self._header_widget.setCursor(
+            Qt.PointingHandCursor if collapsible else Qt.ArrowCursor
+        )
+        if not collapsible:
+            self.set_expanded(True)
 
     def add_stretch(self) -> None:
         """Absorb any height the card is given beyond its content.
@@ -422,15 +460,35 @@ class Expander(QWidget):
 
     The Tk panel uses this shape for the subtitle-appearance controls: set-once
     values that would otherwise make the Display card twice as tall.
+
+    ``collapsible=False`` keeps the panel open and renders the title as a plain
+    section heading instead — the shape a card's other sections have, so a
+    group that cannot be closed does not advertise a button.
     """
 
-    def __init__(self, title: str, parent=None, *, expanded: bool = False):
+    toggled = Signal(bool)
+
+    _PANEL_PAD = 12
+
+    def __init__(
+        self,
+        title: str,
+        parent=None,
+        *,
+        expanded: bool = False,
+        collapsible: bool = True,
+    ):
         super().__init__(parent)
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(8)
 
         self._title = title
+        self.heading = QLabel(title)
+        self.heading.setObjectName("section")
+        # Parented before any setVisible: a parentless widget that is shown is
+        # a top-level window (see Card).
+        box.addWidget(self.heading)
         self.button = QPushButton()
         self.button.setObjectName("expander")
         self.button.setCursor(Qt.PointingHandCursor)
@@ -438,26 +496,60 @@ class Expander(QWidget):
         box.addWidget(self.button)
 
         self.panel = QFrame()
-        self.panel.setObjectName("mini")
         self.body = QVBoxLayout(self.panel)
-        self.body.setContentsMargins(12, 12, 12, 12)
         self.body.setSpacing(10)
         box.addWidget(self.panel)
 
-        self._expanded = not expanded  # so set_expanded always applies
+        self._collapsible = collapsible
+        self._expanded = True
+        self.heading.setVisible(not collapsible)
+        self.button.setVisible(collapsible)
+        self._apply_panel_style()
         self.set_expanded(expanded)
 
     def set_title(self, title: str) -> None:
         self._title = title
+        self.heading.setText(title)
         self._refresh_button()
 
     def is_expanded(self) -> bool:
         return self._expanded
 
+    def is_collapsible(self) -> bool:
+        return self._collapsible
+
     def set_expanded(self, expanded: bool) -> None:
+        expanded = bool(expanded) or not self._collapsible
+        changed = expanded != self._expanded
         self._expanded = expanded
         self.panel.setVisible(expanded)
         self._refresh_button()
+        if changed:
+            # The card around it changes height, and in the 2-column layout
+            # that decides whether the columns can still end level.
+            self.toggled.emit(expanded)
+
+    def set_collapsible(self, collapsible: bool) -> None:
+        if collapsible == self._collapsible:
+            return
+        self._collapsible = collapsible
+        self.button.setVisible(collapsible)
+        self.heading.setVisible(not collapsible)
+        self._apply_panel_style()
+        self.set_expanded(self._expanded)  # forces it open when not collapsible
+
+    def _apply_panel_style(self) -> None:
+        """The soft tile marks the group as collapsible.
+
+        Without the toggle there is nothing to mark, and the controls should
+        sit flush in the card like every other section — so the tile and its
+        padding go with the button.
+        """
+        pad = self._PANEL_PAD if self._collapsible else 0
+        self.panel.setObjectName("mini" if self._collapsible else "")
+        self.body.setContentsMargins(pad, pad, pad, pad)
+        self.panel.style().unpolish(self.panel)
+        self.panel.style().polish(self.panel)
 
     def _refresh_button(self) -> None:
         self.button.setText(f"{'▾' if self._expanded else '▸'}  {self._title}")
