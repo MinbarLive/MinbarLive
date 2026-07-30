@@ -33,6 +33,15 @@ from utils.settings import (  # noqa: E402
     SUBTITLE_MODES,
 )
 
+
+def cp_module():
+    """The control-panel module, imported lazily so this file still collects
+    without a display."""
+    import gui_qt.control_panel as cp
+
+    return cp
+
+
 PAIRS = [
     ("Im Namen Allahs, des Allerbarmers, des Barmherzigen.", "بسم الله الرحمن الرحيم"),
     ("Alles Lob gebuehrt Allah ﷻ, dem Herrn der Welten.", "الحمد لله رب العالمين"),
@@ -287,6 +296,22 @@ class TestLifecycle:
         w.set_subtitle_mode(SUBTITLE_MODE_STATIC)
         assert not w._scroll_timer.isActive()
 
+    def test_always_on_top_never_loses_the_window(self, overlay, qt_app):
+        # setWindowFlag recreates the native window and hides the widget, so
+        # visibility has to be read before the call — reading it after saw the
+        # window Qt had just hidden and the overlay vanished for good.
+        from PySide6.QtCore import Qt
+
+        w = overlay(SUBTITLE_MODE_CONTINUOUS)
+        w.show()
+        qt_app.processEvents()
+        for enabled in (True, False, True, True, False):
+            w.set_always_on_top(enabled)
+            qt_app.processEvents()
+            assert w.isVisible(), f"hidden after set_always_on_top({enabled})"
+            assert bool(w.windowFlags() & Qt.WindowStaysOnTopHint) is enabled
+        w.hide()
+
 
 class TestNoTextShapingLayer:
     """The migration's core claim: Qt shapes Arabic, we never pre-process it."""
@@ -479,6 +504,11 @@ class TestControlPanelLayout:
             pass
 
         p = cp.ControlPanel(FakeController())
+        # The stored log state decides the column count now (the log shares the
+        # window instead of widening it), so pin it rather than inheriting
+        # whatever this machine's settings.json happens to say.
+        if not p._log_collapsed:
+            p._toggle_log_panel()
         p.resize(1200, 800)
         qt_app.processEvents()
         yield p
@@ -489,10 +519,51 @@ class TestControlPanelLayout:
         # A hidden widget never receives resizeEvent, so the reflow is driven
         # directly — that is exactly what the handler does, and showing a real
         # control-panel window during a test run is not worth the parity.
-        for width, expected in ((1200, 3), (860, 2), (520, 1)):
+        for width, expected in ((1200, 3), (900, 2), (520, 1)):
             panel.resize(width, 800)
             panel._relayout_columns()
             assert panel._columns == expected, f"{width}px should give {expected}"
+
+    def test_a_column_is_never_narrower_than_its_cards_need(self, panel):
+        # The horizontal scrollbar is off, so a threshold that lets a column
+        # below its minimum clips the card instead of scrolling it.
+        needs = [c.minimumSizeHint().width() for c in (panel.col_a, panel.col_b)]
+        margins = panel.grid.contentsMargins()
+        chrome = margins.left() + margins.right() + panel.grid.horizontalSpacing()
+        assert cp_module()._COL2_MIN_W >= sum(needs) + chrome
+
+    def test_opening_the_log_gives_the_cards_one_column(self, panel):
+        assert panel._log_collapsed
+        panel.resize(1200, 800)
+        panel._relayout_columns()
+        assert panel._columns == 3
+        panel._toggle_log_panel()
+        assert panel._columns == 1
+
+    def test_the_log_opens_inside_a_window_that_can_hold_it(self, panel, qt_app):
+        # It shares the window rather than bolting 420px onto the side; only a
+        # window too narrow for both is widened.
+        panel.resize(1400, 800)
+        qt_app.processEvents()
+        panel._toggle_log_panel()
+        assert panel.width() == 1400
+        assert panel.sidebar.width() == cp_module()._SIDEBAR_W_WITH_LOG
+
+    def test_a_narrow_window_grows_to_fit_the_log(self, panel, qt_app):
+        panel.resize(600, 800)
+        qt_app.processEvents()
+        panel._toggle_log_panel()
+        assert panel.width() >= (
+            cp_module()._SIDEBAR_W_WITH_LOG + cp_module()._LOG_PANEL_MIN_W
+        )
+
+    def test_advanced_opens_only_when_it_has_a_column_to_itself(self, panel):
+        panel.resize(1200, 800)
+        panel._relayout_columns()
+        assert panel.advanced_card.is_expanded()
+        panel.resize(900, 800)
+        panel._relayout_columns()
+        assert not panel.advanced_card.is_expanded()
 
     def test_each_card_group_is_placed_exactly_once(self, panel):
         panel.resize(1200, 800)
@@ -671,6 +742,321 @@ class TestSubtitleHideMode:
         assert panel.subtitle_window is None
 
 
+class TestSessionStartFeedback:
+    """A Start can take tens of seconds; the panel has to say so."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(cp, "ensure_keys", lambda *a, **k: True)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        class FakeController:
+            def __init__(self):
+                self.released = threading.Event()
+                self.translation_queue = queue.Queue()
+
+            def start(self, **_kwargs):
+                self.released.wait(5)
+
+            def stop(self):
+                pass
+
+        p = cp.ControlPanel(FakeController())
+        yield p
+        p.controller.released.set()
+        p.close()
+
+    def test_start_shows_connecting_and_disables_both_buttons(self, panel, qt_app):
+        panel.on_start()
+        qt_app.processEvents()
+        assert panel._starting is True
+        assert panel.status_pill.objectName() == "pill_connecting"
+        assert panel.status_pill.text() == panel._clean_label("connecting", "x")
+        # Start would queue a second session; there is nothing to stop yet.
+        assert not panel.start_btn.isEnabled()
+        assert not panel.stop_btn.isEnabled()
+
+    def test_the_pipeline_starts_off_the_gui_thread(self, panel, qt_app):
+        # If controller.start() ran inline the window would be frozen for its
+        # whole duration — on_start must return while it is still blocked.
+        panel.on_start()
+        assert not panel.controller.released.is_set()
+        assert panel._starting is True
+
+    def test_a_failed_start_falls_back_to_stopped(self, panel, qt_app, monkeypatch):
+        panel.controller.start = lambda **_k: 1 / 0
+        monkeypatch.setattr(
+            cp_module().QMessageBox, "critical", lambda *a, **k: None
+        )
+        panel.on_start()
+        for _ in range(40):
+            qt_app.processEvents()
+            if not panel._starting:
+                break
+            threading.Event().wait(0.05)
+        assert panel._starting is False
+        assert panel._running is False
+        assert panel.status_pill.objectName() == "pill_stopped"
+
+
+class TestAdvancedCard:
+    """The Advanced card's collapse and its "Default" lock."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(cp, "ensure_keys", lambda *a, **k: True)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        yield p
+        p.close()
+
+    def test_default_locks_the_provider_not_just_the_model(self, panel):
+        # A ticked "Default" that still let the engine be changed left the box
+        # ticked above a non-default provider.
+        panel.use_default_transcription.setChecked(True)
+        panel.use_default_translation.setChecked(True)
+        assert not panel.transcription_provider_combo.isEnabled()
+        assert not panel.transcription_model_combo.isEnabled()
+        assert not panel.provider_combo.isEnabled()
+        assert not panel.model_combo.isEnabled()
+
+    def test_unticking_default_hands_the_provider_back(self, panel):
+        panel.use_default_transcription.setChecked(False)
+        assert panel.transcription_provider_combo.isEnabled()
+        panel.use_default_translation.setChecked(False)
+        assert panel.provider_combo.isEnabled()
+
+    def test_the_card_collapses(self, panel):
+        panel.advanced_card.set_expanded(False)
+        assert not panel.advanced_card.content.isVisible()
+        assert panel.advanced_card.arrow_label.text() == "▾"
+        panel.advanced_card.set_expanded(True)
+        assert panel.advanced_card.arrow_label.text() == "▴"
+
+    def test_window_on_top_sits_under_its_heading_above_the_checkboxes(self, panel):
+        body = panel.advanced_card.body
+        order = [
+            body.itemAt(i).widget().text()
+            for i in range(body.count())
+            if body.itemAt(i).widget() is not None
+            and hasattr(body.itemAt(i).widget(), "text")
+        ]
+        heading = order.index(panel._t("other_settings", "Other settings"))
+        aot = order.index(panel._t("window_on_top_label", "Window always on top"))
+        first_check = order.index(panel._other_checks["show_footer"].text())
+        assert heading < aot < first_check
+
+
+class TestNoStrayTopLevelWindows:
+    """Little boxes flashed across the screen before the panel opened."""
+
+    def test_a_card_never_shows_a_parentless_widget(self, qt_app):
+        from gui_qt.theme import apply_theme
+        from gui_qt.widgets import Card
+
+        apply_theme(qt_app, "dark")
+        before = {w for w in qt_app.topLevelWidgets() if w.isVisible()}
+        # A parentless widget that is shown IS a top-level window. Every
+        # setVisible in a constructor therefore has to come after the widget
+        # has been put into a layout.
+        card = Card("⚙", "Erweitert", collapsible=True, expanded=False)
+        after = {w for w in qt_app.topLevelWidgets() if w.isVisible()}
+        assert after - before == set()
+        assert card.symbol_label.parentWidget() is not None
+        assert card.arrow_label.parentWidget() is not None
+        card.deleteLater()
+
+
+class TestCardPadding:
+    """A collapsed card must not read as lopsided."""
+
+    def test_a_collapsed_card_is_padded_evenly(self, qt_app):
+        from PySide6.QtWidgets import QLabel
+
+        from gui_qt.theme import apply_theme
+        from gui_qt.widgets import Card
+
+        apply_theme(qt_app, "dark")
+        # Standalone, not the panel's card: a child of a live layout is resized
+        # by its parent the moment it is shown, so measuring one there measures
+        # the layout, not the padding rule.
+        card = Card("⚙", "Erweitert", collapsible=True, expanded=False)
+        card.body.addWidget(QLabel("body"))
+        card.add_stretch()
+        card.resize(420, card.sizeHint().height())
+        card.show()
+        qt_app.processEvents()
+        badge = card.symbol_label
+        top = badge.mapTo(card, badge.rect().topLeft()).y()
+        bottom = card.height() - (top + badge.height())
+        assert top == bottom, f"collapsed card padded {top} above, {bottom} below"
+        card.hide()
+        card.deleteLater()
+
+
+class TestEqualColumnHeights:
+    """Side by side the three cards end level; stacked they keep their own."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        if not p._log_collapsed:
+            p._toggle_log_panel()
+        p.resize(1400, 980)
+        p.show()
+        qt_app.processEvents()
+        yield p
+        p.close()
+
+    def test_three_columns_end_level(self, panel, qt_app):
+        panel.resize(1400, 980)
+        qt_app.processEvents()
+        assert panel._columns == 3
+        bottoms = {
+            card.geometry().y() + card.geometry().height()
+            for _box, card in panel._column_tails
+        }
+        assert len(bottoms) == 1, f"columns end at {sorted(bottoms)}"
+
+    def test_the_cards_stop_at_the_tallest_one_not_at_the_window(
+        self, panel, qt_app
+    ):
+        # The scroll area makes cards_host viewport-tall; without a stretch row
+        # under the content the cards swallowed that surplus and ran to the
+        # bottom of the window.
+        panel.resize(1400, 1200)
+        qt_app.processEvents()
+        host = panel.cards_host
+        bottom = max(
+            card.mapTo(host, card.rect().bottomLeft()).y()
+            for _box, card in panel._column_tails
+        )
+        assert bottom < host.height() - 100, (
+            f"cards reach {bottom} of {host.height()} — they filled the window"
+        )
+
+    def test_one_column_keeps_natural_heights(self, panel, qt_app):
+        panel.resize(600, 980)
+        qt_app.processEvents()
+        assert panel._columns == 1
+        for _box, card in panel._column_tails:
+            assert card.height() == card.sizeHint().height()
+
+    def test_two_columns_end_level_without_inflating_a_closed_card(
+        self, panel, qt_app
+    ):
+        panel.resize(900, 900)
+        qt_app.processEvents()
+        assert panel._columns == 2
+        assert not panel.advanced_card.is_expanded()
+        display = panel._column_tails[0][1]
+        advanced = panel.advanced_card
+        host = panel.cards_host
+
+        def bottom(card):
+            return card.mapTo(host, card.rect().bottomLeft()).y()
+
+        assert bottom(advanced) == bottom(display)
+        # Bottom-aligned, not stretched: a header strip blown up into a tall
+        # empty box is worse than a ragged edge.
+        assert advanced.height() == advanced.sizeHint().height()
+
+    def test_always_on_top_covers_the_control_panel(self, panel, qt_app):
+        from PySide6.QtCore import Qt
+
+        from utils.settings import ALWAYS_ON_TOP_MODES
+
+        panel.show()
+        qt_app.processEvents()
+        for mode in ("always", "never"):
+            panel._on_aot_changed(ALWAYS_ON_TOP_MODES.index(mode))
+            qt_app.processEvents()
+            expected = mode == "always"
+            assert bool(panel.windowFlags() & Qt.WindowStaysOnTopHint) is expected
+            assert panel.isVisible(), f"panel hidden after mode {mode}"
+
+
+class TestSubtitleAppearance:
+    """The collapsible typography controls ported from gui/typography.py."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        yield p
+        p.close()
+
+    def test_it_starts_collapsed(self, panel):
+        assert not panel.typography.is_expanded()
+        assert not panel.typography.panel.isVisible()
+
+    def test_the_size_is_shown_against_the_translation_size(self, panel):
+        panel.settings.font_size_base = 40
+        panel.settings.source_font_size_base = 40 / 0.7
+        assert panel._source_font_percent_text() == "70%"
+
+    def test_stepping_the_size_keeps_it_in_range(self, panel):
+        from utils.settings import SOURCE_FONT_SIZE_BASE_MAX
+
+        for _ in range(40):
+            panel._step_source_font(+5.0)
+        assert panel.settings.source_font_size_base == SOURCE_FONT_SIZE_BASE_MAX
+
+    def test_the_main_font_step_drags_the_original_size_with_it(self, panel):
+        panel.settings.font_size_base = 40
+        panel.settings.source_font_size_base = 40 / 0.7
+        before = panel._source_font_percent_text()
+        panel._step_font(smaller=True)
+        assert panel._source_font_percent_text() == before
+
+    def test_reset_is_offered_only_for_an_overridden_colour(self, panel):
+        panel.settings.translation_text_color = ""
+        panel._refresh_typography()
+        assert not panel._color_reset_btns["translation_text_color"].isEnabled()
+        panel.settings.translation_text_color = "#FF0000"
+        panel._refresh_typography()
+        assert panel._color_reset_btns["translation_text_color"].isEnabled()
+        assert "#FF0000" in panel._color_pick_btns["translation_text_color"].text()
+
+    def test_backdrop_opacity_lives_on_the_panel(self, panel):
+        panel.opacity_slider.setValue(30)
+        assert panel.settings.subtitle_backdrop_opacity == 30
+        assert panel.opacity_value.text() == "30%"
+
+
 class TestControlChrome:
     """Check marks and dropdown chevrons are painted, not stylesheet shapes."""
 
@@ -841,19 +1227,26 @@ class TestControlChrome:
             assert not event.isAccepted()
 
     def test_picking_an_entry_releases_the_focus_ring(self, qt_app):
+        from PySide6.QtWidgets import QVBoxLayout, QWidget
+
         from gui_qt.theme import apply_theme
         from gui_qt.widgets import Dropdown
 
         apply_theme(qt_app, "light")
+        window = QWidget()
         combo = Dropdown(["Deutsch", "English"])
-        combo.show()
-        combo.setFocus()
+        QVBoxLayout(window).addWidget(combo)
+        window.show()
         try:
-            assert combo.hasFocus()
+            combo.setFocus()
+            # focusWidget(), not hasFocus(): the latter is False whenever the
+            # window is not the ACTIVE one, which in a full-suite run depends
+            # on whichever test showed a window last.
+            assert window.focusWidget() is combo
             combo.activated.emit(1)  # what a real pick emits
-            assert not combo.hasFocus()
+            assert window.focusWidget() is None
         finally:
-            combo.close()
+            window.close()
 
     def test_the_popup_caps_how_many_rows_it_shows(self, qt_app):
         # A dozen-plus languages/models/devices otherwise open a popup taller
