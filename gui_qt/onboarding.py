@@ -3,6 +3,13 @@
 Port of ``gui/onboarding.py``. Five steps: appearance, languages, input
 device, provider + API key, disclaimer.
 
+Layout follows the Tk wizard: a centred title and step counter as persistent
+chrome, and every step's own heading, sub-line and controls *inside* one card
+that fills the remaining height. The two deliberate departures are the
+appearance choice (a segmented Dark|Light control rather than a dropdown) and
+the provider step's general note, which sits at the top of the card instead of
+below the caveats.
+
 The finish logic is a close port rather than a fresh design — it encodes
 decisions that were expensive to reach:
 
@@ -20,7 +27,7 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -46,6 +53,7 @@ from gui_qt.widgets import AudioLevelBar, Dropdown, SegmentedControl, warning_bo
 from providers import (
     PROVIDER_CHOICES,
     get_default_model,
+    get_key_placeholder,
     get_stored_api_key,
     get_streaming_key_provider,
     resolve_provider_by_keys,
@@ -69,10 +77,11 @@ from utils.settings import (
 
 # Stack index of the input-device step, which owns the level meter.
 _DEVICE_STEP = 2
-# Meter cadence, and how long an automatic preview runs before releasing the
-# device again — same values as the Tk wizard.
+# Meter cadence. Unlike the control panel's meter (and the Tk wizard's, which
+# releases the device again after 10s), the preview here runs until it is
+# stopped: setup is exactly when someone talks into the microphone to see the
+# bar move, and having it die mid-test reads as a broken meter.
 _LEVEL_POLL_MS = 50
-_LEVEL_AUTO_SECONDS = 10
 
 # Providers that have a realtime engine of their own. Anthropic has none.
 _REALTIME_ENGINE_FOR_PROVIDER = {
@@ -118,6 +127,9 @@ class OnboardingWizard(QDialog):
         self._theme = settings.theme_mode
         self.texts = load_gui_translations(self._gui_language)
         self.completed = False
+        # Every label whose text comes from the translation files, so switching
+        # the GUI language on step 1 re-labels the steps behind it too.
+        self._i18n: list[tuple[QWidget, str, str, str]] = []
 
         self.setWindowTitle("MinbarLive")
         for path in (ICON_PATH, ICON_PATH_PNG):
@@ -126,15 +138,23 @@ class OnboardingWizard(QDialog):
                 if not icon.isNull():
                     self.setWindowIcon(icon)
                     break
-        self.resize(620, 660)
+        self.resize(680, 660)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(24, 24, 24, 24)
-        outer.setSpacing(16)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(10)
+
+        self.title_label = QLabel("")
+        self.title_label.setObjectName("wizard_title")
+        self.title_label.setAlignment(Qt.AlignCenter)
+        self._tr(self.title_label, "wizard_title", "Welcome to MinbarLive")
+        outer.addWidget(self.title_label)
 
         self.step_label = QLabel("")
         self.step_label.setObjectName("muted")
+        self.step_label.setAlignment(Qt.AlignCenter)
         outer.addWidget(self.step_label)
+        outer.addSpacing(8)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self._step_appearance())
@@ -149,14 +169,18 @@ class OnboardingWizard(QDialog):
         self.stack.currentChanged.connect(self._on_step_changed)
 
         nav = QHBoxLayout()
-        self.back_btn = QPushButton(self._t("wizard_back", "Back"))
+        nav.setSpacing(16)
+        self.back_btn = QPushButton("")
+        self.back_btn.setMinimumHeight(44)
         self.back_btn.clicked.connect(self._on_back)
-        self.next_btn = QPushButton(self._t("wizard_next", "Next"))
+        self._tr(self.back_btn, "wizard_back", "Back")
+        self.next_btn = QPushButton("")
         self.next_btn.setObjectName("accent")
+        self.next_btn.setMinimumHeight(44)
         self.next_btn.clicked.connect(self._on_next)
-        nav.addWidget(self.back_btn)
-        nav.addStretch(1)
-        nav.addWidget(self.next_btn)
+        # Equal halves, as the Tk nav bar is — not a small Back beside a stretch.
+        nav.addWidget(self.back_btn, 1)
+        nav.addWidget(self.next_btn, 1)
         outer.addLayout(nav)
 
         self._sync_nav()
@@ -164,33 +188,56 @@ class OnboardingWizard(QDialog):
     def _t(self, key: str, fallback: str) -> str:
         return self.texts.get(key, fallback)
 
-    def _card(self, title: str, subtitle: str = "") -> tuple[QWidget, QVBoxLayout]:
+    def _tr(self, widget, key: str, fallback: str, prefix: str = ""):
+        """Set a widget's text from the translations and remember it."""
+        self._i18n.append((widget, key, fallback, prefix))
+        widget.setText(prefix + self._t(key, fallback))
+        return widget
+
+    def _label(self, key: str, fallback: str, object_name: str = "wizard_sub") -> QLabel:
+        label = QLabel("")
+        label.setObjectName(object_name)
+        label.setWordWrap(True)
+        return self._tr(label, key, fallback)
+
+    def _card(
+        self,
+        title_key: str,
+        title_fallback: str,
+        sub_key: str = "",
+        sub_fallback: str = "",
+    ) -> tuple[QWidget, QVBoxLayout]:
+        """A step page: one card filling the height, headed by its own title.
+
+        The Tk wizard puts the step heading and its sub-line inside the card
+        rather than above it, and lets the card fill the window — matched here
+        so the two trees read the same.
+        """
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
-        heading = QLabel(title)
-        heading.setObjectName("heading")
-        layout.addWidget(heading)
-        if subtitle:
-            sub = QLabel(subtitle)
-            sub.setObjectName("muted")
-            sub.setWordWrap(True)
-            layout.addWidget(sub)
         card = QFrame()
         card.setObjectName("card")
         inner = QVBoxLayout(card)
-        inner.setContentsMargins(18, 16, 18, 16)
-        inner.setSpacing(12)
-        layout.addWidget(card)
-        layout.addStretch(1)
+        inner.setContentsMargins(22, 18, 22, 18)
+        inner.setSpacing(8)
+        layout.addWidget(card, 1)
+
+        inner.addWidget(self._label(title_key, title_fallback, object_name="heading"))
+        if sub_key:
+            inner.addWidget(self._label(sub_key, sub_fallback))
         return page, inner
 
     # ── steps ────────────────────────────────────────────────────────────
     def _step_appearance(self) -> QWidget:
-        page, inner = self._card(self._t("wizard_theme_label", "Appearance"))
+        page, inner = self._card(
+            "wizard_ui_language_title",
+            "App language",
+            "wizard_ui_language_sub",
+            "Language of the control panel (subtitles use their own setting).",
+        )
 
-        # GUI language first: changing it re-renders every later step.
+        # GUI language first: changing it re-labels every later step.
         self.gui_lang_combo = Dropdown()
         for code, name in GUI_LANGUAGES:
             self.gui_lang_combo.addItem(name, code)
@@ -198,20 +245,28 @@ class OnboardingWizard(QDialog):
         if idx >= 0:
             self.gui_lang_combo.setCurrentIndex(idx)
         self.gui_lang_combo.currentIndexChanged.connect(self._on_gui_language)
-        inner.addWidget(QLabel(self._t("language", "Language")))
         inner.addWidget(self.gui_lang_combo)
 
+        # A segmented Dark|Light pair rather than a dropdown: it is a two-way
+        # choice whose effect is visible the moment it is clicked.
+        inner.addSpacing(6)
+        inner.addWidget(self._label("wizard_theme_label", "Appearance"))
         self.theme_segment = SegmentedControl(
-            [self._t(f"theme_{m}", m.title()) for m in THEME_MODES],
+            self._theme_labels(),
             THEME_MODES.index(self._theme) if self._theme in THEME_MODES else 0,
         )
         self.theme_segment.changed.connect(self._on_theme)
-        inner.addWidget(QLabel(self._t("wizard_theme_label", "Appearance")))
         inner.addWidget(self.theme_segment)
+        inner.addStretch(1)
         return page
 
+    def _theme_labels(self) -> list[str]:
+        return [self._t(f"theme_{mode}", mode.title()) for mode in THEME_MODES]
+
     def _step_languages(self) -> QWidget:
-        page, inner = self._card(self._t("wizard_languages_title", "Translation languages"))
+        page, inner = self._card(
+            "wizard_languages_title", "Translation languages"
+        )
         settings = load_settings()
 
         # Real-time — where onboarding always lands — cannot auto-detect the
@@ -237,19 +292,23 @@ class OnboardingWizard(QDialog):
             language_display_name(settings.target_language)
         )
 
-        inner.addWidget(QLabel(self._t("wizard_source_language", "Spoken language")))
+        inner.addSpacing(6)
+        inner.addWidget(self._label("wizard_source_language", "Spoken language (source)"))
         inner.addWidget(self.source_combo)
-        inner.addWidget(QLabel(self._t("wizard_target_language", "Subtitle language")))
+        inner.addSpacing(6)
+        inner.addWidget(
+            self._label("wizard_target_language", "Subtitle language (target)")
+        )
         inner.addWidget(self.target_combo)
+        inner.addStretch(1)
         return page
 
     def _step_device(self) -> QWidget:
         page, inner = self._card(
-            self._t("wizard_audio_title", "Input device"),
-            self._t(
-                "wizard_audio_sub",
-                "Choose the audio input used for the live translation.",
-            ),
+            "wizard_audio_title",
+            "Input device",
+            "wizard_audio_sub",
+            "Choose the audio input used for the live translation.",
         )
         (
             self.device_names,
@@ -258,13 +317,27 @@ class OnboardingWizard(QDialog):
             _loopback,
         ) = get_input_devices()
         self.device_combo = Dropdown()
-        self.device_combo.addItems(self.device_names or ["(no input devices)"])
-        self.device_combo.currentIndexChanged.connect(
-            lambda _i: self._start_level_preview(auto=True)
-        )
-        inner.addWidget(QLabel(self._t("input_device", "Input device")))
+        self.device_combo.addItems(self.device_names or [""])
+        self.device_combo.currentIndexChanged.connect(self._on_device_changed)
+        inner.addSpacing(6)
         inner.addWidget(self.device_combo)
-        inner.addWidget(self._level_row())
+        self._level_holder = self._level_row()
+        inner.addWidget(self._level_holder)
+
+        # Nothing to pick from: say so instead of showing a dead combo and a
+        # meter that can never move (the panel can still be used later).
+        self._no_devices_label = self._label(
+            "wizard_no_devices",
+            "No input devices found — you can choose one later in the control "
+            "panel.",
+        )
+        inner.addWidget(self._no_devices_label)
+        has_devices = bool(self.device_names)
+        self.device_combo.setVisible(has_devices)
+        self._level_holder.setVisible(has_devices)
+        self._no_devices_label.setVisible(not has_devices)
+
+        inner.addStretch(1)
         return page
 
     # ── input-level meter (device step only) ─────────────────────────────
@@ -277,7 +350,7 @@ class OnboardingWizard(QDialog):
         """
         holder = QWidget()
         row = QHBoxLayout(holder)
-        row.setContentsMargins(0, 6, 0, 0)
+        row.setContentsMargins(0, 10, 0, 0)
         row.setSpacing(10)
 
         self.level_value = QLabel(self._t("input_level_no_signal", "No signal"))
@@ -287,7 +360,8 @@ class OnboardingWizard(QDialog):
         self.level_value.setMinimumWidth(84)
         self.level_bar = AudioLevelBar(height=14)
         self.level_btn = QPushButton(self._t("input_level_test", "Test mic"))
-        self.level_btn.setMinimumHeight(30)
+        self.level_btn.setMinimumHeight(34)
+        self.level_btn.setMinimumWidth(110)
         self.level_btn.clicked.connect(self._toggle_level_test)
 
         row.addWidget(self.level_value)
@@ -296,11 +370,6 @@ class OnboardingWizard(QDialog):
 
         self._level_timer = QTimer(self)
         self._level_timer.timeout.connect(self._poll_level)
-        # A preview holds the OS input device open, so it is never left running:
-        # an auto-preview stops itself, and leaving the step stops it too.
-        self._level_auto_stop = QTimer(self)
-        self._level_auto_stop.setSingleShot(True)
-        self._level_auto_stop.timeout.connect(self._stop_level_capture)
         return holder
 
     def _selected_device_index(self) -> int | None:
@@ -308,6 +377,16 @@ class OnboardingWizard(QDialog):
         if not self.device_indices or not (0 <= pos < len(self.device_indices)):
             return None
         return self.device_indices[pos]
+
+    def _on_device_changed(self, _index: int) -> None:
+        """Follow the selection with the meter — but only while it is running.
+
+        Switching device must not stop the preview (auditioning inputs is the
+        whole point of this step), and must not silently re-open one the user
+        deliberately stopped either.
+        """
+        if self._level_test_running():
+            self._start_level_preview(auto=True)
 
     def _level_test_running(self) -> bool:
         checker = getattr(self._controller, "is_input_level_test_running", None)
@@ -321,7 +400,6 @@ class OnboardingWizard(QDialog):
     def _start_level_preview(self, *, auto: bool) -> None:
         if self._controller is None:
             return
-        self._level_auto_stop.stop()
         try:
             self._controller.start_input_level_test(self._selected_device_index())
         except Exception as exc:  # noqa: BLE001
@@ -333,12 +411,9 @@ class OnboardingWizard(QDialog):
             self._sync_level_button()
             return
         self._level_timer.start(_LEVEL_POLL_MS)
-        if auto:
-            self._level_auto_stop.start(_LEVEL_AUTO_SECONDS * 1000)
         self._sync_level_button()
 
     def _stop_level_capture(self) -> None:
-        self._level_auto_stop.stop()
         self._level_timer.stop()
         stopper = getattr(self._controller, "stop_input_level_test", None)
         if stopper is not None:
@@ -349,7 +424,6 @@ class OnboardingWizard(QDialog):
         self._sync_level_button()
 
     def _toggle_level_test(self) -> None:
-        # An explicit test is never on a timer: it runs until stopped.
         if self._level_test_running():
             self._stop_level_capture()
         else:
@@ -389,51 +463,63 @@ class OnboardingWizard(QDialog):
         self._sync_level_button()
 
     def _step_provider(self) -> QWidget:
+        # The general note stays at the TOP of this card (the Tk wizard puts it
+        # last): it answers "why is there only one key field?" before the field
+        # is reached, and the per-provider caveats below are the exceptions.
         page, inner = self._card(
-            self._t("wizard_provider_title", "AI provider"),
-            self._t(
-                "wizard_keys_info",
-                "With OpenAI, one key covers both translation and real-time "
-                "transcription.",
-            ),
+            "wizard_provider_title",
+            "AI provider & API key",
+            "wizard_keys_info",
+            "Add keys for as many providers as you like by switching the list "
+            "above. With OpenAI (the default), one key covers translation, "
+            "real-time transcription and Quran verse detection.",
         )
         # Deepgram (streaming STT) is listed alongside the translation
         # providers so its key can be entered here too. It has no translation
         # capability, so selecting it only reveals its key field — the active
         # translation provider is still resolved from the keys entered.
         self.provider_combo = Dropdown()
-        default_tag = self._t("provider_default_tag", "Default")
-        for name, pid in [*PROVIDER_CHOICES, ("Deepgram", "deepgram")]:
-            label = f"{name} ({default_tag})" if pid == DEFAULT_AI_PROVIDER else name
-            self.provider_combo.addItem(label, pid)
+        for _name, pid in self._provider_entries():
+            self.provider_combo.addItem("", pid)
+        self._refresh_provider_labels()
         self.provider_combo.currentIndexChanged.connect(self._on_provider)
 
-        self.key_edit = QLineEdit()
-        self.key_edit.setEchoMode(QLineEdit.Password)
-        self.key_hint = QLabel("")
-        self.key_hint.setObjectName("muted")
-        self.key_hint.setWordWrap(True)
-
+        inner.addSpacing(6)
         # Row label, not the card heading — repeating it reads as a bug.
-        inner.addWidget(QLabel(self._t("wizard_provider", "Provider")))
+        inner.addWidget(self._label("wizard_provider", "Provider"))
         inner.addWidget(self.provider_combo)
-        inner.addWidget(QLabel(self._t("wizard_api_key", "API key")))
-        inner.addWidget(self.key_edit)
-        inner.addWidget(self.key_hint)
+        inner.addSpacing(6)
+        inner.addWidget(self._label("wizard_api_key", "API key"))
+        inner.addWidget(self._key_row())
 
         links = QHBoxLayout()
         links.setSpacing(8)
-        self.key_help_btn = QPushButton(
-            "🛈  " + self._t("wizard_key_help", "Where do I get an API key?")
+        self.key_help_btn = QPushButton("")
+        self._tr(
+            self.key_help_btn,
+            "wizard_key_help",
+            "Where do I get an API key?",
+            prefix="🛈  ",
         )
         self.key_help_btn.clicked.connect(lambda: self._open_link(_KEY_HELP_LINKS))
-        self.key_site_btn = QPushButton(
-            "🔑  " + self._t("wizard_key_site", "Open the API key page")
+        self.key_site_btn = QPushButton("")
+        self._tr(
+            self.key_site_btn,
+            "wizard_key_site",
+            "Open the API key page",
+            prefix="🔑  ",
         )
         self.key_site_btn.clicked.connect(lambda: self._open_link(_KEY_SITE_LINKS))
         links.addWidget(self.key_help_btn)
         links.addWidget(self.key_site_btn)
+        links.addStretch(1)
+        inner.addSpacing(4)
         inner.addLayout(links)
+
+        self.key_hint = QLabel("")
+        self.key_hint.setObjectName("wizard_sub")
+        self.key_hint.setWordWrap(True)
+        inner.addWidget(self.key_hint)
 
         # Provider-specific caveats, as warning callouts rather than another
         # grey note: they cost the user money or accuracy if missed. Rebuilt
@@ -441,12 +527,46 @@ class OnboardingWizard(QDialog):
         self._notes_layout = QVBoxLayout()
         self._notes_layout.setSpacing(8)
         inner.addLayout(self._notes_layout)
+        inner.addStretch(1)
 
         # Keys entered this session, per provider — browsing away and back must
         # not lose one, and finish resolves the provider from this map.
         self._provider_keys: dict[str, str] = {}
         self._on_provider(0)
         return page
+
+    @staticmethod
+    def _provider_entries() -> list[tuple[str, str]]:
+        return [*PROVIDER_CHOICES, ("Deepgram", "deepgram")]
+
+    def _refresh_provider_labels(self) -> None:
+        """(Re-)label the provider entries, tagging the shipped default.
+
+        The tag is translated, so this runs again after a GUI-language switch.
+        """
+        default_tag = self._t("provider_default_tag", "Default")
+        for index, (name, pid) in enumerate(self._provider_entries()):
+            label = f"{name} ({default_tag})" if pid == DEFAULT_AI_PROVIDER else name
+            self.provider_combo.setItemText(index, label)
+
+    def _key_row(self) -> QWidget:
+        """The key field with a show/hide toggle beside it, as in Tk."""
+        holder = QWidget()
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+        self.key_edit = QLineEdit()
+        self.key_edit.setEchoMode(QLineEdit.Password)
+        self.show_key_check = QCheckBox("")
+        self._tr(self.show_key_check, "wizard_show_key", "Show")
+        self.show_key_check.toggled.connect(
+            lambda on: self.key_edit.setEchoMode(
+                QLineEdit.Normal if on else QLineEdit.Password
+            )
+        )
+        row.addWidget(self.key_edit, 1)
+        row.addWidget(self.show_key_check)
+        return holder
 
     def _open_link(self, table: dict) -> None:
         provider = self._current_provider()
@@ -503,31 +623,60 @@ class OnboardingWizard(QDialog):
                     )
                 )
             )
+        elif provider == "deepgram":
+            # Deepgram is transcription-only: no translation model and no
+            # embedding model, so a key here can never be the whole setup.
+            self._notes_layout.addWidget(
+                warning_box(
+                    self._t(
+                        "wizard_deepgram_note",
+                        "Deepgram only does real-time transcription — it has no "
+                        "translation and no embeddings for Quran verse "
+                        "detection. You also need a key for a translation "
+                        "provider (OpenAI, Google Gemini or Anthropic).",
+                    )
+                )
+            )
         self.key_help_btn.setEnabled(provider in _KEY_HELP_LINKS)
         self.key_site_btn.setEnabled(provider in _KEY_SITE_LINKS)
 
     def _step_disclaimer(self) -> QWidget:
-        page, inner = self._card(self._t("wizard_disclaimer_title", "Please note"))
+        page, inner = self._card("wizard_disclaimer_title", "Please note")
         # A warning callout, not body text: this is the one thing on the whole
         # wizard the user must actually read.
-        inner.addWidget(
-            warning_box(
-                self._t(
-                    "wizard_disclaimer_text",
-                    "MinbarLive uses artificial intelligence to transcribe and "
-                    "translate speech in real time. AI translations can be "
-                    "wrong, incomplete or inaccurate — especially for religious "
-                    "content. The audio is sent to the selected AI provider for "
-                    "processing. Do not rely on the subtitles as an "
-                    "authoritative religious source.",
-                )
+        self._disclaimer_box = warning_box(
+            self._t(
+                "wizard_disclaimer_text",
+                "MinbarLive uses artificial intelligence to transcribe and "
+                "translate speech in real time. AI translations can be wrong, "
+                "incomplete or inaccurate — especially for religious content. "
+                "The audio is sent to the selected AI provider for processing. "
+                "Do not rely on the subtitles as an authoritative religious "
+                "source.",
             )
         )
-        self.disclaimer_check = QCheckBox(
-            self._t("wizard_disclaimer_accept", "I understand")
+        # warning_box already prefixes the sign; re-translation must keep it.
+        self._i18n.append(
+            (
+                self._disclaimer_box.label,
+                "wizard_disclaimer_text",
+                self._disclaimer_box.label.text()[3:],
+                "⚠  ",
+            )
+        )
+        inner.addSpacing(6)
+        inner.addWidget(self._disclaimer_box)
+
+        self.disclaimer_check = QCheckBox("")
+        self._tr(
+            self.disclaimer_check,
+            "wizard_disclaimer_accept",
+            "I understand that AI translations can be inaccurate.",
         )
         self.disclaimer_check.toggled.connect(lambda _: self._sync_nav())
+        inner.addSpacing(8)
         inner.addWidget(self.disclaimer_check)
+        inner.addStretch(1)
         return page
 
     @staticmethod
@@ -558,10 +707,13 @@ class OnboardingWizard(QDialog):
             self._provider_keys[previous] = typed
         self._last_provider = provider
         self.key_edit.setText(self._provider_keys.get(provider, ""))
-        self.key_edit.setPlaceholderText("sk-..." if provider == "openai" else "")
+        self.key_edit.setPlaceholderText(get_key_placeholder(provider))
         if get_stored_api_key(provider):
             self.key_hint.setText(
-                self._t("wizard_key_saved_hint", "A key is already saved for this provider.")
+                self._t(
+                    "wizard_key_saved_hint",
+                    "A key is already saved — leave empty to keep it.",
+                )
             )
         else:
             self.key_hint.setText("")
@@ -573,11 +725,18 @@ class OnboardingWizard(QDialog):
             self._provider_keys[self._current_provider()] = typed
 
     def _retranslate(self) -> None:
-        self.back_btn.setText(self._t("wizard_back", "Back"))
-        self.next_btn.setText(self._t("wizard_next", "Next"))
-        self.disclaimer_check.setText(
-            self._t("wizard_disclaimer_accept", "I understand")
-        )
+        """Re-label everything after a GUI-language switch.
+
+        Rebuilding the pages instead would be simpler but would throw away the
+        language, device and key choices already made — the language step is
+        reachable via Back from any later step.
+        """
+        for widget, key, fallback, prefix in self._i18n:
+            widget.setText(prefix + self._t(key, fallback))
+        self.theme_segment.set_labels(self._theme_labels())
+        self._refresh_provider_labels()
+        self._on_provider(self.provider_combo.currentIndex())
+        self._sync_level_button()
         self._sync_nav()
 
     # ── navigation ───────────────────────────────────────────────────────
@@ -680,8 +839,6 @@ class OnboardingWizard(QDialog):
             if not save_api_key(pid, key) and pid == provider:
                 session_only = True
         if session_only:
-            from PySide6.QtWidgets import QMessageBox
-
             QMessageBox.warning(
                 self,
                 "MinbarLive",

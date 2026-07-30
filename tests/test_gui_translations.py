@@ -38,6 +38,7 @@ WIZARD_KEYS = [
     "wizard_gemini_rag_note",
     "wizard_gemini_latency_note",
     "wizard_anthropic_stt_note",
+    "wizard_deepgram_note",
     "wizard_show_key",
     "wizard_key_saved_hint",
     "wizard_disclaimer_title",
