@@ -6,6 +6,11 @@ presentation forms and survive arabic_reshaper — feeding Tk our
 already-reordered visual string then double-reorders it (reversed,
 disconnected letters: the "breaks only with ؟/!" bug). In exactly those
 cases _reshape_rtl must return the logical text and let Tk do the whole job.
+
+macOS Tk goes further: it lays every string out with CoreText, which always
+applies bidi AND shaping — even to the presentation forms the reshaper emits —
+so there pre-shaping is wrong for *every* string, not just the ones with
+surviving Arabic-block punctuation.
 """
 
 import pytest
@@ -28,6 +33,8 @@ class TestTkNativeFallback:
 
     @pytest.fixture(autouse=True)
     def _tk_native(self, monkeypatch):
+        # Pinned so the suite tests the Windows rule on a macOS machine too.
+        monkeypatch.setattr(subtitle_window, "_TK_SHAPES_ARABIC", False)
         monkeypatch.setattr(subtitle_window, "_TK_HANDLES_ARABIC", True)
 
     def test_surviving_arabic_qmark_returns_logical_text(self):
@@ -58,6 +65,7 @@ class TestPreShapedPath:
 
     @pytest.fixture(autouse=True)
     def _no_tk_native(self, monkeypatch):
+        monkeypatch.setattr(subtitle_window, "_TK_SHAPES_ARABIC", False)
         monkeypatch.setattr(subtitle_window, "_TK_HANDLES_ARABIC", False)
 
     def test_surviving_qmark_still_shaped(self):
@@ -68,3 +76,18 @@ class TestPreShapedPath:
 
     def test_pure_arabic_shaped(self):
         assert _reshape_rtl(PURE) != PURE
+
+
+class TestCoreTextPath:
+    """macOS: CoreText shapes and reorders everything itself, so the logical
+    text must be handed over untouched in every case."""
+
+    @pytest.fixture(autouse=True)
+    def _coretext(self, monkeypatch):
+        monkeypatch.setattr(subtitle_window, "_TK_SHAPES_ARABIC", True)
+        # False on purpose: the Windows rule must not be what saves us here.
+        monkeypatch.setattr(subtitle_window, "_TK_HANDLES_ARABIC", False)
+
+    @pytest.mark.parametrize("text", [PURE, QMARK, COMMA, GERMAN])
+    def test_text_is_never_pre_shaped(self, text):
+        assert _reshape_rtl(text) == text

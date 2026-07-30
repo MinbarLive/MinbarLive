@@ -1,5 +1,5 @@
 <div align="center">
-    <a href="https://github.com/MinbarLive/MinbarLive" />
+    <a href="https://minbarlive.info/">
         <img alt="Logo" height="200px" src="./public/MinbarLive2.png">
     </a>
 </div>
@@ -7,6 +7,8 @@
 # MinbarLive - Islamic Live Translation
 
 Real-time translation system for mosque lectures and prayers, supporting multiple languages.
+
+<br>
 
 ## Overview
 
@@ -18,28 +20,22 @@ By default it runs in **real-time streaming mode**: the spoken text appears word
 
 ### Key Features
 
-- **Real-time streaming transcription** (default): live word-by-word transcript with utterance-based translation (engines: Google Gemini Live, OpenAI Realtime, or Deepgram
-- **Segmented mode** as an alternative: chunk-based or semantic sentence buffering
-- **Multiple AI providers**: translation via Google Gemini, OpenAI, or Anthropic Claude, switchable in the settings
-- **Verified Quran verse output**: RAG matching over precomputed verse embeddings; high-confidence matches display the exact published translation (marked 📖) instead of an AI paraphrase
-- Dictionary matching for Athan phrases
-- **System audio capture** (Windows): translate whatever is playing on the PC (a stream, a video call, a recording) by picking a `(Loopback)` device instead of a microphone. No virtual audio cable needed
-- **Noise filter**: a voice-activity gate drops static, hum and hiss before they reach the AI, so a noisy line can't be turned into invented sentences
-- **Bilingual subtitles**: optionally show the original text above the translation
-- Three subtitle modes: Realtime feed, continuous ticker, or static display
-- **Adjustable subtitle look**: font size, window height, size of the original-text line, and custom colours for translation and original text
-- **Announcements**: push a message ("Prayer starts in 5 minutes") onto the subtitle screen for a chosen duration, independently of the translation
-- **Input level meter with mic test**: check the signal before you start. A too-quiet mic is the single most common cause of poor recognition
-- **Batch mode**: turn a pre-recorded audio/video file into an `.srt` subtitle file (or a plain text transcript)
-- **Session history viewer** with AI-generated session summaries and a per-session **cost estimate**
+- **Real-time streaming** (default): word-by-word transcript, translation per finished utterance — chunk-based and semantic modes as alternatives ([details](#real-time-vs-segmented-mode))
+- **Your choice of AI provider**: OpenAI, Google Gemini, or Anthropic Claude, switchable in the settings
+- **Verified Quran verses**: high-confidence matches show the exact published translation (marked 📖) instead of an AI paraphrase; Athan phrases via dictionary
+- **System audio capture** (Windows): translate what the PC is playing, no virtual audio cable needed ([details](#audio-sources))
+- **Noise filter**: a voice-activity gate drops static, hum and hiss before the AI can turn them into invented sentences
+- **Subtitles your way**: three modes (realtime feed, ticker, static), optional original text above the translation, adjustable font, height and colours, multi-monitor and transparent overlay
+- **Announcements**: put a message like "Prayer starts in 5 minutes" on the subtitle screen for a chosen duration ([details](#announcements))
+- **Batch mode**: turn a recording into an `.srt` subtitle file or a plain transcript ([details](#batch-mode-subtitle-files-from-recordings))
+- **History, AI summaries & cost estimates** per session ([details](#history-session-summaries--costs))
 - **Islamic mode toggle**: switch off the Quran/Athan features to use MinbarLive as a general live translator
+- **Built to survive a live session**: input level meter with mic test, silence detection, retries with model fallback, auto-stop after 10 minutes without speech, API keys in the OS keychain
 - First-run setup wizard; control panel in 6 languages (DE, EN, AR, BS, SQ, TR); light & dark theme
-- Multi-monitor support with transparent overlay option
-- Secure API key storage using the OS keychain
-- Automatic silence detection, retries with exponential backoff, model fallback chains
-- **Cost guards**: silent segments are never sent to the API, and a forgotten session auto-stops after 10 minutes without speech
 
 📚 **More details:** See the [docs/](docs/) folder for architecture, providers, configuration, and data file documentation.
+
+<br>
 
 ## ⚠️ API Cost Warning
 
@@ -56,9 +52,14 @@ Rough guide for an OpenAI setup (the default; segmented mode, Arabic → German)
 - Costs differ per provider and model. Check [Google Gemini](https://ai.google.dev/pricing), [OpenAI](https://openai.com/pricing), [Anthropic](https://www.anthropic.com/pricing), or [Deepgram](https://deepgram.com/pricing) pricing for current rates, and set a usage limit in your provider account to avoid surprises.
 - The app tracks what each of **your** sessions actually used: see the **Costs** tab in the session history (⟲). It is an estimate from published list prices, not a bill.
 
+<br>
+
 ## Setup
 
-🎬 **Videos:** What MinbarLive is and how it works: [EN](https://www.youtube.com/watch?v=ajzSpuskEro)/[DE](https://www.youtube.com/watch?v=GWvEXOW8930) · [Setup tutorial](https://youtu.be/_VI6Y8qFDZQ)
+🎬 **Watch first, two short videos:**
+
+- **What MinbarLive is and how it works** — [English](https://www.youtube.com/watch?v=ajzSpuskEro) · [Deutsch](https://www.youtube.com/watch?v=GWvEXOW8930)
+- **How to install it** — [Setup tutorial](https://youtu.be/TvxxN0iadck)
 
 > 📧 **Need help setting up?** Write us an email at [minbar.live@outlook.com](mailto:minbar.live@outlook.com) and we'll help you with your first setup.
 
@@ -72,15 +73,16 @@ Rough guide for an OpenAI setup (the default; segmented mode, Arabic → German)
 
 1. Download for your platform from the [latest release](https://github.com/MinbarLive/MinbarLive/releases/latest):
    - **Windows:** [`MinbarLive.exe`](https://github.com/MinbarLive/MinbarLive/releases/latest/download/MinbarLive.exe) — just run it.
+   - **macOS (Apple Silicon only — M1 and newer):** [`MinbarLive-macos-arm64.zip`](https://github.com/MinbarLive/MinbarLive/releases/latest/download/MinbarLive-macos-arm64.zip) — unzip, move `MinbarLive.app` to Applications, then see the macOS note below for the first launch.
    - **Linux:** [`MinbarLive-x86_64.AppImage`](https://github.com/MinbarLive/MinbarLive/releases/latest/download/MinbarLive-x86_64.AppImage) — `chmod +x` it, then double-click. No FUSE required.
-2. Follow the first-run wizard: interface language & appearance → spoken/subtitle language → microphone → AI provider & API key → disclaimer. Gemini API key tutorial: [EN](https://www.youtube.com/watch?v=Cl4XKgz6EJQ)/[DE](https://youtu.be/alNk5N-pv7Y), or create one directly at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys)
+2. Follow the first-run wizard
 3. It's Running!
 
 > **Windows SmartScreen:** You may see a warning because the EXE is not code-signed. Click "More info" → "Run anyway".
 
-> **Linux:** The AppImage runs on modern desktops without extra dependencies, but is still maturing: a few features are Windows-only (the OBS-visible borderless overlay, transparent static mode, and system-audio loopback capture), and API-key storage needs a Secret Service keychain (GNOME Keyring / KWallet) — without one, an OpenAI key falls back to plaintext and other providers are session-only. See [docs/ci.md](docs/ci.md).
+> **macOS:** The `.app` is **experimental** and ships **unsigned**. It is **Apple Silicon only (M1 and newer) — it will not run on Intel Macs**. Because it is not signed or notarized, Gatekeeper blocks the first launch: **right-click the app → "Open" → "Open"**. If macOS refuses outright, open **System Settings → Privacy & Security** and click **"Open Anyway"** next to the MinbarLive message, then launch it again. This is the same "unknown developer" warning Windows shows for the EXE. Grant the microphone permission when asked, or there is no audio. Two platform limits: system-audio **loopback capture does not exist on macOS** (route audio through a virtual device such as [BlackHole](https://existential.audio/blackhole/), which then shows up as a normal input), and the subtitle overlay **cannot float above the Dock or the menu bar**, so it is laid out inside the usable screen area instead of covering them.
 
-> **macOS:** There is no signed release yet. CI can build an experimental, unsigned Apple-Silicon `.app` on request, but it is **not** attached to releases (Gatekeeper would block it anyway). For now, run on macOS by building from source (Option B). A signed/notarized build is tracked as future work.
+> **Linux:** The AppImage runs on modern desktops without extra dependencies, but is still maturing: a few features are Windows-only (the OBS-visible borderless overlay, transparent static mode), and API-key storage needs a Secret Service keychain (GNOME Keyring / KWallet) — without one, keys are never written to disk and apply to the running session only. See [docs/ci.md](docs/ci.md).
 
 ### Option B: Build it yourself (Python)
 
@@ -119,7 +121,11 @@ Two windows will appear:
 - **Control Panel** - Start/Stop, settings, batch mode, history, API key management
 - **Subtitles** - Full-screen translated text display
 
-Press `Escape` on the subtitle window to stop the translation (same as the Stop button). It leaves the window and the app open; close the control panel to quit.
+Only one copy runs at a time: starting a second one brings up a notice instead, with a **"Launch Anyway"** option if you really do want two instances (they will compete for the same microphone and settings file).
+
+Press `Escape` on the subtitle window to stop the translation (same as the Stop button). It leaves the window and the app open. Closing the subtitle window itself (Alt+F4, or Close on its taskbar entry) also stops a running session and closes only that window — Start recreates it. Quitting MinbarLive is the control panel's job alone.
+
+<br>
 
 ## Real-time vs. Segmented Mode
 
@@ -135,6 +141,8 @@ Real-time mode supports three transcription engines: **OpenAI Realtime** (defaul
 
 > **Note on engine choice:** OpenAI Realtime is the default because it is the only engine measured to transcribe as fast as you speak. The Gemini Live engines run below realtime (~0.75× on a 63-second sample), so on continuous speech the subtitles fall progressively further behind and do not catch up until the speaker pauses.
 
+<br>
+
 ## Audio Sources
 
 The **input device** dropdown lists two kinds of source:
@@ -146,9 +154,13 @@ The **input device** dropdown lists two kinds of source:
 
 Loopback entries are the PC's speakers/headphones captured via WASAPI, so you can translate audio that is only playing on the computer **without a virtual audio cable** (VB-CABLE and similar are no longer needed). They appear automatically, marked `(Loopback)`, and are selected exactly like a microphone.
 
+> **macOS has no loopback.** CoreAudio offers no way to record an output device, so no `(Loopback)` entries are listed there. To translate audio playing on the Mac, install a virtual audio device ([BlackHole](https://existential.audio/blackhole/) or Loopback) and select it as an ordinary input.
+
 > **Mic quality matters more than any setting.** The AI engines need a healthy signal level: a very quiet input (a mic with the gain turned down) produces sporadic or missing transcripts, and no software setting can recover it. If recognition is poor, raise the input gain at the source (interface knob, Windows mic level) first. Loopback sources are digital and always at full level.
 
 Use the **Test mic** button next to the level bar to check this before a session: speak normally and aim for the bar to sit in the green-to-amber range. If it barely moves, turn the gain up at the source rather than changing settings in the app. The meter also runs during a live session.
+
+<br>
 
 ## Batch Mode: Subtitle Files from Recordings
 
@@ -158,15 +170,21 @@ The **Batch / File** card in the control panel processes a pre-recorded audio or
 - Transcription/translation model selectable per run
 - Finished runs are stored in the session history (Batch tab)
 
+<br>
+
 ## Announcements
 
 The 📣 button opens a small window to type a message ("Prayer starts in 5 minutes", "Please switch phones to silent") and choose how long it stays up: 10 s, 30 s, 1 min, 5 min, or until you stop it. It appears large and centred on the subtitle screen, above the subtitles. Frequently used messages can be pinned as favourites, and the last few are kept for one-click re-use. An "until stopped" announcement stays up even when translation is stopped, unless you turn that off in the announcement window.
+
+<br>
 
 ## History, Session Summaries & Costs
 
 The ⟲ button in the control panel opens the session history: browse past live sessions, batch runs, and log files, export transcripts, and generate an **AI summary** of a session in a language of your choice (summaries are saved alongside the history).
 
 Its **Costs** tab shows what each session used and what it approximately cost. This is an estimate computed from the usage each provider reports and a stored snapshot of public list prices. Always check your provider's dashboard for the authoritative figure. Anthropic and Deepgram usage is not metered yet. Only counters, model names and timestamps are stored; no transcripts, audio or keys.
+
+<br>
 
 ## Mirroring/Streaming/Record with OBS
 
@@ -180,6 +198,8 @@ Easiest way to mirror, stream or record with camera + subtitles using [OBS Studi
 
 This overlays the live translations on your camera feed for Mirroring, YouTube, Zoom, or recording.
 
+<br>
+
 ## Runtime Files
 
 Runtime files are written to a per-user app data folder:
@@ -188,7 +208,9 @@ Runtime files are written to a per-user app data folder:
 - **macOS**: `~/Library/Application Support/MinbarLive/`
 - **Linux**: `~/.local/share/MinbarLive/`
 
-API keys live in the **OS keychain**, not in `settings.json`. The one exception is a machine with no keychain backend at all (typically Linux without GNOME Keyring/KWallet): there an OpenAI key falls back to plaintext in `settings.json` (the app warns you when this happens), while other providers keep the key for that session only. Using an environment variable or `.env` avoids both. See [docs/providers.md](docs/providers.md#api-keys).
+API keys live in the **OS keychain** and are **never written to `settings.json`**. On a machine with no keychain backend at all (typically Linux without GNOME Keyring/KWallet) nothing is persisted: the key applies to that session only and must be entered again after a restart — the app tells you when this happens. Set up a keychain, or use an environment variable or `.env`, to avoid re-entering it. See [docs/providers.md](docs/providers.md#api-keys).
+
+<br>
 
 ## Update Check
 
@@ -196,6 +218,8 @@ At startup the app makes one anonymous request to the GitHub releases API to
 see if a newer version exists. If so, a dismissible notice appears in the
 control panel. No data about you or your installation is sent (GitHub sees
 only the request itself), and you can turn the check off in ⚙ Settings.
+
+<br>
 
 ## Documentation
 
@@ -209,15 +233,21 @@ only the request itself), and you can turn the check off in ⚙ Settings.
 | [docs/testing.md](docs/testing.md)                     | Running tests and coverage                             |
 | [docs/ci.md](docs/ci.md)                               | GitHub Actions workflow, LFS policy, required checks   |
 
+<br>
+
 ## Feedback
 
 - **GitHub Issues**: [Open an issue](https://github.com/MinbarLive/MinbarLive/issues)
 - **Google Forms**: [Submit feedback](https://forms.gle/DJ3F25HKrrLjH9h59) anonymously
 - **Email**: [minbar.live@outlook.com](mailto:minbar.live@outlook.com)
 
+<br>
+
 ## Contributing
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+<br>
 
 ## Acknowledgments
 
@@ -228,6 +258,8 @@ MinbarLive would not exist without the help of:
 - Others who wish to remain anonymous
 
 Barakallahu feekum 🌙
+
+<br>
 
 ## License
 

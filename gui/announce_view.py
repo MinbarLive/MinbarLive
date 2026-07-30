@@ -39,6 +39,13 @@ _DURATION_KEYS = [
 ]
 _DEFAULT_DURATION_INDEX = 1  # 30 seconds
 
+# Width the announcement card is laid out for, as a separate OS window and as
+# an in-app panel (logical units) — see BATCH_PANEL_MAX_W for the reasoning:
+# a modest bump so it doesn't look lost in a large main window, while the
+# height stays the content's natural height (favourites/recents vary).
+ANNOUNCE_WINDOW_W = 460
+ANNOUNCE_PANEL_MAX_W = 620
+
 
 class AnnounceViewMixin:
     """Announcement window + overlay lifecycle, hosted by AppGUI."""
@@ -77,8 +84,6 @@ class AnnounceViewMixin:
             return
 
         win = ctk.CTkToplevel(self)
-        win.title(self.gui_texts.get("announce_title", "Announcement"))
-        win.resizable(False, False)
         win.configure(fg_color=self._colors["app_bg"])
         # Transparent while building + sizing to hide the flash, then fade in
         # (alpha, not withdraw — the transient window must never be unmapped).
@@ -86,15 +91,38 @@ class AnnounceViewMixin:
             win.attributes("-alpha", 0.0)
         except tk.TclError:
             pass
-        win.after(200, lambda: self._set_toplevel_icon(win))
-        win.transient(self)
+        if self._use_integrated_windows():
+            # Height is provisional — _resize_announce_window() below
+            # re-declares the natural content height through the host.
+            # No floating ✕ — it would sit on the card's rounded corner; the
+            # card header gets its own close button in _build_announce_widgets.
+            self._modal_host.present(
+                win,
+                ANNOUNCE_PANEL_MAX_W,
+                520,
+                close_command=self._close_announce_window,
+            )
+            # Clamped content (many favorites/recents in a small main window)
+            # scrolls instead of clipping; scrollbar autohides when it fits.
+            self._announce_scroll = ctk.CTkScrollableFrame(
+                win, fg_color="transparent", corner_radius=0
+            )
+            self._announce_scroll.pack(fill="both", expand=True)
+            win.after(
+                300, lambda: self._setup_autohide_scrollbar(self._announce_scroll)
+            )
+            build_parent = self._announce_scroll
+        else:
+            win.title(self.gui_texts.get("announce_title", "Announcement"))
+            win.resizable(False, False)
+            win.after(200, lambda: self._set_toplevel_icon(win))
+            win.transient(self)
+            self._announce_scroll = None
+            build_parent = win
         self._announce_win = win
-        self._build_announce_widgets(win)
+        self._build_announce_widgets(build_parent)
         self._resize_announce_window()
-        try:
-            win.attributes("-alpha", 1.0)
-        except tk.TclError:
-            pass
+        self._reveal_when_drawn(win)
         # If an overlay is open the control panel is -topmost; match it so this
         # window isn't hidden behind the panel.
         self._raise_announce_window()
@@ -110,8 +138,16 @@ class AnnounceViewMixin:
             return
         win = self._announce_win
         win.update_idletasks()
-        w = 460
+        w = ANNOUNCE_WINDOW_W
         scaling = ctk.ScalingTracker.get_window_scaling(win)
+        if self._modal_host.is_presented(win):
+            # Integrated panel: natural height = the scroll host's content
+            # height (win.winfo_reqheight() would report the canvas default);
+            # the host clamps + centres, extra content scrolls.
+            content = self._announce_scroll
+            h = int(content.winfo_reqheight() / scaling) + 6
+            self._modal_host.update_design_size(win, ANNOUNCE_PANEL_MAX_W, h)
+            return
         h = int(win.winfo_reqheight() / scaling) + 1
         x, y = centered_position(self, w, h)
         win.geometry(f"{w}x{h}+{x}+{y}")
@@ -126,7 +162,9 @@ class AnnounceViewMixin:
             border_width=2,
             corner_radius=24,
         )
-        card.pack(fill="both", expand=True, padx=16, pady=16)
+        # Packed at the end of this method (see gui/batch_view.py): an
+        # unmanaged card can be filled without the integrated panel's
+        # scrollbar flushing the pending layout per widget.
         card.grid_columnconfigure(0, weight=1, uniform="announce_actions")
         card.grid_columnconfigure(1, weight=1, uniform="announce_actions")
 
@@ -138,6 +176,23 @@ class AnnounceViewMixin:
             anchor="w",
         )
         header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=20, pady=(18, 0))
+        if self._modal_host.is_presented(parent.winfo_toplevel()):
+            # In-app panel: no titlebar ✕, so the card header carries one
+            # (created after the header label, so it stacks above its empty
+            # right end).
+            close_btn = ctk.CTkButton(
+                card,
+                text="✕",
+                command=self._close_announce_window,
+                width=32,
+                height=32,
+                corner_radius=16,
+                font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+                fg_color=self._colors["button"],
+                hover_color=self._colors["button_hover"],
+                text_color=self._colors["text"],
+            )
+            close_btn.grid(row=0, column=1, sticky="e", padx=(0, 16), pady=(14, 0))
 
         sub = ctk.CTkLabel(
             card,
@@ -274,6 +329,10 @@ class AnnounceViewMixin:
             row=10, column=1, sticky="ew", padx=(8, 20), pady=(0, 20)
         )
         self._refresh_announce_stop_state()
+
+        # Card is complete → attach it (one layout pass). _resize_announce_window
+        # measures the content right after this, so it must be managed by now.
+        card.pack(fill="both", expand=True, padx=16, pady=16)
 
     def _on_announce_stop_on_stop_change(self) -> None:
         """Persist the 'stop announcement when the live session stops' toggle."""

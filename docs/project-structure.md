@@ -1,7 +1,8 @@
 # Project Structure
 
 ```
-├── main.py                  # Entry point (loads .env, runs onboarding wizard on first start)
+├── main.py                  # Entry point (single-instance guard, loads .env,
+│                            #   runs the onboarding wizard on first start)
 ├── app_controller.py        # Thread lifecycle controller (segmented + streaming pipelines)
 ├── config.py                # Static technical constants and paths
 ├── version.py               # App version
@@ -26,6 +27,8 @@
 │   ├── device_support.py    # Input-device capability probing (channels, rates)
 │   ├── level_meter.py       # Smoothed RMS/peak level behind the input meter
 │   ├── loopback.py          # Registry of WASAPI loopback (system-audio) devices
+│   ├── resampler.py         # Streaming windowed-sinc resampler (devices that
+│   │                        #   cannot open at the pipeline rate, e.g. 48 kHz Linux mics)
 │   ├── vad.py               # webrtcvad noise gate: has_speech + StreamNoiseGate
 │   └── writer.py            # Async WAV segment writing
 │
@@ -56,6 +59,9 @@
 │   ├── onboarding.py        # First-run setup wizard (5 steps)
 │   ├── subtitle_window.py   # Full-screen subtitle display (realtime/continuous/static)
 │   ├── dropdown.py          # Shared themed dropdown (mouse + keyboard navigation)
+│   ├── modal_host.py        # Integrated window style: in-app panels over a dim
+│   │                        #   backdrop, clamping/centering, modal stack (Windows-only)
+│   ├── mousewheel.py        # Root-level wheel normaliser (X11 button-4/5 scrolling)
 │   ├── scaling.py           # Display-scaling clamp + centering (fits small high-DPI screens)
 │   └── device_list.py       # Audio input device enumeration (mics + WASAPI loopback)
 │
@@ -99,7 +105,7 @@
 │
 ├── docs/                    # This documentation + the GitHub Pages landing page (index.html)
 │
-└── tests/                   # Pytest suite (860 tests), see docs/testing.md
+└── tests/                   # Pytest suite (1007 tests), see docs/testing.md
 ```
 
 ## Runtime Files
@@ -120,4 +126,4 @@ Contents:
 - `bin/` - ffmpeg, if downloaded via the batch card (Windows)
 - `settings.json` - All user preferences (NOT the API keys)
 
-> **Note:** API keys are stored in your OS keychain, not in settings.json. The one exception is a machine with no keychain backend at all; see [providers.md](providers.md#api-keys).
+> **Note:** API keys are stored in your OS keychain, never in settings.json. On a machine with no keychain backend at all they are kept for the running session only; see [providers.md](providers.md#api-keys).

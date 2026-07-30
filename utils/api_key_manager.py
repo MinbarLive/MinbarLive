@@ -12,7 +12,6 @@ from config import ICON_PATH, ICON_PATH_PNG
 from providers import (
     PROVIDER_CHOICES,
     clear_api_key,
-    has_insecure_key_fallback,
     save_api_key,
 )
 from utils.icons import ICO_SUPPORTED, scaled_icon_photo
@@ -34,6 +33,16 @@ def _provider_display_name(provider: str) -> str:
 
 # Placeholder hint per provider key format
 _KEY_PLACEHOLDERS = {"openai": "sk-…", "gemini": "AIza…", "anthropic": "sk-ant-…"}
+
+# Dialog widths (logical units): the message/confirm box and the key entry.
+DIALOG_W = 440
+KEY_DIALOG_W = 480
+
+# How much bigger these get as in-app panels (integrated window style). The
+# view windows scale with the main window; a notification does not — it is
+# the same short sentence whatever the window size, so it only takes one
+# fixed step up so it doesn't look undersized over a large panel.
+DIALOG_PANEL_GROWTH = 1.1
 
 # Default dark-theme colours used when no colours dict is provided.
 _DEFAULT_COLORS: dict[str, str] = {
@@ -116,6 +125,7 @@ def show_message(
     no_label: str = "No",
     ok_label: str = "OK",
     sections: list[tuple[str, str]] | None = None,
+    modal_host=None,
 ) -> bool:
     """Show a themed CTk message/confirm dialog. Returns True if OK/Yes clicked.
 
@@ -124,17 +134,29 @@ def show_message(
     ``sections`` renders a list of ``(heading, body)`` pairs instead of the flat
     ``message`` — each heading bold and larger, each body muted, with spacing
     between pairs — so a multi-option explainer reads as a list, not a wall of
-    text. When given, ``message`` is ignored."""
+    text. When given, ``message`` is ignored.
+
+    ``modal_host`` (a gui.modal_host.ModalHost, duck-typed to keep utils free
+    of gui imports) renders the dialog as an in-app panel over the dim overlay
+    instead of a separate OS window — integrated window style. The dialog
+    keeps its own Return/Escape/grab/result logic either way."""
     c = colors or _DEFAULT_COLORS
     result = {"ok": False}
 
-    w = 440
+    # In-app dialogs are a touch wider than the separate-window ones (see
+    # DIALOG_PANEL_GROWTH) — deliberately a fixed step, not a share of the
+    # main window: a "stop the program before changing the key" notice
+    # blown up to a fraction of a maximized window would read as an error
+    # page. The wraplengths below follow ``w``, so the extra width becomes
+    # text, not margin.
+    w = int(DIALOG_W * DIALOG_PANEL_GROWTH) if modal_host is not None else DIALOG_W
     dlg = ctk.CTkToplevel(root)
-    dlg.title(title)
-    dlg.geometry(f"{w}x200")
-    dlg.resizable(False, False)
     dlg.configure(fg_color=c["app_bg"])
-    dlg.transient(root)
+    if modal_host is None:
+        dlg.title(title)
+        dlg.geometry(f"{w}x200")
+        dlg.resizable(False, False)
+        dlg.transient(root)
     # grab_set() is deferred until the window is viewable (after the reveal
     # below): on X11 grabbing an unmapped window raises "grab failed: window
     # not viewable" and crashes the click handler.
@@ -171,10 +193,23 @@ def show_message(
     )
     card.pack(fill="both", expand=True, padx=16, pady=16)
     card.grid_columnconfigure(0, weight=1)
-    card.grid_rowconfigure(0, weight=1)
+
+    # In-app panels have no OS titlebar — render the dialog title as a heading
+    # inside the card so it isn't lost.
+    _msg_grid_row = 0
+    if modal_host is not None and title:
+        ctk.CTkLabel(
+            card,
+            text=title,
+            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
+            text_color=c["text"],
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=20, pady=(14, 0))
+        _msg_grid_row = 1
+    card.grid_rowconfigure(_msg_grid_row, weight=1)
 
     msg_row = ctk.CTkFrame(card, fg_color="transparent")
-    msg_row.grid(row=0, column=0, sticky="ew", padx=20, pady=(18, 8))
+    msg_row.grid(row=_msg_grid_row, column=0, sticky="ew", padx=20, pady=(18, 8))
     msg_row.grid_columnconfigure(1, weight=1)
 
     _icon_color = icon_color or c.get("accent", "#16a34a")
@@ -225,7 +260,7 @@ def show_message(
         ).grid(row=0, column=1, sticky="w")
 
     btn_row = ctk.CTkFrame(card, fg_color="transparent")
-    btn_row.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 16))
+    btn_row.grid(row=_msg_grid_row + 1, column=0, sticky="ew", padx=20, pady=(0, 16))
 
     def _ok(_e=None) -> None:
         result["ok"] = True
@@ -280,17 +315,20 @@ def show_message(
     dlg.protocol("WM_DELETE_WINDOW", _cancel)
 
     # Size to content (long error strings would clip a fixed height), then
-    # centre over the parent window.
+    # centre over the parent window (or present in-app via the modal host).
     dlg.update_idletasks()
     h = max(180, min(520, card.winfo_reqheight() + 32))
-    x = root.winfo_rootx() + (root.winfo_width() - w) // 2
-    y = root.winfo_rooty() + (root.winfo_height() - h) // 2
-    dlg.geometry(f"{w}x{h}+{x}+{y}")
-    dlg.after(200, _set_icon)
-    try:
-        dlg.attributes("-topmost", True)
-    except Exception:
-        pass
+    if modal_host is not None:
+        modal_host.present(dlg, w, h)
+    else:
+        x = root.winfo_rootx() + (root.winfo_width() - w) // 2
+        y = root.winfo_rooty() + (root.winfo_height() - h) // 2
+        dlg.geometry(f"{w}x{h}+{x}+{y}")
+        dlg.after(200, _set_icon)
+        try:
+            dlg.attributes("-topmost", True)
+        except Exception:
+            pass
     # Reveal now that the card is drawn and the window is positioned.
     dlg.update_idletasks()
     dlg.lift()
@@ -324,6 +362,7 @@ def prompt_for_api_key(
     colors: dict[str, str] | None = None,
     texts: dict[str, str] | None = None,
     provider: str = "openai",
+    modal_host=None,
 ) -> str | None:
     """
     Prompt user for an API key.
@@ -334,6 +373,9 @@ def prompt_for_api_key(
         on_close: Callback to close the app if cancelled on startup.
         colors: Optional colour palette dict from the app; falls back to dark defaults.
         provider: Which AI provider the key belongs to.
+        modal_host: Present the dialog in-app (integrated window style) —
+            see show_message. None (e.g. from the onboarding wizard, where no
+            main window exists yet) keeps the separate-window behaviour.
 
     Returns:
         The entered API key, or None if cancelled/empty.
@@ -358,11 +400,7 @@ def prompt_for_api_key(
     _keyring_missing = not is_keyring_available()
 
     dialog = ctk.CTkToplevel(root)
-    dialog.title(f"{display} API Key")
-    dialog.geometry(f"480x{'285' if _keyring_missing else '250'}")
-    dialog.resizable(False, False)
     dialog.configure(fg_color=c["app_bg"])
-    dialog.transient(root)
     # grab_set() is deferred until the window is viewable (after the reveal) —
     # on X11 grabbing an unmapped window crashes with "window not viewable".
     # Hide the unpainted first frame (black/white rectangle) until the card is
@@ -372,33 +410,46 @@ def prompt_for_api_key(
     except tk.TclError:
         pass
 
-    # Apply icon with a delay (CTkToplevel defers window creation)
-    def _set_icon() -> None:
-        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
-            try:
-                dialog.iconbitmap(ICON_PATH)
-                return
-            except Exception:
-                pass
-        if os.path.exists(ICON_PATH_PNG):
-            try:
-                dialog.iconphoto(False, scaled_icon_photo(ICON_PATH_PNG))
-            except Exception:
-                pass
-
-    dialog.after(200, _set_icon)
-
-    # Centre over parent window
-    root.update_idletasks()
     _dlg_h = 285 if _keyring_missing else 250
-    x = root.winfo_rootx() + (root.winfo_width() - 480) // 2
-    y = root.winfo_rooty() + (root.winfo_height() - _dlg_h) // 2
-    dialog.geometry(f"480x{_dlg_h}+{x}+{y}")
+    if modal_host is not None:
+        # One fixed step up as an in-app panel, never a share of the main
+        # window (see DIALOG_PANEL_GROWTH).
+        modal_host.present(
+            dialog,
+            int(KEY_DIALOG_W * DIALOG_PANEL_GROWTH),
+            int(_dlg_h * DIALOG_PANEL_GROWTH),
+        )
+    else:
+        dialog.title(f"{display} API Key")
+        dialog.resizable(False, False)
+        dialog.transient(root)
 
-    try:
-        dialog.attributes("-topmost", True)
-    except Exception:
-        pass
+        # Apply icon with a delay (CTkToplevel defers window creation)
+        def _set_icon() -> None:
+            if ICO_SUPPORTED and os.path.exists(ICON_PATH):
+                try:
+                    dialog.iconbitmap(ICON_PATH)
+                    return
+                except Exception:
+                    pass
+            if os.path.exists(ICON_PATH_PNG):
+                try:
+                    dialog.iconphoto(False, scaled_icon_photo(ICON_PATH_PNG))
+                except Exception:
+                    pass
+
+        dialog.after(200, _set_icon)
+
+        # Centre over parent window
+        root.update_idletasks()
+        x = root.winfo_rootx() + (root.winfo_width() - KEY_DIALOG_W) // 2
+        y = root.winfo_rooty() + (root.winfo_height() - _dlg_h) // 2
+        dialog.geometry(f"{KEY_DIALOG_W}x{_dlg_h}+{x}+{y}")
+
+        try:
+            dialog.attributes("-topmost", True)
+        except Exception:
+            pass
 
     # ── Card ──────────────────────────────────────────────────────────────
     card = ctk.CTkFrame(
@@ -521,7 +572,8 @@ def prompt_for_api_key(
 
     result: dict[str, str | None] = {"key": None}
 
-    # Keyring unavailable warning — only shown when secure storage is not available
+    # Keyring unavailable warning — the key is never written to disk, so
+    # without a keychain it only lasts for this session.
     if _keyring_missing:
         warn_row = ctk.CTkFrame(card, fg_color="transparent")
         warn_row.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 4))
@@ -536,8 +588,8 @@ def prompt_for_api_key(
         ctk.CTkLabel(
             warn_row,
             text=t.get(
-                "dlg_key_insecure_warning",
-                "Keyring unavailable — key will be stored unencrypted.",
+                "dlg_key_session_only_warning",
+                "No keyring — the key applies to this session only.",
             ),
             font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color=c.get("warning", "#d97706"),
@@ -621,6 +673,7 @@ def prompt_for_api_key(
                 icon="✕",
                 icon_color=c.get("danger", "#dc2626"),
                 ok_label=t.get("dlg_ok", "OK"),
+                modal_host=modal_host,
             )
             root.after(100, on_close)
         return None
@@ -635,6 +688,7 @@ def prompt_for_api_key(
             icon="⚠",
             icon_color=c.get("warning", "#d97706"),
             ok_label=t.get("dlg_ok", "OK"),
+            modal_host=modal_host,
         )
         if startup:
             root.after(
@@ -646,6 +700,7 @@ def prompt_for_api_key(
                     colors=colors,
                     texts=texts,
                     provider=provider,
+                    modal_host=modal_host,
                 ),
             )
         return None
@@ -661,6 +716,7 @@ def prompt_for_api_key(
             icon="⚠",
             icon_color=c.get("warning", "#d97706"),
             ok_label=t.get("dlg_ok", "OK"),
+            modal_host=modal_host,
         )
         log("API key format warning: key does not start with 'sk-'", level="WARNING")
 
@@ -675,35 +731,25 @@ def prompt_for_api_key(
             c,
             icon="✓",
             ok_label=t.get("dlg_ok", "OK"),
-        )
-    elif has_insecure_key_fallback(provider):
-        _ctk_msgbox(
-            root,
-            "Saved",
-            t.get(
-                "dlg_key_saved_insecure",
-                "API key saved (stored in settings file, not keyring).",
-            ),
-            c,
-            icon="⚠",
-            icon_color=c.get("warning", "#d97706"),
-            ok_label=t.get("dlg_ok", "OK"),
+            modal_host=modal_host,
         )
     else:
-        # No keychain and no file fallback for this provider: the key works
-        # now but is gone after a restart. Saying "saved" here would be a lie.
+        # No keychain: the key is never written to disk, so it works now but
+        # is gone after a restart. Saying "saved" here would be a lie.
         _ctk_msgbox(
             root,
-            "Saved",
+            "Session only",
             t.get(
                 "dlg_key_saved_session_only",
                 "No keyring available — the key works for this session only "
-                "and must be entered again after a restart.",
+                "and must be entered again after a restart. Set up an OS "
+                "keychain to store it permanently.",
             ),
             c,
             icon="⚠",
             icon_color=c.get("warning", "#d97706"),
             ok_label=t.get("dlg_ok", "OK"),
+            modal_host=modal_host,
         )
     return key
 
@@ -714,6 +760,7 @@ def remove_api_key(
     colors: dict[str, str] | None = None,
     texts: dict[str, str] | None = None,
     provider: str = "openai",
+    modal_host=None,
 ) -> bool:
     """
     Remove the saved API key of a provider.
@@ -740,6 +787,7 @@ def remove_api_key(
             icon="⚠",
             icon_color=c.get("warning", "#d97706"),
             ok_label=t.get("dlg_ok", "OK"),
+            modal_host=modal_host,
         )
         return False
 
@@ -753,6 +801,7 @@ def remove_api_key(
         icon_color=c.get("danger", "#dc2626"),
         yes_label=t.get("dlg_yes", "Yes"),
         no_label=t.get("dlg_no", "No"),
+        modal_host=modal_host,
     ):
         return False
 
@@ -765,5 +814,6 @@ def remove_api_key(
         c,
         icon="✓",
         ok_label=t.get("dlg_ok", "OK"),
+        modal_host=modal_host,
     )
     return True

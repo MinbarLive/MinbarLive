@@ -49,6 +49,42 @@ from utils.settings import (
     language_display_name,
 )
 
+# Size the history viewer opens at as a separate OS window (logical units).
+HISTORY_WINDOW_W = 900
+HISTORY_WINDOW_H = 560
+
+# As an in-app panel it is the one window that genuinely profits from every
+# pixel it can get — more transcript on screen — so it asks for far more than
+# the windowed geometry. ModalHost clamps this to PANEL_FRACTION of the main
+# window, so on a small window nothing changes and on a maximized one the
+# viewer actually fills it.
+HISTORY_PANEL_MAX_W = 1700
+HISTORY_PANEL_MAX_H = 1150
+
+# The summary dialog is mostly generated text — it grows too, but stays
+# column-shaped so the summary keeps a readable line length.
+SUMMARY_WINDOW_W = 520
+SUMMARY_WINDOW_H = 430
+SUMMARY_PANEL_MAX_W = 820
+SUMMARY_PANEL_MAX_H = 1150
+
+# Responsive session list (logical units). The list keeps a share of the
+# window between these bounds instead of a fixed 280 px, which at small
+# widths left the transcript unreadably narrow.
+HISTORY_LIST_W_MAX = 280
+HISTORY_LIST_W_MIN = 170
+HISTORY_LIST_W_SHARE = 0.42
+
+# Below this width list and transcript no longer fit side by side, so the
+# viewer shows one at a time: the list, and after picking an item the
+# transcript with a ← button back to the list.
+HISTORY_NARROW_W = 560
+
+# Tab buttons shrink with the window so all four stay reachable (they used to
+# clip off the right edge, taking the Log tab with them).
+HISTORY_TAB_W_MAX = 130
+HISTORY_TAB_W_MIN = 62
+
 
 class HistoryViewMixin:
     """History viewer window + summary dialog, hosted by AppGUI."""
@@ -73,14 +109,30 @@ class HistoryViewMixin:
             return
 
         win = ctk.CTkToplevel(self)
-        win.title(self.gui_texts.get("history_title", "Session History"))
         win.configure(fg_color=self._colors["app_bg"])
+        # This window used to build in plain sight — 400+ widgets appearing one
+        # after the other. Transparent while building, revealed once painted
+        # (alpha, not withdraw: see the note in gui/settings_view.py).
+        try:
+            win.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
 
-        win.after(200, lambda: self._set_toplevel_icon(win))
-        win.transient(self)
-        self.update_idletasks()
-        x, y = centered_position(self, 900, 560)
-        win.geometry(f"900x560+{x}+{y}")
+        if self._use_integrated_windows():
+            self._modal_host.present(
+                win,
+                HISTORY_PANEL_MAX_W,
+                HISTORY_PANEL_MAX_H,
+                close_command=self._close_history_window,
+                close_button=True,
+            )
+        else:
+            win.title(self.gui_texts.get("history_title", "Session History"))
+            win.after(200, lambda: self._set_toplevel_icon(win))
+            win.transient(self)
+            self.update_idletasks()
+            x, y = centered_position(self, HISTORY_WINDOW_W, HISTORY_WINDOW_H)
+            win.geometry(f"{HISTORY_WINDOW_W}x{HISTORY_WINDOW_H}+{x}+{y}")
         self._history_win = win
         self._history_active_tab = initial_tab
         self._history_selected_session = None
@@ -95,11 +147,31 @@ class HistoryViewMixin:
         win.grid_columnconfigure(1, weight=1)
         win.grid_rowconfigure(1, weight=1)
 
+        # Narrow-window state: below HISTORY_NARROW_W the two panes are shown
+        # one at a time (see _layout_history_responsive).
+        self._history_narrow = False
+        self._history_detail_view = False
+        self._history_layout_job = None
+
         # ── Tab bar: History | Log (History is the default) ──────────────────
         tab_bar = ctk.CTkFrame(win, fg_color=self._colors["sidebar"], height=48)
         tab_bar.grid(row=0, column=0, columnspan=2, sticky="ew")
         tab_bar.grid_propagate(False)
         self._history_tab_buttons = {}
+
+        # Back to the list — only mapped in the narrow single-pane layout.
+        self._history_back_btn = ctk.CTkButton(
+            tab_bar,
+            text="←",
+            command=self._history_show_list,
+            width=40,
+            height=34,
+            corner_radius=10,
+            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
+            fg_color=self._colors["button"],
+            hover_color=self._colors["button_hover"],
+            text_color=self._colors["text"],
+        )
         tabs = (
             ("history", "history_tab_sessions", "History"),
             ("batch", "history_tab_batch", "Batch"),
@@ -124,7 +196,10 @@ class HistoryViewMixin:
 
         # ── List (left) — populated per active tab ───────────────────────────
         self._history_list = ctk.CTkScrollableFrame(
-            win, fg_color=self._colors["sidebar"], corner_radius=0, width=280
+            win,
+            fg_color=self._colors["sidebar"],
+            corner_radius=0,
+            width=HISTORY_LIST_W_MAX,
         )
         self._history_list.grid(row=1, column=0, rowspan=2, sticky="nsw")
         self._history_list.grid_columnconfigure(0, weight=1)
@@ -132,6 +207,7 @@ class HistoryViewMixin:
         # ── Content (right): optional format toolbar + preview textbox ───────
         content = ctk.CTkFrame(win, fg_color=self._colors["log_bg"], corner_radius=0)
         content.grid(row=1, column=1, sticky="nsew")
+        self._history_content = content
         content.grid_columnconfigure(0, weight=1)
         content.grid_rowconfigure(1, weight=1)
 
@@ -194,6 +270,7 @@ class HistoryViewMixin:
         action_bar = ctk.CTkFrame(win, fg_color=self._colors["sidebar"], height=56)
         action_bar.grid(row=2, column=1, sticky="ew")
         action_bar.grid_propagate(False)
+        self._history_action_bar = action_bar
         self._history_export_btn = ctk.CTkButton(
             action_bar,
             text=self.gui_texts.get("history_export", "Save…"),
@@ -248,12 +325,145 @@ class HistoryViewMixin:
             text_color="#ffffff",
         )
 
+        # Follow the panel's size: the host re-clamps it whenever the main
+        # window is resized, and in a separate window the user resizes it
+        # directly. <Configure> reaches the toplevel for every descendant, so
+        # filter to the window itself (see the s16 lesson) and coalesce the
+        # storm a drag produces.
+        win.bind("<Configure>", self._on_history_configure, add="+")
+        win.after(0, self._layout_history_responsive)
+
         self._render_history_tab()
+        self._reveal_when_drawn(win)
+
+    # ── responsive layout ───────────────────────────────────────────────────
+
+    def _on_history_configure(self, event: object | None = None) -> None:
+        if not self._history_win_exists():
+            return
+        if event is not None and str(getattr(event, "widget", "")) != str(
+            self._history_win
+        ):
+            return
+        if self._history_layout_job is not None:
+            return
+
+        def _run() -> None:
+            self._history_layout_job = None
+            self._layout_history_responsive()
+
+        try:
+            self._history_layout_job = self._history_win.after(20, _run)
+        except tk.TclError:
+            pass
+
+    def _history_logical_width(self) -> float:
+        """The viewer's width in CTk logical units — the same units the size
+        constants are written in, so the breakpoints behave identically at
+        every display scaling."""
+        win = self._history_win
+        try:
+            scaling = ctk.ScalingTracker.get_window_scaling(win) or 1.0
+        except Exception:
+            scaling = 1.0
+        return win.winfo_width() / scaling
+
+    def _layout_history_responsive(self) -> None:
+        """Fit the two panes to the current width: shrink the session list,
+        shrink the tab buttons, and below HISTORY_NARROW_W show one pane at a
+        time with a ← button back to the list."""
+        if not self._history_win_exists():
+            return
+        width = self._history_logical_width()
+        if width <= 1:  # not laid out yet
+            return
+        narrow = width < HISTORY_NARROW_W
+
+        # Room the tab row needs beyond the buttons themselves: outer padding,
+        # the gaps between them, and the ← button when it is mapped.
+        reserved = 40 + (56 if narrow else 0)
+        count = len(self._history_tab_buttons) or 1
+        tab_w = int((width - reserved) / count) - 8
+        tab_w = max(HISTORY_TAB_W_MIN, min(HISTORY_TAB_W_MAX, tab_w))
+        for btn in self._history_tab_buttons.values():
+            btn.configure(width=tab_w)
+
+        # A share of the window rather than a fixed 280 px, so the transcript
+        # keeps a readable column. Also the list's requested width in the
+        # narrow layout, where it spans both columns and stretches anyway —
+        # keeping it under the window width stops grid from forcing the
+        # spanned columns wider than the window.
+        list_w = int(width * HISTORY_LIST_W_SHARE)
+        self._history_list.configure(
+            width=max(HISTORY_LIST_W_MIN, min(HISTORY_LIST_W_MAX, list_w))
+        )
+        self._history_narrow = narrow
+        self._apply_history_pane_visibility()
+
+    def _grid_history_list(self, columnspan: int, sticky: str) -> None:
+        """(Re-)place the session list in the window grid.
+
+        Always the full ``grid()`` call: CTkScrollableFrame forwards ``grid()``
+        to the outer frame it really occupies, but does NOT forward
+        ``grid_configure()`` — that one lands on the inner frame, which lives
+        inside the scroll canvas. Gridding *that* into the window put a second,
+        content-sized copy of the list in column 0: the list then took whatever
+        width its longest row wanted (a different width on every tab) and
+        squeezed the transcript and the action bar out of the window.
+        """
+        self._history_list.grid(
+            row=1, column=0, rowspan=2, columnspan=columnspan, sticky=sticky
+        )
+
+    def _apply_history_pane_visibility(self) -> None:
+        """Map the panes for the current width + view: side by side when there
+        is room, otherwise the list alone or the transcript alone."""
+        if not self._history_win_exists():
+            return
+        if not self._history_narrow:
+            self._grid_history_list(1, "nsw")
+            self._history_content.grid()
+            self._history_action_bar.grid()
+            self._history_back_btn.pack_forget()
+            return
+        if self._history_detail_view:
+            self._history_list.grid_remove()
+            self._history_content.grid()
+            self._history_action_bar.grid()
+            if not self._history_back_btn.winfo_ismapped():
+                first = next(iter(self._history_tab_buttons.values()), None)
+                kwargs = {"before": first} if first is not None else {}
+                self._history_back_btn.pack(
+                    side="left", padx=(12, 0), pady=8, **kwargs
+                )
+        else:
+            # The list takes the whole width; the transcript waits behind it.
+            self._grid_history_list(2, "nsew")
+            self._history_content.grid_remove()
+            self._history_action_bar.grid_remove()
+            self._history_back_btn.pack_forget()
+
+    def _history_show_list(self) -> None:
+        """← : back from the transcript to the session list (narrow layout)."""
+        self._history_detail_view = False
+        self._apply_history_pane_visibility()
+
+    def _on_history_row_click(self, on_click) -> None:
+        """A list row was picked — show its content, and in the narrow layout
+        swap the list out for it."""
+        on_click()
+        if self._history_narrow and not self._history_detail_view:
+            self._history_detail_view = True
+            self._apply_history_pane_visibility()
 
     def _switch_history_tab(self, tab: str) -> None:
         if tab == self._history_active_tab:
             return
         self._history_active_tab = tab
+        # A new tab means a new list — start on it rather than on the previous
+        # tab's transcript.
+        self._history_detail_view = False
+        self._apply_history_pane_visibility()
         self._render_history_tab()
 
     def _render_history_tab(self) -> None:
@@ -269,6 +479,14 @@ class HistoryViewMixin:
             )
         for child in self._history_list.winfo_children():
             child.destroy()
+        # Rows go into an unmanaged body frame that is attached once at the end
+        # of this method: gridded straight into the scrollable list, every row
+        # made its scrollbar flush the pending layout (CTkScrollbar._draw ends
+        # with update_idletasks()), so a long list built visibly, row by row.
+        self._history_list_body = ctk.CTkFrame(
+            self._history_list, fg_color="transparent"
+        )
+        self._history_list_body.grid_columnconfigure(0, weight=1)
         # The SRT|TXT toggle is a batch-only affordance; hide it here and let
         # _show_batch_run bring it back when a multi-format run is selected.
         self._history_format_bar.grid_remove()
@@ -293,6 +511,9 @@ class HistoryViewMixin:
             self._close_summary_window()
             self._render_log_list()
 
+        # All rows exist → show them in one layout pass.
+        self._history_list_body.grid(row=0, column=0, sticky="ew")
+
     @staticmethod
     def _ellipsize(text: str, limit: int = 40) -> str:
         """Middle-ellipsis so a long filename keeps its start AND its extension."""
@@ -310,7 +531,7 @@ class HistoryViewMixin:
         short/long title can never be clipped against the subtitle (the bug the
         single-button rows hit at fractional DPI)."""
         frame = ctk.CTkFrame(
-            self._history_list, fg_color=self._colors["button"], corner_radius=14
+            self._history_list_body, fg_color=self._colors["button"], corner_radius=14
         )
         frame.grid(
             row=index, column=0, sticky="ew", padx=10,
@@ -355,7 +576,7 @@ class HistoryViewMixin:
         frame._sub_label = sub
         clickers.append(sub)
         for w in clickers:
-            w.bind("<Button-1>", lambda _e: on_click())
+            w.bind("<Button-1>", lambda _e: self._on_history_row_click(on_click))
         return frame
 
     def _select_history_row(self, frame, selected: bool) -> None:
@@ -969,15 +1190,24 @@ class HistoryViewMixin:
 
     def _open_summary_dialog(self, session: HistorySession) -> None:
         win = ctk.CTkToplevel(self)
-        win.title(self.gui_texts.get("summary_title", "Summarise session"))
         win.configure(fg_color=self._colors["app_bg"])
-        win.after(200, lambda: self._set_toplevel_icon(win))
-        win.transient(self._history_win if self._history_win_exists() else self)
-        self.update_idletasks()
-        w, h = 520, 430
-        x = self.winfo_rootx() + (self.winfo_width() - w) // 2
-        y = self.winfo_rooty() + (self.winfo_height() - h) // 2
-        win.geometry(f"{w}x{h}+{x}+{y}")
+        w, h = SUMMARY_WINDOW_W, SUMMARY_WINDOW_H
+        if self._use_integrated_windows():
+            self._modal_host.present(
+                win,
+                SUMMARY_PANEL_MAX_W,
+                SUMMARY_PANEL_MAX_H,
+                close_command=self._close_summary_window,
+                close_button=True,
+            )
+        else:
+            win.title(self.gui_texts.get("summary_title", "Summarise session"))
+            win.after(200, lambda: self._set_toplevel_icon(win))
+            win.transient(self._history_win if self._history_win_exists() else self)
+            self.update_idletasks()
+            x = self.winfo_rootx() + (self.winfo_width() - w) // 2
+            y = self.winfo_rooty() + (self.winfo_height() - h) // 2
+            win.geometry(f"{w}x{h}+{x}+{y}")
         win.grid_columnconfigure(0, weight=1)
         win.grid_rowconfigure(4, weight=1)
         self._summary_win = win

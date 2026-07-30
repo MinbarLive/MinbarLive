@@ -33,11 +33,17 @@ from gui.control_state import (
     subtitle_mode_choices,
     visible_provider_choices,
 )
-from gui.device_list import find_input_device_position, get_input_devices
+from gui.device_list import (
+    BLACKHOLE_URL,
+    find_input_device_position,
+    get_input_devices,
+    loopback_supported,
+)
 from gui.dropdown import CustomDropdown
 from gui.history_view import HistoryViewMixin
+from gui.modal_host import ModalHost
 from gui.mousewheel import install_x11_mousewheel
-from gui.scaling import apply_display_scaling
+from gui.scaling import apply_display_scaling, window_work_area
 from gui.settings_view import SettingsViewMixin
 from gui.subtitle_window import SubtitleWindow
 from gui.typography import SubtitleTypographyMixin
@@ -155,9 +161,12 @@ class AppGUI(
 ):
     # Size the window opens at on a fresh install (CTk logical units), shared
     # by _setup_window and _toggle_log_panel (a mismatch there once locked the
-    # window at the larger size after a log toggle). 848x597 logical renders
-    # ~1060x746 px, the compact size the 2-column card grid fits snugly.
-    _DEFAULT_W = 848
+    # window at the larger size after a log toggle). The 2-column card grid
+    # fits inside this without the sidebar scrolling. Kept at or below
+    # gui/scaling.DESIGN_W/DESIGN_H, which the DPI clamp guarantees fits in 85%
+    # of the work area — so it opens unscrolled on every resolution/DPI, not
+    # just the machine it was tuned on.
+    _DEFAULT_W = 880
     _DEFAULT_H = 597
     # Floor the user may drag the window down to. Deliberately far below the
     # default: the card grid reflows to a single column on the way down, so a
@@ -177,6 +186,33 @@ class AppGUI(
     # Gap between card groups and around the grid (raw px, matches the gap
     # between two cards inside a group).
     _CARD_GAP = 18
+    # Width the sidebar keeps while the log panel is open, and the narrowest
+    # the log panel is still worth reading at (logical units). Opening the log
+    # inside a window that can't hold both grows the window to their sum —
+    # otherwise the panel gets whatever is left over, which in a small window
+    # was a column one character wide.
+    _SIDEBAR_W_WITH_LOG = 500
+    _LOG_PANEL_MIN_W = 340
+    # Font sizes an inline mode selector steps down through when its card is
+    # too narrow for the full-size labels: (title, segment), largest first.
+    # See _fit_inline_mode_selector.
+    _SEG_FIT_SIZES = ((14, 13), (13, 12), (12, 11), (11, 10))
+    # Chrome around a segment label (logical units) — the button's own padding
+    # plus the gap to its neighbour.
+    _SEG_LABEL_PADDING = 26
+    # True between "window built" and "window painted and faded in" (see
+    # _reveal_control_window). A class default so any handler that runs before
+    # _setup_window has set it treats the window as already visible.
+    _reveal_pending = False
+    # Failsafe delay for that reveal, measured from the end of the build. The
+    # normal path is keyed to the root's first <Map>, which only CustomTkinter's
+    # *Windows-only* withdraw/deiconify dance reliably delivers after our bind
+    # exists — off Windows the root is already mapped by then, so without this
+    # backstop the panel stayed transparent forever (reported on macOS: present
+    # and clickable, its dropdowns visible, its own surface invisible).
+    # Comfortably later than the Windows path (~300 ms layout + settle), so it
+    # never pre-empts it.
+    _REVEAL_BACKSTOP_MS = 800
 
     def __init__(self, controller):
         self._saved_settings = load_settings()
@@ -232,6 +268,9 @@ class AppGUI(
         # Compact input-level meter (backend: controller.get_input_level()).
         self.input_level_poll_job: str | None = None
         self._input_level_ui_state: tuple[bool, bool] | None = None
+        # Last (text, colour) actually written to the level readout, so an
+        # unchanged reading costs no redraw (see _poll_input_level).
+        self._input_level_text_state: tuple[str, str] | None = None
         # True while the modal API-key dialog is up (see _prompt_provider_key).
         self._key_prompt_open = False
 
@@ -280,6 +319,10 @@ class AppGUI(
         self._segments: list[ctk.CTkSegmentedButton] = []
 
         self._setup_window()
+        # In-app (Discord-style) presentation of secondary windows — the
+        # mechanism is always available; the window_style setting decides per
+        # open whether a window goes through it (see _use_integrated_windows).
+        self._modal_host = ModalHost(self)
         self._create_layout()
         if self._subtitle_window_should_exist():
             self._create_subtitle_window()
@@ -386,24 +429,40 @@ class AppGUI(
         self.minsize(_min_w, _min_h)
         self.configure(fg_color=self._colors["app_bg"])
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        # Invisible until the window has painted. CustomTkinter keeps the root
+        # withdrawn during the build and maps it inside mainloop(), but the
+        # widgets only draw on the <Configure> events that follow mapping — so
+        # the panel used to appear as an empty frame, then a header, then the
+        # cards. Alpha (not withdraw): the window must map for that drawing to
+        # happen at all. Where per-window alpha is unavailable (X11 without a
+        # compositor) this is a no-op and the old behaviour remains.
+        self._reveal_pending = True
+        try:
+            self.attributes("-alpha", 0.0)
+        except tk.TclError:
+            self._reveal_pending = False
         self.after_idle(self._restore_control_window_surface)
         self.bind("<FocusIn>", self._schedule_control_window_surface_restore)
         self.bind("<Map>", self._schedule_control_window_surface_restore)
+        # The settle window has to start when the window is actually mapped
+        # (an after() scheduled at the end of the build would already be overdue
+        # by then — CTk's mainloop() spends ~300 ms laying the panel out before
+        # it deiconifies). That deiconify is Windows-only, hence the
+        # _REVEAL_BACKSTOP_MS failsafe scheduled in _finalize_setup.
+        self.bind("<Map>", self._reveal_control_window, add="+")
         # <FocusIn> only reaches the toplevel itself when no child widget holds
         # the Tk focus; <Activate> fires on the window whenever the OS makes it
         # the active window, which is what the restore actually cares about.
         self.bind("<Activate>", self._schedule_control_window_surface_restore)
 
-        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
-            try:
-                self.iconbitmap(ICON_PATH)
-            except Exception:
-                pass
-        elif os.path.exists(ICON_PATH_PNG):
-            try:
-                self.iconphoto(False, scaled_icon_photo(ICON_PATH_PNG))
-            except Exception:
-                pass
+        self._window_icon_photo: tk.Image | None = None
+        self._apply_window_icon()
+        # CustomTkinter withdraws and deiconifies this window ~200 ms after
+        # start-up to repaint the titlebar (_windows_set_titlebar_color), which
+        # recreates the Windows taskbar button and drops an icon set before it —
+        # that race is why the taskbar showed the Tk feather about half the
+        # time. Re-assert whenever the window is (re)mapped.
+        self.bind("<Map>", self._apply_window_icon, add="+")
 
         if self._log_collapsed:
             self.grid_columnconfigure(0, weight=1, minsize=self._MIN_W)
@@ -412,6 +471,44 @@ class AppGUI(
             self.grid_columnconfigure(0, weight=0, minsize=500)
             self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
+
+    def _apply_window_icon(self, _event: object | None = None) -> None:
+        """(Re)apply the window and taskbar icon.
+
+        ``default=`` registers it as the *application's* icon rather than this
+        one window's: Tk re-applies that form itself when a window surface is
+        recreated, and every toplevel inherits it. The plain call covers this
+        window right now. Idempotent, so the <Map> binding can simply repeat
+        it — the surface is recreated on a theme switch and on a restore from
+        the taskbar too, not only during start-up.
+
+        Both branches are allocation-free after the first call, because <Map>
+        fires often and this runs on every one of them. The .ico branch is
+        Windows-only (Linux Tk expects an XBM there and raises — see
+        utils/icons); the PNG branch everywhere else.
+        """
+        # <Map> reaches this bindtag for every descendant widget as well.
+        if _event is not None and str(getattr(_event, "widget", "")) != str(self):
+            return
+        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
+            try:
+                self.iconbitmap(default=ICON_PATH)
+                self.iconbitmap(ICON_PATH)
+            except Exception:
+                return
+            # iconbitmap() resets the DWM titlebar to the light default. A
+            # no-op off Windows, where nothing above ran either.
+            apply_dark_titlebar(self, dark=self._theme_mode == "dark")
+        elif os.path.exists(ICON_PATH_PNG):
+            try:
+                # Kept on the instance: scaled_icon_photo() caches the decoded
+                # bytes but returns a FRESH PhotoImage, so rebuilding it per
+                # <Map> would pile up Tk image objects for the session.
+                if self._window_icon_photo is None:
+                    self._window_icon_photo = scaled_icon_photo(ICON_PATH_PNG)
+                self.iconphoto(False, self._window_icon_photo)
+            except Exception:
+                pass
 
     def _schedule_control_window_surface_restore(
         self, _event: object | None = None
@@ -430,6 +527,67 @@ class AppGUI(
             120, self._restore_control_window_surface
         )
 
+    def _is_maximized(self) -> bool:
+        """True if the window is currently maximized, on any platform.
+
+        Windows (and Tk on macOS) report it as the "zoomed" window state; X11
+        has no such state and uses a -zoomed attribute instead. Each raises
+        TclError where it does not apply, so both are tried.
+        """
+        try:
+            if self.state() == "zoomed":
+                return True
+        except tk.TclError:
+            pass
+        try:
+            return bool(self.attributes("-zoomed"))
+        except tk.TclError:
+            return False
+
+    def _restore_maximized_state(self) -> None:
+        """Maximize the window again if it was closed maximized."""
+        if not getattr(self._saved_settings, "window_maximized", False):
+            return
+        try:
+            self.state("zoomed")
+            return
+        except tk.TclError:
+            pass
+        try:
+            self.attributes("-zoomed", True)
+        except tk.TclError:
+            pass
+
+    def _reveal_control_window(self, _event: object | None = None) -> None:
+        """Fade the control panel in once it has painted (first <Map> only).
+
+        See the alpha note in _setup_window and _reveal_when_drawn(): the same
+        post-mapping drawing that made secondary windows fill in visibly
+        applies to the root, so the settle window starts here."""
+        if not self._reveal_pending:
+            return
+        if _event is not None and str(getattr(_event, "widget", "")) != str(self):
+            return
+
+        def _show() -> None:
+            self._reveal_pending = False
+            # Re-maximize here rather than in _setup_window: CustomTkinter
+            # withdraws and deiconifies the window on its way through
+            # _windows_set_titlebar_color, and it only deiconifies again when
+            # the state it saved was "normal" — maximizing before that could
+            # leave the window withdrawn. By the first <Map> that dance is done.
+            self._restore_maximized_state()
+            try:
+                self.attributes("-alpha", 1.0)
+            except tk.TclError:
+                pass
+
+        try:
+            self.update_idletasks()
+            self.after(self._REVEAL_SETTLE_MS, _show)
+        except tk.TclError:
+            self._reveal_pending = False
+
     def _restore_control_window_surface(self, _event: object | None = None) -> None:
         """Keep the control panel opaque and above the subtitle overlay."""
         self._surface_restore_job = None
@@ -437,17 +595,23 @@ class AppGUI(
             self.wm_attributes("-transparentcolor", "")
         except tk.TclError:
             pass
-        try:
-            self.attributes("-alpha", 1.0)
-        except tk.TclError:
-            pass
+        # Not while the first reveal is still pending — this runs from an
+        # after_idle() during startup and would show the unpainted window.
+        if not self._reveal_pending:
+            try:
+                self.attributes("-alpha", 1.0)
+            except tk.TclError:
+                pass
         try:
             self.attributes("-topmost", self._control_window_should_be_topmost())
             self.lift()
         except tk.TclError:
             pass
-        # The lift above would otherwise bury a dropdown popup that is open
-        # right now — e.g. the click that activated the window also opened it.
+        # The lift above would otherwise bury the in-app modal panels (they are
+        # overrideredirect windows — transient() can't own them) and any open
+        # dropdown popup. Panels first: a popup can belong to a panel and must
+        # end up above it.
+        self._modal_host.raise_all()
         CustomDropdown.raise_active_popup()
 
     # ── Window-behaviour policies (always-on-top + subtitle visibility) ──────
@@ -700,7 +864,68 @@ class AppGUI(
                 padx=half_gap,
                 pady=(top_pad, self._CARD_GAP),
             )
+        self._apply_translation_card_stretch(cols)
         self._schedule_advanced_align()
+
+    def _apply_translation_card_stretch(self, cols: int) -> None:
+        """Three columns: run the middle card down to the LEFT column's height.
+
+        The middle group holds a single card while the left holds two, so the
+        centre of a wide window stopped halfway down. Filling the grid row
+        instead was wrong: that row is as tall as the tallest group, which is
+        the Advanced card on the right, and the surplus collected into one
+        hole in the middle of the card.
+
+        The left column's height is therefore matched explicitly, via a
+        minsize on the middle group's row. No feedback loop is possible: the
+        left column's height does not depend on the middle one's, so this
+        settles in a single pass (unlike _align_advanced_card, which measures
+        a delta it also moves).
+        """
+        stretch = cols == 3
+        self.language_card.grid_configure(sticky="nsew" if stretch else "new")
+        # Share the surplus out over every row that holds something, so the
+        # extra height becomes a little more air between the dropdowns rather
+        # than one hole in the middle of the card. Row 0 is the card header,
+        # which stays put. Rows whose widget is grid_remove()d report no
+        # slaves and are skipped, so a hidden control cannot leave a phantom
+        # gap behind. Weightless outside the three-column grid, where the card
+        # keeps its natural height exactly as before.
+        rows = self.language_card.grid_size()[1]
+        occupied = [r for r in range(1, rows) if self.language_card.grid_slaves(row=r)]
+        # The last occupied row carries the toggles and the selector bar. It is
+        # left at its natural height and pushed onto the card's bottom edge by
+        # the expanded rows above, so no share of the surplus opens up directly
+        # above the checkboxes — they stay tucked under the dropdown.
+        spread = set(occupied[:-1])
+        for row in range(1, rows):
+            self.language_card.grid_rowconfigure(
+                row, weight=1 if (stretch and row in spread) else 0
+            )
+        selector = getattr(self, "subtitle_hide_segment", None)
+        if selector is not None:
+            self._set_mode_selector_inline(selector.master, not stretch)
+        if not stretch:
+            self._col_b.grid_rowconfigure(0, minsize=0)
+            self._matched_translation_height = 0
+            return
+        self._match_translation_card_height()
+
+    def _match_translation_card_height(self) -> None:
+        """Give the middle group the left column's rendered height."""
+        if self._applied_columns != 3:
+            return
+        try:
+            target = self._col_a.winfo_height()
+        except tk.TclError:
+            return
+        if target <= 1:  # not laid out yet — a later <Configure> retries
+            return
+        # Deadband, so a pixel of grid rounding cannot make this churn.
+        if abs(target - getattr(self, "_matched_translation_height", 0)) < 2:
+            return
+        self._matched_translation_height = target
+        self._col_b.grid_rowconfigure(0, minsize=target)
 
     def _schedule_advanced_align(self, _event: object | None = None) -> None:
         """Queue one bottom-alignment pass for the next idle moment.
@@ -732,6 +957,11 @@ class AppGUI(
         was consistently a few pixels out (grid rounding, the cards' borders),
         and what has to line up is what the operator sees."""
         self._advanced_align_pending = False
+        # Three columns: the middle card follows the left column's height, and
+        # heights are only known once rendered — so retry from the same idle
+        # pass the column <Configure> bindings already schedule.
+        if self._applied_columns == 3:
+            self._match_translation_card_height()
         if self._applied_columns != 2 or getattr(self, "_typography_open", False):
             return
         try:
@@ -748,8 +978,17 @@ class AppGUI(
         if abs(delta) < 2:  # deadband, so rounding cannot make this oscillate
             return
         # delta is real pixels; the padding is a logical value CustomTkinter
-        # multiplies by the widget scaling on its way into grid().
-        gap = max(0, self._advanced_gap + round(delta / max(self._responsive_scale, 0.1)))
+        # multiplies by the widget scaling on its way into grid(). That factor
+        # is the window scaling (DPI × the design clamp), NOT the clamp alone:
+        # dividing by _responsive_scale overshot every correction by the DPI
+        # factor, and round() then locked the gap into a two-value cycle
+        # (34↔37 at 1.5× DPI) that re-queued this pass forever and froze the
+        # control panel — reported after collapsing the log panel.
+        try:
+            scaling = self._get_window_scaling()
+        except Exception:  # noqa: BLE001 — cosmetic alignment must never crash
+            return
+        gap = max(0, self._advanced_gap + round(delta / max(scaling, 0.1)))
         if gap == self._advanced_gap:
             return
         self._advanced_gap = gap
@@ -1221,6 +1460,7 @@ class AppGUI(
                 selected_device = 0
             self.device_combo.current(selected_device)
         self.device_combo.pack(fill="x", pady=(8, 0))
+        self._build_loopback_hint(device_frame)
 
         # Full-width input-level row below both dropdowns (keeps the monitor and
         # input dropdowns the same height; the meter is one level, not stacked).
@@ -1295,6 +1535,27 @@ class AppGUI(
     # only an explicit "Test mic" keeps it open indefinitely.
     _INPUT_LEVEL_AUTO_SECONDS = 10
 
+    def _build_loopback_hint(self, parent: ctk.CTkFrame) -> None:
+        """Explain the missing "(Loopback)" entries where the platform has no
+        loopback capture (macOS). Created only there, so the card layout on
+        Windows/Linux is untouched. Clicking opens the BlackHole page."""
+        if loopback_supported():
+            return
+        label = ctk.CTkLabel(
+            parent,
+            text=self.gui_texts.get(
+                "macos_loopback_hint", "macOS: system audio needs BlackHole ↗"
+            ),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=self._colors["muted"],
+            anchor="w",
+            cursor="hand2",
+        )
+        label._text_key = "macos_loopback_hint"  # re-texted on language change
+        label.pack(fill="x", pady=(4, 0))
+        label.bind("<Button-1>", lambda _e: webbrowser.open(BLACKHOLE_URL))
+        self._muted_labels.append(label)
+
     def _build_input_level_meter(self, card: ctk.CTkFrame) -> None:
         """Full-width live input-level row below the monitor/input dropdowns.
 
@@ -1343,6 +1604,7 @@ class AppGUI(
         self.input_level_test_btn.grid(row=0, column=2, sticky="e")
 
         self._input_level_ui_state = None
+        self._input_level_text_state: tuple[str, str] | None = None
         self._input_level_auto_job = None  # pending auto-stop of a short preview
         self.input_level_poll_job = self.after(200, self._poll_input_level)
 
@@ -1365,7 +1627,16 @@ class AppGUI(
                 else:
                     text = f"{rms_dbfs:.0f} dBFS"
                     color = self._colors["text"]
-                self.input_level_value_label.configure(text=text, text_color=color)
+                # Only touch the label when the readout actually changed: a
+                # configure() redraws it, and this runs 20x a second (see
+                # AudioLevelBar.set). Theme/GUI-language switches recolour or
+                # re-word the label themselves, and the next tick recomputes
+                # both from _colors/gui_texts, so a stale cache self-heals.
+                if (text, color) != self._input_level_text_state:
+                    self._input_level_text_state = (text, color)
+                    self.input_level_value_label.configure(
+                        text=text, text_color=color
+                    )
                 self._sync_input_level_button()
             self.input_level_poll_job = self.after(
                 self._INPUT_LEVEL_POLL_MS, self._poll_input_level
@@ -2096,6 +2367,9 @@ class AppGUI(
         self.error_poll_job = self.after(250, self._poll_errors)
         self.after(300, lambda: self._setup_autohide_scrollbar(self.sidebar))
         self._start_update_check()
+        # Reveal the panel even if its first <Map> never reaches us (see
+        # _REVEAL_BACKSTOP_MS). A no-op once the <Map> path has run.
+        self.after(self._REVEAL_BACKSTOP_MS, self._reveal_control_window)
         log(self.gui_texts.get("stopped", "Ready"), level="INFO")
         if self._saved_settings.auto_start:
             self.after(700, self.on_start)
@@ -2228,7 +2502,10 @@ class AppGUI(
 
     def _get_translation_drain_policy(self) -> tuple[int, int]:
         queue_depth = self.controller.translation_queue.qsize()
-        mode = self._saved_settings.subtitle_mode
+        # The effective mode, not the stored one: a stored Realtime under a
+        # segmented strategy renders as continuous, and the window-side
+        # catch-up is active there — the drain policy has to agree.
+        mode = self._effective_subtitle_mode()
         adaptive = self._saved_settings.adaptive_subtitle_catchup
         batch_size = 1
         # 50 ms base so the live streaming transcript line (mirrored on every
@@ -3076,6 +3353,9 @@ class AppGUI(
                 colors=self._colors,
                 texts=self.gui_texts,
                 provider=provider,
+                modal_host=(
+                    self._modal_host if self._use_integrated_windows() else None
+                ),
             )
         finally:
             self._key_prompt_open = False
@@ -3275,17 +3555,107 @@ class AppGUI(
             text_color=self._colors["text"],
         )
         seg.set(current_label)
+        # Both parts are recorded whichever way they start out: the subtitle
+        # selector switches between the two layouts at runtime so it can match
+        # the stacked one in the third column (see _set_mode_selector_inline).
+        frame._selector_parts = (title, seg)  # type: ignore[attr-defined]
+        # Keep the one-line layout at every card width by printing smaller when
+        # it gets tight (see _fit_inline_mode_selector). Measuring copies, so
+        # the live fonts are set once, to the winning size.
+        frame._fit_probes = (  # type: ignore[attr-defined]
+            ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+        )
+        frame.bind(
+            "<Configure>",
+            lambda e, f=frame: self._fit_inline_mode_selector(f, e.width),
+            add="+",
+        )
+        self._set_mode_selector_inline(frame, inline)
+        self._segments.append(seg)
+        return seg
+
+    # Font sizes the stacked layout always uses — the inline fitter may have
+    # stepped them down while the selector was sharing a row with its title.
+    _SEG_STACKED_SIZES = (14, 13)
+
+    def _set_mode_selector_inline(self, frame, inline: bool) -> None:
+        """Lay a mode selector out beside its title, or stacked below it.
+
+        Inline keeps the control as short as the checkbox it replaced, which
+        is what the two-column bottom alignment needs. In the three-column
+        grid the middle card is stretched to the left column's height and its
+        selector becomes a full-width bar at the bottom, matching the stacked
+        one in the third column — so this is switched per column count rather
+        than fixed when the widget is built.
+        """
+        if getattr(frame, "_inline", None) is inline:
+            return  # already in this layout — never re-grid on every reflow
+        frame._inline = inline  # type: ignore[attr-defined]
+        title, seg = frame._selector_parts
+        # columnspan is always stated: grid() retains the options of a previous
+        # placement, so the stacked layout's span would survive the switch back
+        # and drop the title into the segment's cell, hidden behind it.
         if inline:
             frame.grid_columnconfigure(0, weight=0)
             frame.grid_columnconfigure(1, weight=1)
-            title.grid(row=0, column=0, sticky="w", padx=(2, 12))
-            seg.grid(row=0, column=1, sticky="ew")
-        else:
-            frame.grid_columnconfigure(0, weight=1)
-            title.grid(row=0, column=0, sticky="w", padx=2, pady=(0, 4))
-            seg.grid(row=1, column=0, sticky="ew")
-        self._segments.append(seg)
-        return seg
+            title.grid(row=0, column=0, columnspan=1, sticky="w", padx=(2, 12), pady=0)
+            seg.grid(row=0, column=1, columnspan=1, sticky="ew", pady=0)
+            return
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_columnconfigure(1, weight=0)
+        title.grid(row=0, column=0, columnspan=2, sticky="w", padx=2, pady=(0, 4))
+        seg.grid(row=1, column=0, columnspan=2, sticky="ew")
+        # The inline fitter shrinks to fit a shared row; a full-width bar has
+        # the whole card to itself, so restore the intended sizes.
+        title.cget("font").configure(size=self._SEG_STACKED_SIZES[0])
+        seg.cget("font").configure(size=self._SEG_STACKED_SIZES[1])
+
+    def _fit_inline_mode_selector(self, frame, width: int | None = None) -> None:
+        """Shrink an inline selector's text until the title and all of its
+        segment labels fit on their shared row.
+
+        The row keeps its one-line layout at every card width — only the font
+        sizes step down. Without this the segment simply gets whatever the
+        title leaves over and clips its labels ("Immer" → "mmer") in the
+        narrower card grids. Sizes are measured with CTkFonts, whose size is
+        independent of display scaling, so the same steps apply at every DPI
+        and in every GUI language (where both texts change length).
+
+        ``width`` is the <Configure> event's width: during that event the
+        frame's own new size is known while its children are still laid out
+        for the previous one, so nothing here reads a child's position.
+        """
+        if not getattr(frame, "_inline", True):
+            return  # stacked: the bar owns the full width, nothing to fit
+        title, seg = frame._selector_parts
+        try:
+            scale = ctk.ScalingTracker.get_widget_scaling(frame) or 1.0
+        except Exception:
+            scale = 1.0
+        avail = (width if width is not None else frame.winfo_width()) / scale
+        values = list(seg.cget("values") or [])
+        if avail <= 1 or not values:  # not laid out yet / nothing to measure
+            return
+
+        probe_title, probe_seg = frame._fit_probes
+        text = title.cget("text")
+        chosen = self._SEG_FIT_SIZES[-1]
+        for sizes in self._SEG_FIT_SIZES:
+            probe_title.configure(size=sizes[0])
+            probe_seg.configure(size=sizes[1])
+            # padx(2, 12) around the title, plus a little slack.
+            per_label = (avail - probe_title.measure(text) - 16) / len(values)
+            widest = max(probe_seg.measure(v) for v in values)
+            if widest + self._SEG_LABEL_PADDING <= per_label:
+                chosen = sizes
+                break
+
+        title_font, seg_font = title.cget("font"), seg.cget("font")
+        if (title_font.cget("size"), seg_font.cget("size")) == chosen:
+            return  # already right — never re-render on every resize event
+        title_font.configure(size=chosen[0])
+        seg_font.configure(size=chosen[1])
 
     @staticmethod
     def _mode_from_label(
@@ -3326,6 +3696,9 @@ class AppGUI(
                 self._saved_settings.subtitle_hide_mode
             )]
         )
+        # Title and segment labels just changed length — what fitted in one
+        # language may not fit in the next (runs after the label texts above).
+        self._fit_inline_mode_selector(self.subtitle_hide_segment.master)
 
     def _set_advanced_visible(self, visible: bool) -> None:
         """Show/hide the Advanced body without re-running the card layout.
@@ -3357,6 +3730,36 @@ class AppGUI(
         # re-run the layout so grid re-measures. See _layout_sidebar_cards.
         self._layout_sidebar_cards()
 
+    def _work_area_logical(self) -> tuple[float, float]:
+        """The usable area of the monitor this window is on, in CTk logical
+        units — the units geometry() takes. Physical px / DPI scaling, so the
+        result means the same thing on a 1080p monitor at 100 % and a 4K one
+        at 200 %."""
+        _x, _y, w, h = window_work_area(self)
+        try:
+            scaling = ctk.ScalingTracker.get_window_scaling(self) or 1.0
+        except Exception:
+            scaling = 1.0
+        return w / scaling, h / scaling
+
+    def _keep_on_screen(self, width: int, height: int) -> None:
+        """Pull a just-grown window back onto its monitor. Sizing alone keeps
+        the top-left corner, so a window near the right or bottom edge grows
+        straight off the screen — with the log panel, off the edge the user
+        just made room for."""
+        try:
+            scaling = ctk.ScalingTracker.get_window_scaling(self) or 1.0
+        except Exception:
+            scaling = 1.0
+        area_x, area_y, area_w, area_h = window_work_area(self)
+        self.update_idletasks()
+        x, y = self.winfo_rootx(), self.winfo_rooty()
+        new_x = min(x, area_x + area_w - int(width * scaling))
+        new_y = min(y, area_y + area_h - int(height * scaling))
+        new_x, new_y = max(area_x, new_x), max(area_y, new_y)
+        if (new_x, new_y) != (x, y):
+            self.geometry(f"{width}x{height}+{new_x}+{new_y}")
+
     def _toggle_log_panel(self) -> None:
         self._log_collapsed = not self._log_collapsed
         self._saved_settings.log_panel_collapsed = self._log_collapsed
@@ -3383,11 +3786,23 @@ class AppGUI(
             self._log_toggle_btn.configure(text="▶")
         else:
             # Expanded: single-column sidebar + log panel (classic look).
-            self.grid_columnconfigure(0, weight=0, minsize=500)
+            self.grid_columnconfigure(0, weight=0, minsize=self._SIDEBAR_W_WITH_LOG)
             self.grid_columnconfigure(1, weight=1)
             self.content.grid()
             self.minsize(self._MIN_W, self._MIN_H)
+            # The log panel only gets what the 500px sidebar leaves over, so in
+            # a window narrower than both it opened as a sliver of one wrapped
+            # character per line. Make room for it instead — never beyond the
+            # monitor this window is on.
+            current_width = max(
+                current_width,
+                min(
+                    self._SIDEBAR_W_WITH_LOG + self._LOG_PANEL_MIN_W,
+                    int(self._work_area_logical()[0]),
+                ),
+            )
             self.geometry(f"{current_width}x{current_height}")
+            self._keep_on_screen(current_width, current_height)
             self._log_toggle_btn.configure(text="◀")
         self._layout_sidebar_cards()
         self._save_current_settings()
@@ -3623,6 +4038,7 @@ class AppGUI(
         self._update_banner_close.configure(text_color=self._colors["accent"])
         self.sidebar.configure(fg_color=self._colors["sidebar"])
         self.content.configure(fg_color=self._colors["app_bg"])
+        self._modal_host.update_chrome(self._colors)
         self._restore_control_window_surface()
         # The OS titlebar is set once at startup and doesn't follow a runtime
         # switch — repaint it (main window here, settings window below).
@@ -3806,17 +4222,18 @@ class AppGUI(
         self.speed_label.configure(text_color=self._colors["text"])
         # Control panel theme does NOT touch subtitle window — see _apply_subtitle_theme()
         if self._settings_win_exists():
-            try:
-                self.subtitle_theme_segment.configure(
-                    fg_color=self._colors["button"],
-                    selected_color=self._colors["accent"],
-                    selected_hover_color=self._colors["accent_hover"],
-                    unselected_color=self._colors["button"],
-                    unselected_hover_color=self._colors["button_hover"],
-                    text_color=self._colors["text"],
-                )
-            except Exception:
-                pass
+            for seg_name in ("subtitle_theme_segment", "window_style_segment"):
+                try:
+                    getattr(self, seg_name).configure(
+                        fg_color=self._colors["button"],
+                        selected_color=self._colors["accent"],
+                        selected_hover_color=self._colors["accent_hover"],
+                        unselected_color=self._colors["button"],
+                        unselected_hover_color=self._colors["button_hover"],
+                        text_color=self._colors["text"],
+                    )
+                except Exception:
+                    pass
         self._set_status(self._running)
         # Re-apply disabled states: after colour update, the new border_color must
         # be used as the "greyed out" text colour for disabled combos.
@@ -3899,6 +4316,23 @@ class AppGUI(
                 )
             except Exception:
                 pass
+            try:
+                self.window_style_segment.configure(
+                    values=[
+                        self.gui_texts.get("window_style_windowed", "Windows"),
+                        self.gui_texts.get("window_style_integrated", "Integrated"),
+                    ]
+                )
+                self.window_style_segment.set(
+                    self.gui_texts.get(
+                        "window_style_integrated"
+                        if self._saved_settings.window_style == "integrated"
+                        else "window_style_windowed",
+                        "Integrated",
+                    )
+                )
+            except Exception:
+                pass
             for label in getattr(self, "_settings_muted_labels", []):
                 key = getattr(label, "_text_key", None)
                 if key:
@@ -3956,7 +4390,13 @@ class AppGUI(
         # jobs behind the cancel-everything pass below.
         self._closing = True
         try:
-            self._saved_settings.window_geometry = self.geometry()
+            maximized = self._is_maximized()
+            self._saved_settings.window_maximized = maximized
+            # While maximized, geometry() reports the maximized box. Storing it
+            # would reopen a screen-sized *normal* window and leave nothing to
+            # restore down to, so the last restored-down geometry is kept.
+            if not maximized:
+                self._saved_settings.window_geometry = self.geometry()
             self._save_current_settings()
         except Exception:
             pass

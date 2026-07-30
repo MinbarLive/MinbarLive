@@ -65,20 +65,39 @@ def _build_with_tk_retry(build, attempts: int = 3):
             time.sleep(0.5)
 
 
-def _display_available() -> bool:
+def _probe_display() -> tuple[bool, bool]:
+    """Ask the display two questions with one throwaway root.
+
+    Returns ``(display available, per-window opacity applied)``. The first is
+    not just a skip guard: a transient failure here would silently skip every
+    test in this file and still report the run green.
+
+    Opacity is asked because X11 without a compositing manager (CI's xvfb)
+    accepts ``-alpha`` without raising and then reports 1.0 back whatever was
+    requested — the paint-before-reveal fade is a documented no-op on such a
+    display, and its *logic* is asserted via ``_reveal_pending`` instead.
+    """
     try:
-        # Not just a skip guard: a transient failure here would silently skip
-        # every test in this file and still report the run green.
         root = _build_with_tk_retry(tk.Tk)
     except Exception:
-        return False
+        return False, False
+    # Withdrawn: a mapped root flashes an empty box in the corner of the screen
+    # on every run. Alpha still round-trips while withdrawn.
+    root.withdraw()
+    try:
+        root.attributes("-alpha", 0.5)
+        alpha_applied = abs(float(root.attributes("-alpha")) - 0.5) < 0.01
+    except Exception:
+        alpha_applied = False
     root.destroy()
-    return True
+    return True, alpha_applied
 
 
 # The control panel needs a real display; skip rather than fail on headless CI.
+_DISPLAY_AVAILABLE, _ALPHA_HONOURED = _probe_display()
+
 pytestmark = pytest.mark.skipif(
-    not _display_available(), reason="no display available for GUI tests"
+    not _DISPLAY_AVAILABLE, reason="no display available for GUI tests"
 )
 
 
@@ -752,6 +771,118 @@ class TestSettingsRemoveKeyGating:
         assert removed == ["openai"]
 
 
+class TestIntegratedWindows:
+    """The window_style setting: separate windows (default, while integrated
+    mode is still tested on Linux) vs in-app panels.
+
+    Integrated mode is gated to Windows (see _integrated_windows_supported),
+    so the tests that drive a real in-app panel only run there — off Windows
+    that configuration cannot occur, and the dim overlay would be exercised
+    under exactly the conditions (no compositor, no window manager) that made
+    the mode unusable on X11 in the first place. What matters on Linux is the
+    gate, and test_integrated_is_gated_to_windows drives BOTH of its branches
+    on every platform."""
+
+    _windows_only = pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="integrated mode is Windows-only; the gate is covered on all "
+        "platforms by test_integrated_is_gated_to_windows",
+    )
+
+    def test_windowed_is_the_default(self, make_gui):
+        gui, _c, settings = make_gui()
+        assert settings.window_style == "windowed"
+
+    @_windows_only
+    def test_integrated_opens_as_in_app_panel(self, make_gui):
+        gui, _c, _s = make_gui(window_style="integrated")
+        gui._open_settings_window()
+        gui.update_idletasks()
+        win = gui._settings_win
+        assert gui._modal_host.is_presented(win)
+        assert bool(win.overrideredirect())
+        overlay = gui._modal_host._overlay
+        assert overlay is not None and overlay.winfo_exists()
+
+    @_windows_only
+    def test_escape_closes_the_panel_and_hides_the_overlay(self, make_gui):
+        # Drives the host's Escape handler directly — a synthesized key event
+        # needs a mapped + focused window, and this file never pumps the event
+        # loop (see the module docstring).
+        gui, _c, _s = make_gui(window_style="integrated")
+        gui._open_settings_window()
+        gui.update_idletasks()
+        gui._modal_host._on_escape()
+        gui.update_idletasks()
+        assert not gui._settings_win_exists()
+        assert gui._modal_host.active is False
+        overlay = gui._modal_host._overlay
+        assert overlay is not None and overlay.state() == "withdrawn"
+
+    def test_windowed_mode_keeps_separate_windows(self, make_gui):
+        gui, _c, _s = make_gui(window_style="windowed")
+        gui._open_settings_window()
+        gui.update_idletasks()
+        win = gui._settings_win
+        assert not gui._modal_host.is_presented(win)
+        assert not bool(win.overrideredirect())
+        assert gui._modal_host._overlay is None
+
+    def test_integrated_is_gated_to_windows(self, make_gui, monkeypatch):
+        """On X11 the dim overlay is solid black and borderless panels do not
+        reliably stack above it (black screen, no popup) — integrated mode
+        must fall back to separate windows off Windows even when selected.
+
+        Both branches are driven through the platform-capability constant, so
+        this runs on every host: patching sys.platform itself would apply
+        process-wide (gui.widgets.sys *is* the sys module) and change what
+        Tk/CustomTkinter do about titlebars mid-test."""
+        import gui.widgets as widgets
+
+        gui, _c, _s = make_gui(window_style="integrated")
+        monkeypatch.setattr(widgets, "INTEGRATED_WINDOWS_SUPPORTED", True)
+        assert gui._use_integrated_windows() is True
+        monkeypatch.setattr(widgets, "INTEGRATED_WINDOWS_SUPPORTED", False)
+        assert gui._use_integrated_windows() is False
+        gui._open_settings_window()
+        gui.update_idletasks()
+        assert not gui._modal_host.is_presented(gui._settings_win)
+        assert not bool(gui._settings_win.overrideredirect())
+        # The control itself must be unreachable, not just ineffective.
+        # CTkSegmentedButton.cget("state") raises (unsupported argument), so
+        # read the attribute configure() stores it in.
+        assert gui.window_style_segment._state == "disabled"
+        assert gui.window_style_segment.get() == gui.gui_texts.get(
+            "window_style_windowed", "Windows"
+        )
+
+    def test_segment_round_trips_the_setting(self, make_gui):
+        gui, _c, settings = make_gui(window_style="integrated")
+        gui._open_settings_window()
+        gui.update_idletasks()
+        gui._on_window_style_change(
+            gui.gui_texts.get("window_style_windowed", "Windows")
+        )
+        assert settings.window_style == "windowed"
+        gui._on_window_style_change(
+            gui.gui_texts.get("window_style_integrated", "Integrated")
+        )
+        assert settings.window_style == "integrated"
+
+    @_windows_only
+    def test_announce_panel_routes_resize_through_the_host(self, make_gui):
+        gui, _c, _s = make_gui(window_style="integrated")
+        gui._open_announce_window()
+        gui.update_idletasks()
+        win = gui._announce_win
+        assert gui._modal_host.is_presented(win)
+        # The natural-height resize must not screen-centre an in-app panel.
+        gui._resize_announce_window()
+        assert gui._modal_host.is_presented(win)
+        gui._close_announce_window()
+        assert gui._modal_host.active is False
+
+
 class TestLocalizationAndTheme:
     def test_gui_language_switch_reloads_texts(self, make_gui):
         """The language dropdown lives in the settings window, and
@@ -1274,8 +1405,12 @@ class TestCardGridReflow:
 
     def _pin_bottoms(self, gui, monkeypatch, display_bottom, advanced_bottom):
         """Fake the two columns' rendered bottom edges (nothing is mapped in a
-        test, so _align_advanced_card would bail out before measuring)."""
-        monkeypatch.setattr(gui, "_responsive_scale", 1.0, raising=False)
+        test, so _align_advanced_card would bail out before measuring).
+
+        The window scaling is pinned to 1.0 so one logical unit is one pixel
+        and the arithmetic below reads plainly — that is the factor the pixel
+        delta is divided by (see TestAdvancedAlignConvergence)."""
+        monkeypatch.setattr(gui, "_get_window_scaling", lambda: 1.0, raising=False)
         for group, bottom in (
             (gui._col_a, display_bottom),
             (gui._col_c, advanced_bottom),
@@ -1340,6 +1475,175 @@ class TestCardGridReflow:
         # CTk's minsize() has no query form (it would compare against None) —
         # read back what _setup_window stored on the window instead.
         assert (gui._min_width, gui._min_height) == (gui._MIN_W, gui._MIN_H)
+
+
+class TestWindowIcon:
+    """CustomTkinter withdraws and deiconifies the window ~200 ms after
+    start-up to repaint the titlebar, which recreates the Windows taskbar
+    button and drops an icon set before it — the taskbar showed the Tk
+    feather about half the time. The icon is therefore re-asserted on <Map>,
+    which means it runs often and must stay cheap on every platform.
+    """
+
+    def test_map_reasserts_the_icon(self, make_gui, monkeypatch):
+        """bind() captures the bound method, so this asserts the effect —
+        that mapping the window reaches Tk's icon call — not the attribute."""
+        import gui.app_gui as app_gui
+
+        gui, _c, _s = make_gui()
+        calls = []
+        monkeypatch.setattr(app_gui, "apply_dark_titlebar", lambda *a, **k: None)
+        for name in ("iconbitmap", "iconphoto"):
+            monkeypatch.setattr(
+                gui, name, lambda *a, **k: calls.append(1), raising=False
+            )
+        gui.event_generate("<Map>")
+        gui.update_idletasks()
+        assert calls, "the <Map> binding no longer re-applies the icon"
+
+    def test_a_child_widgets_map_is_ignored(self, make_gui):
+        """<Map> reaches this bindtag for every descendant widget too."""
+        gui, _c, _s = make_gui()
+
+        class _Event:
+            widget = "not-the-toplevel"
+
+        before = gui._window_icon_photo
+        gui._apply_window_icon(_Event())
+        assert gui._window_icon_photo is before
+
+    def test_the_png_icon_is_built_once(self, make_gui, monkeypatch):
+        """The non-Windows branch: scaled_icon_photo() returns a fresh
+        PhotoImage each call, so repeating it per <Map> would leak Tk images.
+        """
+        import gui.app_gui as app_gui
+
+        gui, _c, _s = make_gui()
+        monkeypatch.setattr(app_gui, "ICO_SUPPORTED", False)
+        monkeypatch.setattr(app_gui.os.path, "exists", lambda _p: True)
+        built = []
+
+        def _fake_photo(_path):
+            built.append(1)
+            return "photo"
+
+        monkeypatch.setattr(app_gui, "scaled_icon_photo", _fake_photo)
+        monkeypatch.setattr(gui, "iconphoto", lambda *a: None, raising=False)
+        gui._window_icon_photo = None
+        for _ in range(5):
+            gui._apply_window_icon()
+        assert len(built) == 1, f"rebuilt the icon {len(built)}x"
+
+
+class _AlignGroup:
+    """A card group whose rendered position answers to the current gap.
+
+    Only the four geometry calls _align_advanced_card makes are implemented,
+    plus the no-op grid() _layout_sidebar_cards performs on it.
+    """
+
+    def __init__(self, rooty, height, gui=None, scaling=1.0, base=0):
+        self._rooty = rooty
+        self._height = height
+        self._gui = gui
+        self._scaling = scaling
+        self._base = base
+
+    def winfo_ismapped(self):
+        return True
+
+    def winfo_rooty(self):
+        if self._gui is None:
+            return self._rooty
+        # Padding above Advanced pushes it down by gap × the widget scaling —
+        # exactly what CustomTkinter does with a logical pady on its way into
+        # grid(). This is the feedback path the alignment loop closes over.
+        return self._base + round(self._gui._advanced_gap * self._scaling)
+
+    def winfo_height(self):
+        return self._height
+
+    def grid(self, **_kwargs):
+        pass
+
+
+class TestAdvancedAlignConvergence:
+    """_align_advanced_card is a feedback loop: it measures the rendered
+    bottom-edge delta, re-pads Advanced, and the resulting <Configure> queues
+    another pass. The delta is real pixels and the padding is logical, so the
+    divisor must be the WINDOW scaling (DPI × design clamp). Dividing by
+    _responsive_scale (the clamp alone) overshot every correction by the DPI
+    factor and round() locked the gap into a two-value cycle, which re-queued
+    this pass forever and froze the control panel — reported 2026-07-29 after
+    collapsing the log panel on a 1.5× DPI screen.
+    """
+
+    _SCALING = 1.5  # a real 150% display, deliberately != _responsive_scale
+
+    def _rig(self, gui, monkeypatch):
+        """Two columns, Advanced 40px short of the display column's bottom."""
+        monkeypatch.setattr(
+            gui, "_get_window_scaling", lambda: self._SCALING, raising=False
+        )
+        monkeypatch.setattr(
+            gui.sidebar,
+            "winfo_width",
+            lambda: int(gui._COL2_MIN_W * self._SCALING),
+            raising=False,
+        )
+        gui._log_collapsed = True
+        gui._typography_open = False
+        gui._applied_columns = 2
+        gui._advanced_gap = 0
+        monkeypatch.setattr(gui, "_col_a", _AlignGroup(100, 400), raising=False)
+        monkeypatch.setattr(
+            gui,
+            "_col_c",
+            _AlignGroup(0, 200, gui=gui, scaling=self._SCALING, base=260),
+            raising=False,
+        )
+
+    def _run(self, gui, passes=25):
+        """Drive the loop by hand: after_idle never fires without a mainloop."""
+        history = []
+        for _ in range(passes):
+            gui._advanced_align_pending = False
+            gui._align_advanced_card()
+            history.append(gui._advanced_gap)
+            if len(history) >= 2 and history[-1] == history[-2]:
+                break  # reached a fixed point
+        return history
+
+    def test_the_gap_reaches_a_fixed_point(self, make_gui, monkeypatch):
+        gui, _c, _s = make_gui()
+        self._rig(gui, monkeypatch)
+        history = self._run(gui)
+        assert history[-1] == history[-2], f"never settled: {history}"
+
+    def test_the_gap_never_cycles_between_two_values(self, make_gui, monkeypatch):
+        """The exact freeze signature: [34, 37, 34, 37, ...] forever."""
+        gui, _c, _s = make_gui()
+        self._rig(gui, monkeypatch)
+        history = self._run(gui)
+        settled = history[-1]
+        assert history.count(settled) >= 2
+        # No value may reappear after the run has moved past it — a repeat is
+        # a limit cycle, which is what starved the idle queue.
+        for index, gap in enumerate(history[:-2]):
+            assert gap not in history[index + 1 : -1], f"cycle in {history}"
+
+    def test_the_correction_divides_by_the_window_scaling(
+        self, make_gui, monkeypatch
+    ):
+        """One pass over a known delta, so a wrong divisor is unambiguous."""
+        gui, _c, _s = make_gui()
+        self._rig(gui, monkeypatch)
+        # Static column C: the delta is a fixed 40px regardless of the gap.
+        monkeypatch.setattr(gui, "_col_c", _AlignGroup(260, 200), raising=False)
+        gui._responsive_scale = 0.86  # what the buggy divisor used
+        gui._advanced_align_pending = False
+        gui._align_advanced_card()
+        assert gui._advanced_gap == round(40 / self._SCALING)  # 27, not 47
 
 
 class _Configure:
@@ -1437,6 +1741,185 @@ class TestBrandWordmark:
         )
 
 
+class TestPaintBeforeReveal:
+    """Windows must be invisible until they have painted.
+
+    CTk widgets draw on the <Configure> events that follow mapping, not at
+    construction, so a window shown at the end of its build appears empty and
+    fills in over ~0.6 s — the "you can watch it build itself" effect. Every
+    window therefore builds transparent and fades in one settle beat later.
+    """
+
+    # Opacity can only be asserted where the platform applies it (see
+    # _probe_display); the reveal logic itself is checked everywhere.
+    _needs_alpha = pytest.mark.skipif(
+        not _ALPHA_HONOURED, reason="per-window opacity not applied by this display"
+    )
+
+    @staticmethod
+    def _alpha(win) -> float:
+        return float(win.attributes("-alpha"))
+
+    def test_control_panel_is_built_transparent(self, make_gui):
+        gui, _c, _s = make_gui()
+        assert gui._reveal_pending is True
+        if _ALPHA_HONOURED:
+            assert self._alpha(gui) == 0.0
+
+    def test_surface_restore_does_not_show_an_unpainted_window(self, make_gui):
+        """_restore_control_window_surface runs from an after_idle() during
+        start-up; forcing the window opaque there would undo the guard."""
+        gui, _c, _s = make_gui()
+        gui._restore_control_window_surface()
+        assert gui._reveal_pending is True
+        if _ALPHA_HONOURED:
+            assert self._alpha(gui) == 0.0
+
+    @_needs_alpha
+    def test_surface_restore_still_repairs_a_revealed_window(self, make_gui):
+        gui, _c, _s = make_gui()
+        gui._reveal_pending = False
+        gui.attributes("-alpha", 0.3)  # e.g. left behind by the overlay
+        gui._restore_control_window_surface()
+        assert self._alpha(gui) == 1.0
+
+    def test_map_of_a_child_widget_does_not_reveal(self, make_gui):
+        """<Map> reaches the toplevel's bindtag for every descendant, so the
+        first dropdown popup would otherwise reveal the unpainted panel."""
+        gui, _c, _s = make_gui()
+        scheduled = []
+        gui.after = lambda ms, fn=None, *a: scheduled.append((ms, fn))
+
+        class _Event:
+            widget = gui.sidebar
+
+        gui._reveal_control_window(_Event())
+        assert scheduled == []
+        assert gui._reveal_pending is True
+
+    def test_reveal_fades_in_after_the_settle_beat(self, make_gui):
+        gui, _c, _s = make_gui()
+        scheduled = []
+        gui.after = lambda ms, fn=None, *a: scheduled.append((ms, fn))
+
+        gui._reveal_control_window()
+        assert [ms for ms, _fn in scheduled] == [gui._REVEAL_SETTLE_MS]
+        assert gui._reveal_pending is True  # still hidden until the beat elapses
+        if _ALPHA_HONOURED:
+            assert self._alpha(gui) == 0.0
+
+        scheduled[0][1]()  # the timer fires
+        assert gui._reveal_pending is False
+        if _ALPHA_HONOURED:
+            assert self._alpha(gui) == 1.0
+
+    def test_reveal_happens_only_once(self, make_gui):
+        gui, _c, _s = make_gui()
+        gui._reveal_pending = False
+        scheduled = []
+        gui.after = lambda ms, fn=None, *a: scheduled.append((ms, fn))
+        gui._reveal_control_window()
+        assert scheduled == []
+
+    def test_build_schedules_a_reveal_backstop(self, make_gui):
+        """The <Map> the reveal is keyed to is delivered by CustomTkinter's
+        withdraw/deiconify in mainloop(), which is Windows-only — everywhere
+        else the root is mapped before our bind exists and the event never
+        arrives. Without this timer the panel stayed fully transparent for the
+        whole session (reported on macOS: clickable, its dropdowns visible, its
+        own surface not)."""
+        gui, _c, _s = make_gui()
+        scheduled = []
+        gui.after = lambda ms, fn=None, *a: scheduled.append((ms, fn))
+
+        gui._finalize_setup()
+
+        assert (gui._REVEAL_BACKSTOP_MS, gui._reveal_control_window) in scheduled
+        # Late enough that the <Map> path always wins on Windows.
+        assert gui._REVEAL_BACKSTOP_MS > gui._REVEAL_SETTLE_MS
+
+
+class _LevelSnapshot:
+    def __init__(self, rms_dbfs: float, clipping_ratio: float = 0.0):
+        self.rms_dbfs = rms_dbfs
+        self.clipping_ratio = clipping_ratio
+
+
+class TestIdleMeterCosts:
+    """The level meter polls 20x a second; an unchanged reading must cost no
+    redraw (it used to reconfigure a label and three progress bars per tick,
+    forever, silent input included)."""
+
+    def test_unchanged_level_does_not_redraw_the_bar(self, make_gui):
+        gui, _c, _s = make_gui()
+        bar = gui.input_level_bar
+        bar.set(0.42)
+        calls = []
+        for segment in bar._segments:
+            segment.set = lambda value, _c=calls: _c.append(value)
+        bar.set(0.42)
+        assert calls == []
+        bar.set(0.43)
+        assert len(calls) == len(bar._segments)
+
+    def test_unchanged_readout_does_not_reconfigure_the_label(self, make_gui):
+        gui, controller, _s = make_gui()
+        controller.get_input_level = lambda: _LevelSnapshot(-24.0)
+        calls = []
+        gui.input_level_value_label.configure = lambda **kw: calls.append(kw)
+
+        gui._poll_input_level()
+        assert len(calls) == 1  # first reading is written
+        gui._poll_input_level()
+        assert len(calls) == 1  # identical reading: no redraw
+
+        controller.get_input_level = lambda: _LevelSnapshot(-12.0)
+        gui._poll_input_level()
+        assert len(calls) == 2  # a changed reading still gets through
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestLoopbackHint:
+    """Where the platform has no loopback capture (macOS), the input-device
+    card explains where system audio comes from instead of leaving the user
+    hunting for their speakers in the list."""
+
+    @staticmethod
+    def _hints(gui):
+        return [
+            label
+            for label in gui._muted_labels
+            if getattr(label, "_text_key", None) == "macos_loopback_hint"
+        ]
+
+    def test_shown_where_the_platform_has_no_loopback(self, make_gui, monkeypatch):
+        import gui.app_gui as app_gui
+
+        monkeypatch.setattr(app_gui, "loopback_supported", lambda: False)
+        gui, _c, _s = make_gui()
+
+        hints = self._hints(gui)
+        assert len(hints) == 1
+        assert hints[0].cget("text").strip()  # a real string, not the raw key
+
+    def test_absent_where_loopback_works(self, make_gui, monkeypatch):
+        import gui.app_gui as app_gui
+
+        monkeypatch.setattr(app_gui, "loopback_supported", lambda: True)
+        gui, _c, _s = make_gui()
+
+        assert self._hints(gui) == []
+
+    def test_follows_a_gui_language_change(self, make_gui, monkeypatch):
+        import gui.app_gui as app_gui
+
+        monkeypatch.setattr(app_gui, "loopback_supported", lambda: False)
+        gui, _c, _s = make_gui()
+
+        gui.gui_texts["macos_loopback_hint"] = "Systemton via BlackHole"
+        gui._update_all_ui_texts()
+
+        assert self._hints(gui)[0].cget("text") == "Systemton via BlackHole"

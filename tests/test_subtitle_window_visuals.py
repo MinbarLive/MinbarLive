@@ -137,6 +137,7 @@ def test_five_percent_surface_keeps_footer_legible_without_limiting_footer_free_
     geometries = []
     window.geometry = geometries.append
     window._apply_topmost = lambda: None
+    window._schedule_geometry_fit_check = lambda: None
 
     window._set_screen_position()
 
@@ -170,3 +171,183 @@ def test_static_subtitle_card_uses_theme_outline():
     assert window.canvas.created[1]["fill"] == "#071521"
     assert window.canvas.created[1]["outline"] == "#29414D"
     assert window.canvas.created[1]["width"] == 1
+
+
+class TestStackOverlapFollowsTheFont:
+    """The tight line stacking overlaps the metric boxes by the blank leading
+    the LOWER font keeps above its ink. That leading is family-specific, so
+    the shipped Windows numbers must survive while other families get their
+    own — a hardcoded Segoe UI figure collided with real ink on Linux."""
+
+    @staticmethod
+    def _window(em, ascent):
+        window = object.__new__(SubtitleWindow)
+        window.font = ("family", 64, "bold")
+        # Pre-seeded cache = the metrics of the family under test, so the
+        # classification path runs for real without a Tk font.
+        window._font_metrics_cache = {("family", 64, "bold"): (em, ascent)}
+        return window
+
+    @pytest.mark.parametrize(
+        "text, expected",
+        [("Plain caps line", 24), ("Über die Zeit", 10), ("الحمد لله", 0)],
+    )
+    def test_segoe_ui_keeps_its_shipped_overlap(self, text, expected):
+        # Segoe UI Semibold at 64pt, measured: em 85 px, ascent 91 px.
+        assert self._window(85.0, 91.0)._stack_overlap(text) == expected
+
+    def test_shallower_ascent_gets_a_smaller_overlap(self):
+        # Arial/Helvetica class at 64pt: em 86.8 px, ascent 78 px. Only
+        # ~17 px of leading exists, so overlapping by Segoe UI's 32 px ate
+        # into the glyphs (the Linux bug).
+        window = self._window(86.8, 78.0)
+
+        overlap = window._stack_overlap("Plain caps line")
+
+        assert 0 <= overlap <= 10
+
+    def test_font_without_internal_leading_gets_no_overlap(self):
+        # Helvetica clones (Nimbus Sans) set the ascent at the cap height.
+        window = self._window(80.0, 58.0)
+
+        assert window._stack_overlap("Plain caps line") == 0
+
+    def test_allah_honorific_does_not_count_as_arabic_ink(self):
+        window = self._window(85.0, 91.0)
+
+        assert window._stack_overlap("Allah ﷻ sagt") == window._stack_overlap("Allah")
+
+
+class TestGeometryFitCorrection:
+    """A window manager may honour the requested size but not the position
+    (GNOME keeps splash windows out of the top-bar strut), pushing the
+    overlay's bottom — and the disclaimer pill — off-screen."""
+
+    @staticmethod
+    def _window(rootx, rooty, width, height):
+        window = object.__new__(SubtitleWindow)
+        window._monitor_index = 0
+        window._active_monitor = lambda: SimpleNamespace(
+            x=0, y=0, width=1920, height=1080
+        )
+        window.update_idletasks = lambda: None
+        window.winfo_rootx = lambda: rootx
+        window.winfo_rooty = lambda: rooty
+        window.winfo_width = lambda: width
+        window.winfo_height = lambda: height
+        window.canvas_width, window.canvas_height = width, height
+        window._applied_size = (width, height)
+        window._subtitle_mode = SUBTITLE_MODE_CONTINUOUS
+        window.subtitle_stack = []
+        window.geometry = window.__dict__.setdefault("_geometries", []).append
+        for noop in (
+            "_update_font",
+            "_update_footer_visibility",
+            "_render_announcement",
+        ):
+            setattr(window, noop, lambda *a, **k: None)
+        return window
+
+    def test_window_pushed_below_the_screen_is_shrunk_to_fit(self):
+        window = self._window(0, 37, 1920, 1080)  # 37 px of it hangs off
+
+        window._fit_geometry_to_monitor()
+
+        assert window._geometries == ["1920x1043+0+37"]
+        assert window._applied_size == (1920, 1043)
+        assert window.canvas_height == 1043  # the pill is drawn from this
+
+    def test_window_the_wm_granted_is_left_alone(self):
+        window = self._window(0, 0, 1920, 1080)
+
+        window._fit_geometry_to_monitor()
+
+        assert window._geometries == []
+        assert window._applied_size == (1920, 1080)
+
+    def test_implausible_measurement_is_ignored(self):
+        window = self._window(0, 1040, 1920, 1080)  # would leave a 40 px sliver
+
+        window._fit_geometry_to_monitor()
+
+        assert window._geometries == []
+
+    def test_realtime_feed_scroll_absorbs_the_height_change(self):
+        window = self._window(0, 37, 1920, 1080)
+        window._subtitle_mode = subtitle_module.SUBTITLE_MODE_REALTIME
+        window._live_feed_scroll = 500.0
+        window._live_feed_scroll_target = 500.0
+        window._reposition_subtitles = lambda: None
+        window._render_live_line = lambda: None
+
+        window._fit_geometry_to_monitor()
+
+        # Shrunk by 37 px, so the feed scrolls 37 px further to keep the text
+        # where it was on screen (same rule as set_window_height_percent).
+        assert window._live_feed_scroll == 537.0
+        assert window._live_feed_scroll_target == 537.0
+
+    def test_smaller_window_than_requested_only_resyncs_the_canvas(self):
+        # The WM granted 1043 px, _applied_size still claims 1080 — the footer
+        # would be drawn 37 px below the canvas. No geometry call needed.
+        window = self._window(0, 0, 1920, 1043)
+        window._applied_size = (1920, 1080)
+        window.canvas_height = 1080
+
+        window._fit_geometry_to_monitor()
+
+        assert window._geometries == []
+        assert window._applied_size == (1920, 1043)
+        assert window.canvas_height == 1043
+
+
+class TestMacOSWorkArea:
+    """A -topmost Tk window on macOS sits below the Dock and the menu bar, so
+    the overlay is laid out inside the usable area instead of over it."""
+
+    MONITOR = (0, 0, 1440, 900)
+
+    def test_unknown_usable_size_keeps_the_full_monitor(self):
+        assert subtitle_module._macos_work_area(self.MONITOR, None) == self.MONITOR
+
+    def test_dock_at_the_bottom_reserves_menu_bar_and_dock(self):
+        # 900 - 25 (menu bar) - 60 (Dock) = 815 usable.
+        area = subtitle_module._macos_work_area(self.MONITOR, (1440, 815))
+
+        assert area == (0, 25, 1440, 815)
+        x, y, _w, h = area
+        assert y + h == 840  # ends exactly where the Dock starts
+
+    def test_dock_on_a_side_only_reserves_the_menu_bar(self):
+        # The whole height loss is the menu bar; the Dock ate width instead.
+        assert subtitle_module._macos_work_area(self.MONITOR, (1370, 875)) == (
+            0,
+            25,
+            1370,
+            875,
+        )
+
+    def test_hidden_menu_bar_and_dock_use_the_whole_screen(self):
+        assert subtitle_module._macos_work_area(self.MONITOR, (1440, 900)) == (
+            0,
+            0,
+            1440,
+            900,
+        )
+
+    def test_monitor_origin_is_preserved(self):
+        assert subtitle_module._macos_work_area((100, 200, 1440, 900), (1440, 815)) == (
+            100,
+            225,
+            1440,
+            815,
+        )
+
+    def test_usable_size_larger_than_the_monitor_is_clamped(self):
+        # wm maxsize reports the union of every screen; never grow past ours.
+        assert subtitle_module._macos_work_area(self.MONITOR, (3000, 1600)) == (
+            0,
+            0,
+            1440,
+            900,
+        )

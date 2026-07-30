@@ -130,6 +130,16 @@ jobs:
           **Windows**
           - "MinbarLive.exe" herunterladen
           - Download "MinbarLive.exe"
+
+          **macOS** (experimentell / experimental — nur Apple Silicon / Apple Silicon only)
+          - "MinbarLive-macos-arm64.zip" herunterladen, entpacken, `MinbarLive.app` nach "Programme" ziehen
+          - Die App ist nicht signiert: beim ersten Start Rechtsklick auf die App → "Öffnen", dann im Dialog auf "Öffnen". Falls macOS sie ganz blockiert: Systemeinstellungen → Datenschutz & Sicherheit → "Trotzdem öffnen"
+          - Download "MinbarLive-macos-arm64.zip", unzip it, move `MinbarLive.app` to Applications
+          - The app is unsigned: on first launch right-click it → "Open", then confirm "Open". If macOS blocks it outright: System Settings → Privacy & Security → "Open Anyway"
+
+          **Linux** (experimentell / experimental)
+          - "MinbarLive-x86_64.AppImage" herunterladen, ausführbar machen (`chmod +x`), starten
+          - Download "MinbarLive-x86_64.AppImage", make it executable (`chmod +x`), run it
           EOF
 
           if gh release view "$tag" >/dev/null 2>&1; then
@@ -157,8 +167,8 @@ jobs:
   # this job) - but it is still labelled experimental: several features are
   # Windows-only there (the OBS-visible borderless overlay, transparent static
   # mode, loopback capture), and the OS keychain needs a Secret Service backend
-  # or it falls back to plaintext for OpenAI / session-only for every other
-  # provider. See docs/ci.md.
+  # or every provider's API key is session-only (nothing is written to disk).
+  # See docs/ci.md.
   build-linux:
     needs: build
     # NOT ubuntu-latest. A PyInstaller binary only starts on glibc at least as
@@ -285,22 +295,16 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" \
             dist/MinbarLive-x86_64.AppImage dist/SHA256SUMS-linux.txt --clobber
 
-  # EXPERIMENTAL macOS build. Kept as a workflow artifact only and NEVER attached
-  # to a release yet — exactly how the Linux build started before it was verified
-  # on real hardware. It is UNSIGNED and UN-NOTARIZED, so Gatekeeper blocks it on
-  # first launch (right-click → Open to run once). Apple Silicon (arm64) only; it
-  # will not run on Intel Macs. Several features are Windows-only there (the
-  # OBS-visible borderless overlay, transparent static mode, loopback capture).
-  # See docs/ci.md. Promote to a release asset only after a real Mac verifies it.
-  #
-  # MANUAL ONLY: this job does NOT run on a tag push / release — it is gated to
-  # workflow_dispatch so an unverified, users-can't-use-it-yet .app never turns a
-  # release run red or costs release CI time. Build/test it on demand from
-  # Actions → Release → Run workflow. Remove this `if` when the .app is signed,
-  # notarized and verified and is ready to ship on releases (issue tracked).
+  # EXPERIMENTAL macOS build, attached to tagged releases since 2026-07-28 after
+  # a real Mac verified the .app runs (same path the Linux AppImage took). It is
+  # UNSIGNED and UN-NOTARIZED, so Gatekeeper blocks it on first launch and users
+  # have to open it once via right-click → Open / Settings → Privacy & Security;
+  # the release notes say so. Apple Silicon (arm64) only — it will not run on
+  # Intel Macs. Known platform limits: loopback ("record what the speakers play")
+  # does not exist on macOS, and the overlay cannot float above the Dock or the
+  # menu bar, so it is laid out inside the usable screen area. See docs/ci.md.
   build-macos:
     needs: build
-    if: github.event_name == 'workflow_dispatch'
     # arm64. macos-14 is Apple Silicon; use it for a native, fast build. A single
     # x86_64 job (macos-13) would also cover Apple Silicon via Rosetta, but the
     # artifact is labelled arm64 to make the limitation explicit rather than
@@ -399,3 +403,15 @@ jobs:
             echo "::warning::MinbarLive exited early with $code — see log below."
             cat /tmp/mac_smoke.log || true
           fi
+
+      # Attach the macOS bundle to the release (tag builds only). The Windows
+      # `build` job is a dependency and creates the release first, so it already
+      # exists here — just upload alongside MinbarLive.exe, like the AppImage.
+      - name: Publish the .app to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/MinbarLive-macos-arm64.zip dist/SHA256SUMS-macos.txt --clobber

@@ -31,7 +31,7 @@ from gui.audio_level_bar import (
     AudioLevelBar,
     level_fill,
 )
-from gui.device_list import get_input_devices
+from gui.device_list import BLACKHOLE_URL, get_input_devices, loopback_supported
 from gui.dropdown import CustomDropdown
 from gui.mousewheel import install_x11_mousewheel
 from gui.scaling import apply_display_scaling
@@ -40,7 +40,6 @@ from providers import (
     get_default_model,
     get_stored_api_key,
     get_streaming_key_provider,
-    has_insecure_key_fallback,
     resolve_provider_by_keys,
     save_api_key,
 )
@@ -674,9 +673,25 @@ class OnboardingWizard(ctk.CTk):
             self._schedule_level_preview()
 
         combo.configure(command=_on_device)
+        self._build_loopback_hint()
 
         self._build_level_row()
         self._schedule_level_preview()
+
+    def _build_loopback_hint(self) -> None:
+        """Same note the control panel shows where the platform has no
+        loopback capture (macOS): the speakers are missing from the list on
+        purpose. Clicking opens the BlackHole page."""
+        if loopback_supported():
+            return
+        label = self._section_label(
+            self._container,
+            self._t("macos_loopback_hint", "macOS: system audio needs BlackHole ↗"),
+            muted=True,
+            pady=(8, 2),
+        )
+        label.configure(cursor="hand2")
+        label.bind("<Button-1>", lambda _e: webbrowser.open(BLACKHOLE_URL))
 
     # ── Input-level meter (audio step only) ────────────────────────────────
 
@@ -855,12 +870,20 @@ class OnboardingWizard(ctk.CTk):
             self._t("wizard_provider_title", "AI provider & API key"),
         )
 
-        # Deepgram (real-time streaming STT) is listed alongside the translation
+        # Deepgram (streaming STT) is listed alongside the translation
         # providers so its key can be entered here too. Selecting a translation
         # provider also makes it the active one; selecting Deepgram only reveals
-        # its key field (it has no translation capability).
-        choices = list(PROVIDER_CHOICES) + [("Deepgram (real-time)", "deepgram")]
-        provider_names = [name for name, _pid in choices]
+        # its key field (it has no translation capability). No "(real-time)"
+        # tag here — this step is about whose key is being entered, and the
+        # pipeline-mode wording only means something in the control panel.
+        choices = list(PROVIDER_CHOICES) + [("Deepgram", "deepgram")]
+        # The shipped provider is tagged so a first-run user has an answer to
+        # "which one do I pick?" without reading the notes below.
+        default_tag = self._t("provider_default_tag", "Default")
+        provider_names = [
+            f"{name} ({default_tag})" if pid == DEFAULT_AI_PROVIDER else name
+            for name, pid in choices
+        ]
         provider_ids = [pid for _name, pid in choices]
 
         self._section_label(
@@ -1112,33 +1135,25 @@ class OnboardingWizard(ctk.CTk):
         save_settings(settings)
 
         # Persist every provider key entered this session. Only the translation
-        # provider's key surfaces the insecure-storage warning (once) so several
+        # provider's key surfaces the session-only warning (once) so several
         # keys don't stack dialogs.
-        insecure = False
         session_only = False
         for pid, key in self._state.get("provider_keys", {}).items():
             if not key:
                 continue
             stored = save_api_key(pid, key)
             if pid == provider and not stored:
-                # Without a keychain, OpenAI falls back to the plaintext
-                # settings file while every other provider keeps the key for
-                # this session only — two different warnings.
-                if has_insecure_key_fallback(pid):
-                    insecure = True
-                else:
-                    session_only = True
-        if insecure or session_only:
+                # No keychain: keys are never written to disk, so this one
+                # lasts for the session only.
+                session_only = True
+        if session_only:
             messagebox.showwarning(
                 "MinbarLive",
                 self._t(
-                    "dlg_key_insecure_warning"
-                    if insecure
-                    else "dlg_key_saved_session_only",
-                    "Keyring unavailable — key will be stored unencrypted."
-                    if insecure
-                    else "No keyring available — the key works for this "
-                    "session only and must be entered again after a restart.",
+                    "dlg_key_saved_session_only",
+                    "No keyring available — the key works for this session "
+                    "only and must be entered again after a restart. Set up "
+                    "an OS keychain to store it permanently.",
                 ),
                 parent=self,
             )

@@ -50,7 +50,7 @@ The Processing Strategy setting selects one of two pipelines:
 
 ### Streaming pipeline (default: "Real-time streaming")
 
-1. Audio (microphone or system loopback) is fed as small PCM chunks into a live connection to the streaming engine (Gemini Live, OpenAI Realtime, or Deepgram). With the noise filter on, sustained non-speech is replaced by **digital silence of the same length**, so the connection's timing and endpointing stay intact
+1. Audio (microphone or system loopback) is fed as small PCM chunks into a live connection to the streaming engine (OpenAI Realtime by default, or Gemini Live / Deepgram). With the noise filter on, sustained non-speech is replaced by **digital silence of the same length**, so the connection's timing and endpointing stay intact
 2. The engine sends back **interim transcripts** (word by word, self-correcting) and marks **utterance ends** on natural pauses
 3. The live transcript line is shown on the subtitle window while the speaker talks (Realtime subtitle mode)
 4. Very short utterances are **coalesced**: a 1–3 word fragment from a rhetorical pause is held briefly and merged with the next one, so the LLM translates a whole clause instead of an isolated word (and one API call is saved per fragment)

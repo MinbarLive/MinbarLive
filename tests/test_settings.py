@@ -114,6 +114,77 @@ class TestSubtitleModes:
             settings_module._cached_settings = None
 
 
+class TestApiKeyStorage:
+    """The plaintext settings-file fallback was removed: a key is either in
+    the OS keychain or session-only. Nothing writes it to disk any more, and
+    a key left in settings.json by an older version is cleaned up on read.
+    """
+
+    def _no_keyring(self, monkeypatch):
+        monkeypatch.setattr(
+            "utils.keyring_storage._check_keyring_available", lambda: False
+        )
+
+    def test_save_without_keyring_writes_nothing(self, tmp_path, monkeypatch):
+        self._no_keyring(monkeypatch)
+        path = tmp_path / "settings.json"
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+
+        assert settings_module.set_saved_api_key("sk-secret-123") is False
+        assert not path.exists()
+
+    def test_save_without_keyring_leaves_existing_file_clean(
+        self, tmp_path, monkeypatch
+    ):
+        self._no_keyring(monkeypatch)
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"gui_language": "de"}), encoding="utf-8")
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+
+        assert settings_module.set_saved_api_key("sk-secret-123") is False
+        assert "sk-secret-123" not in path.read_text(encoding="utf-8")
+        assert json.loads(path.read_text(encoding="utf-8")) == {"gui_language": "de"}
+
+    def test_legacy_key_is_wiped_when_there_is_no_keyring(self, tmp_path, monkeypatch):
+        """No keychain to migrate into: the plaintext key is deleted rather
+        than kept, and the user re-enters it (session-only)."""
+        self._no_keyring(monkeypatch)
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"gui_language": "de", "openai_api_key": "sk-legacy-123"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+
+        assert settings_module.get_saved_api_key() is None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert "openai_api_key" not in data
+        assert data["gui_language"] == "de"  # rest of the file survives
+
+    def test_legacy_key_migrates_into_the_keyring(self, tmp_path, monkeypatch):
+        stored: dict[str, str] = {}
+        monkeypatch.setattr(
+            "utils.keyring_storage._check_keyring_available", lambda: True
+        )
+        monkeypatch.setattr(
+            "utils.keyring_storage.get_api_key_from_keyring",
+            lambda provider="openai": stored.get(provider),
+        )
+        monkeypatch.setattr(
+            "utils.keyring_storage.set_api_key_in_keyring",
+            lambda key, provider="openai": stored.setdefault(provider, key) is not None,
+        )
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"openai_api_key": "sk-legacy-123"}), encoding="utf-8"
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+
+        assert settings_module.get_saved_api_key() == "sk-legacy-123"
+        assert stored["openai"] == "sk-legacy-123"
+        assert "openai_api_key" not in json.loads(path.read_text(encoding="utf-8"))
+
+
 class TestSourceLanguageCode:
     """Tests for source language code lookup."""
 
@@ -284,6 +355,34 @@ class TestSubtitleHideMode:
         settings_module._cached_settings = None
         try:
             assert load_settings(use_cache=False).subtitle_hide_mode == "stopped"
+        finally:
+            settings_module._cached_settings = None
+
+
+class TestWindowStyle:
+    def test_default_is_windowed(self):
+        # Integrated mode is still being tested on Linux (see the dataclass).
+        assert Settings().window_style == "windowed"
+
+    def test_round_trip_integrated(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            settings_module, "_settings_path", lambda: tmp_path / "settings.json"
+        )
+        settings_module._cached_settings = None
+        save_settings(Settings(window_style="integrated"))
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).window_style == "integrated"
+        finally:
+            settings_module._cached_settings = None
+
+    def test_invalid_value_falls_back_to_windowed(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"window_style": "floating"}), encoding="utf-8")
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).window_style == "windowed"
         finally:
             settings_module._cached_settings = None
 

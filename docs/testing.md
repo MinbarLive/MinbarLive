@@ -1,6 +1,6 @@
 # Testing
 
-The project includes a test suite of 860 tests using pytest. Provider tests run against faked SDK connections; no API keys or network access needed.
+The project includes a test suite of 1007 tests using pytest. Provider tests run against faked SDK connections; no API keys or network access needed.
 
 ## Running Tests
 

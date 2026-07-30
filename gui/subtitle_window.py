@@ -27,6 +27,16 @@ _ARABIC_BLOCK_RE = re.compile(r"[؀-ۿݐ-ݿࢠ-ࣿ]")
 # strings don't trigger it — that's why the reshape+bidi pipeline normally
 # renders correctly here.
 _TK_HANDLES_ARABIC = sys.platform == "win32"
+# macOS Tk draws EVERY string through CoreText: tkMacOSXFont.c builds an
+# NSAttributedString and lays it out with CTTypesetterCreateWithAttributedString
+# — no paragraph style, no kCTTypesetterOptionForcedEmbeddingLevel — so the full
+# bidi algorithm and contextual shaping always run, including over the
+# presentation forms arabic_reshaper emits (those are strong RTL too). Handing
+# CoreText our already-visual string therefore reorders it a second time: the
+# reversed, disconnected Arabic reported on macOS in both the overlay and the
+# control panel's dropdowns. Unlike Windows this is unconditional — there is no
+# "safe" pre-shaped case to keep — so macOS always gets the logical text.
+_TK_SHAPES_ARABIC = sys.platform == "darwin"
 
 
 def _reshape_rtl(text: str) -> str:
@@ -37,7 +47,7 @@ def _reshape_rtl(text: str) -> str:
     python-bidi before passing it to the canvas. Non-Arabic text is
     returned unchanged.
     """
-    if not _ARABIC_SUPPORT:
+    if _TK_SHAPES_ARABIC or not _ARABIC_SUPPORT:
         return text
     try:
         reshaped = arabic_reshaper.reshape(text)
@@ -107,6 +117,49 @@ _ARABIC_ANY_RE = re.compile(
 # guess can only widen the gap, never let letters touch.
 # Capital letters with diacritics (Ä Ü Š İ Ç …) reach well above plain caps.
 _TALL_DIACRITIC_RE = re.compile(r"[À-ÖØ-ÞĀ-ɏ̀-ͯ]")
+
+# How high a line's tallest ink reaches above the baseline, as a fraction of
+# the font's em — one value per ink class. Ink-probe measured on Segoe UI at
+# 64pt (2026-07-15); cap height is ~0.70 em across sans families, so these
+# travel between fonts. What does NOT travel is the blank space above the
+# ink, which is (font ascent − ink top) and therefore font-specific: Segoe UI
+# has an unusually deep ascent (1.07 em), Arial/Helvetica-class fonts 0.90 em.
+# That is why _stack_overlap measures the ascent instead of assuming it.
+# A -topmost Tk window on macOS sits at kCGUtilityWindowLevel, which is BELOW
+# the Dock (kCGDockWindowLevel) and the menu bar (tkMacOSXWm.c) — unlike
+# Windows, where a topmost overlay paints over the taskbar. Covering the whole
+# screen there only hides the overlay's own edges: the disclaimer pill ends up
+# behind the Dock. So on macOS the overlay is laid out inside the usable area
+# instead. The menu bar is always the top inset and the Dock takes the rest
+# (bottom — or a side, in which case the usable *width* shrinks and the whole
+# height loss is the menu bar). Only the menu bar's exact height has to be
+# assumed: 24 pt classic, 25 pt since Big Sur, taller on notched displays.
+# Being a few pixels out just shifts the overlay; it can never push content
+# back under the Dock. A Dock on the LEFT is not distinguishable from one on
+# the right, so the overlay keeps the monitor's left edge either way.
+_MACOS_MENU_BAR_HEIGHT = 25
+
+
+def _macos_work_area(
+    monitor: tuple[int, int, int, int],
+    usable: tuple[int, int] | None,
+    menu_bar_height: int = _MACOS_MENU_BAR_HEIGHT,
+) -> tuple[int, int, int, int]:
+    """Fit a monitor rectangle into the usable size macOS reports for it."""
+    if usable is None:
+        return monitor
+    x, y, width, height = monitor
+    usable_w = max(1, min(usable[0], width))
+    usable_h = max(1, min(usable[1], height))
+    top = min(menu_bar_height, height - usable_h)
+    return (x, y + top, usable_w, usable_h)
+
+
+_INK_TOP_EM_ARABIC = 1.05  # marks reach the ascent line
+_INK_TOP_EM_TALL_DIACRITIC = 0.86
+_INK_TOP_EM_PLAIN = 0.70  # cap height
+# Visual gap kept between the two ink edges.
+_STACK_INK_GAP_EM = 0.09
 # The Allah honorifics the translator inserts into TARGET-language lines
 # (Allah ﷻ, Muhammad ﷺ) are Arabic presentation-form ligatures but render
 # within plain Latin ink bounds (probed 33/30px vs plain text 35px below the
@@ -182,6 +235,11 @@ STATIC_CARD_OUTLINE_ALLOWANCE = 2
 # settings, but protect the actual audience window with a small physical floor
 # whenever the footer is present. Footer-free overlays still honour true 5%.
 MIN_FOOTER_SURFACE_HEIGHT = 96
+# Floor for the "shrink the overlay into what the WM actually granted" repair
+# (_fit_geometry_to_monitor). Below these, the measurement is more likely to be
+# wrong than the window: leave the overlay alone rather than crush it.
+MIN_FITTED_OVERLAY_WIDTH = 240
+MIN_FITTED_OVERLAY_HEIGHT = 120
 
 
 def _prefers_reduced_motion() -> bool:
@@ -331,13 +389,23 @@ class SubtitleWindow(tk.Toplevel):
         # family bakes Semibold into its name, so "not bold" needs its own).
         self._slant_font_family = "Segoe UI" if is_windows else "Helvetica"
         self._footer_font_family = "Segoe UI" if is_windows else "Helvetica"
+        # {font spec: (em px, ascent px)} for the ink-aware line stacking.
+        self._font_metrics_cache: dict[tuple, tuple[float, float]] = {}
+        # Declared here, not with the other delayed jobs below: the first one
+        # is scheduled by _set_screen_position further down in __init__, and a
+        # later `= None` would orphan it (uncancellable callback).
+        self._geometry_fit_job: str | None = None
         self._apply_theme_palette(self._theme_mode)
 
         self.configure(bg=self._bg_color)
 
-        # Configure window to be borderless but still visible to OBS/screen capture
-        # We avoid overrideredirect(True) because it makes the window invisible to
-        # OBS window capture on most platforms.
+        # Configure window to be borderless but still visible to OBS/screen
+        # capture. On Windows/Linux we avoid overrideredirect(True) because it
+        # makes the window invisible to OBS window capture there; macOS is the
+        # exception (see _setup_borderless_window), where it is the only way to
+        # drop the title bar and the window stays in the CoreGraphics window
+        # list regardless. Its side effect there: the overlay no longer takes
+        # keyboard focus, so the Escape shortcut below is Windows/Linux only.
         self._setup_borderless_window()
 
         # Esc stops the translation (like the Stop button) but never closes
@@ -520,22 +588,23 @@ class SubtitleWindow(tk.Toplevel):
                 self.overrideredirect(True)
 
         elif sys.platform == "darwin":
-            # macOS: Use transparent title bar approach or fullscreen
+            # macOS: overrideredirect is the only thing that actually removes
+            # the title bar here. ::tk::unsupported::MacWindowStyle only sets
+            # the window class, and Tk applies the resulting style mask when it
+            # CREATES the NSWindow — CustomTkinter has already mapped this one
+            # by then, so the "plain" call was a silent no-op and the overlay
+            # kept a draggable title bar that covered the first subtitle block.
+            # overrideredirect clears NSTitledWindowMask on the live window
+            # (tkMacOSXWm.c) and makes it non-activating, which is what an
+            # audience overlay wants — nothing here reacts to clicks.
+            # It also clears Tk's topmost flag (same function, no transient
+            # container), so _apply_topmost() must run afterwards; it does, at
+            # the end of the _set_screen_position() call below.
             try:
-                # Make the window borderless-looking while keeping it managed
-                # On macOS, we can use the "transparent" appearance
                 self.wm_attributes("-fullscreen", False)
-                # Remove title bar but keep window managed
-                self.tk.call(
-                    "::tk::unsupported::MacWindowStyle",
-                    "style",
-                    self._w,
-                    "plain",
-                    "none",
-                )
             except tk.TclError:
-                # Fallback for older Tk versions
-                self.overrideredirect(True)
+                pass
+            self.overrideredirect(True)
 
         else:
             # Linux/Other: Use EWMH hints to remove decorations
@@ -716,6 +785,7 @@ class SubtitleWindow(tk.Toplevel):
             "_continuous_start_job",
             "_scroll_animation_id",
             "_feed_anim_job",
+            "_geometry_fit_job",
         ):
             self._cancel_after_job(attribute)
 
@@ -1521,30 +1591,69 @@ class SubtitleWindow(tk.Toplevel):
                 bottoms.append(bbox[3])
         return (max(bottoms) - min(tops)) if tops else 75
 
+    def _font_em_and_ascent(self, font_spec) -> tuple[float, float]:
+        """(em height, ascent) of a Tk font spec, both in pixels.
+
+        Tk font sizes are POINTS, so the pixel em depends on the display DPI
+        and is measured against a font of a known PIXEL size rather than
+        assumed. Cached per spec — this runs per row per animation frame."""
+        import tkinter.font as tkfont
+
+        # Lazily healed: the scripted render harnesses build this window with
+        # object.__new__ and only the attributes they render with.
+        cache = getattr(self, "_font_metrics_cache", None)
+        if cache is None:
+            cache = self._font_metrics_cache = {}
+        key = tuple(font_spec)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            font_obj = tkfont.Font(font=font_spec)
+            ascent = float(font_obj.metrics("ascent"))
+            linespace = float(font_obj.metrics("linespace"))
+            reference = tkfont.Font(font=font_spec)
+            reference.configure(size=-1000)  # same family/style, em = 1000 px
+            em = 1000.0 * linespace / float(reference.metrics("linespace"))
+        except (tk.TclError, ZeroDivisionError, ValueError):
+            # No usable metrics (headless/synthetic harness): fall back to the
+            # nominal size as the em and Segoe UI's ascent ratio.
+            em = float(self._current_font_size)
+            ascent = 1.07 * em
+        cache[key] = (em, ascent)
+        return em, ascent
+
     def _stack_overlap(self, lower_text: str) -> int:
         """How far a line's bounding box may overlap the box of `lower_text`
         (translation font) directly below it.
 
-        Tk boxes are font-METRIC sized: even at zero box gap the glyphs sit
-        ~0.5em apart, because the lower font's leading above its tallest ink
-        is blank pixels inside the box. Overlapping by that (ink-probe
-        measured, loose-biased) amount pulls the lines visually together
-        while the ink itself can never touch.
+        Tk boxes are font-METRIC sized: even at zero box gap the glyphs can
+        sit ~0.5em apart, because the lower font's leading above its tallest
+        ink is blank pixels inside the box. Overlapping by that amount pulls
+        the lines visually together while the ink itself can never touch.
+
+        That leading is the font's ascent minus its ink top, and it varies
+        per FAMILY: Segoe UI (Windows) carries ~0.37 em of it, an
+        Arial/Helvetica-class font (the Linux fallback) barely 0.20 em, and
+        Helvetica clones like Nimbus Sans none at all. Hardcoding the Windows
+        figure overlapped real ink on Linux, so both terms are measured from
+        the live font — a family without leading simply gets no overlap.
 
         The upper line always keeps its full descent zone, even when its
         text has no descenders: baseline distances must stay CONSTANT for
         the spacing to READ as even — the eye measures baselines, not
         descender tips, so tucking a descender-less line closer makes it an
         outlier (live-session feedback 2026-07-15)."""
-        size = self._current_font_size
+        em, ascent = self._font_em_and_ascent(self.font)
         lower_text = _HONORIFIC_LIGATURE_RE.sub("", lower_text)
         if _ARABIC_ANY_RE.search(lower_text):
-            lower_ws = 0.03 * size  # Arabic marks reach almost the box top
+            ink_top = _INK_TOP_EM_ARABIC
         elif _TALL_DIACRITIC_RE.search(lower_text):
-            lower_ws = 0.28 * size  # capital diacritics (probed 0.33×size)
+            ink_top = _INK_TOP_EM_TALL_DIACRITIC
         else:
-            lower_ws = 0.50 * size  # plain caps/ascenders (probed 0.55×size)
-        return max(0, round(lower_ws - 0.12 * size))
+            ink_top = _INK_TOP_EM_PLAIN
+        leading = ascent - ink_top * em
+        return max(0, round(leading - _STACK_INK_GAP_EM * em))
 
     def _stack_rows_tight(self, line_items, bottom_y: float | None = None):
         """Position a multi-row Realtime block's rows bottom-up so each row
@@ -2080,11 +2189,32 @@ class SubtitleWindow(tk.Toplevel):
         self._live_feed_scroll_target = settled_scroll
         self._render_feed_positions()
 
+    def _macos_usable_size(self) -> tuple[int, int] | None:
+        """The usable screen size macOS reports, or None if it cannot be
+        attributed to a single screen.
+
+        Tk answers ``wm maxsize`` from the union of every screen's visibleFrame
+        (tkMacOSXXStubs.c) — the desktop minus the menu bar and the Dock. With
+        one monitor that union *is* that monitor's usable rectangle; with
+        several it says nothing about any one of them, so those setups keep the
+        full-monitor geometry they have today."""
+        try:
+            if len(get_monitors()) != 1:
+                return None
+            width, height = self.wm_maxsize()
+        except (tk.TclError, IndexError, OSError, ValueError):
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        return int(width), int(height)
+
     def _monitor_work_area(self, mon) -> tuple[int, int, int, int]:
         """Physical (x, y, w, h) work area — the monitor minus the taskbar —
         of the monitor ``mon`` lives on. Falls back to the full monitor bounds
-        off Windows or on any failure."""
+        off Windows/macOS or on any failure."""
         full = (mon.x, mon.y, mon.width, mon.height)
+        if sys.platform == "darwin":
+            return _macos_work_area(full, self._macos_usable_size())
         if sys.platform != "win32":
             return full
         try:
@@ -2124,14 +2254,18 @@ class SubtitleWindow(tk.Toplevel):
             pass
         return full
 
-    def _set_screen_position(self, force_redraw: bool = False):
+    def _active_monitor(self):
+        """The monitor the overlay is configured for (falls back like the
+        rest of the app when the stored index no longer exists)."""
         monitors = get_monitors()
         if self._monitor_index < len(monitors):
-            mon = monitors[self._monitor_index]
-        elif len(monitors) > 1:
-            mon = monitors[1]
-        else:
-            mon = monitors[0]
+            return monitors[self._monitor_index]
+        if len(monitors) > 1:
+            return monitors[1]
+        return monitors[0]
+
+    def _set_screen_position(self, force_redraw: bool = False):
+        mon = self._active_monitor()
 
         # A full-height overlay always fills the whole monitor so OBS captures
         # the entire frame (no uncovered taskbar strip at the bottom). Only a
@@ -2139,7 +2273,12 @@ class SubtitleWindow(tk.Toplevel):
         # (monitor minus taskbar): as an ordinary window the topmost taskbar
         # would otherwise cover its bottom strip on screen. Topmost overlays
         # paint above the taskbar, so they never need the clamp.
-        if self._window_height_percent >= 100 or self._always_on_top:
+        # macOS is the exception to both: nothing Tk can do puts a window above
+        # the Dock or the menu bar there (see _MACOS_MENU_BAR_HEIGHT), so the
+        # overlay is always laid out inside the work area.
+        if sys.platform != "darwin" and (
+            self._window_height_percent >= 100 or self._always_on_top
+        ):
             base_x, base_y, base_w, base_h = mon.x, mon.y, mon.width, mon.height
         else:
             base_x, base_y, base_w, base_h = self._monitor_work_area(mon)
@@ -2207,6 +2346,75 @@ class SubtitleWindow(tk.Toplevel):
         # transparent overlay; a full-screen opaque overlay stays in normal
         # stacking. Gated by the user's always_on_top setting.
         self._apply_topmost()
+        self._schedule_geometry_fit_check()
+
+    def _schedule_geometry_fit_check(self):
+        """Queue a check of what the window manager actually granted.
+
+        Windows places the overlay exactly (SetWindowPos), so this only runs
+        elsewhere: an X11 WM may honour the requested SIZE but not the
+        requested POSITION — GNOME keeps a splash-type window clear of the
+        top-bar/dock struts, so a full-monitor overlay is pushed down and its
+        bottom strip (the disclaimer pill) ends up below the screen edge.
+        """
+        # __init__ positions the window before the teardown flags exist.
+        if sys.platform == "win32" or getattr(self, "_destroying", False):
+            return
+        self._cancel_after_job("_geometry_fit_job")
+        self._geometry_fit_job = self.after(250, self._fit_geometry_to_monitor)
+
+    def _fit_geometry_to_monitor(self):
+        """Re-fit the overlay to the rectangle the WM actually granted, so
+        nothing it draws lands off-screen. Two ways the request can be
+        refused: the WM keeps the size but moves the window (its bottom then
+        hangs off the screen — resize it), or it grants a smaller window than
+        asked (the canvas is then smaller than _applied_size claims — just
+        re-sync). Only ever shrinks; an implausible measurement is ignored."""
+        self._geometry_fit_job = None
+        if getattr(self, "_destroying", False) or getattr(self, "_is_hidden", False):
+            return
+        try:
+            mon = self._active_monitor()
+            self.update_idletasks()
+            x, y = self.winfo_rootx(), self.winfo_rooty()
+            width, height = self.winfo_width(), self.winfo_height()
+        except (tk.TclError, IndexError, OSError):
+            return
+        if width <= 1 or height <= 1:
+            return
+        fit_w = min(width, mon.x + mon.width - x)
+        fit_h = min(height, mon.y + mon.height - y)
+        if fit_w < MIN_FITTED_OVERLAY_WIDTH or fit_h < MIN_FITTED_OVERLAY_HEIGHT:
+            return  # implausible reading; a sliver of an overlay helps nobody
+        hangs_off_screen = fit_w < width or fit_h < height
+        if not hangs_off_screen and (fit_w, fit_h) == self._applied_size:
+            return  # the WM granted the request — nothing to correct
+        old_width, old_height = self.canvas_width, self.canvas_height
+        if hangs_off_screen:
+            try:
+                self.geometry(f"{fit_w}x{fit_h}+{x}+{y}")
+            except tk.TclError:
+                return
+        self._applied_size = (fit_w, fit_h)
+        self.canvas_width, self.canvas_height = self._applied_size
+        # Same bottom-anchored bookkeeping as set_window_height_percent: the
+        # top edge moved, so shift the modes that lay out from the canvas top.
+        delta = self.canvas_height - old_height
+        if delta and old_height > 1:
+            if self._subtitle_mode == SUBTITLE_MODE_REALTIME:
+                self._live_feed_scroll -= delta
+                self._live_feed_scroll_target -= delta
+            elif self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
+                for block in self.subtitle_stack:
+                    self._move_block(block, delta)
+        self._update_font()
+        self._update_footer_visibility()
+        if self.canvas_width != old_width or self._subtitle_mode == SUBTITLE_MODE_STATIC:
+            self._refresh_subtitles(reflow=True)
+        elif self._subtitle_mode == SUBTITLE_MODE_REALTIME:
+            self._reposition_subtitles()
+            self._render_live_line()
+        self._render_announcement()
 
     def _desired_topmost(self) -> bool:
         """Whether the overlay should sit above other windows, ignoring the
