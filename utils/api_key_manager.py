@@ -12,6 +12,7 @@ from config import ICON_PATH, ICON_PATH_PNG
 from providers import (
     PROVIDER_CHOICES,
     clear_api_key,
+    get_key_placeholder,
     save_api_key,
 )
 from utils.icons import ICO_SUPPORTED, scaled_icon_photo
@@ -31,8 +32,8 @@ def _provider_display_name(provider: str) -> str:
     return _EXTRA_PROVIDER_NAMES.get(provider, provider)
 
 
-# Placeholder hint per provider key format
-_KEY_PLACEHOLDERS = {"openai": "sk-…", "gemini": "AIza…", "anthropic": "sk-ant-…"}
+# Placeholder hint per provider key format — see providers.KEY_PLACEHOLDERS,
+# which both GUI trees share.
 
 # Dialog widths (logical units): the message/confirm box and the key entry.
 DIALOG_W = 440
@@ -498,7 +499,7 @@ def prompt_for_api_key(
 
     entry = ctk.CTkEntry(
         entry_row,
-        placeholder_text=_KEY_PLACEHOLDERS.get(provider, ""),
+        placeholder_text=get_key_placeholder(provider),
         show="●",
         height=46,
         corner_radius=14,

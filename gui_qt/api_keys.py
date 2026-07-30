@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from providers import (
     PROVIDER_CHOICES,
+    get_key_placeholder,
     get_stored_api_key,
     has_usable_key,
     save_api_key,
@@ -71,7 +72,7 @@ class ApiKeyDialog(QDialog):
         # Masked like a password field: the key is a secret and may be entered
         # in front of a congregation.
         self.edit.setEchoMode(QLineEdit.Password)
-        self.edit.setPlaceholderText("sk-..." if provider_id == "openai" else "")
+        self.edit.setPlaceholderText(get_key_placeholder(provider_id))
         layout.addWidget(self.edit)
 
         note = QLabel(
