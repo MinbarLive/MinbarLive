@@ -49,6 +49,24 @@ PAIRS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def pinned_window_geometry():
+    """Open every panel at its default size.
+
+    ``load_settings()`` hands out one cached object, and a closing panel writes
+    its geometry into it — so without this, one test's window size decides the
+    next test's column count (and could reach the real settings.json through
+    any unstubbed save).
+    """
+    from utils.settings import load_settings
+
+    settings = load_settings()
+    saved = (settings.window_geometry, settings.window_maximized)
+    settings.window_geometry, settings.window_maximized = "", False
+    yield
+    settings.window_geometry, settings.window_maximized = saved
+
+
 @pytest.fixture(scope="session")
 def qt_app():
     """One QApplication for the session — Qt allows only a single instance."""
@@ -70,6 +88,17 @@ def overlay(qt_app):
     yield _make
     for w in made:
         w.destroy()
+
+
+def _settle(app, rounds: int = 5) -> None:
+    """Let queued layout work finish.
+
+    A geometry assertion needs more than one pass: the levelling is queued for
+    after the layout settles, and the minimum height it sets then needs another
+    pass before the widgets have actually moved.
+    """
+    for _ in range(rounds):
+        app.processEvents()
 
 
 def _visible(w: SubtitleWindow, block) -> bool:
@@ -840,25 +869,63 @@ class TestAdvancedCard:
         panel.use_default_translation.setChecked(False)
         assert panel.provider_combo.isEnabled()
 
-    def test_the_card_collapses(self, panel):
+    def test_the_card_collapses_while_it_shares_a_column(self, panel):
+        panel.resize(900, 800)
+        panel._relayout_columns()
+        assert panel._columns == 2
         panel.advanced_card.set_expanded(False)
-        assert not panel.advanced_card.content.isVisible()
+        # isHidden(), not isVisible(): the panel is never shown in these tests,
+        # so every descendant is invisible and isVisible() proves nothing.
+        assert panel.advanced_card.content.isHidden()
         assert panel.advanced_card.arrow_label.text() == "▾"
         panel.advanced_card.set_expanded(True)
+        assert not panel.advanced_card.content.isHidden()
         assert panel.advanced_card.arrow_label.text() == "▴"
 
+    def test_in_three_columns_the_card_is_pinned_open(self, panel):
+        # Its column holds nothing else, so collapsing it empties the column.
+        panel.resize(1200, 800)
+        panel._relayout_columns()
+        assert panel._columns == 3
+        assert not panel.advanced_card.is_collapsible()
+        assert panel.advanced_card.arrow_label.isHidden()
+        panel.advanced_card.set_expanded(False)  # a header click
+        assert panel.advanced_card.is_expanded()
+
+    def test_the_collapse_moves_to_other_settings_in_three_columns(self, panel):
+        panel.resize(1200, 800)
+        panel._relayout_columns()
+        # Closed to start with: it is the longest, least-touched group, and
+        # closing it is what shortens a pinned-open card.
+        assert panel.other_settings.is_collapsible()
+        assert not panel.other_settings.is_expanded()
+        assert panel.other_settings.panel.isHidden()
+        panel.other_settings.set_expanded(True)
+        assert not panel.other_settings.panel.isHidden()
+
+    def test_other_settings_is_a_plain_section_below_three_columns(self, panel):
+        for width in (900, 520):
+            panel.resize(width, 800)
+            panel._relayout_columns()
+            assert not panel.other_settings.is_collapsible()
+            assert panel.other_settings.is_expanded()
+            assert panel.other_settings.button.isHidden()
+            assert not panel.other_settings.heading.isHidden()
+
     def test_window_on_top_sits_under_its_heading_above_the_checkboxes(self, panel):
-        body = panel.advanced_card.body
+        body = panel.other_settings.body
         order = [
             body.itemAt(i).widget().text()
             for i in range(body.count())
             if body.itemAt(i).widget() is not None
             and hasattr(body.itemAt(i).widget(), "text")
         ]
-        heading = order.index(panel._t("other_settings", "Other settings"))
+        assert panel.other_settings.heading.text() == panel._t(
+            "other_settings", "Other settings"
+        )
         aot = order.index(panel._t("window_on_top_label", "Window always on top"))
         first_check = order.index(panel._other_checks["show_footer"].text())
-        assert heading < aot < first_check
+        assert aot < first_check
 
 
 class TestLevelMeterZones:
@@ -998,24 +1065,69 @@ class TestEqualColumnHeights:
         for _box, card in panel._column_tails:
             assert card.height() == card.sizeHint().height()
 
-    def test_two_columns_end_level_without_inflating_a_closed_card(
-        self, panel, qt_app
-    ):
+    def _top(self, card):
+        host = card.window().cards_host
+        return card.mapTo(host, card.rect().topLeft()).y()
+
+    def test_two_columns_stack_the_right_column_tightly(self, panel, qt_app):
+        # Levelling the bottoms here means padding Advanced away from the card
+        # above it — a gap that grows every time column A does.
         panel.resize(900, 900)
         qt_app.processEvents()
         assert panel._columns == 2
-        assert not panel.advanced_card.is_expanded()
-        display = panel._column_tails[0][1]
-        advanced = panel.advanced_card
+        language = panel._column_tails[1][1]
         host = panel.cards_host
+        gap = self._top(panel.advanced_card) - (
+            language.mapTo(host, language.rect().bottomLeft()).y()
+        )
+        spacing = panel.grid.verticalSpacing()
+        # The row spacing, give or take the pixel the grid's rounding leaves in
+        # the row above. Bottom-aligning instead put a hundred here.
+        assert spacing <= gap <= spacing + 2, f"{gap}px between the cards"
 
-        def bottom(card):
-            return card.mapTo(host, card.rect().bottomLeft()).y()
+    def _bottom(self, card):
+        host = card.window().cards_host
+        return card.mapTo(host, card.rect().bottomLeft()).y()
 
-        assert bottom(advanced) == bottom(display)
-        # Bottom-aligned, not stretched: a header strip blown up into a tall
-        # empty box is worse than a ragged edge.
+    def test_two_columns_end_on_one_line(self, panel, qt_app):
+        # A few pixels apart reads as a mistake, so the shorter column's last
+        # card takes the difference.
+        for size in ((900, 900), (900, 700), (900, 1400)):
+            panel.resize(*size)
+            _settle(qt_app)
+            assert panel._columns == 2, size
+            display = panel._column_tails[0][1]
+            assert self._bottom(display) == self._bottom(panel.advanced_card), size
+
+    def test_an_opened_appearance_section_is_not_absorbed(self, panel, qt_app):
+        # Levelling THAT much would inflate a collapsed header into an empty
+        # box; the columns simply end where they end instead.
+        panel.resize(900, 900)
+        _settle(qt_app)
+        panel.typography.set_expanded(True)
+        _settle(qt_app)
+        advanced = panel.advanced_card
         assert advanced.height() == advanced.sizeHint().height()
+        panel.typography.set_expanded(False)
+        _settle(qt_app)
+        # ...and levelling comes back once the section is closed again.
+        assert self._bottom(panel._column_tails[0][1]) == self._bottom(advanced)
+
+    def test_opening_the_appearance_expander_leaves_advanced_where_it_is(
+        self, panel, qt_app
+    ):
+        # It lives in the left column, which spans both rows: its extra height
+        # has to land in the row BELOW Advanced, not push Advanced down.
+        panel.resize(900, 900)
+        qt_app.processEvents()
+        assert panel._columns == 2
+        before = self._top(panel.advanced_card)
+        panel.typography.set_expanded(True)
+        qt_app.processEvents()
+        assert self._top(panel.advanced_card) == before
+        panel.typography.set_expanded(False)
+        qt_app.processEvents()
+        assert self._top(panel.advanced_card) == before
 
     def test_always_on_top_covers_the_control_panel(self, panel, qt_app):
         from PySide6.QtCore import Qt
@@ -1030,6 +1142,141 @@ class TestEqualColumnHeights:
             expected = mode == "always"
             assert bool(panel.windowFlags() & Qt.WindowStaysOnTopHint) is expected
             assert panel.isVisible(), f"panel hidden after mode {mode}"
+
+
+class TestControlRowHeights:
+    """Everything sharing a row with a dropdown is as tall as the dropdown."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        from gui_qt.theme import apply_theme
+
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+        # The dropdown's height comes from the stylesheet, so an unthemed panel
+        # would measure Qt's default metrics rather than the app's.
+        apply_theme(qt_app, "dark")
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        if not p._log_collapsed:
+            p._toggle_log_panel()
+        p.resize(940, 900)
+        p.typography.set_expanded(True)  # the colour buttons live in here
+        p.show()
+        _settle(qt_app)
+        yield p
+        p.close()
+
+    def test_the_small_buttons_match_the_dropdowns(self, panel):
+        from PySide6.QtWidgets import QPushButton
+
+        from gui_qt.widgets import CONTROL_H
+
+        assert panel.mode_combo.height() == CONTROL_H
+        widgets = [
+            panel.font_stepper.minus,
+            panel.font_stepper.plus,
+            panel._color_pick_btns["translation_text_color"],
+            panel._color_reset_btns["translation_text_color"],
+            panel.hide_segment,  # a full-width row control, same rhythm
+            *[b for b in panel.findChildren(QPushButton) if b.text() in ("?", "⇄")],
+        ]
+        assert widgets  # the "?" buttons must actually have been found
+        for widget in widgets:
+            assert widget.height() == CONTROL_H, widget.text()
+
+    def test_the_swap_button_lines_up_with_the_language_dropdowns(self, panel):
+        from PySide6.QtWidgets import QPushButton
+
+        swap = next(b for b in panel.findChildren(QPushButton) if b.text() == "⇄")
+        host = panel.cards_host
+
+        def top(widget):
+            return widget.mapTo(host, widget.rect().topLeft()).y()
+
+        # It used to be pushed down by a hand-measured spacer, which left it
+        # sitting a few pixels above the dropdowns it belongs to.
+        assert top(swap) == top(panel.source_combo) == top(panel.target_combo)
+
+
+class TestWindowGeometryMemory:
+    """The panel reopens at the size, place and state it was closed at."""
+
+    @pytest.fixture
+    def make_panel(self, qt_app, monkeypatch):
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        class FakeController:
+            pass
+
+        made = []
+
+        def _make():
+            p = cp.ControlPanel(FakeController())
+            made.append(p)
+            return p
+
+        yield _make
+        for p in made:
+            p.close()
+
+    def test_a_closed_size_and_place_come_back(self, make_panel, qt_app):
+        first = make_panel()
+        first.show()
+        first.setGeometry(220, 140, 1010, 700)
+        qt_app.processEvents()
+        first.close()
+        assert first.settings.window_geometry == "1010x700+220+140"
+
+        second = make_panel()
+        assert (second.width(), second.height()) == (1010, 700)
+        assert (second.x(), second.y()) == (220, 140)
+
+    def test_a_maximized_panel_comes_back_maximized(self, make_panel, qt_app):
+        from PySide6.QtCore import Qt
+
+        first = make_panel()
+        first.show()
+        first.setGeometry(220, 140, 1010, 700)
+        qt_app.processEvents()
+        first.showMaximized()
+        qt_app.processEvents()
+        first.close()
+        assert first.settings.window_maximized
+        # The maximized box is not stored: it would reopen a screen-sized
+        # *normal* window with nothing to restore down to.
+        assert first.settings.window_geometry == "1010x700+220+140"
+
+        second = make_panel()
+        assert second.windowState() & Qt.WindowMaximized
+
+    def test_a_geometry_off_every_screen_is_dropped(self, make_panel):
+        panel = make_panel()
+        panel.settings.window_geometry = "900x600+-9000+-9000"
+        assert not panel._restore_window_geometry()
+
+    def test_a_geometry_below_the_minimum_is_dropped(self, make_panel):
+        panel = make_panel()
+        panel.settings.window_geometry = "100x80+100+100"
+        assert not panel._restore_window_geometry()
+
+    def test_garbage_is_dropped(self, make_panel):
+        panel = make_panel()
+        for value in ("", "zoomed", "900x600", "900x600+10"):
+            panel.settings.window_geometry = value
+            assert not panel._restore_window_geometry(), value
 
 
 class TestSubtitleAppearance:
