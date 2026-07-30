@@ -430,20 +430,60 @@ class SubtitleWindow(QWidget):
     def _content_height(self) -> int:
         return max(1, self.height() - self.reserved_bottom())
 
-    def _pill(self, p: QPainter, text: str, bottom: int, fill: QColor, fg: QColor) -> int:
-        """Draw a centred rounded pill with its bottom edge at ``bottom``."""
+    def _pill(
+        self,
+        p: QPainter,
+        text: str,
+        bottom: int,
+        fill: QColor,
+        fg: QColor,
+        *,
+        pause_icon: bool = False,
+    ) -> int:
+        """Draw a centred rounded pill with its bottom edge at ``bottom``.
+
+        ``pause_icon`` prefixes two bars. They are DRAWN, not typed: every
+        media-control code point (U+23F8, U+275A, …) either has no glyph or
+        carries side bearings so wide that the pair reads as two loose blocks
+        — the same conclusion the Tk overlay reached.
+        """
         font = self._pill_font()
         fm = QFontMetrics(font)
-        w = fm.horizontalAdvance(text) + 36
+        pad_x = 18
+        line_h = fm.height()
+        bar_w = max(2, round(line_h * 0.17))
+        bar_h = round(line_h * 0.66)
+        bar_gap = max(2, round(bar_w * 0.75))
+        icon_w = (bar_w * 2 + bar_gap) if pause_icon else 0
+        icon_gap = round(pad_x * 0.5) if pause_icon else 0
+        w = fm.horizontalAdvance(text) + icon_w + icon_gap + pad_x * 2
         h = self._pill_height()
         x = (self.width() - w) // 2
         y = bottom - h
         path = QPainterPath()
         path.addRoundedRect(x, y, w, h, h / 2, h / 2)
         p.fillPath(path, fill)
+        if pause_icon:
+            # A pause mark is symmetric, so it needs no mirroring for RTL.
+            mid_y = y + h / 2
+            for i in range(2):
+                bar = QPainterPath()
+                bar.addRoundedRect(
+                    x + pad_x + i * (bar_w + bar_gap),
+                    mid_y - bar_h / 2,
+                    bar_w,
+                    bar_h,
+                    bar_w * 0.35,
+                    bar_w * 0.35,
+                )
+                p.fillPath(bar, fg)
         p.setFont(font)
         p.setPen(fg)
-        p.drawText(QRect(x, y, w, h), int(Qt.AlignCenter), text)
+        p.drawText(
+            QRect(x + pad_x + icon_w + icon_gap, y, w - pad_x * 2 - icon_w - icon_gap, h),
+            int(Qt.AlignVCenter | Qt.AlignLeft) if pause_icon else int(Qt.AlignCenter),
+            text,
+        )
         return y
 
     def _paint_pills(self, p: QPainter) -> None:
@@ -459,7 +499,14 @@ class SubtitleWindow(QWidget):
             ) - PILL_GAP
         if self._stopped_hint:
             c = self._colors
-            self._pill(p, self._stopped_text(), bottom, QColor(c["card"]), QColor(c["muted"]))
+            self._pill(
+                p,
+                self._stopped_text(),
+                bottom,
+                QColor(c["card"]),
+                QColor(c["muted"]),
+                pause_icon=True,
+            )
 
     def _paint_announcement(self, p: QPainter) -> None:
         block = Block(self._announcement or "")
@@ -595,9 +642,21 @@ class SubtitleWindow(QWidget):
         self.update()
 
     def set_always_on_top(self, enabled: bool) -> None:
+        """Toggle the stays-on-top flag without losing the window.
+
+        ``setWindowFlag`` recreates the native window and HIDES the widget in
+        the process, so visibility has to be read BEFORE the call — reading it
+        after saw the window Qt had just hidden and skipped the re-show, which
+        is how switching the always-on-top mode made the overlay vanish.
+        """
+        if bool(self.windowFlags() & Qt.WindowStaysOnTopHint) == enabled:
+            return  # nothing to recreate
+        was_visible = self.isVisible()
         self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
-        if self.isVisible():
-            self.show()  # re-apply flags without losing visibility
+        if was_visible:
+            # The recreated window comes back at its default geometry.
+            self._apply_geometry()
+            self.show()
 
     def set_backdrop_opacity(self, percent: int) -> None:
         """Set backdrop opacity 0-100. 0 leaves the video fully visible.
