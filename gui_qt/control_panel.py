@@ -1,48 +1,105 @@
-"""Qt control panel — start/stop and the settings a session actually needs.
+"""Qt control panel.
 
-Deliberately a subset of the 4,425-line Tk panel: enough to run a real
-session end-to-end so the overlay can be judged against live audio instead of
-render harnesses. Settings/history/batch/announcement windows are not ported
-yet and are reached from the Tk panel meanwhile.
+Layout parity with the CustomTkinter panel is deliberate: the same four cards,
+in the same order, in the same reflowing 1/2/3-column grid, with the same
+header button row and the same collapsible log panel on the right. Operators
+know where things are, and "it moved" is a real cost.
 
-Layout is Qt layouts, not measured pixels — no ``_responsive_scale``, no
-``_align_advanced_card`` correction loop (the one that divided by the wrong
-scale factor and froze the panel in PR #43), no ``window_work_area`` clamp.
+What is NOT ported is the measurement machinery the Tk panel needs to achieve
+that layout — ``_responsive_scale``, ``_align_advanced_card``'s idle-requeueing
+correction loop (the one that divided by the wrong scale factor and froze the
+panel in PR #43), ``_collapsed_margin``, ``window_work_area``. Qt layouts do
+that arithmetic; only the column count is ours to decide.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QGuiApplication
+import os
+
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
+from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
 
-from gui.control_state import required_key_providers
+from config import ICON_PATH, ICON_PATH_PNG, ICON_PATH_PNG_ON_DARK
+from gui.control_state import (
+    STRATEGY_IDS,
+    apply_strategy,
+    current_strategy_index,
+    effective_subtitle_mode,
+    repair_default_provider,
+    required_key_providers,
+    subtitle_mode_choices,
+    visible_provider_choices,
+)
 from gui.device_list import find_input_device_position, get_input_devices
 from gui_qt.api_keys import activate_stored_keys, ensure_keys
 from gui_qt.i18n import load_gui_translations
 from gui_qt.pipeline_bridge import PipelineBridge, streaming_enabled
 from gui_qt.subtitle_window import SubtitleWindow
-from gui_qt.widgets import Stepper
-from utils.logging import log
+from gui_qt.theme import current_colors
+from gui_qt.widgets import (
+    AudioLevelBar,
+    Card,
+    Dropdown,
+    SegmentedControl,
+    Stepper,
+    field,
+)
+from providers import (
+    PROVIDER_CHOICES,
+    TRANSCRIPTION_PROVIDER_CHOICES,
+    get_default_model,
+    get_model_choices,
+)
+from utils.logging import log, log_queue
 from utils.settings import (
+    ALWAYS_ON_TOP_MODES,
+    PIPELINE_MODE_STREAMING,
     SOURCE_LANGUAGES,
-    SUBTITLE_MODES,
+    STREAMING_TRANSCRIPTION_PROVIDERS,
+    SUBTITLE_HIDE_MODES,
+    TARGET_LANGUAGE_DISPLAY_NAMES,
     TARGET_LANGUAGE_NAMES,
+    language_canonical_name,
+    language_display_name,
     load_settings,
     save_settings,
 )
+
+# Logical widths at which the card grid gains a column. Same thresholds as the
+# Tk panel's _COL2_MIN_W / _COL3_MIN_W, so a window that showed three columns
+# there shows three here.
+_COL2_MIN_W = 700
+_COL3_MIN_W = 1060
+# Width the log panel claims when it is opened.
+_LOG_PANEL_W = 420
+
+_HIDE_MODE_KEYS = {
+    "never": ("mode_never", "Never"),
+    "stopped": ("mode_when_stopped", "When stopped"),
+    "always": ("mode_always", "Always"),
+}
+_AOT_MODE_KEYS = {
+    "never": ("mode_never", "Never"),
+    "running": ("mode_when_running", "While running"),
+    "always": ("mode_always", "Always"),
+}
 
 
 class ControlPanel(QMainWindow):
@@ -50,9 +107,18 @@ class ControlPanel(QMainWindow):
         super().__init__()
         self.controller = controller
         self.settings = load_settings()
+        # Heals a stored "Use default" + non-default provider written by early
+        # onboarding; must run before any dropdown reads the value.
+        stale = repair_default_provider(self.settings)
+        if stale:
+            log(f"Repaired stale default provider: {stale}", level="INFO")
+            save_settings(self.settings)
         self.texts = load_gui_translations(self.settings.gui_language)
         self.subtitle_window: SubtitleWindow | None = None
         self._running = False
+        self._announcement_active = False
+        self._log_collapsed = self.settings.log_panel_collapsed
+        self._columns: int | None = None
         activate_stored_keys()
 
         self.bridge = PipelineBridge(controller, self)
@@ -60,25 +126,218 @@ class ControlPanel(QMainWindow):
         self.bridge.live_text.connect(self._on_live_text)
         self.bridge.audio_device_lost.connect(self._on_device_lost)
 
-        self.setWindowTitle("MinbarLive (Qt)")
+        self.setWindowTitle(self._t("window_title", "MinbarLive"))
+        self._apply_window_icon()
         self._build()
-        self.resize(560, 420)
+        # Small enough that the panel can be dragged down to a corner of the
+        # screen; everything above it scrolls.
+        self.setMinimumSize(QSize(420, 420))
+        self.resize(880 + (_LOG_PANEL_W if not self._log_collapsed else 0), 640)
+        # _build() laid the grid out against the pre-resize size; redo it now
+        # that the window has its real width, so the first paint is already
+        # right instead of one <Configure> behind.
+        self._relayout_columns()
+
+        self._log_timer = QTimer(self)
+        self._log_timer.timeout.connect(self._drain_logs)
+        self._log_timer.start(150)
+        self._level_timer = QTimer(self)
+        self._level_timer.timeout.connect(self._poll_input_level)
+        self._level_timer.start(200)
+
+        # With hide mode "never" (the default) the overlay is open even while
+        # stopped — that is what makes the stopped hint and a stopped-session
+        # announcement possible at all.
+        self._apply_subtitle_hide_mode()
 
     def _t(self, key: str, fallback: str) -> str:
         return self.texts.get(key, fallback)
 
+    def _clean_label(self, key: str, fallback: str) -> str:
+        """A translated label with any leading symbol stripped, so prefixing
+        our own glyph cannot produce "▶  ▶ Start"."""
+        text = self._t(key, fallback).strip()
+        while text and not (text[0].isalnum() or text[0] in "ÄÖÜ"):
+            text = text[1:].lstrip()
+        return text or fallback
+
+    # ── window chrome ────────────────────────────────────────────────────
+    def _apply_window_icon(self) -> None:
+        """Taskbar + title-bar icon. Without it Qt shows its default, which is
+        what "no logo in the taskbar" was."""
+        for path in (ICON_PATH, ICON_PATH_PNG):
+            if path and os.path.exists(path):
+                icon = QIcon(path)
+                if not icon.isNull():
+                    self.setWindowIcon(icon)
+                    return
+
+    def _logo_pixmap(self, height: int = 30) -> QPixmap | None:
+        """The header logo's mark for the current theme.
+
+        ``logo_mark`` trims the shipped artwork's transparent padding and its
+        illegible lettering (see utils/icons) — drawing the raw PNG would put a
+        tiny dome in the middle of an empty box.
+        """
+        path = (
+            ICON_PATH_PNG_ON_DARK
+            if self.settings.theme_mode == "dark"
+            else ICON_PATH_PNG
+        )
+        if not os.path.exists(path):
+            return None
+        try:
+            import io
+
+            from utils.icons import logo_mark
+
+            buffer = io.BytesIO()
+            logo_mark(path, height).save(buffer, format="PNG")
+            pixmap = QPixmap()
+            pixmap.loadFromData(buffer.getvalue(), "PNG")
+            return pixmap if not pixmap.isNull() else None
+        except Exception as exc:  # noqa: BLE001 - a missing logo is cosmetic
+            log(f"Header logo unavailable: {exc}", level="WARNING")
+            return None
+
     # ── build ────────────────────────────────────────────────────────────
     def _build(self) -> None:
         root = QWidget()
-        outer = QVBoxLayout(root)
-        outer.setContentsMargins(20, 20, 20, 20)
-        outer.setSpacing(16)
+        row = QHBoxLayout(root)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
 
-        card = QFrame()
-        card.setObjectName("card")
-        form = QFormLayout(card)
-        form.setContentsMargins(18, 18, 18, 18)
-        form.setSpacing(12)
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(0, 0, 0, 0)
+        side.setSpacing(0)
+        side.addWidget(self._header())
+
+        self.card_area = QScrollArea()
+        self.card_area.setWidgetResizable(True)
+        self.card_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.cards_host = QWidget()
+        self.grid = QGridLayout(self.cards_host)
+        self.grid.setContentsMargins(18, 14, 18, 18)
+        self.grid.setHorizontalSpacing(18)
+        self.grid.setVerticalSpacing(18)
+
+        # Three column groups, exactly as the Tk panel: A = Controls +
+        # Display, B = Translation flow, C = Advanced. A group is the reflow's
+        # atom, so a tall card never pads a short one out with dead space.
+        self.col_a, box_a = self._column()
+        self.col_b, box_b = self._column()
+        self.col_c, box_c = self._column()
+        box_a.addWidget(self._control_card())
+        box_a.addWidget(self._display_card())
+        box_a.addStretch(1)
+        box_b.addWidget(self._language_card())
+        box_b.addStretch(1)
+        box_c.addWidget(self._advanced_card())
+        box_c.addStretch(1)
+
+        self.card_area.setWidget(self.cards_host)
+        self.card_area.viewport().installEventFilter(self)
+        side.addWidget(self.card_area, 1)
+        row.addWidget(sidebar, 1)
+
+        self.log_panel = self._log_panel()
+        self.log_panel.setVisible(not self._log_collapsed)
+        row.addWidget(self.log_panel)
+
+        self.setCentralWidget(root)
+        self._relayout_columns()
+        self._sync_mode_controls()
+        self._sync_running_state()
+
+    @staticmethod
+    def _column() -> tuple[QWidget, QVBoxLayout]:
+        widget = QWidget()
+        box = QVBoxLayout(widget)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(18)
+        return widget, box
+
+    def _header(self) -> QWidget:
+        header = QWidget()
+        header.setObjectName("sidebar")
+        row = QHBoxLayout(header)
+        row.setContentsMargins(20, 12, 14, 8)
+        row.setSpacing(8)
+
+        self.logo_label = QLabel()
+        pixmap = self._logo_pixmap()
+        if pixmap is not None:
+            self.logo_label.setPixmap(pixmap)
+        row.addWidget(self.logo_label)
+        brand = QLabel("MinbarLive")
+        brand.setObjectName("hero")
+        row.addWidget(brand)
+        row.addStretch(1)
+
+        # Same glyphs and order as the Tk header: ⟲ ▦ ⚑ ⚙ then the log toggle.
+        for glyph, tip_key, tip_default, slot in (
+            ("⟲", "history_title", "Session history", self.open_history),
+            ("▦", "batch_file", "File / Batch", self.open_batch),
+            ("⚑", "announce_title", "Announcement", self.open_announce),
+            ("⚙", "settings_title", "Settings", self.open_settings),
+        ):
+            button = QPushButton(glyph)
+            button.setObjectName("icon")
+            button.setFixedSize(40, 40)
+            button.setToolTip(self._t(tip_key, tip_default))
+            button.setCursor(Qt.PointingHandCursor)
+            button.clicked.connect(slot)
+            row.addWidget(button)
+
+        self.log_toggle = QPushButton("▶" if self._log_collapsed else "◀")
+        self.log_toggle.setObjectName("icon")
+        self.log_toggle.setFixedSize(40, 40)
+        self.log_toggle.setToolTip(self._t("logs", "Logs"))
+        self.log_toggle.setCursor(Qt.PointingHandCursor)
+        self.log_toggle.clicked.connect(self._toggle_log_panel)
+        row.addWidget(self.log_toggle)
+        return header
+
+    # ── card: control centre ─────────────────────────────────────────────
+    def _control_card(self) -> Card:
+        card = Card("▶", self._t("control_center", "Control centre"))
+
+        self.status_pill = QLabel(self._t("stopped", "Stopped"))
+        self.status_pill.setObjectName("pill_stopped")
+        self.status_pill.setAlignment(Qt.AlignCenter)
+        card.body.addWidget(self.status_pill)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        self.start_btn = QPushButton("▶  " + self._clean_label("start", "Start"))
+        self.start_btn.setObjectName("accent")
+        self.start_btn.setProperty("class", "big")
+        self.start_btn.setMinimumHeight(52)
+        self.start_btn.clicked.connect(self.on_start)
+        self.stop_btn = QPushButton("■  " + self._clean_label("stop", "Stop"))
+        self.stop_btn.setObjectName("danger")
+        self.stop_btn.setMinimumHeight(52)
+        self.stop_btn.clicked.connect(self.on_stop)
+        self.stop_btn.setEnabled(False)
+        buttons.addWidget(self.start_btn)
+        buttons.addWidget(self.stop_btn)
+        card.body.addLayout(buttons)
+        return card
+
+    # ── card: display & audio ────────────────────────────────────────────
+    def _display_card(self) -> Card:
+        card = Card("▤", self._t("display_routing", "Display & audio"))
+
+        self.monitor_combo = self._combo()
+        for i, screen in enumerate(QGuiApplication.screens()):
+            g = screen.geometry()
+            self.monitor_combo.addItem(f"{i + 1}. {screen.name()} ({g.width()}x{g.height()})")
+        self.monitor_combo.setCurrentIndex(
+            max(0, min(self.settings.monitor_index, self.monitor_combo.count() - 1))
+        )
+        self.monitor_combo.currentIndexChanged.connect(self._on_monitor_changed)
 
         (
             self.device_names,
@@ -86,12 +345,11 @@ class ControlPanel(QMainWindow):
             self.device_indices,
             self.device_loopback_flags,
         ) = get_input_devices()
-        self.device_combo = QComboBox()
+        self.device_combo = self._combo()
         self.device_combo.addItems(self.device_names or ["(no input devices)"])
-        # Restore the saved device by NAME, not position: indices shift when
-        # hardware is plugged in, and loopback entries carry synthetic negative
-        # indices. Without this the combo silently defaults to the first device,
-        # so a loopback setup captures a real microphone instead.
+        # Restore by NAME, not position: indices shift when hardware is plugged
+        # in, and loopback entries carry synthetic negative indices. Without
+        # this a loopback setup silently captures a real microphone.
         saved = self.settings.input_device_name
         if saved:
             pos = find_input_device_position(saved, self.device_base_names)
@@ -99,137 +357,849 @@ class ControlPanel(QMainWindow):
                 pos = self.device_names.index(saved)
             if pos is not None:
                 self.device_combo.setCurrentIndex(pos)
-        # Connected AFTER restoring, so restoring the saved device does not
-        # itself count as a user change and trigger a swap.
+        # Connected AFTER restoring, so restoring is not itself a user change.
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
 
-        self.source_combo = QComboBox()
-        # SOURCE_LANGUAGES is (display name, code) pairs; the settings field
-        # stores the name.
-        self.source_combo.addItems([name for name, _ in SOURCE_LANGUAGES])
-        self._select(self.source_combo, self.settings.source_language)
-
-        self.target_combo = QComboBox()
-        self.target_combo.addItems(TARGET_LANGUAGE_NAMES)
-        self._select(self.target_combo, self.settings.target_language)
-
-        # Display translated mode names but keep the raw values for storage:
-        # "realtime" must never reach the user, and must never be replaced by
-        # its label on the way back into Settings.
-        self.mode_combo = QComboBox()
-        for mode in SUBTITLE_MODES:
-            self.mode_combo.addItem(self._t(f"subtitle_mode_{mode}", mode), mode)
-        idx = self.mode_combo.findData(self.settings.subtitle_mode)
-        if idx >= 0:
-            self.mode_combo.setCurrentIndex(idx)
-        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-
-        form.addRow(QLabel(self._t("input_device", "Input device:")), self.device_combo)
-        form.addRow(QLabel(self._t("source", "Spoken language:")), self.source_combo)
-        form.addRow(QLabel(self._t("target", "Subtitle language:")), self.target_combo)
-        form.addRow(QLabel(self._t("subtitles", "Subtitles:")), self.mode_combo)
-        outer.addWidget(card)
-        outer.addWidget(self._display_card())
-
-        # ⚙ / ⟲ pair, mirroring the Tk sidebar header.
-        tools = QHBoxLayout()
-        self.settings_btn = QPushButton("⚙  " + self._t("settings_title", "Settings"))
-        self.settings_btn.clicked.connect(self.open_settings)
-        self.history_btn = QPushButton("⟲  " + self._t("history_title", "History"))
-        self.history_btn.clicked.connect(self.open_history)
-        self.batch_btn = QPushButton("▦  " + self._t("batch_file", "File / Batch"))
-        self.batch_btn.clicked.connect(self.open_batch)
-        self.announce_btn = QPushButton("⚑  " + self._t("announce_title", "Announcement"))
-        self.announce_btn.clicked.connect(self.open_announce)
-        tools.addWidget(self.settings_btn)
-        tools.addWidget(self.history_btn)
-        tools.addWidget(self.batch_btn)
-        tools.addWidget(self.announce_btn)
-        outer.addLayout(tools)
-
-        buttons = QHBoxLayout()
-        self.start_btn = QPushButton(self._t("start", "Start"))
-        self.start_btn.setObjectName("accent")
-        self.start_btn.clicked.connect(self.on_start)
-        self.stop_btn = QPushButton(self._t("stop", "Stop"))
-        self.stop_btn.setObjectName("danger")
-        self.stop_btn.clicked.connect(self.on_stop)
-        self.stop_btn.setEnabled(False)
-        buttons.addWidget(self.start_btn)
-        buttons.addWidget(self.stop_btn)
-        outer.addLayout(buttons)
-
-        self.status = QLabel(self._t("status_stopped", "Stopped"))
-        self.status.setObjectName("muted")
-        self.status.setAlignment(Qt.AlignCenter)
-        outer.addWidget(self.status)
-        outer.addStretch(1)
-
-        self.setCentralWidget(root)
-
-    def _display_card(self) -> QFrame:
-        """Controls that take effect on the live overlay mid-session."""
-        card = QFrame()
-        card.setObjectName("card")
-        form = QFormLayout(card)
-        form.setContentsMargins(18, 18, 18, 18)
-        form.setSpacing(12)
-
-        # Monitors come straight from Qt, already in logical coordinates.
-        self.monitor_combo = QComboBox()
-        for i, screen in enumerate(QGuiApplication.screens()):
-            g = screen.geometry()
-            self.monitor_combo.addItem(f"{i + 1}. {screen.name()} ({g.width()}x{g.height()})")
-        self.monitor_combo.setCurrentIndex(
-            min(self.settings.monitor_index, self.monitor_combo.count() - 1)
+        top = QHBoxLayout()
+        top.setSpacing(10)
+        top.addWidget(
+            field(self._t("subtitle_screen", "Subtitle screen"), self.monitor_combo), 1
         )
-        self.monitor_combo.currentIndexChanged.connect(self._on_monitor_changed)
+        top.addWidget(
+            field(self._t("input_device", "Input device"), self.device_combo), 1
+        )
+        card.body.addLayout(top)
+        card.body.addWidget(self._input_level_row())
 
-        # Stepper with a visible value, matching the Tk font/scroll rows.
+        controls = QHBoxLayout()
+        controls.setSpacing(10)
+        controls.addWidget(self._font_panel(), 1)
+        controls.addWidget(self._height_panel(), 1)
+        card.body.addLayout(controls)
+        return card
+
+    def _input_level_row(self) -> QWidget:
+        """dBFS readout · segmented bar · Test button, as in the Tk card."""
+        holder = QWidget()
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+
+        self.level_value = QLabel(self._t("input_level_no_signal", "No signal"))
+        # Deliberately NOT objectName "muted": the readout recolours per state
+        # via its own stylesheet, and an id rule in the app sheet outranks a
+        # widget sheet's plain `color` — the text stayed grey either way.
+        self.level_value.setStyleSheet(f"color: {current_colors()['muted']};")
+        self.level_value.setMinimumWidth(78)
+        self.level_bar = AudioLevelBar()
+        self.level_test_btn = QPushButton(self._t("input_level_test", "Test mic"))
+        self.level_test_btn.setMinimumHeight(28)
+        self.level_test_btn.clicked.connect(self._toggle_input_level_test)
+
+        row.addWidget(self.level_value)
+        row.addWidget(self.level_bar, 1)
+        row.addWidget(self.level_test_btn)
+        self._level_text_state: tuple[str, str] | None = None
+        self._level_button_state: tuple[bool, bool] | None = None
+        return holder
+
+    def _mini(self, title: str) -> tuple[QFrame, QVBoxLayout]:
+        frame = QFrame()
+        frame.setObjectName("mini")
+        box = QVBoxLayout(frame)
+        box.setContentsMargins(12, 10, 12, 12)
+        box.setSpacing(4)
+        label = QLabel(title)
+        label.setObjectName("field")
+        box.addWidget(label)
+        return frame, box
+
+    def _font_panel(self) -> QFrame:
+        frame, box = self._mini(self._t("font", "Font size"))
         self.font_stepper = Stepper(
             lambda: self._step_font(smaller=True),
             lambda: self._step_font(smaller=False),
-            self._font_value_text(),
+            str(self.settings.font_size_base),
         )
+        box.addWidget(self.font_stepper)
+        return frame
 
+    def _height_panel(self) -> QFrame:
+        frame, box = self._mini(self._t("height", "Window height"))
+        self.height_value = QLabel(f"{self.settings.window_height_percent}%")
+        self.height_value.setObjectName("value")
+        self.height_slider = QSlider(Qt.Horizontal)
+        self.height_slider.setRange(5, 100)
+        self.height_slider.setValue(max(5, min(100, self.settings.window_height_percent)))
+        self.height_slider.valueChanged.connect(self._on_height_changed)
+        box.addWidget(self.height_value)
+        box.addWidget(self.height_slider)
+        return frame
+
+    # ── card: translation flow ───────────────────────────────────────────
+    def _language_card(self) -> Card:
+        card = Card("⇄", self._t("translation_flow", "Translation flow"))
+
+        # Canonical (English) names are stored; the dropdown shows the endonym.
+        self._source_names = [name for name, _ in SOURCE_LANGUAGES]
+        self.source_combo = self._combo()
+        self._refresh_source_combo()
+        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
+        self.target_combo = self._combo()
+        self.target_combo.addItems(TARGET_LANGUAGE_DISPLAY_NAMES)
+        self.target_combo.setCurrentText(
+            language_display_name(self.settings.target_language)
+        )
+        self.target_combo.currentIndexChanged.connect(self._on_target_changed)
+
+        pair = QHBoxLayout()
+        pair.setSpacing(6)
+        pair.addWidget(field(self._t("source", "Spoken language"), self.source_combo), 1)
+        swap = QPushButton("⇄")
+        swap.setObjectName("icon")
+        swap.setFixedSize(42, 42)
+        swap.setCursor(Qt.PointingHandCursor)
+        swap.clicked.connect(self._on_swap_languages)
+        swap_holder = QVBoxLayout()
+        swap_holder.addSpacing(20)
+        swap_holder.addWidget(swap)
+        pair.addLayout(swap_holder)
+        pair.addWidget(
+            field(self._t("target", "Subtitle language"), self.target_combo), 1
+        )
+        card.body.addLayout(pair)
+
+        # Processing strategy — the master switch, above the Subtitles picker
+        # it feeds (Realtime is streaming-only).
+        strat_head = QHBoxLayout()
+        strat_label = QLabel(self._t("processing_strategy", "Processing"))
+        strat_label.setObjectName("field")
+        self.strategy_hint = QLabel(
+            self._t("hint_stop_to_change", "⚠ Stop to change")
+        )
+        self.strategy_hint.setObjectName("warning_text")
+        self.strategy_hint.setVisible(False)
+        strat_head.addWidget(strat_label)
+        strat_head.addStretch(1)
+        strat_head.addWidget(self.strategy_hint)
+        card.body.addLayout(strat_head)
+
+        self.strategy_combo = self._combo()
+        self.strategy_combo.addItems(
+            [self._t(f"strategy_{s}", s.title()) for s in STRATEGY_IDS]
+        )
+        self.strategy_combo.setCurrentIndex(current_strategy_index(self.settings))
+        self.strategy_combo.currentIndexChanged.connect(self._on_strategy_changed)
+        card.body.addWidget(self._with_help(self.strategy_combo, "strategy"))
+
+        # Subtitles mode + its mode-specific control (speed / transparent).
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(10)
+        self.mode_combo = self._combo()
+        self._refresh_mode_combo()
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        mode_left = QVBoxLayout()
+        mode_left.setSpacing(4)
+        mode_caption = QLabel(self._t("subtitles", "Subtitles"))
+        mode_caption.setObjectName("field")
+        mode_left.addWidget(mode_caption)
+        mode_left.addWidget(self._with_help(self.mode_combo, "subtitle"))
+        mode_row.addLayout(mode_left, 1)
+
+        self.speed_stepper = Stepper(
+            lambda: self._step_speed(-0.25),
+            lambda: self._step_speed(+0.25),
+            f"{self.settings.scroll_speed:.1f}x",
+        )
+        self.transparent_check = QCheckBox(self._t("transparent", "Transparent"))
+        self.transparent_check.setChecked(self.settings.transparent_static)
+        self.transparent_check.toggled.connect(self._on_transparent_changed)
+        self.mode_controls = QWidget()
+        mc = QVBoxLayout(self.mode_controls)
+        mc.setContentsMargins(0, 20, 0, 0)
+        mc.setSpacing(4)
+        mc.addWidget(self.speed_stepper)
+        mc.addWidget(self.transparent_check)
+        mode_row.addWidget(self.mode_controls)
+        card.body.addLayout(mode_row)
+
+        # Display toggles, in the Tk order: catch-up / live transcript (one at
+        # a time, by mode), then "show original text", then the 3-way
+        # visibility selector.
+        self.catchup_check = QCheckBox(
+            self._t("adaptive_subtitle_catchup", "Speed up when behind")
+        )
+        self.catchup_check.setChecked(self.settings.adaptive_subtitle_catchup)
+        self.catchup_check.toggled.connect(self._on_catchup_changed)
+        self.interim_check = QCheckBox(
+            self._t("show_interim_transcript", "Show live transcript")
+        )
+        self.interim_check.setChecked(self.settings.show_interim_transcript)
+        self.interim_check.toggled.connect(self._on_interim_changed)
         self.bilingual_check = QCheckBox(
             self._t("bilingual_mode", "Show original text")
         )
         self.bilingual_check.setChecked(self.settings.bilingual_mode)
         self.bilingual_check.toggled.connect(self._on_bilingual_toggled)
+        card.body.addWidget(self.catchup_check)
+        card.body.addWidget(self.interim_check)
+        card.body.addWidget(self.bilingual_check)
 
-        form.addRow(QLabel(self._t("subtitle_monitor", "Monitor:")), self.monitor_combo)
-        form.addRow(QLabel(self._t("font", "Font size:")), self.font_stepper)
-        form.addRow(QLabel(""), self.bilingual_check)
+        hide_caption = QLabel(self._t("hide_subtitle_label", "Hide subtitle window"))
+        hide_caption.setObjectName("field")
+        self.hide_segment = SegmentedControl(
+            [self._t(*_HIDE_MODE_KEYS[m]) for m in SUBTITLE_HIDE_MODES],
+            SUBTITLE_HIDE_MODES.index(self.settings.subtitle_hide_mode)
+            if self.settings.subtitle_hide_mode in SUBTITLE_HIDE_MODES
+            else 0,
+        )
+        self.hide_segment.changed.connect(self._on_hide_mode_changed)
+        card.body.addWidget(hide_caption)
+        card.body.addWidget(self.hide_segment)
         return card
 
+    def _with_help(self, widget: QWidget, kind: str) -> QWidget:
+        """``widget`` with a "?" button beside it, as the Tk dropdowns have."""
+        holder = QWidget()
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(widget, 1)
+        help_btn = QPushButton("?")
+        help_btn.setObjectName("icon")
+        help_btn.setFixedSize(38, 38)
+        help_btn.setCursor(Qt.PointingHandCursor)
+        help_btn.clicked.connect(lambda: self._show_help(kind))
+        row.addWidget(help_btn)
+        return holder
+
+    def _show_help(self, kind: str) -> None:
+        """Explain each entry of a dropdown, as the Tk "?" popups do."""
+        if kind == "strategy":
+            title = self._t("processing_strategy", "Processing")
+            keys = [f"strategy_hint_{s}" for s in STRATEGY_IDS]
+            names = [self._t(f"strategy_{s}", s) for s in STRATEGY_IDS]
+        else:
+            title = self._t("subtitles", "Subtitles")
+            modes = subtitle_mode_choices(self.settings)
+            keys = [f"subtitle_hint_{m}" for m in modes]
+            names = [self._t(f"subtitle_mode_{m}", m) for m in modes]
+        body = "\n\n".join(
+            f"{name}\n{self._t(key, '')}" for name, key in zip(names, keys, strict=False)
+        )
+        QMessageBox.information(self, title, body)
+
+    # ── card: advanced ───────────────────────────────────────────────────
+    def _advanced_card(self) -> Card:
+        card = Card("⚙", self._t("advanced_settings", "Advanced"))
+
+        # Transcription first, then translation — the Tk order.
+        card.body.addWidget(self._section(self._t("section_transcription", "Transcription")))
+        self.transcription_provider_combo = self._combo()
+        self.transcription_provider_combo.currentIndexChanged.connect(
+            self._on_transcription_provider_changed
+        )
+        card.body.addWidget(self.transcription_provider_combo)
+        self.transcription_model_combo = self._combo()
+        self.transcription_model_combo.currentIndexChanged.connect(
+            self._on_transcription_model_changed
+        )
+        self.use_default_transcription = QCheckBox(self._t("use_default", "Default"))
+        self.use_default_transcription.setChecked(
+            self.settings.use_default_transcription_model
+        )
+        self.use_default_transcription.toggled.connect(
+            self._on_use_default_transcription
+        )
+        card.body.addLayout(
+            self._model_row(self.transcription_model_combo, self.use_default_transcription)
+        )
+
+        card.body.addWidget(self._section(self._t("section_translation", "Translation")))
+        self.provider_combo = self._combo()
+        self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
+        card.body.addWidget(self.provider_combo)
+        self.model_combo = self._combo()
+        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
+        self.use_default_translation = QCheckBox(self._t("use_default", "Default"))
+        self.use_default_translation.setChecked(
+            self.settings.use_default_translation_model
+        )
+        self.use_default_translation.toggled.connect(self._on_use_default_translation)
+        card.body.addLayout(
+            self._model_row(self.model_combo, self.use_default_translation)
+        )
+
+        aot_caption = QLabel(self._t("window_on_top_label", "Window always on top"))
+        aot_caption.setObjectName("field")
+        self.aot_segment = SegmentedControl(
+            [self._t(*_AOT_MODE_KEYS[m]) for m in ALWAYS_ON_TOP_MODES],
+            ALWAYS_ON_TOP_MODES.index(self.settings.always_on_top_mode)
+            if self.settings.always_on_top_mode in ALWAYS_ON_TOP_MODES
+            else 0,
+        )
+        self.aot_segment.changed.connect(self._on_aot_changed)
+        card.body.addWidget(aot_caption)
+        card.body.addWidget(self.aot_segment)
+
+        card.body.addWidget(self._section(self._t("other_settings", "Other settings")))
+        self._other_checks: dict[str, QCheckBox] = {}
+        for attribute, key, fallback in (
+            ("show_footer", "show_footer", "Show disclaimer"),
+            ("auto_stop_inactivity", "auto_stop_inactivity", "Stop when idle"),
+            ("noise_filter", "noise_filter", "Noise filter"),
+            ("auto_cleanup_logs", "auto_cleanup_logs", "Clean up logs"),
+            ("auto_cleanup_content", "auto_cleanup_content", "Clean up recordings"),
+            ("auto_start", "auto_start_on_launch", "Start on launch"),
+        ):
+            box = QCheckBox(self._t(key, fallback))
+            box.setChecked(bool(getattr(self.settings, attribute)))
+            box.toggled.connect(
+                lambda checked, a=attribute: self._on_simple_setting(a, checked)
+            )
+            card.body.addWidget(box)
+            self._other_checks[attribute] = box
+
+        self._refresh_provider_combos()
+        return card
+
+    def _section(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("section")
+        return label
+
+    @staticmethod
+    def _model_row(combo: QComboBox, check: QCheckBox) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(combo, 1)
+        row.addWidget(check)
+        return row
+
+    # ── log panel ────────────────────────────────────────────────────────
+    def _log_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setMinimumWidth(260)
+        box = QVBoxLayout(panel)
+        box.setContentsMargins(0, 16, 18, 18)
+        box.setSpacing(12)
+
+        head = QHBoxLayout()
+        title = QLabel("▤  " + self._t("logs", "Logs"))
+        title.setObjectName("hero")
+        self.log_status = QLabel(self._t("stopped", "Stopped"))
+        self.log_status.setObjectName("pill_stopped")
+        head.addWidget(title)
+        head.addStretch(1)
+        head.addWidget(self.log_status)
+        box.addLayout(head)
+
+        self.log_text = QPlainTextEdit()
+        self.log_text.setObjectName("log")
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumBlockCount(2000)
+        box.addWidget(self.log_text, 1)
+        return panel
+
+    def _toggle_log_panel(self) -> None:
+        self._log_collapsed = not self._log_collapsed
+        self.log_panel.setVisible(not self._log_collapsed)
+        self.log_toggle.setText("▶" if self._log_collapsed else "◀")
+        self.settings.log_panel_collapsed = self._log_collapsed
+        save_settings(self.settings)
+        # Grow/shrink by the panel's width so opening the log does not squeeze
+        # the cards into one column on an otherwise wide window.
+        if not self.isMaximized():
+            delta = -_LOG_PANEL_W if self._log_collapsed else _LOG_PANEL_W
+            self.resize(max(self.minimumWidth(), self.width() + delta), self.height())
+        self._relayout_columns()
+
+    def _drain_logs(self) -> None:
+        appended = False
+        while not log_queue.empty():
+            try:
+                self.log_text.appendPlainText(log_queue.get_nowait())
+                appended = True
+            except Exception:  # noqa: BLE001 - a log line must never break the UI
+                break
+        if appended:
+            bar = self.log_text.verticalScrollBar()
+            bar.setValue(bar.maximum())
+
+    # ── responsive card grid ─────────────────────────────────────────────
+    def _available_width(self) -> int:
+        """Width the card grid has to work with.
+
+        The viewport is authoritative once the window is on screen. Before
+        that it still reports its default, so fall back to the window's own
+        width minus whatever the log panel will claim — otherwise the first
+        layout is computed against a placeholder size.
+        """
+        viewport = self.card_area.viewport().width()
+        if self.isVisible() and viewport > 1:
+            return viewport
+        return max(0, self.width() - (0 if self._log_collapsed else _LOG_PANEL_W))
+
+    def _column_count(self) -> int:
+        width = self._available_width()
+        if width <= 1:
+            return 2  # nothing to measure yet; the default window shows two
+        if width >= _COL3_MIN_W:
+            return 3
+        if width >= _COL2_MIN_W:
+            return 2
+        return 1
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt API
+        """Reflow when the SCROLL VIEWPORT resizes, not just the window.
+
+        The window's own resizeEvent fires before the layout has handed the
+        viewport its new width, so a window-only trigger leaves the grid one
+        step behind — it stuck at one column on a 1180 px window.
+        """
+        if watched is self.card_area.viewport() and event.type() == QEvent.Resize:
+            self._relayout_columns()
+        return super().eventFilter(watched, event)
+
+    def _relayout_columns(self) -> None:
+        cols = self._column_count()
+        if cols == self._columns:
+            return
+        self._columns = cols
+        for widget in (self.col_a, self.col_b, self.col_c):
+            self.grid.removeWidget(widget)
+        for i in range(3):
+            self.grid.setColumnStretch(i, 0)
+
+        if cols == 1:
+            for i, widget in enumerate((self.col_a, self.col_b, self.col_c)):
+                self.grid.addWidget(widget, i, 0)
+            self.grid.setColumnStretch(0, 1)
+        elif cols == 2:
+            # A spans both rows so its height does not push C away from B.
+            self.grid.addWidget(self.col_a, 0, 0, 2, 1)
+            self.grid.addWidget(self.col_b, 0, 1)
+            self.grid.addWidget(self.col_c, 1, 1)
+            self.grid.setColumnStretch(0, 1)
+            self.grid.setColumnStretch(1, 1)
+        else:
+            for i, widget in enumerate((self.col_a, self.col_b, self.col_c)):
+                self.grid.addWidget(widget, 0, i)
+                self.grid.setColumnStretch(i, 1)
+        for widget in (self.col_a, self.col_b, self.col_c):
+            widget.setVisible(True)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self._relayout_columns()
+
+    # ── combo helper ─────────────────────────────────────────────────────
+    @staticmethod
+    def _combo() -> Dropdown:
+        combo = Dropdown()
+        # Ignored horizontally so a card can be squeezed below the combo's
+        # natural width instead of pinning the window open (report 8).
+        combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        return combo
+
+    # ── dropdown refreshers ──────────────────────────────────────────────
+    def _refresh_source_combo(self) -> None:
+        """Real-time transcription cannot auto-detect the source language, so
+        "Automatic" is removed from the picker while streaming is selected."""
+        streaming = self.settings.pipeline_mode == PIPELINE_MODE_STREAMING
+        names = [
+            name
+            for name, code in SOURCE_LANGUAGES
+            if not (streaming and code is None)
+        ]
+        current = self.settings.source_language
+        if current not in names:
+            current = names[0]
+            self.settings.source_language = current
+        # Signals stay connected: blocking them across the repopulate is enough,
+        # and disconnect/reconnect warns loudly the first time round (nothing is
+        # connected yet when the card builds).
+        blocked = self.source_combo.blockSignals(True)
+        self.source_combo.clear()
+        self.source_combo.addItems([language_display_name(n) for n in names])
+        self.source_combo.setCurrentText(language_display_name(current))
+        self.source_combo.blockSignals(blocked)
+
+    def _refresh_mode_combo(self) -> None:
+        modes = subtitle_mode_choices(self.settings)
+        blocked = self.mode_combo.blockSignals(True)
+        self.mode_combo.clear()
+        for mode in modes:
+            self.mode_combo.addItem(self._t(f"subtitle_mode_{mode}", mode), mode)
+        index = self.mode_combo.findData(effective_subtitle_mode(self.settings))
+        self.mode_combo.setCurrentIndex(max(0, index))
+        self.mode_combo.blockSignals(blocked)
+
+    def _refresh_provider_combos(self) -> None:
+        """Repopulate both provider dropdowns for the current strategy.
+
+        The transcription list follows the Processing Strategy: real-time
+        offers the streaming engines, chunk/semantic the segmented ones.
+        """
+        streaming = self.settings.pipeline_mode == PIPELINE_MODE_STREAMING
+        if streaming:
+            choices = [
+                (name, pid)
+                for name, pid in TRANSCRIPTION_PROVIDER_CHOICES
+                if pid in STREAMING_TRANSCRIPTION_PROVIDERS
+            ]
+        else:
+            choices = [
+                (name, pid)
+                for name, pid in TRANSCRIPTION_PROVIDER_CHOICES
+                if pid not in STREAMING_TRANSCRIPTION_PROVIDERS
+            ]
+        self._fill(
+            self.transcription_provider_combo,
+            visible_provider_choices(choices, self._running),
+            self.settings.transcription_provider,
+        )
+        self._fill(
+            self.provider_combo,
+            visible_provider_choices(list(PROVIDER_CHOICES), self._running),
+            self.settings.ai_provider,
+        )
+        self._refresh_model_combos()
+        self._sync_default_model_states()
+
+    def _refresh_model_combos(self) -> None:
+        self._fill(
+            self.transcription_model_combo,
+            get_model_choices(self.settings.transcription_provider, "transcription"),
+            self.settings.transcription_model,
+            get_default_model(self.settings.transcription_provider, "transcription"),
+        )
+        self._fill(
+            self.model_combo,
+            get_model_choices(self.settings.ai_provider, "translation"),
+            self.settings.translation_model,
+            get_default_model(self.settings.ai_provider, "translation"),
+        )
+
+    @staticmethod
+    def _fill(
+        combo: QComboBox,
+        choices: list[tuple[str, str]],
+        current: str,
+        fallback: str | None = None,
+    ) -> None:
+        blocked = combo.blockSignals(True)
+        combo.clear()
+        for name, value in choices:
+            combo.addItem(name, value)
+        index = combo.findData(current)
+        if index < 0 and fallback is not None:
+            index = combo.findData(fallback)
+        combo.setCurrentIndex(max(0, index))
+        combo.blockSignals(blocked)
+
+    def _sync_default_model_states(self) -> None:
+        """A model dropdown is disabled while its "Default" box is ticked —
+        that is what the tick means."""
+        self.transcription_model_combo.setEnabled(
+            not self.use_default_transcription.isChecked()
+        )
+        self.model_combo.setEnabled(not self.use_default_translation.isChecked())
+        # Provider choice is locked while "Default" is on, mirroring Tk.
+        self.provider_combo.setEnabled(not self.use_default_translation.isChecked())
+
+    def _sync_mode_controls(self) -> None:
+        """Show only the control the current subtitle mode actually uses."""
+        mode = self._current_mode()
+        self.speed_stepper.setVisible(mode == "continuous")
+        self.transparent_check.setVisible(mode == "static")
+        self.mode_controls.setVisible(mode in ("continuous", "static"))
+        self.catchup_check.setVisible(mode == "continuous")
+        self.interim_check.setVisible(mode == "realtime")
+
+    def _sync_running_state(self) -> None:
+        self.start_btn.setEnabled(not self._running)
+        self.stop_btn.setEnabled(self._running)
+        text = self._t("running", "Running") if self._running else self._t(
+            "stopped", "Stopped"
+        )
+        for label, name in (
+            (self.status_pill, "pill_running" if self._running else "pill_stopped"),
+            (self.log_status, "pill_running" if self._running else "pill_stopped"),
+        ):
+            label.setText(text)
+            label.setObjectName(name)
+            label.style().unpolish(label)
+            label.style().polish(label)
+        # Strategy and engine cannot change mid-run: the pipeline reads them
+        # once at start.
+        self.strategy_hint.setVisible(self._running)
+        self.strategy_combo.setEnabled(not self._running)
+
+    # ── handlers: display ────────────────────────────────────────────────
     def _on_monitor_changed(self, index: int) -> None:
         self.settings.monitor_index = index
+        save_settings(self.settings)
         if self.subtitle_window:
             self.subtitle_window.set_monitor(index)
 
-    def _font_value_text(self) -> str:
-        # font_size_base is a DIVISOR, so a smaller base is a larger font.
-        # Showing the raw divisor would read backwards; show the step instead.
-        return f"{self.settings.font_size_base}"
+    def _on_height_changed(self, value: int) -> None:
+        self.settings.window_height_percent = value
+        self.height_value.setText(f"{value}%")
+        save_settings(self.settings)
+        if self.subtitle_window:
+            self.subtitle_window.set_window_height_percent(value)
 
     def _step_font(self, *, smaller: bool) -> None:
+        # font_size_base is a DIVISOR, so a bigger base is a smaller font.
         base = self.settings.font_size_base
-        # Mirrors SubtitleWindow.increase_font/decrease_font so the stepper
-        # works before an overlay exists (settings still persist).
-        self.settings.font_size_base = (
-            min(80, base + 5) if smaller else max(20, base - 5)
-        )
+        self.settings.font_size_base = min(80, base + 5) if smaller else max(20, base - 5)
         if self.subtitle_window:
             if smaller:
                 self.subtitle_window.decrease_font()
             else:
                 self.subtitle_window.increase_font()
             self.settings.font_size_base = self.subtitle_window.get_font_size_base()
-        self.font_stepper.set_value_text(self._font_value_text())
+        self.font_stepper.set_value_text(str(self.settings.font_size_base))
+        save_settings(self.settings)
 
+    def _step_speed(self, delta: float) -> None:
+        speed = round(max(0.25, min(5.0, self.settings.scroll_speed + delta)), 2)
+        self.settings.scroll_speed = speed
+        self.speed_stepper.set_value_text(f"{speed:.1f}x")
+        save_settings(self.settings)
+        if self.subtitle_window:
+            self.subtitle_window.set_scroll_speed(speed)
+
+    # ── handlers: languages / mode ───────────────────────────────────────
+    def _on_source_changed(self, _index: int) -> None:
+        self.settings.source_language = language_canonical_name(
+            self.source_combo.currentText()
+        )
+        save_settings(self.settings)
+
+    def _on_target_changed(self, _index: int) -> None:
+        self.settings.target_language = language_canonical_name(
+            self.target_combo.currentText()
+        )
+        save_settings(self.settings)
+        if self.subtitle_window:
+            self.subtitle_window.set_language(self.settings.target_language)
+
+    def _on_swap_languages(self) -> None:
+        source = self.settings.source_language
+        target = self.settings.target_language
+        if source not in TARGET_LANGUAGE_NAMES:
+            return  # "Automatic" has no target counterpart
+        self.settings.source_language, self.settings.target_language = target, source
+        self._refresh_source_combo()
+        self.target_combo.setCurrentText(language_display_name(source))
+        save_settings(self.settings)
+
+    def _current_mode(self) -> str:
+        return self.mode_combo.currentData() or "continuous"
+
+    def _on_mode_changed(self, _index: int) -> None:
+        self.settings.subtitle_mode = self._current_mode()
+        save_settings(self.settings)
+        self._sync_mode_controls()
+        if self.subtitle_window:
+            self.subtitle_window.set_subtitle_mode(
+                effective_subtitle_mode(self.settings)
+            )
+
+    def _on_strategy_changed(self, index: int) -> None:
+        if apply_strategy(self.settings, index) is None:
+            return
+        save_settings(self.settings)
+        self._refresh_source_combo()
+        self._refresh_mode_combo()
+        self._refresh_provider_combos()
+        self._sync_mode_controls()
+        # A strategy change can select an engine whose key is missing; ask now
+        # rather than at Start.
+        ensure_keys(required_key_providers(self.settings), self.texts, self)
+
+    def _on_transparent_changed(self, checked: bool) -> None:
+        self.settings.transparent_static = checked
+        save_settings(self.settings)
+        if self.subtitle_window:
+            self.subtitle_window.set_transparent_static(checked)
+
+    def _on_catchup_changed(self, checked: bool) -> None:
+        self.settings.adaptive_subtitle_catchup = checked
+        save_settings(self.settings)
+        if self.subtitle_window:
+            self.subtitle_window.set_adaptive_catchup(checked)
+
+    def _on_interim_changed(self, checked: bool) -> None:
+        self.settings.show_interim_transcript = checked
+        save_settings(self.settings)
+
+    def _on_bilingual_toggled(self, checked: bool) -> None:
+        self.settings.bilingual_mode = checked
+        save_settings(self.settings)
+        if self.subtitle_window:
+            self.subtitle_window.set_bilingual_mode(checked)
+
+    def _on_hide_mode_changed(self, index: int) -> None:
+        self.settings.subtitle_hide_mode = SUBTITLE_HIDE_MODES[index]
+        save_settings(self.settings)
+        self._apply_subtitle_hide_mode()
+
+    def _on_aot_changed(self, index: int) -> None:
+        self.settings.always_on_top_mode = ALWAYS_ON_TOP_MODES[index]
+        save_settings(self.settings)
+        if self.subtitle_window:
+            self.subtitle_window.set_always_on_top(self._effective_always_on_top())
+
+    def _on_simple_setting(self, attribute: str, checked: bool) -> None:
+        setattr(self.settings, attribute, checked)
+        save_settings(self.settings)
+        if attribute == "show_footer" and self.subtitle_window:
+            self.subtitle_window.set_show_footer(checked)
+
+    # ── handlers: providers ──────────────────────────────────────────────
+    def _on_provider_changed(self, _index: int) -> None:
+        provider = self.provider_combo.currentData()
+        if not provider or provider == self.settings.ai_provider:
+            return
+        self.settings.ai_provider = provider
+        self.settings.translation_model = get_default_model(provider, "translation")
+        save_settings(self.settings)
+        self._refresh_model_combos()
+        ensure_keys([provider], self.texts, self)
+
+    def _on_model_changed(self, _index: int) -> None:
+        model = self.model_combo.currentData()
+        if model:
+            self.settings.translation_model = model
+            save_settings(self.settings)
+
+    def _on_transcription_provider_changed(self, _index: int) -> None:
+        provider = self.transcription_provider_combo.currentData()
+        if not provider or provider == self.settings.transcription_provider:
+            return
+        self.settings.transcription_provider = provider
+        self.settings.transcription_model = get_default_model(provider, "transcription")
+        save_settings(self.settings)
+        self._refresh_model_combos()
+        ensure_keys(required_key_providers(self.settings), self.texts, self)
+
+    def _on_transcription_model_changed(self, _index: int) -> None:
+        model = self.transcription_model_combo.currentData()
+        if model:
+            self.settings.transcription_model = model
+            save_settings(self.settings)
+
+    def _on_use_default_translation(self, checked: bool) -> None:
+        self.settings.use_default_translation_model = checked
+        if checked:
+            from utils.settings import DEFAULT_AI_PROVIDER
+
+            self.settings.ai_provider = DEFAULT_AI_PROVIDER
+            self.settings.translation_model = get_default_model(
+                DEFAULT_AI_PROVIDER, "translation"
+            )
+            self._refresh_provider_combos()
+        save_settings(self.settings)
+        self._sync_default_model_states()
+
+    def _on_use_default_transcription(self, checked: bool) -> None:
+        self.settings.use_default_transcription_model = checked
+        if checked:
+            from utils.settings import (
+                DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER,
+                DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER,
+            )
+
+            provider = (
+                DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER
+                if self.settings.pipeline_mode == PIPELINE_MODE_STREAMING
+                else DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER
+            )
+            self.settings.transcription_provider = provider
+            self.settings.transcription_model = get_default_model(
+                provider, "transcription"
+            )
+            self._refresh_provider_combos()
+        save_settings(self.settings)
+        self._sync_default_model_states()
+
+    # ── input level meter ────────────────────────────────────────────────
+    def _poll_input_level(self) -> None:
+        try:
+            snapshot = self.controller.get_input_level()
+        except Exception:  # noqa: BLE001 - the meter is never worth a crash
+            snapshot = None
+        # The APPLIED theme, not this window's copy of the setting: the two can
+        # diverge, and dark-theme text on a light card is invisible.
+        colors = current_colors()
+        if snapshot is not None:
+            from gui.audio_level_bar import level_fill
+
+            value = level_fill(snapshot.rms_dbfs)
+            self.level_bar.set_value(value)
+            if snapshot.clipping_ratio > 0.02:
+                text, colour = (
+                    self._t("input_level_clipping", "Clipping!"),
+                    colors["danger"],
+                )
+            elif value <= 0.001:
+                text, colour = (
+                    self._t("input_level_no_signal", "No signal"),
+                    colors["muted"],
+                )
+            else:
+                text, colour = f"{snapshot.rms_dbfs:.0f} dBFS", colors["text"]
+            # Only touch the label when the readout changed: this runs 5x a
+            # second and a restyle is not free.
+            if (text, colour) != self._level_text_state:
+                self._level_text_state = (text, colour)
+                self.level_value.setText(text)
+                self.level_value.setStyleSheet(f"color: {colour};")
+        self._sync_level_button()
+
+    def _sync_level_button(self) -> None:
+        testing = False
+        checker = getattr(self.controller, "is_input_level_test_running", None)
+        if checker is not None:
+            try:
+                testing = bool(checker())
+            except Exception:  # noqa: BLE001
+                testing = False
+        state = (self._running, testing)
+        if state == self._level_button_state:
+            return
+        self._level_button_state = state
+        # A live session already feeds the meter, and a preview cannot own the
+        # same device, so testing is not offered while running.
+        self.level_test_btn.setEnabled(not self._running)
+        self.level_test_btn.setText(
+            self._t("input_level_stop_test", "Stop")
+            if testing and not self._running
+            else self._t("input_level_test", "Test mic")
+        )
+
+    def _toggle_input_level_test(self) -> None:
+        checker = getattr(self.controller, "is_input_level_test_running", None)
+        if checker is not None and checker():
+            try:
+                self.controller.stop_input_level_test()
+            except Exception:  # noqa: BLE001
+                pass
+            self._level_button_state = None
+            return
+        if self._running:
+            return
+        try:
+            self.controller.start_input_level_test(self._selected_device())
+        except Exception as exc:  # noqa: BLE001 - surfaced to the operator
+            QMessageBox.warning(self, self._t("input_level", "Input level"), str(exc))
+        self._level_button_state = None
+
+    # ── secondary windows ────────────────────────────────────────────────
     def open_settings(self) -> None:
-        """Open the settings window, reusing it if already open."""
         existing = getattr(self, "_settings_window", None)
         if existing is not None and existing.isVisible():
             existing.raise_()
@@ -241,11 +1211,8 @@ class ControlPanel(QMainWindow):
         self._settings_window.show()
 
     def open_history(self) -> None:
-        """Open the session history viewer, reusing it if already open.
-
-        Rebuilt on each open rather than refreshed, so a session recorded
-        while it was closed always appears.
-        """
+        """Rebuilt on each open rather than refreshed, so a session recorded
+        while it was closed always appears."""
         existing = getattr(self, "_history_window", None)
         if existing is not None and existing.isVisible():
             existing.raise_()
@@ -257,11 +1224,8 @@ class ControlPanel(QMainWindow):
         self._history_window.show()
 
     def open_batch(self) -> None:
-        """Open the batch/file window, reusing it if already open.
-
-        Kept alive rather than rebuilt so an in-flight run survives the window
-        losing focus; closing it cancels the run.
-        """
+        """Kept alive rather than rebuilt so an in-flight run survives the
+        window losing focus; closing it cancels the run."""
         existing = getattr(self, "_batch_window", None)
         if existing is not None and existing.isVisible():
             existing.raise_()
@@ -273,11 +1237,8 @@ class ControlPanel(QMainWindow):
         self._batch_window.show()
 
     def open_announce(self) -> None:
-        """Open the announcement window, reusing it if already open.
-
-        Kept alive rather than rebuilt: it owns the auto-clear timer for a
-        timed announcement, which must keep running while the window is shut.
-        """
+        """Kept alive rather than rebuilt: it owns the auto-clear timer for a
+        timed announcement, which must keep running while the window is shut."""
         existing = getattr(self, "_announce_window", None)
         if existing is not None:
             existing.show()
@@ -286,33 +1247,40 @@ class ControlPanel(QMainWindow):
             return
         from gui_qt.announce_window import AnnounceWindow
 
-        self._announce_window = AnnounceWindow(
-            self._t, self.settings, lambda: self.subtitle_window, self
-        )
+        self._announce_window = AnnounceWindow(self._t, self.settings, self)
         self._announce_window.show()
 
     def apply_theme_mode(self, theme_mode: str) -> None:
-        """Re-theme the whole application.
-
-        One stylesheet call — the Tk tree walks per-widget registries
-        (_cards, _labels, _buttons, _combos, ...) to recolour every widget.
-        """
+        """Re-theme the whole application — one stylesheet call, where the Tk
+        tree walks per-widget registries to recolour every widget by hand."""
         from PySide6.QtWidgets import QApplication
 
         from gui_qt.theme import apply_theme
 
         apply_theme(QApplication.instance(), theme_mode)
+        self.level_bar.update()
+        self._level_text_state = None
+        pixmap = self._logo_pixmap()
+        if pixmap is not None:
+            self.logo_label.setPixmap(pixmap)
 
-    def _on_bilingual_toggled(self, checked: bool) -> None:
-        self.settings.bilingual_mode = checked
-        if self.subtitle_window:
-            self.subtitle_window.set_bilingual_mode(checked)
-
-    @staticmethod
-    def _select(combo: QComboBox, value: str) -> None:
-        idx = combo.findText(value)
-        if idx >= 0:
-            combo.setCurrentIndex(idx)
+    def apply_gui_language(self, code: str) -> None:
+        """Reload the GUI texts. Rebuilding every label in place is a lot of
+        bookkeeping for a rare action, so the panel is rebuilt instead — the
+        same thing the Tk tree does to its secondary windows."""
+        self.settings.gui_language = code
+        save_settings(self.settings)
+        self.texts = load_gui_translations(code)
+        for name in ("_settings_window", "_history_window", "_batch_window",
+                     "_announce_window"):
+            window = getattr(self, name, None)
+            if window is not None:
+                window.close()
+                setattr(self, name, None)
+        geometry = self.saveGeometry()
+        self._columns = None
+        self._build()
+        self.restoreGeometry(geometry)
 
     # ── session ──────────────────────────────────────────────────────────
     def on_start(self) -> None:
@@ -330,19 +1298,19 @@ class ControlPanel(QMainWindow):
         except Exception as exc:  # noqa: BLE001 - surfaced to the operator
             log(f"Start failed: {exc}", level="ERROR")
             QMessageBox.critical(self, "MinbarLive", str(exc))
-            self._teardown_subtitle_window()
+            self._apply_subtitle_hide_mode()
             return
 
         self._running = True
         if self.subtitle_window:
             self.subtitle_window.set_stopped_hint(False)
+            self.subtitle_window.set_always_on_top(self._effective_always_on_top())
         self.bridge.start(
             streaming=streaming_enabled(self.settings),
             show_interim=self.settings.show_interim_transcript,
         )
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.status.setText(self._t("status_running", "Running"))
+        self._sync_running_state()
+        self._refresh_provider_combos()
 
     def on_stop(self) -> None:
         if not self._running:
@@ -356,6 +1324,7 @@ class ControlPanel(QMainWindow):
         if self.subtitle_window:
             self.subtitle_window.set_live_text(None)
             self.subtitle_window.set_stopped_hint(True)
+            self.subtitle_window.set_always_on_top(self._effective_always_on_top())
         # An announcement left on screen after the session ends is usually
         # stale ("starts in 10 minutes"), so clear it unless the operator
         # asked for it to persist.
@@ -363,11 +1332,11 @@ class ControlPanel(QMainWindow):
             announce = getattr(self, "_announce_window", None)
             if announce is not None:
                 announce.stop_announcement()
-            elif self.subtitle_window:
-                self.subtitle_window.clear_announcement()
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
-        self.status.setText(self._t("status_stopped", "Stopped"))
+            else:
+                self.clear_announcement()
+        self._sync_running_state()
+        self._refresh_provider_combos()
+        self._apply_subtitle_hide_mode()
 
     def _on_device_lost(self) -> None:
         if self._running:
@@ -382,8 +1351,8 @@ class ControlPanel(QMainWindow):
     def _on_device_changed(self, _index: int) -> None:
         """Swap the capture device without stopping the session.
 
-        Both pipeline modes only need the capture thread replaced, so this is
-        a hot-swap rather than a restart. Persisted either way so the choice
+        Both pipeline modes only need the capture thread replaced, so this is a
+        hot-swap rather than a restart. Persisted either way so the choice
         survives a restart even when nothing is running.
         """
         self._persist()
@@ -398,12 +1367,39 @@ class ControlPanel(QMainWindow):
         except Exception as exc:  # noqa: BLE001 - surfaced to the operator
             log(f"Device switch failed: {exc}", level="ERROR")
             self._running = False
-            self.start_btn.setEnabled(True)
-            self.stop_btn.setEnabled(False)
-            self.status.setText(self._t("status_stopped", "Stopped"))
+            self._sync_running_state()
             QMessageBox.critical(self, "MinbarLive", str(exc))
 
     # ── subtitle window ──────────────────────────────────────────────────
+    def _effective_always_on_top(self) -> bool:
+        mode = self.settings.always_on_top_mode
+        if mode == "always":
+            return True
+        if mode == "running":
+            return self._running
+        return False
+
+    def _subtitle_window_should_exist(self) -> bool:
+        mode = self.settings.subtitle_hide_mode
+        if mode == "always":
+            return False
+        if mode == "stopped":
+            return self._running
+        return True  # "never"
+
+    def _apply_subtitle_hide_mode(self) -> None:
+        """Create or destroy the overlay so it matches the hide mode and the
+        running state, without disturbing an already-correct window. An active
+        announcement keeps it alive."""
+        should = self._subtitle_window_should_exist()
+        if should and self.subtitle_window is None:
+            self._ensure_subtitle_window()
+            if self.subtitle_window and not self._running:
+                self.subtitle_window.set_stopped_hint(True)
+        elif not should and self.subtitle_window is not None:
+            if not self._announcement_active:
+                self._teardown_subtitle_window()
+
     def _ensure_subtitle_window(self) -> None:
         if self.subtitle_window is not None:
             return
@@ -416,7 +1412,7 @@ class ControlPanel(QMainWindow):
             translation_text_color=s.translation_text_color,
             source_text_color=s.source_text_color,
             target_language=s.target_language,
-            subtitle_mode=s.subtitle_mode,
+            subtitle_mode=effective_subtitle_mode(s),
             scroll_speed=s.scroll_speed,
             transparent_static=s.transparent_static,
             window_height_percent=s.window_height_percent,
@@ -426,6 +1422,7 @@ class ControlPanel(QMainWindow):
             bilingual_mode=s.bilingual_mode,
             adaptive_catchup=s.adaptive_subtitle_catchup,
         )
+        self.subtitle_window.set_always_on_top(self._effective_always_on_top())
         self.subtitle_window.show()
 
     def _teardown_subtitle_window(self) -> None:
@@ -433,12 +1430,25 @@ class ControlPanel(QMainWindow):
             self.subtitle_window.destroy()
             self.subtitle_window = None
 
-    def _current_mode(self) -> str:
-        return self.mode_combo.currentData() or SUBTITLE_MODES[0]
-
-    def _on_mode_changed(self, _index: int) -> None:
+    # ── announcements (driven by the announcement window) ────────────────
+    def show_announcement(self, text: str) -> None:
+        """Put ``text`` on the overlay, creating one if the hide policy left
+        none open — otherwise an announcement is impossible while stopped,
+        which is exactly when it is most useful."""
+        self._announcement_active = True
+        self._ensure_subtitle_window()
         if self.subtitle_window:
-            self.subtitle_window.set_subtitle_mode(self._current_mode())
+            self.subtitle_window.set_announcement(text)
+
+    def clear_announcement(self) -> None:
+        self._announcement_active = False
+        if self.subtitle_window:
+            self.subtitle_window.clear_announcement()
+        # If the overlay was kept open only for the announcement, close it.
+        self._apply_subtitle_hide_mode()
+
+    def has_active_announcement(self) -> bool:
+        return self._announcement_active
 
     # ── pipeline signals (already on the GUI thread) ─────────────────────
     def _on_translation(self, text: str, source_text) -> None:
@@ -451,8 +1461,12 @@ class ControlPanel(QMainWindow):
 
     # ── persistence / shutdown ───────────────────────────────────────────
     def _persist(self) -> None:
-        self.settings.source_language = self.source_combo.currentText()
-        self.settings.target_language = self.target_combo.currentText()
+        self.settings.source_language = language_canonical_name(
+            self.source_combo.currentText()
+        )
+        self.settings.target_language = language_canonical_name(
+            self.target_combo.currentText()
+        )
         self.settings.subtitle_mode = self._current_mode()
         self.settings.monitor_index = self.monitor_combo.currentIndex()
         self.settings.bilingual_mode = self.bilingual_check.isChecked()
@@ -461,8 +1475,10 @@ class ControlPanel(QMainWindow):
             self.settings.input_device_name = self.device_base_names[pos]
         save_settings(self.settings)
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         if self._running:
             self.on_stop()
+        self._log_timer.stop()
+        self._level_timer.stop()
         self._teardown_subtitle_window()
         super().closeEvent(event)
