@@ -861,6 +861,38 @@ class TestAdvancedCard:
         assert heading < aot < first_check
 
 
+class TestLevelMeterZones:
+    """The zone map must tile, not overlap.
+
+    Asserted on the geometry, not on rendered pixels: the seam was one pixel
+    wide, which is also the width of a legitimate fractional device-pixel edge
+    on a scaled display — a pixel probe cannot tell the two apart (tried).
+    """
+
+    def test_consecutive_zones_share_an_edge_exactly(self):
+        from gui_qt.widgets import AudioLevelBar as Bar
+
+        bounds = (0.0, Bar.GREEN_END, Bar.RED_START, 1.0)
+        # Odd widths included: they are where rounding used to disagree.
+        for width in (37, 60, 101, 200, 275, 512):
+            spans = [
+                Bar.band_span(0, width, a, b)
+                for a, b in zip(bounds, bounds[1:], strict=False)
+            ]
+            for (_, end), (start, _) in zip(spans, spans[1:], strict=False):
+                assert end == start, f"width {width}: {end} != {start}"
+            assert spans[0][0] == 0 and spans[-1][1] == width
+
+    def test_a_zone_never_reaches_into_the_next(self):
+        from gui_qt.widgets import AudioLevelBar as Bar
+
+        # The translucent zone map is drawn amber-then-red; one pixel of
+        # overlap composited twice and showed as a dark seam.
+        amber = Bar.band_span(0, 275, Bar.GREEN_END, Bar.RED_START)
+        red = Bar.band_span(0, 275, Bar.RED_START, 1.0)
+        assert amber[1] <= red[0]
+
+
 class TestNoStrayTopLevelWindows:
     """Little boxes flashed across the screen before the panel opened."""
 

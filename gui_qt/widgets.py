@@ -224,6 +224,18 @@ class AudioLevelBar(QWidget):
         self.setFixedHeight(height)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
+    @staticmethod
+    def band_span(left: int, width: int, start: float, end: float) -> tuple[int, int]:
+        """Pixel range ``[x0, x1)`` for the fraction ``start``..``end``.
+
+        Both edges are rounded the same way, so consecutive zones share a
+        boundary EXACTLY. Rounding the width instead and padding it by a pixel
+        — the obvious way to close a rounding gap — makes every band reach one
+        pixel into the next. Invisible for the opaque fill, but the translucent
+        zone map composited twice there and drew a seam between amber and red.
+        """
+        return round(left + width * start), round(left + width * end)
+
     def set_value(self, value: float) -> None:
         value = max(0.0, min(1.0, float(value)))
         # Repainting 20x a second for an unchanged reading is pure waste; the
@@ -260,10 +272,11 @@ class AudioLevelBar(QWidget):
         )
 
         def band(start: float, end: float, colour: QColor) -> None:
-            x0 = rect.left() + rect.width() * start
-            x1 = rect.left() + rect.width() * end
+            x0, x1 = self.band_span(rect.left(), rect.width(), start, end)
+            if x1 <= x0:
+                return
             painter.setBrush(QBrush(colour))
-            painter.drawRect(round(x0), rect.top(), round(x1 - x0) + 1, rect.height())
+            painter.drawRect(x0, rect.top(), x1 - x0, rect.height())
 
         # The zone map first, at low opacity. Only amber and red are ghosted:
         # washing the green zone too made a silent meter read as an already

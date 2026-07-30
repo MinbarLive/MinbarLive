@@ -438,16 +438,21 @@ class ControlPanel(QMainWindow):
             field(self._t("input_device", "Input device"), self.device_combo, symbol="◉"),
             1,
         )
+        # Roomier than the other cards: moving font size into the expander
+        # left this one short, and the four groups (routing, level, sliders,
+        # appearance) read better with air between them than packed together.
+        card.body.setSpacing(12)
         card.body.addLayout(top)
-        card.body.addSpacing(2)
+        card.body.addSpacing(6)
         card.body.addWidget(self._input_level_row())
-        card.body.addSpacing(2)
+        card.body.addSpacing(6)
 
         # One control per row — the two side-by-side tiles left the sliders too
         # short to aim with. Font size lives in the appearance expander below,
         # next to the colour it applies to.
         card.body.addWidget(self._height_panel())
         card.body.addWidget(self._opacity_panel())
+        card.body.addSpacing(4)
         card.body.addWidget(self._typography_expander())
         return card
 
@@ -499,7 +504,7 @@ class ControlPanel(QMainWindow):
         frame = QFrame()
         frame.setObjectName("mini")
         box = QHBoxLayout(frame)
-        box.setContentsMargins(12, 8, 12, 8)
+        box.setContentsMargins(14, 11, 14, 11)
         box.setSpacing(10)
         label = QLabel(title)
         label.setObjectName("field")
