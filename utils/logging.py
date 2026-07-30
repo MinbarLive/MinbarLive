@@ -24,8 +24,17 @@ _file_lock = threading.Lock()
 # Log level configuration
 LOG_LEVEL = "INFO"
 _LEVEL_ORDER = {"DEBUG": 10, "INFO": 20, "WARNING": 25, "ERROR": 30}
+# Key shapes worth redacting on sight, wherever they appear in a line.
+# Google issues two formats: the legacy "AIza..." and the newer "AQ.Ab..." —
+# only the first was covered, so a current Gemini key could reach a log file
+# in the clear unless it happened to follow an "api_key="-style label.
+# Deepgram keys are deliberately absent: they are a bare 40-char hex string,
+# indistinguishable from a git SHA, so a shape rule would redact real log
+# content. Those rely on _AUTH_VALUE_RE below.
 _SECRET_SHAPE_RE = re.compile(
-    r"(?:sk-(?:proj-|ant-)?[A-Za-z0-9_*.-]{4,}|AIza[A-Za-z0-9_-]{20,})"
+    r"(?:sk-(?:proj-|ant-)?[A-Za-z0-9_*.-]{4,}"
+    r"|AIza[A-Za-z0-9_-]{20,}"
+    r"|AQ\.[A-Za-z0-9_.-]{16,})"
 )
 _AUTH_VALUE_RE = re.compile(
     r"(?i)\b(api[_ -]?key|authorization|bearer)(\s*[:=]?\s*)([A-Za-z0-9._-]{12,})"
