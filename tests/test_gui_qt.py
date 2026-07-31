@@ -1069,6 +1069,114 @@ class TestAdvancedCard:
         assert aot < first_check
 
 
+class TestStartStopFocus:
+    """Starting a session must not light up an unrelated control."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        p.show()
+        qt_app.processEvents()
+        yield p
+        p.close()
+
+    def test_start_does_not_hand_the_focus_ring_to_the_monitor_combo(
+        self, panel, qt_app
+    ):
+        # Disabling the button that was just clicked moves focus to the NEXT
+        # widget in the tab chain, and the subtitle-screen dropdown then wore
+        # the accent ring as if the operator had selected it.
+        # QWidget.hasFocus() additionally requires an ACTIVE window, which a
+        # test window is not; the application's focus widget is the state this
+        # is actually about.
+        from PySide6.QtCore import Qt
+
+        panel.start_btn.setFocus(Qt.MouseFocusReason)
+        qt_app.processEvents()
+        assert QApplication.focusWidget() is panel.start_btn
+
+        panel._starting = True
+        panel._sync_running_state()
+        qt_app.processEvents()
+        assert QApplication.focusWidget() is not panel.monitor_combo
+
+        panel._starting, panel._running = False, True
+        panel._sync_running_state()
+        qt_app.processEvents()
+        assert QApplication.focusWidget() is not panel.monitor_combo
+
+    def test_focus_moves_to_the_button_that_is_now_live(self, panel, qt_app):
+        # Stop is the only action left once a session is up, so the ring goes
+        # there rather than nowhere when it can.
+        from PySide6.QtCore import Qt
+
+        panel._running = True
+        panel._sync_running_state()
+        panel.start_btn.setEnabled(True)
+        panel.start_btn.setFocus(Qt.MouseFocusReason)
+        qt_app.processEvents()
+        panel._sync_running_state()
+        qt_app.processEvents()
+        assert QApplication.focusWidget() is panel.stop_btn
+
+
+class TestSlidersIgnoreTheWheel:
+    """Both sliders drive the audience overlay live, so a stray wheel while
+    scrolling the panel would resize or fade what the room is looking at."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        yield p
+        p.close()
+
+    def test_the_wheel_changes_neither_slider(self, panel, qt_app):
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtGui import QWheelEvent
+
+        for slider in (panel.height_slider, panel.opacity_slider):
+            before = slider.value()
+            event = QWheelEvent(
+                QPoint(10, 10),
+                slider.mapToGlobal(QPoint(10, 10)),
+                QPoint(0, 120),
+                QPoint(0, 120),
+                Qt.NoButton,
+                Qt.NoModifier,
+                Qt.NoScrollPhase,
+                False,
+            )
+            qt_app.sendEvent(slider, event)
+            assert slider.value() == before
+            # Ignored rather than swallowed, so the page behind scrolls.
+            assert not event.isAccepted()
+
+    def test_dragging_still_works(self, panel, qt_app):
+        # Only the wheel is refused; the slider is not read-only.
+        panel.height_slider.setValue(42)
+        assert panel.height_slider.value() == 42
+
+
 class TestLevelMeterZones:
     """The zone map must tile, not overlap.
 
@@ -1254,20 +1362,46 @@ class TestEqualColumnHeights:
         # ...and levelling comes back once the section is closed again.
         assert self._bottom(panel._column_tails[0][1]) == self._bottom(advanced)
 
-    def test_opening_the_appearance_expander_leaves_advanced_where_it_is(
+    def test_a_collapsed_advanced_is_padded_above_not_inflated(
         self, panel, qt_app
     ):
-        # It lives in the left column, which spans both rows: its extra height
-        # has to land in the row BELOW Advanced, not push Advanced down.
+        # It was the shorter column's last card, so it took the levelling slack
+        # into its own height — a header strip stretched into a tall empty box,
+        # which is the one thing collapsing it is for. The spacer above it takes
+        # the slack now, so the strip keeps its height and the bottoms still
+        # line up (the rule three columns already used).
         panel.resize(900, 900)
-        qt_app.processEvents()
+        _settle(qt_app)
+        assert panel._columns == 2
+        advanced = panel.advanced_card
+        advanced.set_expanded(False)
+        panel._level_two_column_bottoms()
+        _settle(qt_app)
+        assert not advanced.is_expanded()
+        assert advanced.height() == advanced.sizeHint().height(), "inflated"
+        assert self._bottom(panel._column_tails[0][1]) == self._bottom(advanced)
+
+    def test_opening_the_appearance_expander_does_not_slide_advanced_away(
+        self, panel, qt_app
+    ):
+        # It lives in the left column, which spans both rows, and its extra
+        # height has to land in the row BELOW Advanced rather than push
+        # Advanced down the window.
+        #
+        # Advanced may still move by the levelling slack, which is capped: once
+        # a collapsed card is padded from above rather than inflated, keeping
+        # the two columns on one line IS a change of its top edge. What must
+        # never happen is it travelling by the section's own height.
+        panel.resize(900, 900)
+        _settle(qt_app)
         assert panel._columns == 2
         before = self._top(panel.advanced_card)
         panel.typography.set_expanded(True)
-        qt_app.processEvents()
-        assert self._top(panel.advanced_card) == before
+        _settle(qt_app)
+        drift = abs(self._top(panel.advanced_card) - before)
+        assert drift <= cp_module()._LEVEL_FILL_MAX_PX, f"slid {drift}px"
         panel.typography.set_expanded(False)
-        qt_app.processEvents()
+        _settle(qt_app)
         assert self._top(panel.advanced_card) == before
 
     def test_always_on_top_covers_the_control_panel(self, panel, qt_app):
