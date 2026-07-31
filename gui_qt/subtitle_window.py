@@ -137,11 +137,19 @@ class SubtitleWindow(QWidget):
         # with it. The Tk overlay goes to some length for the same thing
         # (stripping the caption by hand but forcing WS_EX_APPWINDOW), because
         # window capture is how most operators put subtitles into a stream.
-        # It still never takes focus, so clicking the video behind it or
-        # typing into the panel is unaffected.
+        # It still never takes focus, and that is deliberately done with
+        # WA_ShowWithoutActivating rather than Qt.WindowDoesNotAcceptFocus:
+        # the latter sets WS_EX_NOACTIVATE, and Windows documents such a window
+        # as staying OFF the taskbar unless WS_EX_APPWINDOW is forced on too —
+        # which is exactly the flag the Tk overlay sets by hand. Whether the
+        # button appeared was then down to when the shell looked, so it came
+        # and went between runs. WA_ShowWithoutActivating gives the half that
+        # matters (showing the overlay never pulls focus off the panel) with no
+        # taskbar side effect, and the window is transparent to the mouse
+        # anyway, so it cannot be clicked into focus either.
         self.setWindowFlag(Qt.Window, True)
         self.setWindowFlag(Qt.FramelessWindowHint, True)
-        self.setWindowFlag(Qt.WindowDoesNotAcceptFocus, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         # The title OBS lists it under; kept identical to the Tk overlay's so
         # an existing capture source keeps matching.
         self.setWindowTitle("MinbarLive Subtitles")
