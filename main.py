@@ -16,7 +16,8 @@ from pathlib import Path
 # and warns "SetProcessDpiAwarenessContext() failed: Access is denied." if the
 # process is already marked aware. Qt handles DPI natively, so this call is not
 # merely redundant there — it actively takes the setting away from Qt.
-if "--qt" not in sys.argv:
+_QT_MODE = "--qt" in sys.argv
+if not _QT_MODE:
     from utils.windows_dpi import enable_windows_dpi_awareness
 
     enable_windows_dpi_awareness()
@@ -40,6 +41,15 @@ def _show_already_running_dialog() -> bool:
 
     Returns True if the user chose 'Launch Anyway', False to abort.
     """
+    if _QT_MODE:
+        # Never the CustomTkinter dialog below under --qt: the two toolkits are
+        # not meant to share a process, and building a Tk window sets the
+        # process DPI awareness (per-monitor v1) before Qt can ask for the v2
+        # context it wants.
+        from gui_qt.already_running import show_already_running_dialog
+
+        return show_already_running_dialog()
+
     import customtkinter as ctk
 
     # ── Load translations + theme from saved settings ─────────────────────

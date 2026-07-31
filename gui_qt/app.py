@@ -24,7 +24,9 @@ from utils.settings import load_settings
 
 def run(controller) -> int:
     """Run the Qt GUI against ``controller``; returns the process exit code."""
-    app = QApplication(sys.argv)
+    # Reused when one exists: the "already running" dialog runs before this and
+    # creates it, and Qt allows only one QApplication per process.
+    app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("MinbarLive")
     # Application-wide and before the first window, so every window — including
     # the overlay, which nobody else sets an icon on — inherits it the moment
