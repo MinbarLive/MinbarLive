@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -242,6 +243,23 @@ class Dropdown(QComboBox):
             ]
         )
         painter.end()
+
+
+class Slider(QSlider):
+    """A horizontal slider the wheel does not touch.
+
+    Same rule as Dropdown: the panel scrolls, and a slider that happens to be
+    under the pointer would take the gesture instead. Both of ours drive the
+    audience overlay live — window height and backdrop opacity — so a stray
+    wheel resizes or fades what the room is looking at, mid-session. Dragging
+    and the arrow keys still work; the gesture goes to the page behind.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(Qt.Horizontal, parent)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt API
+        event.ignore()
 
 
 class AudioLevelBar(QWidget):

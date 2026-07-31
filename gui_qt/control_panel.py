@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -65,6 +64,7 @@ from gui_qt.widgets import (
     Dropdown,
     Expander,
     SegmentedControl,
+    Slider,
     Stepper,
     field,
     set_window_on_top,
@@ -582,9 +582,9 @@ class ControlPanel(QMainWindow):
 
     def _slider_panel(
         self, title: str, minimum: int, maximum: int, value: int, on_change
-    ) -> tuple[QFrame, QSlider, QLabel]:
+    ) -> tuple[QFrame, Slider, QLabel]:
         frame, box, caption = self._mini_row(title)
-        slider = QSlider(Qt.Horizontal)
+        slider = Slider()
         slider.setRange(minimum, maximum)
         slider.setValue(max(minimum, min(maximum, value)))
         slider.valueChanged.connect(on_change)
