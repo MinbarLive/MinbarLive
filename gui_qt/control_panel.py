@@ -1322,6 +1322,13 @@ class ControlPanel(QMainWindow):
         the difference; a Card keeps its content top-aligned, so the padding
         lands below it, invisible.
 
+        Unless that card is COLLAPSED, and then it must not grow at all: a
+        header strip inflated into a tall empty box is exactly what a collapsed
+        card exists to avoid. The spacer ABOVE it takes the slack instead, so
+        the strip keeps its own height and the two columns still end on one
+        line — the rule _set_equal_column_heights already applies at three
+        columns.
+
         Only a small difference, though: when one column is a whole opened
         subtitle-appearance section taller, inflating a card by that much is
         worse than a ragged edge — and pushing Advanced down to meet it is
@@ -1339,24 +1346,51 @@ class ControlPanel(QMainWindow):
         # below describe the layout as it is now and not as it was one toggle
         # ago. A 0-timer alone does not guarantee they have been processed.
         QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
-        display, advanced = tails[0][1], tails[2][1]
+        (display_box, display), (advanced_box, advanced) = tails[0], tails[2]
         if self._columns != 2:
-            for card in (display, advanced):
+            for box, card in ((display_box, display), (advanced_box, advanced)):
                 card.setMinimumHeight(0)
+                self._pad_above(box, 0)
             return
         gap = self.grid.verticalSpacing()
-        left = self._natural_height(tails[0][0])
+        left = self._natural_height(display_box)
         right = self._natural_height(tails[1][0]) + gap + self._natural_height(
-            tails[2][0]
+            advanced_box
         )
-        shorter, taller = (advanced, display) if left > right else (display, advanced)
+        if left > right:
+            (shorter, shorter_box), (taller, taller_box) = (
+                (advanced, advanced_box),
+                (display, display_box),
+            )
+        else:
+            (shorter, shorter_box), (taller, taller_box) = (
+                (display, display_box),
+                (advanced, advanced_box),
+            )
         extra = abs(left - right)
+        if extra > _LEVEL_FILL_MAX_PX:
+            extra = 0
         taller.setMinimumHeight(0)
+        self._pad_above(taller_box, 0)
+        collapsed = extra and not shorter.is_expanded()
+        self._pad_above(shorter_box, extra if collapsed else 0)
         shorter.setMinimumHeight(
-            shorter.sizeHint().height() + extra
-            if 0 < extra <= _LEVEL_FILL_MAX_PX
-            else 0
+            0 if collapsed or not extra else shorter.sizeHint().height() + extra
         )
+
+    @staticmethod
+    def _pad_above(box, pixels: int) -> None:
+        """Set the height of a column's leading spacer.
+
+        Excluded from _natural_height (which counts widgets only), so a second
+        pass measures the same columns and lands on the same number — no
+        feedback loop.
+        """
+        spacer = box.itemAt(0).spacerItem() if box.count() else None
+        if spacer is None:
+            return
+        spacer.changeSize(0, pixels, QSizePolicy.Minimum, QSizePolicy.Fixed)
+        box.invalidate()
 
     @staticmethod
     def _natural_height(box) -> int:
