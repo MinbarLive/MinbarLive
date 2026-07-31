@@ -66,6 +66,7 @@ from gui_qt.widgets import (
     SegmentedControl,
     Stepper,
     field,
+    set_window_on_top,
 )
 from providers import (
     PROVIDER_CHOICES,
@@ -118,6 +119,8 @@ _LEVEL_FILL_MAX_PX = 140
 
 # Step applied to the original-text divisor per −/+ click, as in gui/typography.
 _SOURCE_FONT_STEP = 5.0
+# The shipped font_size_base, i.e. the 100% the size stepper counts from.
+_FONT_SIZE_BASE_DEFAULT = 40
 
 # Opening size when nothing is stored. Wide enough for the two-column grid
 # without the sidebar scrollbar; the log adds its own width on top.
@@ -641,7 +644,7 @@ class ControlPanel(QMainWindow):
         self.font_stepper = Stepper(
             lambda: self._step_font(smaller=True),
             lambda: self._step_font(smaller=False),
-            str(self.settings.font_size_base),
+            self._font_percent_text(),
         )
         self.source_font_stepper = Stepper(
             lambda: self._step_source_font(+_SOURCE_FONT_STEP),
@@ -692,6 +695,21 @@ class ControlPanel(QMainWindow):
         self._color_pick_btns[attribute] = pick
         self._color_reset_btns[attribute] = reset
         self._typography_row(self._t(attribute, attribute), buttons)
+
+    def _font_percent_text(self) -> str:
+        """Subtitle size as a percentage of the shipped default.
+
+        ``font_size_base`` is a DIVISOR — a bigger base is a SMALLER font — so
+        showing it raw made the number count down when "+" was pressed. The
+        percentage moves with the text, like the original-size row below it.
+        """
+        try:
+            percent = round(
+                _FONT_SIZE_BASE_DEFAULT / float(self.settings.font_size_base) * 100
+            )
+        except (TypeError, ValueError, ZeroDivisionError):
+            percent = 100
+        return f"{percent}%"
 
     def _source_font_percent_text(self) -> str:
         """Original size as a percentage OF the translation size.
@@ -1562,7 +1580,7 @@ class ControlPanel(QMainWindow):
                 self.subtitle_window.increase_font()
             self.settings.font_size_base = self.subtitle_window.get_font_size_base()
         self._scale_source_font_with_translation(base, self.settings.font_size_base)
-        self.font_stepper.set_value_text(str(self.settings.font_size_base))
+        self.font_stepper.set_value_text(self._font_percent_text())
         save_settings(self.settings)
 
     def _scale_source_font_with_translation(
@@ -1690,22 +1708,17 @@ class ControlPanel(QMainWindow):
         on_top = self._effective_always_on_top()
         if self.subtitle_window:
             self.subtitle_window.set_always_on_top(on_top)
-        windows = [self, *self._open_secondary_windows()]
-        for window in windows:
-            if bool(window.windowFlags() & Qt.WindowStaysOnTopHint) == on_top:
-                continue
-            # Same trap as the overlay: setWindowFlag recreates the native
-            # window and hides the widget, so read visibility first.
-            was_visible = window.isVisible()
-            window.setWindowFlag(Qt.WindowStaysOnTopHint, on_top)
-            if was_visible:
-                window.show()
+        for window in (self, *self._open_secondary_windows()):
+            # Never through setWindowFlag: that recreates the native window,
+            # which repaints it from an empty surface — the white flash the
+            # panel showed on every change of this setting.
+            set_window_on_top(window, on_top)
 
     def _show_secondary(self, window: QWidget) -> None:
         """Show a secondary window carrying the current always-on-top mode.
 
-        Set before the first show(): applying it afterwards would recreate the
-        native window and flash it.
+        Set before the first show(), while the window has no native surface
+        yet and the flag costs nothing.
         """
         if self._effective_always_on_top():
             window.setWindowFlag(Qt.WindowStaysOnTopHint, True)
@@ -1806,7 +1819,7 @@ class ControlPanel(QMainWindow):
         # diverge, and dark-theme text on a light card is invisible.
         colors = current_colors()
         if snapshot is not None:
-            from gui.audio_level_bar import level_fill
+            from gui_qt.levels import level_fill
 
             value = level_fill(snapshot.rms_dbfs)
             self.level_bar.set_value(value)
