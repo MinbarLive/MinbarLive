@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
@@ -99,6 +100,9 @@ class _Worker(QObject):
     progress = Signal(int, int)
     finished = Signal(str)  # output path, "" when cancelled
     failed = Signal(str)
+    ffmpeg_missing = Signal()  # the input needs ffmpeg and none is installed
+    dl_progress = Signal(int)  # ffmpeg download, percent
+    dl_finished = Signal()  # ffmpeg is in place
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -109,9 +113,12 @@ class _Worker(QObject):
         self.cancel_event.clear()
 
         def _run() -> None:
-            try:
-                from batch.processor import process_file  # lazy: heavy import
+            from batch.processor import (  # lazy: heavy import
+                FfmpegNotFoundError,
+                process_file,
+            )
 
+            try:
                 path = process_file(
                     progress_callback=lambda done, total: self.progress.emit(
                         done, total
@@ -120,6 +127,11 @@ class _Worker(QObject):
                     **kwargs,
                 )
                 self.finished.emit(path or "")
+            except FfmpegNotFoundError:
+                # Its own signal: the window can offer to fetch ffmpeg rather
+                # than showing the raw exception as a dead end.
+                log("Batch run needs ffmpeg", level="WARNING")
+                self.ffmpeg_missing.emit()
             except Exception as exc:  # noqa: BLE001 - reported to the operator
                 log(f"Batch run failed: {exc}", level="ERROR")
                 self.failed.emit(str(exc))
@@ -127,11 +139,46 @@ class _Worker(QObject):
         self._thread = threading.Thread(target=_run, daemon=True, name="qt-batch")
         self._thread.start()
 
+    def start_ffmpeg_download(self) -> None:
+        """Fetch ffmpeg into the app data directory, on its own thread.
+
+        Reports through signals like the run does, so every update lands on
+        the GUI thread rather than being painted from this one.
+        """
+        self.cancel_event.clear()
+
+        def _run() -> None:
+            from utils.ffmpeg_download import (
+                FfmpegDownloadCancelled,
+                download_ffmpeg,
+            )
+
+            try:
+                download_ffmpeg(
+                    progress_cb=self.dl_progress.emit,
+                    cancel_event=self.cancel_event,
+                )
+                self.dl_finished.emit()
+            except FfmpegDownloadCancelled:
+                self.finished.emit("")  # reuses the cancelled-run path
+            except Exception as exc:  # noqa: BLE001 - reported to the operator
+                log(f"ffmpeg download failed: {exc}", level="ERROR")
+                self.failed.emit(str(exc))
+
+        self._thread = threading.Thread(
+            target=_run, daemon=True, name="qt-ffmpeg-download"
+        )
+        self._thread.start()
+
     def cancel(self) -> None:
         self.cancel_event.set()
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    def join(self, timeout: float = 2.0) -> None:
+        if self._thread is not None:
+            self._thread.join(timeout)
 
 
 class BatchWindow(QDialog):
@@ -151,6 +198,9 @@ class BatchWindow(QDialog):
         self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
         self.worker.failed.connect(self._on_failed)
+        self.worker.ffmpeg_missing.connect(self._on_ffmpeg_missing)
+        self.worker.dl_progress.connect(self._on_download_progress)
+        self.worker.dl_finished.connect(self._on_download_finished)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 16, 16, 16)
@@ -645,6 +695,66 @@ class BatchWindow(QDialog):
             self._t("batch_error", "Failed: {error}").format(error=message),
             "status_error",
         )
+
+    # ── ffmpeg ───────────────────────────────────────────────────────────
+    def _on_ffmpeg_missing(self) -> None:
+        """Anything that is not already a 16 kHz WAV goes through ffmpeg.
+
+        Offer to fetch it once, with consent, instead of leaving the operator
+        at a dead end. Windows only — every other platform has a package
+        manager, and pulling an unsigned binary there would be worse than the
+        instruction to install it.
+        """
+        self._sync_file_row()
+        self.progress.setValue(0)
+        if sys.platform == "win32" and self._offer_ffmpeg_download():
+            return  # the run restarts itself once ffmpeg is in place
+        self._set_status(
+            self._t(
+                "batch_ffmpeg_missing",
+                "ffmpeg not found — install ffmpeg to process this file format.",
+            ),
+            "status_error",
+        )
+
+    def _offer_ffmpeg_download(self) -> bool:
+        """True when a download was started (and the run will resume)."""
+        from utils.ffmpeg_download import FFMPEG_DOWNLOAD_MB
+
+        prompt = self._t(
+            "batch_ffmpeg_download_prompt",
+            "ffmpeg is required to convert this file format. Download it now? "
+            "(one time, ~{mb} MB)",
+        ).format(mb=FFMPEG_DOWNLOAD_MB)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.NoIcon)  # the icon is what plays the system sound
+        box.setWindowTitle("ffmpeg")
+        box.setText(prompt)
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.Yes)
+        if box.exec() != QMessageBox.Yes:
+            return False
+        log("BATCH ffmpeg download started")
+        self.worker.start_ffmpeg_download()
+        self._sync_file_row()
+        return True
+
+    def _on_download_progress(self, percent: int) -> None:
+        self.progress.setValue(percent)
+        self._set_status(
+            self._t("batch_ffmpeg_downloading", "Downloading ffmpeg… {percent}%").format(
+                percent=percent
+            )
+        )
+
+    def _on_download_finished(self) -> None:
+        self.progress.setValue(0)
+        # The download thread emitted this as its last statement and is about
+        # to exit; without the join it can still be alive, and _on_start's
+        # "already running" guard would silently skip the restart.
+        self.worker.join()
+        # ffmpeg is in place — run what the user actually asked for.
+        self._on_start()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         # A run keeps going in its own thread otherwise, writing files after
