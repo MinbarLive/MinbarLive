@@ -2297,6 +2297,57 @@ class TestHistoryCostTab:
         assert w.entry_list.currentRow() == 1
 
 
+class TestAlreadyRunningDialog:
+    """main.py's single-instance guard, under --qt.
+
+    It used to show the CustomTkinter dialog whatever tree was asked for,
+    which put Tk in a Qt-only process and set the process DPI awareness to
+    per-monitor v1 before Qt could ask for the v2 context it wants.
+    """
+
+    @pytest.fixture
+    def dialog(self, qt_app):
+        from gui_qt.already_running import AlreadyRunningDialog
+
+        made = AlreadyRunningDialog({})
+        yield made
+        made.close()
+
+    def test_launch_anyway_accepts(self, dialog):
+        from PySide6.QtWidgets import QDialog
+
+        dialog.launch_btn.click()
+        assert dialog.result() == QDialog.Accepted
+
+    def test_cancel_rejects_and_answers_the_keyboard(self, dialog):
+        from PySide6.QtWidgets import QDialog
+
+        # Starting a second instance is what this dialog exists to prevent, so
+        # the safe option is the one Enter and Esc land on.
+        assert dialog.cancel_btn.isDefault()
+        dialog.cancel_btn.click()
+        assert dialog.result() == QDialog.Rejected
+
+    def test_qt_mode_never_reaches_the_tk_dialog(self, monkeypatch):
+        import types
+
+        import main
+
+        monkeypatch.setattr(main, "_QT_MODE", True)
+        calls = []
+        monkeypatch.setitem(
+            sys.modules,
+            "gui_qt.already_running",
+            types.SimpleNamespace(
+                show_already_running_dialog=lambda: calls.append(1) or True
+            ),
+        )
+        # customtkinter must not even be imported on this path.
+        monkeypatch.setitem(sys.modules, "customtkinter", None)
+        assert main._show_already_running_dialog() is True
+        assert calls == [1]
+
+
 class TestBatchWindow:
     """The pipeline is batch/processor.py; these cover the window around it."""
 
