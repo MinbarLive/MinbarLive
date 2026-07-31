@@ -2336,6 +2336,81 @@ class TestBatchWindow:
         w, _ = batch
         assert not w.start_btn.isEnabled()
 
+    def test_it_opens_at_the_windowed_size(self, batch):
+        # The port asked for a fixed 640x700 and towered over the Tk window.
+        # Width is the Tk card's; the height follows the content and must not
+        # be the sizeHint, which reserves a line a wrapped label never uses.
+        import gui_qt.batch_window as bw
+
+        w, _ = batch
+        assert w.width() == bw.BATCH_WINDOW_W
+        assert w.height() == w.layout().totalHeightForWidth(bw.BATCH_WINDOW_W)
+
+    def test_more_settings_grows_the_window_and_shrinks_it_back(self, batch, qt_app):
+        # Shown, and with an event pass after each toggle: a widget's show/hide
+        # invalidates the layout through a POSTED event, so a measure in the
+        # same call reads the previous state — which is how the window came to
+        # grow when the panel opened and stay tall when it closed.
+        w, _ = batch
+        w.show()
+        qt_app.processEvents()
+        before = w.height()
+        w._toggle_more()
+        qt_app.processEvents()
+        assert w.height() > before
+        w._toggle_more()
+        qt_app.processEvents()
+        assert w.height() == before
+
+    def test_the_progress_bar_is_always_on_screen(self, batch):
+        # It used to appear only once a run started, so the window jumped a row
+        # taller at the moment the user was watching it.
+        w, _ = batch
+        assert not w.progress.isHidden()
+        w._input_path = "khutbah.mp3"
+        w._on_start()
+        w.worker._thread.join(timeout=5)
+        assert not w.progress.isHidden()
+
+    def test_show_in_history_is_always_clickable(self, batch):
+        # Past runs are in the history viewer whether or not one finished in
+        # THIS window; disabling it until then hid a working feature.
+        w, _ = batch
+        assert w.history_btn.isEnabled()
+        assert not w.folder_btn.isEnabled()  # nothing written yet
+
+    def test_bilingual_subtitles_default_on(self, batch):
+        # The Tk window defaults it on, and it decides what the .srt contains.
+        w, _ = batch
+        assert w.bilingual_check.isChecked()
+
+    def test_the_picker_button_carries_the_chosen_file(self, batch):
+        w, _ = batch
+        assert w.clear_btn.isHidden()  # nothing to clear yet
+        w._input_path = "C:/rec/khutbah.mp3"
+        w._sync_file_row()
+        assert w.pick_btn.text() == "khutbah.mp3"
+        assert not w.clear_btn.isHidden()
+        w._on_clear()
+        assert w.clear_btn.isHidden()
+
+    def test_a_long_filename_keeps_its_extension(self, batch):
+        w, _ = batch
+        w._input_path = "C:/rec/" + "The episode is out now, catch it while it is gone.m4a"
+        assert w._file_button_text().endswith(".m4a")
+        assert w._file_button_text().startswith("The episode")
+
+    def test_the_status_line_reports_the_outcome_in_colour(self, batch):
+        # Through an object name, not a widget stylesheet: an id rule in the
+        # app sheet outranks one, and it would survive a theme switch stale.
+        w, _ = batch
+        w._on_finished("khutbah.mp3.de.srt")
+        assert w.status.objectName() == "status_ok"
+        w._on_failed("boom")
+        assert w.status.objectName() == "status_error"
+        w._on_finished("")  # cancelled: the processor writes nothing
+        assert w.status.objectName() == "status_warn"
+
     def test_output_format_maps_from_the_segment(self, batch):
         w, _ = batch
         for index, expected in enumerate(("srt", "txt", "both")):
