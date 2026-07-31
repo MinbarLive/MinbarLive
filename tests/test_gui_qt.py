@@ -233,6 +233,20 @@ class TestFooterReserve:
         w = overlay(SUBTITLE_MODE_STATIC, show_footer=False)
         assert w.reserved_bottom() == 0
 
+    def test_the_pill_font_is_fixed_and_bold(self, overlay):
+        # It used to be derived from the subtitle size, so at a large font the
+        # disclaimer grew into a banner. The Tk overlay draws it at a constant
+        # 14pt bold.
+        from gui_qt.subtitle_window import PILL_FONT_PX
+
+        w = overlay(SUBTITLE_MODE_STATIC, show_footer=True, font_size_base=40)
+        small = w._pill_font()
+        assert small.pixelSize() == PILL_FONT_PX
+        assert small.bold()
+        for _ in range(4):
+            w.increase_font()
+        assert w._pill_font().pixelSize() == PILL_FONT_PX
+
 
 class TestBackdropOpacity:
     """Adjustable only because Qt composites real per-pixel alpha."""
@@ -326,19 +340,56 @@ class TestLifecycle:
         assert not w._scroll_timer.isActive()
 
     def test_always_on_top_never_loses_the_window(self, overlay, qt_app):
-        # setWindowFlag recreates the native window and hides the widget, so
-        # visibility has to be read before the call — reading it after saw the
-        # window Qt had just hidden and the overlay vanished for good.
-        from PySide6.QtCore import Qt
+        # setWindowFlag recreates the native window: it used to hide the widget
+        # (the overlay vanished for good) and it repaints from an empty surface
+        # (a white flash). The flag goes to the QWindow instead, so the native
+        # window has to survive every toggle.
+        from gui_qt.widgets import is_window_on_top
 
         w = overlay(SUBTITLE_MODE_CONTINUOUS)
         w.show()
         qt_app.processEvents()
+        native = int(w.winId())
         for enabled in (True, False, True, True, False):
             w.set_always_on_top(enabled)
             qt_app.processEvents()
             assert w.isVisible(), f"hidden after set_always_on_top({enabled})"
-            assert bool(w.windowFlags() & Qt.WindowStaysOnTopHint) is enabled
+            assert is_window_on_top(w) is enabled
+            assert int(w.winId()) == native, "the native window was recreated"
+        w.hide()
+
+    def test_the_overlay_is_a_real_window_for_the_taskbar_and_obs(self, overlay):
+        # A Qt.Tool is kept out of the taskbar, the alt-tab list and OBS's
+        # window-capture list; window capture is how most operators get
+        # subtitles into a stream, so the Tk overlay forces the opposite.
+        from PySide6.QtCore import Qt
+
+        w = overlay(SUBTITLE_MODE_CONTINUOUS)
+        # The window TYPE is a masked value, not a bit — "& Qt.Tool" is true
+        # for a plain Qt.Window too, and would pass whatever this is.
+        assert (w.windowFlags() & Qt.WindowType_Mask) == Qt.Window
+        assert w.windowFlags() & Qt.FramelessWindowHint
+        assert w.windowTitle() == "MinbarLive Subtitles"
+
+    def test_a_non_topmost_overlay_stays_clear_of_the_taskbar(self, overlay, qt_app):
+        # Only a topmost window paints over the taskbar. Laid out on the full
+        # screen without that flag, the taskbar covers the disclaimer pill and
+        # the last line of every subtitle.
+        from PySide6.QtGui import QGuiApplication
+
+        screen = QGuiApplication.screens()[0]
+        if screen.availableGeometry().height() == screen.geometry().height():
+            pytest.skip("no taskbar/dock reserved on this screen")
+        w = overlay(SUBTITLE_MODE_CONTINUOUS, always_on_top=False)
+        w.show()
+        qt_app.processEvents()
+        assert w.set_always_on_top(False) is None
+        bottom_off = w.geometry().y() + w.geometry().height()
+        w.set_always_on_top(True)
+        qt_app.processEvents()
+        bottom_on = w.geometry().y() + w.geometry().height()
+        assert bottom_off == screen.availableGeometry().bottom() + 1
+        assert bottom_on == screen.geometry().bottom() + 1
         w.hide()
 
 
@@ -1130,18 +1181,20 @@ class TestEqualColumnHeights:
         assert self._top(panel.advanced_card) == before
 
     def test_always_on_top_covers_the_control_panel(self, panel, qt_app):
-        from PySide6.QtCore import Qt
-
+        from gui_qt.widgets import is_window_on_top
         from utils.settings import ALWAYS_ON_TOP_MODES
 
         panel.show()
         qt_app.processEvents()
+        native = int(panel.winId())
         for mode in ("always", "never"):
             panel._on_aot_changed(ALWAYS_ON_TOP_MODES.index(mode))
             qt_app.processEvents()
             expected = mode == "always"
-            assert bool(panel.windowFlags() & Qt.WindowStaysOnTopHint) is expected
+            assert is_window_on_top(panel) is expected
             assert panel.isVisible(), f"panel hidden after mode {mode}"
+            # Recreating the native window is what made the panel flash white.
+            assert int(panel.winId()) == native, f"recreated for mode {mode}"
 
 
 class TestControlRowHeights:
