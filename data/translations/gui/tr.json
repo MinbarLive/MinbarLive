@@ -137,7 +137,7 @@
   "batch_media_files": "Ses/Video",
   "batch_all_files": "Tüm dosyalar",
   "batch_start": "Başlat",
-  "batch_cancel": "İptal",
+  "batch_cancel": "İşlemi durdur",
   "batch_progress": "Bölüm {current}/{total}",
   "batch_done": "Dosyanızın yanına kaydedildi: {name}",
   "batch_transcription_model": "Transkripsiyon modeli",

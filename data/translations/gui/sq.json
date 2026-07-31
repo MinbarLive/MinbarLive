@@ -137,7 +137,7 @@
   "batch_media_files": "Audio/Video",
   "batch_all_files": "Të gjithë skedarët",
   "batch_start": "Fillo",
-  "batch_cancel": "Anulo",
+  "batch_cancel": "Ndalo përpunimin",
   "batch_progress": "Segmenti {current}/{total}",
   "batch_done": "U ruajt pranë skedarit tuaj: {name}",
   "batch_transcription_model": "Modeli i transkriptimit",

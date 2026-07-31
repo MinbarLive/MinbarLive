@@ -137,7 +137,7 @@
   "batch_media_files": "صوت/فيديو",
   "batch_all_files": "كل الملفات",
   "batch_start": "ابدأ",
-  "batch_cancel": "إلغاء",
+  "batch_cancel": "إيقاف المعالجة",
   "batch_progress": "المقطع {current}/{total}",
   "batch_done": "تم الحفظ بجانب ملفك: {name}",
   "batch_transcription_model": "نموذج النسخ",

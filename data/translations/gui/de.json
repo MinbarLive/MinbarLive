@@ -148,7 +148,7 @@
   "batch_media_files": "Audio/Video",
   "batch_all_files": "Alle Dateien",
   "batch_start": "Starten",
-  "batch_cancel": "Abbrechen",
+  "batch_cancel": "Verarbeitung stoppen",
   "batch_progress": "Segment {current}/{total}",
   "batch_done": "Neben deiner Datei gespeichert: {name}",
   "batch_transcription_model": "Transkriptionsmodell",
