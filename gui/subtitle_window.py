@@ -85,7 +85,6 @@ reshape_rtl = _reshape_rtl
 
 
 from config import (
-    FOOTER_TRANSLATIONS_PATH,
     ICON_PATH,
     ICON_PATH_PNG,
     LINE_SPACING,
@@ -95,16 +94,21 @@ from config import (
     REALTIME_MAX_BLOCK_CHARS,
 )
 from utils.icons import ICO_SUPPORTED, scaled_icon_photo
-from utils.json_helpers import load_json
 from utils.settings import (
     SUBTITLE_MODE_CONTINUOUS,
     SUBTITLE_MODE_REALTIME,
     SUBTITLE_MODE_STATIC,
 )
 
-# Sentence boundaries for splitting oversized Realtime blocks: terminal
-# punctuation (Latin + Arabic), optionally followed by closing quotes.
-_SENTENCE_RE = re.compile(r"[^.!?…؟؛]*[.!?…؟؛]+[\"'“”„»«]*\s*|[^.!?…؟؛]+$")
+# The footer wording and the block splitter live in gui_qt/subtitle_text.py,
+# which imports no GUI toolkit, so the Qt overlay can share them without
+# pulling this tkinter module into a process that has no Tk in it. Re-exported
+# because this module's callers and tests import them from here.
+from gui_qt.subtitle_text import (  # noqa: E402, F401 - re-exported
+    DEFAULT_FOOTER,
+    FOOTER_TRANSLATIONS,
+    split_display_chunks,
+)
 
 # Any Arabic-script character, incl. the presentation forms the reshaper
 # emits — checked on rendered text to pick the source/live-line font.
@@ -167,37 +171,6 @@ _STACK_INK_GAP_EM = 0.09
 # headroom class.
 _HONORIFIC_LIGATURE_RE = re.compile(r"[ﷺﷻ]")
 
-
-def split_display_chunks(text: str, max_chars: int) -> list[str]:
-    """Split a long settled translation at sentence boundaries into chunks
-    of at most ``max_chars`` (a single over-long sentence stays whole).
-    Continuous speech flushes up to 12s of speech as one utterance — its
-    translation would otherwise render as a wall of text in the feed."""
-    text = text.strip()
-    if len(text) <= max_chars:
-        return [text] if text else []
-    sentences = [m.group(0).strip() for m in _SENTENCE_RE.finditer(text)]
-    sentences = [s for s in sentences if s]
-    chunks: list[str] = []
-    current = ""
-    for sentence in sentences:
-        if current and len(current) + 1 + len(sentence) > max_chars:
-            chunks.append(current)
-            current = sentence
-        else:
-            current = f"{current} {sentence}".strip()
-    if current:
-        chunks.append(current)
-    return chunks
-
-
-# Load footer translations from JSON file
-FOOTER_TRANSLATIONS = load_json(FOOTER_TRANSLATIONS_PATH)
-
-# Default footer for languages not in the list
-DEFAULT_FOOTER = (
-    "AI Translation! Our association assumes no liability for accuracy or completeness."
-)
 
 # Continuous scroll settings
 SCROLL_INTERVAL_MS = 30  # Milliseconds between scroll updates (~33 fps)

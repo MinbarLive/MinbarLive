@@ -45,9 +45,9 @@ from PySide6.QtWidgets import (
 )
 
 from config import ICON_PATH, ICON_PATH_PNG
-from gui.audio_level_bar import level_fill
 from gui.device_list import get_input_devices
 from gui_qt.i18n import load_gui_translations
+from gui_qt.levels import level_fill
 from gui_qt.theme import apply_theme, current_colors
 from gui_qt.widgets import AudioLevelBar, Dropdown, SegmentedControl, warning_box
 from providers import (

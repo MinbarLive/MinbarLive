@@ -4,20 +4,17 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
-# Conventional audio-meter zone colours (readable in both themes) and the
-# scale the GUI maps dBFS onto. Shared so the control panel and the setup
-# wizard show the same meter.
-LEVEL_GREEN = "#37B24D"
-LEVEL_WARNING = "#F08C00"
-LEVEL_DANGER = "#E03131"
-LEVEL_FLOOR_DBFS = -60.0
-
-
-def level_fill(rms_dbfs: float) -> float:
-    """Map a dBFS reading onto the bar's 0..1 fill."""
-
-    span = -LEVEL_FLOOR_DBFS
-    return max(0.0, min(1.0, (rms_dbfs - LEVEL_FLOOR_DBFS) / span))
+# The scale itself lives in gui_qt/levels.py, which imports no GUI toolkit, so
+# the Qt panel and wizard can share it without loading CustomTkinter. Re-
+# exported here because this module's own callers (and tests) import it from
+# the widget.
+from gui_qt.levels import (  # noqa: F401 - re-exported for existing callers
+    LEVEL_DANGER,
+    LEVEL_FLOOR_DBFS,
+    LEVEL_GREEN,
+    LEVEL_WARNING,
+    level_fill,
+)
 
 
 class AudioLevelBar(ctk.CTkFrame):
