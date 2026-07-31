@@ -195,6 +195,12 @@ QFrame#mini {{
     border-radius: 12px;
 }}
 QLabel#muted {{ color: {c["muted"]}; }}
+/* Status lines that report an outcome (the batch run). An object name rather
+   than a per-widget stylesheet, which an id rule here would outrank anyway,
+   and which would keep its old colour through a theme switch. */
+QLabel#status_ok {{ color: {c["accent"]}; }}
+QLabel#status_warn {{ color: {c["warning"]}; }}
+QLabel#status_error {{ color: {c["danger"]}; }}
 QLabel#heading {{ font-size: 15px; font-weight: 600; }}
 /* Card headers: a big title beside a rounded accent tile holding the section's
    glyph — the Tk look. The tile is a QLabel with a background, which only

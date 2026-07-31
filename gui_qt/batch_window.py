@@ -18,8 +18,9 @@ import subprocess
 import sys
 import threading
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -73,6 +74,23 @@ _OUTPUT_FORMATS = (
     ("txt", "batch_output_text", "Transcript (.txt)"),
     ("both", "batch_output_both", "Both (.srt + .txt)"),
 )
+
+# Width the card is laid out for (the Tk window's), fixed: the content is a
+# single column of dropdowns and buttons that stretch badly. The height follows
+# the content, which changes with the GUI language and the More-settings
+# expander — see _resize_to_content.
+BATCH_WINDOW_W = 480
+
+# Qt's "no maximum", for lifting the fixed height before re-measuring.
+_MAX_H = 16777215
+
+# Longest picker-button label before the filename is truncated in the middle,
+# so the start AND the extension stay readable.
+_FILE_NAME_LIMIT = 48
+
+# Progress bar height. Pinned rather than left to the stylesheet, which states
+# it as a hint the layout is free to exceed when it has height to spare.
+_PROGRESS_H = 10
 
 
 class _Worker(QObject):
@@ -128,7 +146,6 @@ class BatchWindow(QDialog):
         self.setWindowTitle(self._t("batch_file", "Batch / File"))
         if parent is not None:
             self.setWindowIcon(parent.windowIcon())
-        self.resize(640, 700)
 
         self.worker = _Worker(self)
         self.worker.progress.connect(self._on_progress)
@@ -136,62 +153,42 @@ class BatchWindow(QDialog):
         self.worker.failed.connect(self._on_failed)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(20, 18, 20, 18)
-        outer.setSpacing(12)
+        outer.setContentsMargins(16, 16, 16, 16)
+        outer.setSpacing(0)
 
-        title = QLabel("▦  " + self._t("batch_file", "Batch / File"))
-        title.setObjectName("hero")
-        subtitle = QLabel(
-            self._t("batch_file_sub", "Create translated subtitles from a recording")
-        )
-        subtitle.setObjectName("muted")
-        subtitle.setWordWrap(True)
-        outer.addWidget(title)
-        outer.addWidget(subtitle)
-
-        outer.addWidget(self._options_card())
-        outer.addWidget(self._file_card())
+        # One card holding everything, as in the Tk window: the title belongs
+        # to the card rather than floating above it, and the file picker is
+        # part of the same surface as the options it applies to.
+        card = QFrame()
+        card.setObjectName("card")
+        box = QVBoxLayout(card)
+        box.setContentsMargins(18, 16, 18, 16)
+        box.setSpacing(10)
+        box.addLayout(self._header())
+        box.addWidget(self._options())
+        box.addLayout(self._file_row())
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        self.progress.setVisible(False)
-        outer.addWidget(self.progress)
+        # Always on screen, empty when idle — a bar that only appears once a
+        # run starts leaves the window jumping a row taller at the moment the
+        # user is watching it, and gives no hint that progress is reported.
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(_PROGRESS_H)
+        box.addWidget(self.progress)
 
-        # Starts empty: the file card already says "no file selected", and
-        # repeating it right below reads as a duplicated widget.
         self.status = QLabel("")
-        self.status.setObjectName("muted")
         self.status.setWordWrap(True)
-        outer.addWidget(self.status)
+        self._set_status("", "muted")
+        box.addWidget(self.status)
 
-        actions = QHBoxLayout()
-        actions.setSpacing(8)
-        self.start_btn = QPushButton(self._t("batch_start", "Start"))
-        self.start_btn.setObjectName("accent")
-        self.start_btn.setMinimumHeight(44)
-        self.start_btn.clicked.connect(self._on_start)
-        self.start_btn.setEnabled(False)
-        self.cancel_btn = QPushButton(self._t("batch_cancel", "Cancel"))
-        self.cancel_btn.setMinimumHeight(44)
-        self.cancel_btn.clicked.connect(self._on_cancel)
-        self.cancel_btn.setEnabled(False)
-        actions.addWidget(self.start_btn)
-        actions.addWidget(self.cancel_btn)
-        outer.addLayout(actions)
+        box.addLayout(self._actions())
+        box.addLayout(self._followups())
+        outer.addWidget(card)
 
-        followups = QHBoxLayout()
-        followups.setSpacing(8)
-        self.history_btn = QPushButton(self._t("batch_open_history", "Show in history"))
-        self.history_btn.clicked.connect(self._on_open_history)
-        self.history_btn.setEnabled(False)
-        self.folder_btn = QPushButton(self._t("batch_open_folder", "Open folder"))
-        self.folder_btn.clicked.connect(self._on_open_folder)
-        self.folder_btn.setEnabled(False)
-        followups.addWidget(self.history_btn)
-        followups.addWidget(self.folder_btn)
-        outer.addLayout(followups)
-        outer.addStretch(1)
+        self._sync_file_row()
+        self._resize_to_content()
 
     # ── build ────────────────────────────────────────────────────────────
     def _caption(self, text: str) -> QLabel:
@@ -199,11 +196,69 @@ class BatchWindow(QDialog):
         label.setObjectName("field")
         return label
 
-    def _options_card(self) -> QFrame:
-        card = QFrame()
-        card.setObjectName("card")
-        grid = QGridLayout(card)
-        grid.setContentsMargins(18, 16, 18, 16)
+    def _header(self) -> QHBoxLayout:
+        """Glyph tile, title and sub-line — the card header the Tk window has."""
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        # Same grid glyph as the panel button that opens this window.
+        symbol = QLabel("▦")
+        symbol.setObjectName("card_symbol")
+        symbol.setFixedSize(44, 44)
+        symbol.setAlignment(Qt.AlignCenter)
+        row.addWidget(symbol, 0, Qt.AlignTop)
+
+        column = QVBoxLayout()
+        column.setSpacing(2)
+        title = QLabel(self._t("batch_file", "Batch / File"))
+        title.setObjectName("card_title")
+        subtitle = QLabel(
+            self._t("batch_file_sub", "Create translated subtitles from a recording")
+        )
+        subtitle.setObjectName("muted")
+        subtitle.setWordWrap(True)
+        column.addWidget(title)
+        column.addWidget(subtitle)
+        row.addLayout(column, 1)
+        return row
+
+    def _actions(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.start_btn = QPushButton(self._t("batch_start", "Start"))
+        self.start_btn.setObjectName("accent")
+        self.start_btn.setMinimumHeight(44)
+        self.start_btn.clicked.connect(self._on_start)
+        self.start_btn.setEnabled(False)
+        self.cancel_btn = QPushButton(self._t("batch_cancel", "Stop processing"))
+        self.cancel_btn.setMinimumHeight(44)
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        self.cancel_btn.setEnabled(False)
+        row.addWidget(self.start_btn, 1)
+        row.addWidget(self.cancel_btn, 1)
+        return row
+
+    def _followups(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        # Always clickable: past runs are in the history viewer whether or not
+        # one finished in THIS window, so disabling it hid a working feature.
+        # A finished run turns it accent (see _on_finished) to point at it.
+        self.history_btn = QPushButton(self._t("batch_open_history", "Show in history"))
+        self.history_btn.setMinimumHeight(36)
+        self.history_btn.clicked.connect(self._on_open_history)
+        self.folder_btn = QPushButton(self._t("batch_open_folder", "Open folder"))
+        self.folder_btn.setMinimumHeight(36)
+        self.folder_btn.clicked.connect(self._on_open_folder)
+        # Nothing to open until a run has written something this session.
+        self.folder_btn.setEnabled(False)
+        row.addWidget(self.history_btn, 1)
+        row.addWidget(self.folder_btn, 1)
+        return row
+
+    def _options(self) -> QWidget:
+        holder = QWidget()
+        grid = QGridLayout(holder)
+        grid.setContentsMargins(0, 6, 0, 0)
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(6)
         grid.setColumnStretch(0, 1)
@@ -253,6 +308,10 @@ class BatchWindow(QDialog):
                 "batch_bilingual_srt", "Bilingual subtitles (original + translation)"
             )
         )
+        # On by default, as in the Tk window: the original above the
+        # translation is what most runs want. Untick for a clean
+        # single-language subtitle file (an OBS overlay, say).
+        self.bilingual_check.setChecked(True)
         grid.addWidget(self.bilingual_check, 4, 0, 1, 2)
 
         self.more_btn = QPushButton(self._more_text())
@@ -261,10 +320,10 @@ class BatchWindow(QDialog):
         grid.addWidget(self.more_btn, 5, 0, 1, 2)
 
         self.more_widget = self._more_settings()
-        self.more_widget.setVisible(False)
         grid.addWidget(self.more_widget, 6, 0, 1, 2)
+        self.more_widget.setVisible(False)
         self._sync_bilingual_state()
-        return card
+        return holder
 
     def _more_settings(self) -> QWidget:
         """Engine + model pickers. Batch always runs the SEGMENTED engine, so
@@ -335,28 +394,77 @@ class BatchWindow(QDialog):
         )
         return holder
 
-    def _file_card(self) -> QFrame:
-        card = QFrame()
-        card.setObjectName("card")
-        box = QVBoxLayout(card)
-        box.setContentsMargins(18, 14, 18, 14)
-        box.setSpacing(8)
+    def _file_row(self) -> QHBoxLayout:
+        """The picker button carries the chosen file's name itself, with a ✕
+        beside it to clear the choice — so no separate "no file selected" line
+        repeating what the button already says."""
         row = QHBoxLayout()
-        row.setSpacing(8)
-        self.pick_btn = QPushButton("▤  " + self._t("batch_pick_file", "Choose file…"))
+        row.setSpacing(6)
+        self.pick_btn = QPushButton()
+        self.pick_btn.setMinimumHeight(40)
         self.pick_btn.clicked.connect(self._on_pick)
         self.clear_btn = QPushButton("✕")
-        self.clear_btn.setFixedWidth(46)
+        self.clear_btn.setFixedSize(40, 40)
         self.clear_btn.clicked.connect(self._on_clear)
-        self.clear_btn.setEnabled(False)
         row.addWidget(self.pick_btn, 1)
         row.addWidget(self.clear_btn)
-        box.addLayout(row)
-        self.file_label = QLabel(self._t("batch_no_file", "No file selected"))
-        self.file_label.setObjectName("muted")
-        self.file_label.setWordWrap(True)
-        box.addWidget(self.file_label)
-        return card
+        return row
+
+    def _file_button_text(self) -> str:
+        """The chosen file's name, or the prompt. A long name is truncated in
+        the middle so the start AND the extension stay visible."""
+        if not self._input_path:
+            return "▤  " + self._t("batch_pick_file", "Choose file…")
+        name = os.path.basename(self._input_path)
+        if len(name) <= _FILE_NAME_LIMIT:
+            return name
+        stem, extension = os.path.splitext(name)
+        head = max(10, _FILE_NAME_LIMIT - len(extension) - 1)
+        return stem[:head].rstrip() + "…" + extension
+
+    def _sync_file_row(self) -> None:
+        """Picker label, ✕ and Start, all driven by the current selection."""
+        running = self.worker.is_running()
+        chosen = bool(self._input_path)
+        self.pick_btn.setText(self._file_button_text())
+        self.pick_btn.setEnabled(not running)
+        self.clear_btn.setVisible(chosen)
+        self.clear_btn.setEnabled(not running)
+        self.start_btn.setEnabled(chosen and not running)
+        self.cancel_btn.setEnabled(running)
+
+    def _resize_to_content(self) -> None:
+        """Fixed width, height from the content — the shape of the Tk window,
+        which is not resizable either. Called again whenever the More-settings
+        expander changes how tall the card is.
+
+        The height comes from heightForWidth, not from ``adjustSize()``: a
+        word-wrapped label's sizeHint reserves a second line it does not use at
+        this width, and the surplus was handed to the progress bar and the
+        status line, which then sat in a visibly loose column.
+        """
+        self.setFixedWidth(BATCH_WINDOW_W)
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(_MAX_H)
+        # Deliver the invalidation the expander posted when it hid or showed
+        # its panel: QBoxLayout caches heightForWidth, so measuring in the same
+        # call would describe the layout as it was one toggle ago.
+        QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
+        layout = self.layout()
+        layout.activate()
+        if layout.hasHeightForWidth():
+            self.setFixedHeight(layout.totalHeightForWidth(BATCH_WINDOW_W))
+        else:
+            self.setFixedHeight(layout.totalSizeHint().height())
+
+    def _set_status(self, text: str, kind: str = "muted") -> None:
+        """Status line + its colour. The colour comes from an object name, not
+        a widget stylesheet: an id rule in the app sheet would outrank one, and
+        this way a theme switch recolours it with everything else."""
+        self.status.setText(text)
+        self.status.setObjectName(kind)
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
 
     @staticmethod
     def _combo(items: list[str]) -> Dropdown:
@@ -371,6 +479,12 @@ class BatchWindow(QDialog):
         self._more_open = not self._more_open
         self.more_widget.setVisible(self._more_open)
         self.more_btn.setText(self._more_text())
+        # Queued: showing or hiding a widget invalidates the layout through a
+        # POSTED event, and measuring in this same call returns the previous
+        # state's numbers — the window then grew when the panel opened but did
+        # not shrink again when it closed. Bound to self so a closed window
+        # never gets the late call.
+        QTimer.singleShot(0, self, self._resize_to_content)
 
     def _sync_bilingual_state(self) -> None:
         # Transcript-only writes no SRT, so a bilingual SRT is meaningless.
@@ -434,16 +548,15 @@ class BatchWindow(QDialog):
         if not path:
             return
         self._input_path = path
-        self.file_label.setText(os.path.basename(path))
-        self.status.setText("")
-        self.start_btn.setEnabled(True)
-        self.clear_btn.setEnabled(True)
+        self._set_status("")
+        self.progress.setValue(0)
+        self._sync_file_row()
 
     def _on_clear(self) -> None:
         self._input_path = ""
-        self.file_label.setText(self._t("batch_no_file", "No file selected"))
-        self.start_btn.setEnabled(False)
-        self.clear_btn.setEnabled(False)
+        self._set_status("")
+        self.progress.setValue(0)
+        self._sync_file_row()
 
     def _on_start(self) -> None:
         if not self._input_path or self.worker.is_running():
@@ -453,9 +566,7 @@ class BatchWindow(QDialog):
         providers = [self._selected_stt_provider(), self._selected_translation_provider()]
         if not ensure_keys(list(dict.fromkeys(providers)), {}, self):
             return
-        self._set_running(True)
         self.progress.setValue(0)
-        self.progress.setVisible(True)
         self.worker.start(
             input_path=self._input_path,
             source_language=language_canonical_name(self.source_combo.currentText()),
@@ -468,17 +579,13 @@ class BatchWindow(QDialog):
             bilingual_srt=self.bilingual_check.isChecked()
             and self.bilingual_check.isEnabled(),
         )
+        # After start(), so is_running() already reports the new state.
+        self._sync_file_row()
 
     def _on_cancel(self) -> None:
         self.worker.cancel()
         self.cancel_btn.setEnabled(False)
-        self.status.setText(self._t("batch_cancelled", "Cancelled"))
-
-    def _set_running(self, running: bool) -> None:
-        self.start_btn.setEnabled(not running and bool(self._input_path))
-        self.cancel_btn.setEnabled(running)
-        self.pick_btn.setEnabled(not running)
-        self.clear_btn.setEnabled(not running and bool(self._input_path))
+        self._set_status(self._t("batch_cancelled", "Cancelled"), "status_warn")
 
     def _on_open_history(self) -> None:
         # Straight to the Batch tab: the run just finished is there, not in the
@@ -504,33 +611,39 @@ class BatchWindow(QDialog):
     def _on_progress(self, done: int, total: int) -> None:
         if total > 0:
             self.progress.setValue(round(done * 100 / total))
-        self.status.setText(
+        self._set_status(
             self._t("batch_progress", "Segment {current}/{total}").format(
                 current=done, total=total
             )
         )
 
     def _on_finished(self, path: str) -> None:
-        self._set_running(False)
-        self.progress.setVisible(False)
+        self._sync_file_row()
         if not path:
             # Cancelled: process_file writes nothing in that case.
-            self.status.setText(self._t("batch_cancelled", "Cancelled"))
+            self.progress.setValue(0)
+            self._set_status(self._t("batch_cancelled", "Cancelled"), "status_warn")
             return
         self._output_path = path
-        self.history_btn.setEnabled(True)
+        self.progress.setValue(100)
         self.folder_btn.setEnabled(True)
-        self.status.setText(
+        # Point at where the finished run can be reopened.
+        self.history_btn.setObjectName("accent")
+        self.history_btn.style().unpolish(self.history_btn)
+        self.history_btn.style().polish(self.history_btn)
+        self._set_status(
             self._t("batch_done", "Saved next to your file: {name}").format(
                 name=os.path.basename(path)
-            )
+            ),
+            "status_ok",
         )
 
     def _on_failed(self, message: str) -> None:
-        self._set_running(False)
-        self.progress.setVisible(False)
-        self.status.setText(
-            self._t("batch_error", "Failed: {error}").format(error=message)
+        self._sync_file_row()
+        self.progress.setValue(0)
+        self._set_status(
+            self._t("batch_error", "Failed: {error}").format(error=message),
+            "status_error",
         )
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
