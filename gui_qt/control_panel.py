@@ -1560,10 +1560,15 @@ class ControlPanel(QMainWindow):
         self._level_two_column_bottoms()
 
     def _sync_running_state(self) -> None:
+        # Captured BEFORE the buttons change: Qt moves focus out of a widget
+        # during setEnabled(False), so by the time this returns the focus
+        # widget is already the successor.
+        focused = QApplication.focusWidget()
         # Both buttons are inert while a Start is in flight: Start would queue a
         # second session and there is nothing to stop until the pipeline is up.
         self.start_btn.setEnabled(not self._running and not self._starting)
         self.stop_btn.setEnabled(self._running and not self._stopping)
+        self._rehome_button_focus(focused)
         if self._starting:
             text = self._clean_label("connecting", "Connecting…")
             pill = "pill_connecting"
@@ -1580,6 +1585,26 @@ class ControlPanel(QMainWindow):
         # once at start.
         self.strategy_hint.setVisible(self._running)
         self.strategy_combo.setEnabled(not self._running)
+
+    def _rehome_button_focus(self, focused) -> None:
+        """Keep the focus ring off unrelated controls when Start/Stop is
+        disabled under it.
+
+        Disabling the button that was just clicked hands focus to the NEXT
+        widget in the tab chain — the subtitle-screen dropdown, which then wore
+        the accent ring after every Start, as if the operator had selected it.
+        Focus goes to the button that is now the live action, or nowhere at all
+        while a start is in flight and neither is.
+        """
+        if focused not in (self.start_btn, self.stop_btn) or focused.isEnabled():
+            return
+        heir = self.stop_btn if focused is self.start_btn else self.start_btn
+        if heir.isEnabled():
+            heir.setFocus(Qt.OtherFocusReason)
+            return
+        current = QApplication.focusWidget()
+        if current is not None:
+            current.clearFocus()
 
     # ── handlers: display ────────────────────────────────────────────────
     def _on_monitor_changed(self, index: int) -> None:
