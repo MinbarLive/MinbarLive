@@ -482,6 +482,41 @@ class TestWindowIcon:
         )
         assert result.stdout.strip() == "False", result.stderr
 
+    def test_the_whole_qt_tree_pulls_no_tk_into_the_process(self):
+        # Every window the Qt tree can open, including the popups: the
+        # already-running dialog used to be CustomTkinter whatever tree was
+        # asked for, which put a live Tcl interpreter beside the Qt one and
+        # took the DPI awareness away from Qt.
+        import pathlib
+        import subprocess
+
+        modules = (
+            "gui_qt.app",
+            "gui_qt.already_running",
+            "gui_qt.api_keys",
+            "gui_qt.announce_window",
+            "gui_qt.batch_window",
+            "gui_qt.control_panel",
+            "gui_qt.history_window",
+            "gui_qt.onboarding",
+            "gui_qt.settings_window",
+            "gui_qt.subtitle_window",
+            "gui_qt.update_banner",
+        )
+        code = (
+            "import sys, importlib\n"
+            f"for name in {modules!r}: importlib.import_module(name)\n"
+            "print(sorted(m for m in sys.modules "
+            "if m.split('.')[0] in ('tkinter', 'customtkinter', '_tkinter')))"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            cwd=pathlib.Path(__file__).resolve().parents[1],
+        )
+        assert result.stdout.strip() == "[]", result.stdout + result.stderr
+
 
 class TestNoTextShapingLayer:
     """The migration's core claim: Qt shapes Arabic, we never pre-process it."""
@@ -2348,6 +2383,85 @@ class TestAlreadyRunningDialog:
         assert calls == [1]
 
 
+def _wait_for(app, predicate, timeout: float = 5.0) -> None:
+    """Pump the event loop until ``predicate`` holds.
+
+    The work runs on a worker thread and reports back as a queued signal, so
+    the result only lands while events are being delivered.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition never became true")
+
+
+class TestUpdateBanner:
+    """The check_for_updates setting had a checkbox in the Qt settings window
+    and nothing behind it."""
+
+    @pytest.fixture
+    def banner(self, qt_app, monkeypatch):
+        import gui_qt.update_banner as ub
+        from utils.update_check import UpdateInfo
+
+        ub.reset_cache()
+        monkeypatch.setattr(
+            ub,
+            "check_for_update",
+            lambda: UpdateInfo(version="9.9.9", url="https://example.invalid/r"),
+        )
+        made = ub.UpdateBanner(lambda key, fallback="": fallback)
+        yield made, ub
+        made.close()
+        ub.reset_cache()
+
+    def test_hidden_until_a_newer_release_answers(self, banner):
+        made, _ub = banner
+        assert made.isHidden()
+
+    def test_it_shows_the_version_it_found(self, banner, qt_app):
+        made, _ub = banner
+        made.start_check(True)
+        _wait_for(qt_app, lambda: not made.isHidden())
+        assert "9.9.9" in made.label.text()
+
+    def test_opting_out_makes_no_request(self, banner, monkeypatch):
+        made, ub = banner
+        calls = []
+        monkeypatch.setattr(ub, "check_for_update", lambda: calls.append(1))
+        made.start_check(False)
+        assert calls == []
+        assert made.isHidden()
+
+    def test_dismissing_hides_it_for_the_session(self, banner, qt_app):
+        made, _ub = banner
+        made.start_check(True)
+        _wait_for(qt_app, lambda: not made.isHidden())
+        made.close_btn.click()
+        assert made.isHidden()
+
+    def test_the_answer_is_reused_after_a_rebuild(self, banner, qt_app):
+        # A GUI-language switch rebuilds the panel; a fresh request per rebuild
+        # would be waste, and the banner should come straight back.
+        made, ub = banner
+        made.start_check(True)
+        _wait_for(qt_app, lambda: not made.isHidden())
+        calls = []
+        ub.check_for_update = lambda: calls.append(1)
+        second = ub.UpdateBanner(lambda key, fallback="": fallback)
+        try:
+            second.start_check(True)
+            assert calls == []
+            assert "9.9.9" in second.label.text()
+        finally:
+            second.close()
+
+
 class TestBatchWindow:
     """The pipeline is batch/processor.py; these cover the window around it."""
 
@@ -2373,11 +2487,19 @@ class TestBatchWindow:
                     progress_callback(i, 3)
             return input_path + ".de.srt"
 
-        # Stub the module the worker imports lazily, so no ffmpeg or API is hit.
+        # Stub the module the worker imports lazily, so no ffmpeg or API is
+        # hit. It must carry FfmpegNotFoundError too: the worker imports it to
+        # tell "install ffmpeg" apart from a real failure.
+        class FfmpegNotFoundError(RuntimeError):
+            pass
+
         monkeypatch.setitem(
             sys.modules,
             "batch.processor",
-            types.SimpleNamespace(process_file=fake_process_file),
+            types.SimpleNamespace(
+                process_file=fake_process_file,
+                FfmpegNotFoundError=FfmpegNotFoundError,
+            ),
         )
         w = bw.BatchWindow(lambda k, f="": f, load_settings())
         yield w, calls
@@ -2451,6 +2573,38 @@ class TestBatchWindow:
         assert w._file_button_text().endswith(".m4a")
         assert w._file_button_text().startswith("The episode")
 
+    def test_a_missing_ffmpeg_offers_the_download(self, batch, monkeypatch):
+        # Anything that is not already a 16 kHz WAV goes through ffmpeg. The
+        # port reported the raw exception, which is a dead end; the Tk window
+        # offers to fetch it once, with consent.
+        w, _ = batch
+        offered = []
+        monkeypatch.setattr(
+            w, "_offer_ffmpeg_download", lambda: offered.append(1) or True
+        )
+        monkeypatch.setattr(sys, "platform", "win32")
+        w._on_ffmpeg_missing()
+        assert offered == [1]
+        # The offer was accepted, so nothing is reported as an error yet.
+        assert w.status.objectName() != "status_error"
+
+    def test_declining_the_download_explains_what_to_install(self, batch, monkeypatch):
+        w, _ = batch
+        monkeypatch.setattr(w, "_offer_ffmpeg_download", lambda: False)
+        w._on_ffmpeg_missing()
+        assert w.status.objectName() == "status_error"
+        assert "ffmpeg" in w.status.text()
+
+    def test_the_run_resumes_once_ffmpeg_is_downloaded(self, batch):
+        # The whole point of the offer: the user asked for a run, not for a
+        # download. The join matters — the emitting thread is still alive, and
+        # _on_start's "already running" guard would skip the restart.
+        w, calls = batch
+        w._input_path = "khutbah.mp3"
+        w._on_download_finished()
+        w.worker.join(timeout=5)
+        assert calls.get("input_path") == "khutbah.mp3"
+
     def test_the_status_line_reports_the_outcome_in_colour(self, batch):
         # Through an object name, not a widget stylesheet: an id rule in the
         # app sheet outranks one, and it would survive a theme switch stale.
@@ -2506,7 +2660,13 @@ class TestBatchWindow:
         monkeypatch.setitem(
             sys.modules,
             "batch.processor",
-            types.SimpleNamespace(process_file=blocking_process_file),
+            types.SimpleNamespace(
+                process_file=blocking_process_file,
+                # Same module surface as the fixture's stub, different run.
+                FfmpegNotFoundError=sys.modules[
+                    "batch.processor"
+                ].FfmpegNotFoundError,
+            ),
         )
         w._input_path = "khutbah.mp3"
         w._on_start()
