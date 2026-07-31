@@ -29,6 +29,42 @@ from PySide6.QtWidgets import (
 CONTROL_H = 38
 
 
+def is_window_on_top(window: QWidget) -> bool:
+    """Whether ``window`` currently carries the always-on-top flag.
+
+    Reads the platform window when there is one: set_window_on_top applies the
+    flag there, so the widget's cached copy can be a step behind.
+    """
+    handle = window.windowHandle()
+    flags = handle.flags() if handle is not None else window.windowFlags()
+    return bool(flags & Qt.WindowStaysOnTopHint)
+
+
+def set_window_on_top(window: QWidget, on_top: bool) -> None:
+    """Toggle always-on-top without the window flashing.
+
+    ``QWidget.setWindowFlag`` DESTROYS and recreates the native window, which
+    hides the widget and repaints it from an empty surface — a white flash on
+    every change, and the reason the old code had to re-show and re-apply the
+    geometry afterwards. Setting the flag on the QWindow instead goes straight
+    to the platform plugin (a SetWindowPos on Windows), so the surface, the
+    geometry and the visibility all survive.
+
+    A widget that has never been shown has no QWindow yet; there the widget
+    call is both necessary and free of any flash.
+    """
+    if is_window_on_top(window) == on_top:
+        return
+    handle = window.windowHandle()
+    if handle is None:
+        window.setWindowFlag(Qt.WindowStaysOnTopHint, on_top)
+        return
+    flags = handle.flags()
+    handle.setFlags(
+        flags | Qt.WindowStaysOnTopHint if on_top else flags & ~Qt.WindowStaysOnTopHint
+    )
+
+
 class SegmentedControl(QWidget):
     """A joined row of mutually exclusive buttons — a CTkSegmentedButton.
 
@@ -392,6 +428,12 @@ class Card(QFrame):
 
         self.header = header_row
         self._header_widget = header
+        # Slack above the header, off while the card is open. A card given more
+        # height than it needs puts the difference into its trailing stretch,
+        # which is right for an open card (content stays top-aligned) but hangs
+        # a collapsed one's title off the top edge with a gap underneath. While
+        # collapsed the two stretches share it and the title sits centred.
+        outer.addStretch(0)
         outer.addWidget(header)
 
         self.content = QWidget()
@@ -426,6 +468,7 @@ class Card(QFrame):
             return
         self._expanded = expanded
         self.content.setVisible(expanded)
+        self._outer.setStretch(0, 0 if expanded else 1)
         self.arrow_label.setText("▴" if expanded else "▾")
         self.toggled.emit(expanded)
 
