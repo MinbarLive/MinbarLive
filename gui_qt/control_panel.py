@@ -210,6 +210,10 @@ class ControlPanel(QMainWindow):
         self._level_timer.timeout.connect(self._poll_input_level)
         self._level_timer.start(200)
 
+        # One anonymous request to the GitHub releases API, off the GUI thread;
+        # the banner appears only if it answers with a newer version.
+        self.update_banner.start_check(self.settings.check_for_updates)
+
         # With hide mode "never" (the default) the overlay is open even while
         # stopped — that is what makes the stopped hint and a stopped-session
         # announcement possible at all.
@@ -325,6 +329,13 @@ class ControlPanel(QMainWindow):
         side.setContentsMargins(0, 0, 0, 0)
         side.setSpacing(0)
         side.addWidget(self._header())
+
+        # Between the header and the cards, as in the Tk panel. Hidden unless
+        # the check finds a release newer than the running version.
+        from gui_qt.update_banner import UpdateBanner
+
+        self.update_banner = UpdateBanner(self._t)
+        side.addWidget(self.update_banner)
 
         self.card_area = QScrollArea()
         self.card_area.setWidgetResizable(True)
@@ -2144,8 +2155,13 @@ class ControlPanel(QMainWindow):
         self._apply_subtitle_hide_mode()
 
     def _on_device_lost(self) -> None:
+        # Say so. Stopping silently mid-session leaves the operator watching a
+        # dead overlay with no idea the microphone went away.
         if self._running:
             self.on_stop()
+        title = self._t("audio_device_lost", "Audio device lost")
+        log(title, level="ERROR")
+        self._info(title, title)
 
     def _selected_device(self) -> int | None:
         pos = self.device_combo.currentIndex()

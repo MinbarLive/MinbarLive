@@ -225,6 +225,25 @@ QLabel#hero {{ font-size: 17px; font-weight: 700; }}
 QLabel#wizard_title {{ font-size: 22px; font-weight: 700; }}
 QLabel#wizard_sub {{ color: {c["muted"]}; font-size: 14px; }}
 
+/* "A newer release exists" strip, between the panel header and the cards.
+   Accent-soft rather than a warning colour: it is an offer, not a problem. */
+/* The outer spacing is a margin rather than a layout's, so that while the
+   banner is hidden it takes no room at all. */
+QFrame#update_banner {{
+    background-color: {c["accent_soft"]};
+    border: none;
+    border-radius: 14px;
+    margin: 0px 18px 4px 18px;
+}}
+QLabel#update_text {{ color: {c["accent"]}; font-size: 13px; font-weight: 700; }}
+QPushButton#banner_close {{
+    background: transparent;
+    color: {c["accent"]};
+    border-radius: 14px;
+    padding: 0;
+}}
+QPushButton#banner_close:hover {{ background-color: {c["accent"]}; color: #ffffff; }}
+
 /* Warning callout: bordered, warning-coloured — the wizard's provider caveats
    and the AI-accuracy disclaimer, which must not read as another grey note. */
 QFrame#warning {{
