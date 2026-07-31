@@ -481,8 +481,10 @@ class BatchWindow(QDialog):
         self.clear_btn.setEnabled(not running and bool(self._input_path))
 
     def _on_open_history(self) -> None:
+        # Straight to the Batch tab: the run just finished is there, not in the
+        # session list the viewer opens on by default.
         if self._panel is not None:
-            self._panel.open_history()
+            self._panel.open_history("batch")
 
     def _on_open_folder(self) -> None:
         if not self._output_path:

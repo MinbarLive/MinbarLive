@@ -1951,17 +1951,18 @@ class ControlPanel(QMainWindow):
         self._settings_window = SettingsWindow(self)
         self._show_secondary(self._settings_window)
 
-    def open_history(self) -> None:
+    def open_history(self, initial_tab: str = "history") -> None:
         """Rebuilt on each open rather than refreshed, so a session recorded
         while it was closed always appears."""
         existing = getattr(self, "_history_window", None)
         if existing is not None and existing.isVisible():
+            existing.show_tab(initial_tab)
             existing.raise_()
             existing.activateWindow()
             return
         from gui_qt.history_window import HistoryWindow
 
-        self._history_window = HistoryWindow(self._t, self)
+        self._history_window = HistoryWindow(self._t, self, initial_tab=initial_tab)
         self._show_secondary(self._history_window)
 
     def open_batch(self) -> None:
