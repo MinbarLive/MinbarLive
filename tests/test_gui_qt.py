@@ -1877,6 +1877,20 @@ class TestControlChrome:
         )
 
 
+def row_text(window, index: int) -> str:
+    """Title + detail line of one history list row, as the delegate has them."""
+    from gui_qt.history_window import RowDelegate
+
+    item = window.entry_list.item(index)
+    return f"{item.text()}\n{item.data(RowDelegate.SUB_ROLE)}"
+
+
+def row_tag(window, index: int) -> str:
+    from gui_qt.history_window import RowDelegate
+
+    return window.entry_list.item(index).data(RowDelegate.TAG_ROLE)
+
+
 class TestHistoryWindow:
     """Rendering only — parsing is utils/history.py and already covered."""
 
@@ -1940,7 +1954,76 @@ class TestHistoryWindow:
         make, sessions = history
         w = make()
         assert w.entry_list.count() == len(sessions)
-        assert "2026-07-30" in w.entry_list.item(0).text()
+        assert "2026-07-30" in row_text(w, 0)
+
+    def test_rows_never_widen_the_list(self, history):
+        # The rows carry long lines ("... GE → EN, AR → EN, AR → GE · 52").
+        # Asking for their full width made the item boxes wider than the
+        # viewport, so the text ran out of its own rounded box. The delegate
+        # elides to whatever width the row got, so it asks for none.
+        from PySide6.QtWidgets import QStyleOptionViewItem
+
+        make, _ = history
+        w = make()
+        delegate = w.entry_list.itemDelegate()
+        option = QStyleOptionViewItem()
+        option.font = w.entry_list.font()
+        index = w.entry_list.model().index(0, 0)
+        hint = delegate.sizeHint(option, index)
+        assert hint.width() == 0
+        # ...and tall enough for both lines, which one item widget was not:
+        # the stylesheet's item padding left it 16px for a 40px row.
+        assert hint.height() >= 2 * w.entry_list.fontMetrics().height()
+
+    def test_opens_at_the_windowed_size(self, history):
+        # Tk opens this viewer at 900x560; the port asked for 1180x720, which
+        # covered the panel behind it.
+        import gui_qt.history_window as hw
+
+        make, _ = history
+        w = make()
+        assert (w.width(), w.height()) == (
+            hw.HISTORY_WINDOW_W,
+            hw.HISTORY_WINDOW_H,
+        )
+
+    def test_the_two_panes_do_not_touch(self, history):
+        # The splitter handle measured 0px wide here — the stylesheet's
+        # QSplitter::handle width never reached it, and the panes ended up
+        # overlapping by a pixel — so the list border sat directly against the
+        # transcript border. The gap lives in the right pane's own margin.
+        import gui_qt.history_window as hw
+
+        make, _ = history
+        w = make()
+        assert w.detail.parentWidget().layout().contentsMargins().left() >= hw.PANE_GAP
+
+    def test_a_saved_summary_is_marked_on_the_row(self, history):
+        import gui_qt.history_window as hw
+
+        make, _ = history
+        w = make()
+        assert row_text(w, 0).startswith(hw.SUMMARY_MARK)
+        assert not row_text(w, 1).startswith(hw.SUMMARY_MARK)
+
+    def test_delete_is_the_danger_button(self, history):
+        # Deleting a record is irreversible; it must not read like Copy.
+        make, _ = history
+        w = make()
+        assert w.delete_btn.objectName() == "danger"
+        assert w.summarise_btn.objectName() == "accent"
+
+    def test_summarise_is_hidden_where_there_is_no_transcript(
+        self, history, monkeypatch
+    ):
+        import gui_qt.history_window as hw
+
+        monkeypatch.setattr(hw, "list_log_files", lambda: [])
+        make, _ = history
+        w = make()
+        assert not w.summarise_btn.isHidden()
+        w._on_tab(3)  # Log
+        assert w.summarise_btn.isHidden()
 
     def test_first_session_is_selected_and_rendered(self, history):
         make, _ = history
@@ -1993,6 +2076,225 @@ class TestHistoryWindow:
         monkeypatch.setattr(hw, "parse_history_file", boom)
         w = make()  # must build and select without propagating the error
         assert w.detail.toPlainText() != ""
+
+
+class TestHistoryBatchTab:
+    """The Batch tab previews the run's own output, in the format it holds."""
+
+    @pytest.fixture
+    def batch(self, qt_app, monkeypatch, tmp_path):
+        import gui_qt.history_window as hw
+        from utils.history import BatchRun
+
+        srt = tmp_path / "both.srt"
+        srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nHallo\n", encoding="utf-8-sig")
+        runs = [
+            BatchRun(
+                date="2026-07-19",
+                time="01:45",
+                source_name="Do You Really Know Allah.mp4",
+                path=str(tmp_path / "both.txt"),
+                duration_minutes=10,
+                active_seconds=600,
+                language_pair="AU → GE",
+                entry_count=83,
+                has_summary=False,
+                formats=["srt", "txt"],
+            ),
+            BatchRun(
+                date="2026-07-11",
+                time="18:11",
+                source_name="1.mp3",
+                path=str(tmp_path / "text-only.txt"),
+                duration_minutes=1,
+                active_seconds=60,
+                language_pair="AR → GE",
+                entry_count=10,
+                has_summary=False,
+                formats=["txt"],
+            ),
+        ]
+        monkeypatch.setattr(hw, "list_batch_runs", lambda: runs)
+        monkeypatch.setattr(hw, "parse_history_file", lambda _p: [])
+        monkeypatch.setattr(hw, "read_batch_languages", lambda _p: ("Arabic", "German"))
+        monkeypatch.setattr(hw, "list_history_sessions", lambda: [])
+
+        made = []
+
+        def _make():
+            w = hw.HistoryWindow(lambda key, fallback="": fallback)
+            w._on_tab(1)  # Batch
+            made.append(w)
+            return w
+
+        yield _make, runs
+        for w in made:
+            w.close()
+
+    def test_format_toggle_defaults_to_srt(self, batch):
+        make, _ = batch
+        w = make()
+        assert not w.format_bar.isHidden()
+        assert w.format_buttons["srt"].isChecked()
+        assert "00:00:00,000" in w.detail.toPlainText()
+
+    def test_switching_to_txt_shows_the_transcript(self, batch):
+        make, _ = batch
+        w = make()
+        w._on_format("txt")
+        assert w.format_buttons["txt"].isChecked()
+        assert "00:00:00,000" not in w.detail.toPlainText()
+
+    def test_a_single_format_run_hides_the_toggle(self, batch):
+        # Nothing to choose between, so the toggle is noise.
+        make, _ = batch
+        w = make()
+        w.entry_list.setCurrentRow(1)
+        assert w.format_bar.isHidden()
+
+    def test_the_toggle_does_not_leak_onto_another_tab(self, batch, monkeypatch):
+        import gui_qt.history_window as hw
+
+        monkeypatch.setattr(hw, "list_log_files", lambda: [])
+        make, _ = batch
+        w = make()
+        assert not w.format_bar.isHidden()
+        w._on_tab(3)  # Log — an SRT/TXT switch means nothing here
+        assert w.format_bar.isHidden()
+
+    def test_the_available_formats_are_tagged_on_the_row(self, batch):
+        make, _ = batch
+        w = make()
+        assert row_tag(w, 0) == "SRT+TXT"
+
+    def test_a_long_filename_keeps_its_extension(self, batch):
+        # Elided in the middle, not at the end: ".mp4" is what tells the two
+        # runs of the same lecture apart.
+        from PySide6.QtCore import Qt
+
+        from gui_qt.history_window import RowDelegate
+
+        make, runs = batch
+        w = make()
+        item = w.entry_list.item(0)
+        assert item.text().endswith(runs[0].source_name)  # stored whole
+        assert item.data(RowDelegate.ELIDE_ROLE) == Qt.ElideMiddle
+
+    def test_it_can_open_straight_onto_this_tab(self, qt_app, batch):
+        # "Show in history" after a batch run must land on the run, not on the
+        # session list — as it does in the Tk viewer.
+        import gui_qt.history_window as hw
+
+        _make, runs = batch
+        w = hw.HistoryWindow(lambda key, fallback="": fallback, initial_tab="batch")
+        try:
+            assert w._tab == "batch"
+            assert w.entry_list.count() == len(runs)
+        finally:
+            w.close()
+
+
+class TestHistoryCostTab:
+    """The Kosten tab: a spend chart over a per-session breakdown."""
+
+    @pytest.fixture
+    def cost(self, qt_app, monkeypatch):
+        import gui_qt.history_window as hw
+
+        sessions = [
+            {
+                "id": "s2",
+                "started_at": "2026-07-28T14:08:00+00:00",
+                "ended_at": "2026-07-28T14:12:00+00:00",
+                "total_cost_usd": "0.1704",
+                "fully_priced": True,
+                "providers": {
+                    "openai": {
+                        "requests": 82,
+                        "cost_usd": "0.1704",
+                        "fully_priced": True,
+                        "models": {
+                            "gpt-5.2": {
+                                "requests": 82,
+                                "cost_usd": "0.1704",
+                                "roles": ["translation"],
+                                "fully_priced": True,
+                            }
+                        },
+                    }
+                },
+            },
+            {
+                "id": "s1",
+                "started_at": "2026-07-27T17:19:00+00:00",
+                "ended_at": "2026-07-27T17:21:00+00:00",
+                "total_cost_usd": "0.0331",
+                "fully_priced": False,
+                "providers": {
+                    "gemini": {
+                        "requests": 4,
+                        "cost_usd": "0.0331",
+                        "fully_priced": False,
+                        "models": {},
+                    }
+                },
+            },
+        ]
+        monkeypatch.setattr(hw, "list_cost_sessions", lambda: sessions)
+        monkeypatch.setattr(hw, "list_history_sessions", lambda: [])
+
+        made = []
+
+        def _make():
+            w = hw.HistoryWindow(lambda key, fallback="": fallback)
+            w._on_tab(2)  # Cost
+            made.append(w)
+            return w
+
+        yield _make, sessions
+        for w in made:
+            w.close()
+
+    def test_the_breakdown_is_rendered(self, cost):
+        # It was blank: the 30-day header was formatted with "sessions=" while
+        # every translation of that string carries "{count}", so the KeyError
+        # took the whole detail pane down.
+        make, _ = cost
+        w = make()
+        text = w.detail.toPlainText()
+        assert "OpenAI" in text and "gpt-5.2" in text
+
+    def test_the_chart_is_shown_only_on_this_tab(self, cost):
+        make, _ = cost
+        w = make()
+        assert not w.cost_chart.isHidden()
+        w._on_tab(0)  # History (empty in this fixture)
+        assert w.cost_chart.isHidden()
+
+    def test_the_thirty_day_header_formats(self, cost):
+        # The chart paints it; formatting it must not raise on any translation.
+        from utils.cost_display import cost_window_total
+
+        make, sessions = cost
+        w = make()
+        window = cost_window_total(sessions, days=30)
+        header = w._t(
+            "cost_last_30_days", "Last 30 days: {total} · {count} sessions"
+        ).format(total=window.total, count=window.sessions)
+        assert "2" in header
+
+    def test_an_estimated_session_is_tagged(self, cost):
+        make, _ = cost
+        w = make()
+        assert row_tag(w, 1) == "~"
+        assert row_tag(w, 0) is None
+
+    def test_clicking_a_bar_selects_that_session(self, cost):
+        make, sessions = cost
+        w = make()
+        assert w.entry_list.currentRow() == 0
+        w.cost_chart.selected.emit("s1")
+        assert w.entry_list.currentRow() == 1
 
 
 class TestBatchWindow:
