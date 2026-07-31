@@ -43,6 +43,7 @@ from config import (
 )
 from gui_qt.fonts import source_font, subtitle_font
 from gui_qt.palette import palette
+from gui_qt.widgets import is_window_on_top, set_window_on_top
 from utils.settings import (
     BACKDROP_OPACITY_MAX,
     BACKDROP_OPACITY_MIN,
@@ -57,6 +58,9 @@ from utils.settings import (
 PAIR_GAP = 6
 # Distance from the window's bottom edge to the footer pill, and between pills.
 FOOTER_MARGIN = 18
+# Pill text size. Fixed, never derived from the subtitle size: the Tk overlay
+# draws its footer at a constant 14pt bold, which is ~19 logical px at 96 DPI.
+PILL_FONT_PX = 19
 PILL_GAP = 12
 # Side margin as a fraction of window width, so a line never runs edge to edge.
 SIDE_MARGIN_RATIO = 0.06
@@ -128,8 +132,19 @@ class SubtitleWindow(QWidget):
         self._adaptive_catchup = adaptive_catchup
         self._effective_scroll_speed = scroll_speed
 
+        # A REAL window, not a Qt.Tool: a tool window is kept out of the
+        # taskbar and the alt-tab list, and out of OBS's window-capture list
+        # with it. The Tk overlay goes to some length for the same thing
+        # (stripping the caption by hand but forcing WS_EX_APPWINDOW), because
+        # window capture is how most operators put subtitles into a stream.
+        # It still never takes focus, so clicking the video behind it or
+        # typing into the panel is unaffected.
+        self.setWindowFlag(Qt.Window, True)
         self.setWindowFlag(Qt.FramelessWindowHint, True)
-        self.setWindowFlag(Qt.Tool, True)
+        self.setWindowFlag(Qt.WindowDoesNotAcceptFocus, True)
+        # The title OBS lists it under; kept identical to the Tk overlay's so
+        # an existing capture source keeps matching.
+        self.setWindowTitle("MinbarLive Subtitles")
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.set_always_on_top(always_on_top)
@@ -177,13 +192,20 @@ class SubtitleWindow(QWidget):
     def _apply_geometry(self) -> None:
         """Occupy the bottom ``height_percent`` of the chosen screen.
 
-        Qt reports each screen's geometry in logical units already, so there is
-        no DPI arithmetic here — that is what gui/scaling.py does by hand.
+        Which bottom depends on the stacking: a topmost window paints OVER the
+        Windows taskbar, so it can have the whole screen. A window that is not
+        topmost is painted over BY the taskbar, which would swallow the
+        disclaimer pill and the last line of every subtitle — so it is laid out
+        inside the work area instead, ending above the taskbar. Same reasoning
+        the Tk overlay applies to the macOS Dock, which is always above it.
+
+        Qt reports both rectangles in logical units already, so there is no DPI
+        arithmetic here — that is what gui/scaling.py does by hand.
         """
         screen = self._screen()
         if screen is None:
             return
-        g = screen.geometry()
+        g = screen.geometry() if is_window_on_top(self) else screen.availableGeometry()
         h = max(1, int(g.height() * self._height_percent / 100))
         self.setGeometry(QRect(g.x(), g.y() + g.height() - h, g.width(), h))
 
@@ -397,13 +419,19 @@ class SubtitleWindow(QWidget):
         )
 
     def _pill_font(self) -> QFont:
-        return subtitle_font(max(14, self._translation_px() // 3), bold=False)
+        """Fixed size and bold, exactly as the Tk overlay draws it.
+
+        The pills are a disclaimer and a status note, not subtitle content, so
+        they must not grow with the subtitle font — at a large size the
+        disclaimer took a third of the overlay.
+        """
+        return subtitle_font(PILL_FONT_PX, bold=True)
 
     def _pill_height(self) -> int:
         return QFontMetrics(self._pill_font()).height() + 16
 
     def _footer_text(self) -> str:
-        from gui.subtitle_window import DEFAULT_FOOTER, FOOTER_TRANSLATIONS
+        from gui_qt.subtitle_text import DEFAULT_FOOTER, FOOTER_TRANSLATIONS
 
         return FOOTER_TRANSLATIONS.get(self._target_language, DEFAULT_FOOTER)
 
@@ -563,7 +591,7 @@ class SubtitleWindow(QWidget):
         """
         if not text:
             return
-        from gui.subtitle_window import split_display_chunks
+        from gui_qt.subtitle_text import split_display_chunks
 
         if self._mode == SUBTITLE_MODE_REALTIME and not source_text:
             chunks = split_display_chunks(text, REALTIME_MAX_BLOCK_CHARS)
@@ -642,21 +670,17 @@ class SubtitleWindow(QWidget):
         self.update()
 
     def set_always_on_top(self, enabled: bool) -> None:
-        """Toggle the stays-on-top flag without losing the window.
+        """Toggle the stays-on-top flag, and re-place the overlay for it.
 
-        ``setWindowFlag`` recreates the native window and HIDES the widget in
-        the process, so visibility has to be read BEFORE the call — reading it
-        after saw the window Qt had just hidden and skipped the re-show, which
-        is how switching the always-on-top mode made the overlay vanish.
+        The flag goes through set_window_on_top, which does not recreate the
+        native window — so the overlay neither vanishes nor flashes. The
+        geometry still has to be recomputed: only a topmost window paints over
+        the taskbar, so a non-topmost overlay is laid out above it instead.
         """
-        if bool(self.windowFlags() & Qt.WindowStaysOnTopHint) == enabled:
-            return  # nothing to recreate
-        was_visible = self.isVisible()
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
-        if was_visible:
-            # The recreated window comes back at its default geometry.
-            self._apply_geometry()
-            self.show()
+        if is_window_on_top(self) == enabled:
+            return
+        set_window_on_top(self, enabled)
+        self._apply_geometry()
 
     def set_backdrop_opacity(self, percent: int) -> None:
         """Set backdrop opacity 0-100. 0 leaves the video fully visible.
