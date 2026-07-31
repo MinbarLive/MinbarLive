@@ -19,7 +19,7 @@ import re
 import threading
 
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPixmap
+from PySide6.QtGui import QColor, QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config import ICON_PATH, ICON_PATH_PNG, ICON_PATH_PNG_ON_DARK
+from config import ICON_PATH_PNG, ICON_PATH_PNG_ON_DARK
 from gui.control_state import (
     STRATEGY_IDS,
     apply_strategy,
@@ -54,6 +54,7 @@ from gui.control_state import (
 from gui.device_list import find_input_device_position, get_input_devices
 from gui_qt.api_keys import activate_stored_keys, ensure_keys
 from gui_qt.i18n import load_gui_translations
+from gui_qt.icons import app_icon
 from gui_qt.pipeline_bridge import PipelineBridge, streaming_enabled
 from gui_qt.subtitle_window import SubtitleWindow
 from gui_qt.theme import current_colors
@@ -276,14 +277,12 @@ class ControlPanel(QMainWindow):
 
     # ── window chrome ────────────────────────────────────────────────────
     def _apply_window_icon(self) -> None:
-        """Taskbar + title-bar icon. Without it Qt shows its default, which is
-        what "no logo in the taskbar" was."""
-        for path in (ICON_PATH, ICON_PATH_PNG):
-            if path and os.path.exists(path):
-                icon = QIcon(path)
-                if not icon.isNull():
-                    self.setWindowIcon(icon)
-                    return
+        """Taskbar + title-bar icon. Set on the window as well as on the
+        QApplication so the two can never disagree — both come from the one
+        cached QIcon, built from the logo's mark (see gui_qt/icons.py)."""
+        icon = app_icon()
+        if icon is not None:
+            self.setWindowIcon(icon)
 
     def _logo_pixmap(self, height: int = 30) -> QPixmap | None:
         """The header logo's mark for the current theme.

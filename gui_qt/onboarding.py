@@ -25,10 +25,8 @@ decisions that were expensive to reach:
 
 from __future__ import annotations
 
-import os
-
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QIcon
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -44,9 +42,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config import ICON_PATH, ICON_PATH_PNG
 from gui.device_list import get_input_devices
 from gui_qt.i18n import load_gui_translations
+from gui_qt.icons import app_icon
 from gui_qt.levels import level_fill
 from gui_qt.theme import apply_theme, current_colors
 from gui_qt.widgets import AudioLevelBar, Dropdown, SegmentedControl, warning_box
@@ -132,12 +130,9 @@ class OnboardingWizard(QDialog):
         self._i18n: list[tuple[QWidget, str, str, str]] = []
 
         self.setWindowTitle("MinbarLive")
-        for path in (ICON_PATH, ICON_PATH_PNG):
-            if path and os.path.exists(path):
-                icon = QIcon(path)
-                if not icon.isNull():
-                    self.setWindowIcon(icon)
-                    break
+        icon = app_icon()
+        if icon is not None:
+            self.setWindowIcon(icon)
         self.resize(680, 660)
 
         outer = QVBoxLayout(self)
