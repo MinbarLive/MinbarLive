@@ -16,6 +16,7 @@ text appearance would not.
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 
 import pytest
@@ -391,6 +392,95 @@ class TestLifecycle:
         assert bottom_off == screen.availableGeometry().bottom() + 1
         assert bottom_on == screen.geometry().bottom() + 1
         w.hide()
+
+    def test_the_overlay_takes_a_taskbar_button(self, overlay):
+        # Qt.WindowDoesNotAcceptFocus sets WS_EX_NOACTIVATE, and Windows keeps
+        # such a window OFF the taskbar unless WS_EX_APPWINDOW is forced on too
+        # — the flag the Tk overlay sets by hand. Whether the button appeared
+        # was then down to when the shell looked, so it came and went between
+        # runs. WA_ShowWithoutActivating keeps the half that matters.
+        from PySide6.QtCore import Qt
+
+        w = overlay(SUBTITLE_MODE_CONTINUOUS)
+        assert not (w.windowFlags() & Qt.WindowDoesNotAcceptFocus)
+        assert w.testAttribute(Qt.WA_ShowWithoutActivating)
+
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="WS_EX_NOACTIVATE is a Windows style"
+    )
+    def test_the_native_window_is_not_ws_ex_noactivate(self, overlay, qt_app):
+        # The rule above is a native one, so assert on the native style: a
+        # future flag change could reintroduce it without touching the Qt flag
+        # this class otherwise checks.
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        user32.GetWindowLongW.restype = ctypes.c_long
+        w = overlay(SUBTITLE_MODE_CONTINUOUS)
+        w.show()
+        qt_app.processEvents()
+        ex_style = user32.GetWindowLongW(int(w.winId()), -20) & 0xFFFFFFFF
+        w.hide()
+        assert not ex_style & 0x08000000, "WS_EX_NOACTIVATE keeps it off the taskbar"
+        assert not ex_style & 0x00000080, "WS_EX_TOOLWINDOW hides it from OBS"
+
+
+class TestWindowIcon:
+    """The taskbar button drew a pale smudge: the shipped .ico carries the full
+    vertical lockup — mark, wordmark and tagline — at every one of its sizes."""
+
+    def test_the_icon_covers_the_sizes_windows_asks_for(self, qt_app):
+        from gui_qt.icons import ICON_SIZES, app_icon
+
+        icon = app_icon()
+        assert icon is not None and not icon.isNull()
+        assert set(ICON_SIZES) <= {size.width() for size in icon.availableSizes()}
+
+    def test_the_taskbar_size_is_drawn_and_square(self, qt_app):
+        from gui_qt.icons import app_icon
+
+        pixmap = app_icon().pixmap(24, 24)
+        # The returned pixmap is in DEVICE pixels — 30x30 on a 125% display.
+        assert pixmap.width() == pixmap.height()
+        assert round(pixmap.width() / pixmap.devicePixelRatio()) == 24
+        image = pixmap.toImage()
+        painted = sum(
+            1
+            for y in range(image.height())
+            for x in range(image.width())
+            if image.pixelColor(x, y).alpha() > 8
+        )
+        assert painted > 20, "the 24px icon is blank"
+
+    def test_the_mark_is_centred_on_its_square(self):
+        # The mark is wider than tall (402x256 for the shipped artwork), so it
+        # is scaled by its longer side and centred rather than stretched.
+        from config import ICON_PATH_PNG_ON_DARK
+        from utils.icons import square_marks
+
+        squares = square_marks(ICON_PATH_PNG_ON_DARK, (32, 64))
+        assert [s.size for s in squares] == [(32, 32), (64, 64)]
+        for square in squares:
+            box = square.getbbox()
+            assert box is not None, "nothing drawn"
+            above, below = box[1], square.height - box[3]
+            assert abs(above - below) <= 1, f"not vertically centred: {box}"
+
+    def test_utils_icons_does_not_pull_tk_into_the_process(self):
+        # gui_qt/control_panel.py and gui_qt/icons.py both call logo_mark, and
+        # a module-level "import tkinter" there loaded 50-odd Tk modules into
+        # the Qt process. Run in a subprocess: the suite imports the Tk tree
+        # elsewhere, so sys.modules in THIS process proves nothing.
+        import pathlib
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, "-c", "import sys, utils.icons; print('tkinter' in sys.modules)"],
+            capture_output=True,
+            text=True,
+            cwd=pathlib.Path(__file__).resolve().parents[1],
+        )
+        assert result.stdout.strip() == "False", result.stderr
 
 
 class TestNoTextShapingLayer:
