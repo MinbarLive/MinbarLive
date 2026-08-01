@@ -30,7 +30,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -52,6 +51,7 @@ from gui.control_state import (
 )
 from gui.device_list import find_input_device_position, get_input_devices
 from gui_qt.api_keys import activate_stored_keys, ensure_keys
+from gui_qt.dialogs import show_message
 from gui_qt.i18n import load_gui_translations
 from gui_qt.icons import app_icon
 from gui_qt.pipeline_bridge import PipelineBridge, streaming_enabled
@@ -173,6 +173,7 @@ class ControlPanel(QMainWindow):
         self._start_error: Exception | None = None
         self._stop_error: Exception | None = None
         self._announcement_active = False
+        self._announcement_text = ""
         self._log_collapsed = self.settings.log_panel_collapsed
         self._columns: int | None = None
         self._level_queued = False
@@ -971,17 +972,13 @@ class ControlPanel(QMainWindow):
         self._info(title, body)
 
     def _info(self, title: str, body: str) -> None:
-        """A silent information dialog.
+        """A themed, silent information dialog.
 
-        ``QMessageBox.information`` plays the system's "asterisk" sound on
-        Windows — the icon is what triggers it. Reading a dropdown's help is not
-        an alert, so the icon (and with it the sound) is dropped.
+        ``QMessageBox.information`` draws the platform's own dialog with an
+        English "OK" and plays the system's "asterisk" sound — the icon is what
+        triggers it. Reading a dropdown's help is not an alert.
         """
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.NoIcon)
-        box.setWindowTitle(title)
-        box.setText(body)
-        box.exec()
+        show_message(self, title, body, kind="info", translate=self._t)
 
     # ── card: advanced ───────────────────────────────────────────────────
     def _advanced_card(self) -> Card:
@@ -1783,6 +1780,18 @@ class ControlPanel(QMainWindow):
             # panel showed on every change of this setting.
             set_window_on_top(window, on_top)
 
+    def bring_to_front(self, window: QWidget) -> None:
+        """Put a secondary window back in front of the panel and the overlay.
+
+        Raising alone is not enough when an always-on-top window is in play —
+        the overlay, which an announcement can create on the spot — so the
+        window is first put on the same footing, as the Tk tree does before it
+        lifts the announcement window.
+        """
+        set_window_on_top(window, self._effective_always_on_top())
+        window.raise_()
+        window.activateWindow()
+
     def _show_secondary(self, window: QWidget) -> None:
         """Show a secondary window carrying the current always-on-top mode.
 
@@ -1947,7 +1956,13 @@ class ControlPanel(QMainWindow):
         try:
             self.controller.start_input_level_test(self._selected_device())
         except Exception as exc:  # noqa: BLE001 - surfaced to the operator
-            QMessageBox.warning(self, self._t("input_level", "Input level"), str(exc))
+            show_message(
+                self,
+                self._t("input_level", "Input level"),
+                str(exc),
+                kind="warn",
+                translate=self._t,
+            )
         self._level_button_state = None
 
     # ── secondary windows ────────────────────────────────────────────────
@@ -2076,7 +2091,9 @@ class ControlPanel(QMainWindow):
         if error is not None:
             log(f"Start failed: {error}", level="ERROR")
             self._sync_running_state()
-            QMessageBox.critical(self, "MinbarLive", str(error))
+            show_message(
+                self, "MinbarLive", str(error), kind="error", translate=self._t
+            )
             self._apply_subtitle_hide_mode()
             return
 
@@ -2189,7 +2206,9 @@ class ControlPanel(QMainWindow):
             log(f"Device switch failed: {exc}", level="ERROR")
             self._running = False
             self._sync_running_state()
-            QMessageBox.critical(self, "MinbarLive", str(exc))
+            show_message(
+                self, "MinbarLive", str(exc), kind="error", translate=self._t
+            )
 
     # ── subtitle window ──────────────────────────────────────────────────
     def _effective_always_on_top(self) -> bool:
@@ -2244,6 +2263,7 @@ class ControlPanel(QMainWindow):
             adaptive_catchup=s.adaptive_subtitle_catchup,
         )
         self.subtitle_window.set_always_on_top(self._effective_always_on_top())
+        self._apply_active_announcement()
         self.subtitle_window.show()
 
     def _teardown_subtitle_window(self) -> None:
@@ -2257,12 +2277,17 @@ class ControlPanel(QMainWindow):
         none open — otherwise an announcement is impossible while stopped,
         which is exactly when it is most useful."""
         self._announcement_active = True
+        # Kept, not just flagged: an "until stopped" message has to survive the
+        # overlay being torn down and built again (Tk keeps the same state on
+        # the AppGUI for the same reason) — see _ensure_subtitle_window.
+        self._announcement_text = text
         self._ensure_subtitle_window()
         if self.subtitle_window:
             self.subtitle_window.set_announcement(text)
 
     def clear_announcement(self) -> None:
         self._announcement_active = False
+        self._announcement_text = ""
         if self.subtitle_window:
             self.subtitle_window.clear_announcement()
         # If the overlay was kept open only for the announcement, close it.
@@ -2270,6 +2295,22 @@ class ControlPanel(QMainWindow):
 
     def has_active_announcement(self) -> bool:
         return self._announcement_active
+
+    def _apply_active_announcement(self) -> None:
+        """Put a still-running announcement back onto a freshly built overlay.
+
+        An "until stopped" message has to survive the overlay being torn down
+        and built again — a stop/start under the "when stopped" hide policy, a
+        monitor change — instead of vanishing with the window it happened to
+        have been drawn on. The Tk tree keeps the same state on the AppGUI for
+        exactly this.
+        """
+        if (
+            self._announcement_active
+            and self._announcement_text
+            and self.subtitle_window is not None
+        ):
+            self.subtitle_window.set_announcement(self._announcement_text)
 
     # ── pipeline signals (already on the GUI thread) ─────────────────────
     def _on_translation(self, text: str, source_text) -> None:
