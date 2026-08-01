@@ -1,10 +1,15 @@
 """Qt batch / file window: turn a recording into subtitles.
 
 Port of ``gui/batch_view.py``, including its control ORDER: settings first
-(languages, output format, bilingual toggle, then the collapsed "More
-settings" expander with the four engine dropdowns), THEN the file picker, then
-progress, status and the action buttons. Picking a file is the last thing you
-do before pressing Start, so it sits next to Start — not at the top.
+(languages, output format, subtitle content, then the collapsed "More settings"
+expander with the four engine dropdowns), THEN the file picker, then progress,
+status and the action buttons. Picking a file is the last thing you do before
+pressing Start, so it sits next to Start — not at the top.
+
+Laid out as a hero plus three cards over a fixed action bar, rather than as the
+Tk window's single frame: every other window in this tree (settings, history,
+announcement) groups its controls into cards, and one box around everything
+read as the odd one out. The cards scroll; Start never does.
 
 The batch job is configured independently of the live app: nothing here writes
 to the main settings. The pipeline itself is ``batch/processor.py``, reused
@@ -20,8 +25,8 @@ import threading
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QAbstractScrollArea,
     QApplication,
-    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -29,15 +34,16 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
 from gui_qt.api_keys import ensure_keys
-from gui_qt.widgets import Dropdown
+from gui_qt.dialogs import ask_yes_no
+from gui_qt.widgets import Dropdown, Expander, SegmentedControl, field
 from providers import (
     PROVIDER_CHOICES,
     TRANSCRIPTION_PROVIDER_CHOICES,
@@ -69,21 +75,40 @@ def _batch_stt_fallback(provider_id: str) -> str:
     return _BATCH_STT_FALLBACKS.get(provider_id, provider_id)
 
 
-# (settings value, translation key, English fallback) per output format.
+# (settings value, translation key, English fallback) per output format, in the
+# order the segmented control shows them.
 _OUTPUT_FORMATS = (
     ("srt", "batch_output_srt", "Subtitles (.srt)"),
     ("txt", "batch_output_text", "Transcript (.txt)"),
     ("both", "batch_output_both", "Both (.srt + .txt)"),
 )
+_DEFAULT_OUTPUT_INDEX = 2  # both — the extra file costs nothing
 
-# Width the card is laid out for (the Tk window's), fixed: the content is a
+# Bilingual subtitles: off / on, as a two-way segmented choice rather than a
+# check box, so it reads like the other either/or selectors in the app.
+_BILINGUAL_LABELS = (
+    ("batch_bilingual_off", "Translation only"),
+    ("batch_bilingual_on", "Original + translation"),
+)
+_DEFAULT_BILINGUAL_INDEX = 1  # the original above the translation, as in Tk
+
+# Width the window is laid out for (the Tk card's), fixed: the content is a
 # single column of dropdowns and buttons that stretch badly. The height follows
 # the content, which changes with the GUI language and the More-settings
 # expander — see _resize_to_content.
 BATCH_WINDOW_W = 480
 
-# Qt's "no maximum", for lifting the fixed height before re-measuring.
-_MAX_H = 16777215
+# Padding around the card column, the gap between cards, and a card's own
+# inner padding. Tighter than the settings window's, which scrolls anyway:
+# this one is sized to its content, and every pixel of padding is one the
+# whole window grows by.
+_PAD = 16
+_CARD_GAP = 12
+_CARD_PAD = 16
+
+# Never taller than this share of the screen. Past it the cards scroll rather
+# than the action bar being pushed off the bottom.
+_MAX_SCREEN_SHARE = 0.92
 
 # Longest picker-button label before the filename is truncated in the middle,
 # so the start AND the extension stay readable.
@@ -189,7 +214,6 @@ class BatchWindow(QDialog):
         self.settings = settings
         self._input_path = ""
         self._output_path = ""
-        self._more_open = False
         self.setWindowTitle(self._t("batch_file", "Batch / File"))
         if parent is not None:
             self.setWindowIcon(parent.windowIcon())
@@ -203,51 +227,57 @@ class BatchWindow(QDialog):
         self.worker.dl_finished.connect(self._on_download_finished)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 16, 16, 16)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # One card holding everything, as in the Tk window: the title belongs
-        # to the card rather than floating above it, and the file picker is
-        # part of the same surface as the options it applies to.
-        card = QFrame()
-        card.setObjectName("card")
-        box = QVBoxLayout(card)
-        box.setContentsMargins(18, 16, 18, 16)
-        box.setSpacing(10)
-        box.addLayout(self._header())
-        box.addWidget(self._options())
-        box.addLayout(self._file_row())
+        # The cards scroll; the action bar below does not. On a short screen
+        # that is the difference between reaching Start and not.
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
+        self.body = QWidget()
+        column = QVBoxLayout(self.body)
+        column.setContentsMargins(_PAD, _PAD, _PAD, _PAD)
+        column.setSpacing(_CARD_GAP)
+        column.addLayout(self._hero())
+        column.addWidget(self._language_card())
+        column.addWidget(self._output_card())
+        column.addWidget(self._file_card())
+        # Keeps the cards top-aligned when the window is taller than they are.
+        column.addStretch(1)
+        self.scroll.setWidget(self.body)
+        outer.addWidget(self.scroll, 1)
 
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        # Always on screen, empty when idle — a bar that only appears once a
-        # run starts leaves the window jumping a row taller at the moment the
-        # user is watching it, and gives no hint that progress is reported.
-        self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(_PROGRESS_H)
-        box.addWidget(self.progress)
-
-        self.status = QLabel("")
-        self.status.setWordWrap(True)
-        self._set_status("", "muted")
-        box.addWidget(self.status)
-
-        box.addLayout(self._actions())
-        box.addLayout(self._followups())
-        outer.addWidget(card)
+        self.action_bar = self._action_bar()
+        outer.addWidget(self.action_bar)
 
         self._sync_file_row()
+        self._sync_bilingual_state()
         self._resize_to_content()
 
     # ── build ────────────────────────────────────────────────────────────
-    def _caption(self, text: str) -> QLabel:
-        label = QLabel(text)
-        label.setObjectName("field")
-        return label
+    def _card(self, symbol: str, title: str) -> tuple[QFrame, QVBoxLayout]:
+        """A titled card, laid out like the settings window's.
 
-    def _header(self) -> QHBoxLayout:
-        """Glyph tile, title and sub-line — the card header the Tk window has."""
+        The heading is the smaller ``#heading`` style rather than the settings
+        window's 20px ``#card_title``: three of those in a window sized to its
+        content cost about 45px of height for no extra information, and the
+        hero above already carries the big title.
+        """
+        card = QFrame()
+        card.setObjectName("card")
+        box = QVBoxLayout(card)
+        box.setContentsMargins(_CARD_PAD, _CARD_PAD - 2, _CARD_PAD, _CARD_PAD - 2)
+        box.setSpacing(10)
+        heading = QLabel(f"{symbol}  {title}")
+        heading.setObjectName("heading")
+        box.addWidget(heading)
+        return card, box
+
+    def _hero(self) -> QHBoxLayout:
+        """Glyph tile, title and sub-line — the window's identity block."""
         row = QHBoxLayout()
         row.setSpacing(12)
         # Same grid glyph as the panel button that opens this window.
@@ -271,53 +301,12 @@ class BatchWindow(QDialog):
         row.addLayout(column, 1)
         return row
 
-    def _actions(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        self.start_btn = QPushButton(self._t("batch_start", "Start"))
-        self.start_btn.setObjectName("accent")
-        self.start_btn.setMinimumHeight(44)
-        self.start_btn.clicked.connect(self._on_start)
-        self.start_btn.setEnabled(False)
-        self.cancel_btn = QPushButton(self._t("batch_cancel", "Stop processing"))
-        self.cancel_btn.setMinimumHeight(44)
-        self.cancel_btn.clicked.connect(self._on_cancel)
-        self.cancel_btn.setEnabled(False)
-        row.addWidget(self.start_btn, 1)
-        row.addWidget(self.cancel_btn, 1)
-        return row
-
-    def _followups(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        # Always clickable: past runs are in the history viewer whether or not
-        # one finished in THIS window, so disabling it hid a working feature.
-        # A finished run turns it accent (see _on_finished) to point at it.
-        self.history_btn = QPushButton(self._t("batch_open_history", "Show in history"))
-        self.history_btn.setMinimumHeight(36)
-        self.history_btn.clicked.connect(self._on_open_history)
-        self.folder_btn = QPushButton(self._t("batch_open_folder", "Open folder"))
-        self.folder_btn.setMinimumHeight(36)
-        self.folder_btn.clicked.connect(self._on_open_folder)
-        # Nothing to open until a run has written something this session.
-        self.folder_btn.setEnabled(False)
-        row.addWidget(self.history_btn, 1)
-        row.addWidget(self.folder_btn, 1)
-        return row
-
-    def _options(self) -> QWidget:
-        holder = QWidget()
-        grid = QGridLayout(holder)
-        grid.setContentsMargins(0, 6, 0, 0)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(6)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+    # ── card: translation ────────────────────────────────────────────────
+    def _language_card(self) -> QFrame:
+        card, box = self._card("⇄", self._t("section_translation", "Translation"))
 
         source_names = [name for name, _ in SOURCE_LANGUAGES]
-        self.source_combo = self._combo(
-            [language_display_name(n) for n in source_names]
-        )
+        self.source_combo = Dropdown([language_display_name(n) for n in source_names])
         self.source_combo.setCurrentText(
             language_display_name(
                 self.settings.source_language
@@ -325,55 +314,68 @@ class BatchWindow(QDialog):
                 else source_names[0]
             )
         )
-        self.target_combo = self._combo(
+        self.target_combo = Dropdown(
             [language_display_name(n) for n in TARGET_LANGUAGE_NAMES]
         )
         self.target_combo.setCurrentText(
             language_display_name(self.settings.target_language)
         )
-        grid.addWidget(
-            self._caption(self._t("batch_source_language", "Spoken language")), 0, 0
-        )
-        grid.addWidget(
-            self._caption(self._t("batch_target_language", "Subtitle language")), 0, 1
-        )
-        grid.addWidget(self.source_combo, 1, 0)
-        grid.addWidget(self.target_combo, 1, 1)
 
-        # Output format stays visible rather than hiding behind "More
-        # settings": it is the primary deliverable. Both is the default — the
-        # extra file costs nothing.
-        self.output_combo = self._combo(
-            [self._t(key, fallback) for _, key, fallback in _OUTPUT_FORMATS]
+        pair = QHBoxLayout()
+        pair.setSpacing(10)
+        pair.addWidget(
+            field(
+                self._t("batch_source_language", "Spoken language"),
+                self.source_combo,
+                symbol="⌁",
+            ),
+            1,
         )
-        self.output_combo.setCurrentIndex(2)
-        self.output_combo.currentIndexChanged.connect(self._sync_bilingual_state)
-        grid.addWidget(
-            self._caption(self._t("batch_output_format", "Output")), 2, 0, 1, 2
+        pair.addWidget(
+            field(
+                self._t("batch_target_language", "Subtitle language"),
+                self.target_combo,
+                symbol="→",
+            ),
+            1,
         )
-        grid.addWidget(self.output_combo, 3, 0, 1, 2)
+        box.addLayout(pair)
+        return card
 
-        self.bilingual_check = QCheckBox(
-            self._t(
-                "batch_bilingual_srt", "Bilingual subtitles (original + translation)"
+    # ── card: output ─────────────────────────────────────────────────────
+    def _output_card(self) -> QFrame:
+        card, box = self._card("▤", self._t("batch_output_format", "Output"))
+
+        # Segmented rather than a dropdown: three fixed alternatives, all worth
+        # seeing at once — the same shape as the panel's 3-way selectors.
+        self.output_segment = SegmentedControl(
+            [self._t(key, fallback) for _v, key, fallback in _OUTPUT_FORMATS],
+            _DEFAULT_OUTPUT_INDEX,
+        )
+        self.output_segment.changed.connect(lambda _i: self._sync_bilingual_state())
+        # No caption of its own: the card is titled "Output" and repeating it
+        # one line down says nothing.
+        box.addWidget(self.output_segment)
+
+        # Was a check box; a two-way segment says what each choice PRODUCES
+        # instead of leaving "off" unnamed.
+        self.bilingual_segment = SegmentedControl(
+            [self._t(key, fallback) for key, fallback in _BILINGUAL_LABELS],
+            _DEFAULT_BILINGUAL_INDEX,
+        )
+        box.addWidget(
+            field(
+                self._t("subtitles", "Subtitles").rstrip(":"),
+                self.bilingual_segment,
+                symbol="≋",
             )
         )
-        # On by default, as in the Tk window: the original above the
-        # translation is what most runs want. Untick for a clean
-        # single-language subtitle file (an OBS overlay, say).
-        self.bilingual_check.setChecked(True)
-        grid.addWidget(self.bilingual_check, 4, 0, 1, 2)
 
-        self.more_btn = QPushButton(self._more_text())
-        self.more_btn.setObjectName("row")
-        self.more_btn.clicked.connect(self._toggle_more)
-        grid.addWidget(self.more_btn, 5, 0, 1, 2)
-
-        self.more_widget = self._more_settings()
-        grid.addWidget(self.more_widget, 6, 0, 1, 2)
-        self.more_widget.setVisible(False)
-        self._sync_bilingual_state()
-        return holder
+        self.more = Expander(self._t("batch_more_settings", "More settings"))
+        self.more.body.addWidget(self._more_settings())
+        self.more.toggled.connect(self._on_more_toggled)
+        box.addWidget(self.more)
+        return card
 
     def _more_settings(self) -> QWidget:
         """Engine + model pickers. Batch always runs the SEGMENTED engine, so
@@ -381,9 +383,9 @@ class BatchWindow(QDialog):
         what the run actually uses."""
         holder = QWidget()
         grid = QGridLayout(holder)
-        grid.setContentsMargins(0, 10, 0, 0)
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(6)
+        grid.setVerticalSpacing(8)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
 
@@ -396,10 +398,10 @@ class BatchWindow(QDialog):
         effective = _batch_stt_fallback(self.settings.transcription_provider)
         if effective not in self._stt_ids:
             effective = self._stt_ids[0]
-        self.stt_provider_combo = self._combo([n for n, _p in stt_choices])
+        self.stt_provider_combo = Dropdown([n for n, _p in stt_choices])
         self.stt_provider_combo.setCurrentIndex(self._stt_ids.index(effective))
         self.stt_provider_combo.currentIndexChanged.connect(self._on_stt_provider)
-        self.stt_model_combo = self._combo([])
+        self.stt_model_combo = Dropdown()
         grid.addWidget(
             self._caption(self._t("batch_transcription_model", "Transcription")),
             0, 0, 1, 2,
@@ -413,16 +415,14 @@ class BatchWindow(QDialog):
             if self.settings.ai_provider in self._translation_ids
             else self._translation_ids[0]
         )
-        self.translation_provider_combo = self._combo(
-            [n for n, _p in PROVIDER_CHOICES]
-        )
+        self.translation_provider_combo = Dropdown([n for n, _p in PROVIDER_CHOICES])
         self.translation_provider_combo.setCurrentIndex(
             self._translation_ids.index(provider)
         )
         self.translation_provider_combo.currentIndexChanged.connect(
             self._on_translation_provider
         )
-        self.translation_model_combo = self._combo([])
+        self.translation_model_combo = Dropdown()
         grid.addWidget(
             self._caption(self._t("batch_translation_model", "Translation")),
             2, 0, 1, 2,
@@ -444,10 +444,16 @@ class BatchWindow(QDialog):
         )
         return holder
 
-    def _file_row(self) -> QHBoxLayout:
-        """The picker button carries the chosen file's name itself, with a ✕
-        beside it to clear the choice — so no separate "no file selected" line
-        repeating what the button already says."""
+    # ── card: the recording ──────────────────────────────────────────────
+    def _file_card(self) -> QFrame:
+        card, box = self._card("♪", self._t("batch_media_files", "Audio/Video"))
+        # Tighter than the other cards: picker, progress and status are one
+        # group, and the status line is blank until a run says something.
+        box.setSpacing(8)
+
+        # The picker button carries the chosen file's name itself, with a ✕
+        # beside it to clear the choice — so no separate "no file selected"
+        # line repeating what the button already says.
         row = QHBoxLayout()
         row.setSpacing(6)
         self.pick_btn = QPushButton()
@@ -458,7 +464,69 @@ class BatchWindow(QDialog):
         self.clear_btn.clicked.connect(self._on_clear)
         row.addWidget(self.pick_btn, 1)
         row.addWidget(self.clear_btn)
-        return row
+        box.addLayout(row)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        # Always on screen, empty when idle — a bar that only appears once a
+        # run starts leaves the window jumping a row taller at the moment the
+        # user is watching it, and gives no hint that progress is reported.
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(_PROGRESS_H)
+        box.addWidget(self.progress)
+
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        self._set_status("", "muted")
+        box.addWidget(self.status)
+        return card
+
+    # ── action bar ───────────────────────────────────────────────────────
+    def _action_bar(self) -> QWidget:
+        """Start / Stop and the two follow-ups, pinned below the scroll area."""
+        holder = QWidget()
+        box = QVBoxLayout(holder)
+        box.setContentsMargins(_PAD, 4, _PAD, _PAD - 2)
+        box.setSpacing(8)
+
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        self.start_btn = QPushButton(self._t("batch_start", "Start"))
+        self.start_btn.setObjectName("accent")
+        self.start_btn.setMinimumHeight(44)
+        self.start_btn.clicked.connect(self._on_start)
+        self.start_btn.setEnabled(False)
+        self.cancel_btn = QPushButton(self._t("batch_cancel", "Stop processing"))
+        self.cancel_btn.setMinimumHeight(44)
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        self.cancel_btn.setEnabled(False)
+        top.addWidget(self.start_btn, 1)
+        top.addWidget(self.cancel_btn, 1)
+        box.addLayout(top)
+
+        bottom = QHBoxLayout()
+        bottom.setSpacing(8)
+        # Always clickable: past runs are in the history viewer whether or not
+        # one finished in THIS window, so disabling it hid a working feature.
+        # A finished run turns it accent (see _on_finished) to point at it.
+        self.history_btn = QPushButton(self._t("batch_open_history", "Show in history"))
+        self.history_btn.setMinimumHeight(36)
+        self.history_btn.clicked.connect(self._on_open_history)
+        self.folder_btn = QPushButton(self._t("batch_open_folder", "Open folder"))
+        self.folder_btn.setMinimumHeight(36)
+        self.folder_btn.clicked.connect(self._on_open_folder)
+        # Nothing to open until a run has written something this session.
+        self.folder_btn.setEnabled(False)
+        bottom.addWidget(self.history_btn, 1)
+        bottom.addWidget(self.folder_btn, 1)
+        box.addLayout(bottom)
+        return holder
+
+    def _caption(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("field")
+        return label
 
     def _file_button_text(self) -> str:
         """The chosen file's name, or the prompt. A long name is truncated in
@@ -483,29 +551,40 @@ class BatchWindow(QDialog):
         self.start_btn.setEnabled(chosen and not running)
         self.cancel_btn.setEnabled(running)
 
+    def _natural_height(self) -> int:
+        """Height the content wants at ``BATCH_WINDOW_W``.
+
+        Measured from the card column's own layout plus the action bar, not
+        from ``adjustSize()`` or the dialog's sizeHint: a word-wrapped label's
+        sizeHint reserves a second line it does not use at this width, and the
+        surplus was handed to whatever in the column could stretch.
+        """
+        body_layout = self.body.layout()
+        body_layout.activate()
+        if body_layout.hasHeightForWidth():
+            body = body_layout.totalHeightForWidth(BATCH_WINDOW_W)
+        else:
+            body = body_layout.totalSizeHint().height()
+        return body + self.action_bar.sizeHint().height()
+
     def _resize_to_content(self) -> None:
         """Fixed width, height from the content — the shape of the Tk window,
         which is not resizable either. Called again whenever the More-settings
-        expander changes how tall the card is.
+        expander changes how tall the cards are.
 
-        The height comes from heightForWidth, not from ``adjustSize()``: a
-        word-wrapped label's sizeHint reserves a second line it does not use at
-        this width, and the surplus was handed to the progress bar and the
-        status line, which then sat in a visibly loose column.
+        Capped at a share of the screen: past that the cards scroll instead of
+        the action bar being pushed off the bottom.
         """
         self.setFixedWidth(BATCH_WINDOW_W)
-        self.setMinimumHeight(0)
-        self.setMaximumHeight(_MAX_H)
         # Deliver the invalidation the expander posted when it hid or showed
-        # its panel: QBoxLayout caches heightForWidth, so measuring in the same
+        # its panel: layouts cache heightForWidth, so measuring in the same
         # call would describe the layout as it was one toggle ago.
         QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
-        layout = self.layout()
-        layout.activate()
-        if layout.hasHeightForWidth():
-            self.setFixedHeight(layout.totalHeightForWidth(BATCH_WINDOW_W))
-        else:
-            self.setFixedHeight(layout.totalSizeHint().height())
+        wanted = self._natural_height()
+        screen = self.screen()
+        if screen is not None:
+            wanted = min(wanted, int(screen.availableGeometry().height() * _MAX_SCREEN_SHARE))
+        self.setFixedHeight(wanted)
 
     def _set_status(self, text: str, kind: str = "muted") -> None:
         """Status line + its colour. The colour comes from an object name, not
@@ -516,19 +595,8 @@ class BatchWindow(QDialog):
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
 
-    @staticmethod
-    def _combo(items: list[str]) -> Dropdown:
-        return Dropdown(items)
-
     # ── option handlers ──────────────────────────────────────────────────
-    def _more_text(self) -> str:
-        arrow = "▾" if self._more_open else "▸"
-        return f"{arrow}  {self._t('batch_more_settings', 'More settings')}"
-
-    def _toggle_more(self) -> None:
-        self._more_open = not self._more_open
-        self.more_widget.setVisible(self._more_open)
-        self.more_btn.setText(self._more_text())
+    def _on_more_toggled(self, _open: bool) -> None:
         # Queued: showing or hiding a widget invalidates the layout through a
         # POSTED event, and measuring in this same call returns the previous
         # state's numbers — the window then grew when the panel opened but did
@@ -538,7 +606,15 @@ class BatchWindow(QDialog):
 
     def _sync_bilingual_state(self) -> None:
         # Transcript-only writes no SRT, so a bilingual SRT is meaningless.
-        self.bilingual_check.setEnabled(self._output_format() != "txt")
+        # Disabled on the widget rather than through set_enabled(), so
+        # isEnabled() reports it and Qt greys the segments by propagation.
+        self.bilingual_segment.setEnabled(self._output_format() != "txt")
+
+    def _bilingual_srt(self) -> bool:
+        return (
+            self.bilingual_segment.isEnabled()
+            and self.bilingual_segment.current_index() == _DEFAULT_BILINGUAL_INDEX
+        )
 
     def _selected_stt_provider(self) -> str:
         return self._stt_ids[self.stt_provider_combo.currentIndex()]
@@ -579,10 +655,15 @@ class BatchWindow(QDialog):
             )
         self._on_stt_provider(0)
         self._on_translation_provider(0)
-        self.output_combo.setCurrentIndex(2)
+        self.output_segment.set_current_index(_DEFAULT_OUTPUT_INDEX)
+        self.bilingual_segment.set_current_index(_DEFAULT_BILINGUAL_INDEX)
+        self._sync_bilingual_state()
 
     def _output_format(self) -> str:
-        return _OUTPUT_FORMATS[self.output_combo.currentIndex()][0]
+        index = self.output_segment.current_index()
+        if not 0 <= index < len(_OUTPUT_FORMATS):
+            index = _DEFAULT_OUTPUT_INDEX
+        return _OUTPUT_FORMATS[index][0]
 
     # ── file + run ───────────────────────────────────────────────────────
     def _on_pick(self) -> None:
@@ -626,8 +707,7 @@ class BatchWindow(QDialog):
             translation_provider=self._selected_translation_provider(),
             translation_model=self.translation_model_combo.currentData(),
             output_format=self._output_format(),
-            bilingual_srt=self.bilingual_check.isChecked()
-            and self.bilingual_check.isEnabled(),
+            bilingual_srt=self._bilingual_srt(),
         )
         # After start(), so is_running() already reports the new state.
         self._sync_file_row()
@@ -661,6 +741,8 @@ class BatchWindow(QDialog):
     def _on_progress(self, done: int, total: int) -> None:
         if total > 0:
             self.progress.setValue(round(done * 100 / total))
+        # No resize: the text is a constant-length counter, and a window that
+        # resizes on every segment would twitch for the whole run.
         self._set_status(
             self._t("batch_progress", "Segment {current}/{total}").format(
                 current=done, total=total
@@ -687,6 +769,9 @@ class BatchWindow(QDialog):
             ),
             "status_ok",
         )
+        # The outcome can wrap to a second line; the run is over, so growing
+        # for it costs nothing.
+        self._resize_to_content()
 
     def _on_failed(self, message: str) -> None:
         self._sync_file_row()
@@ -695,6 +780,7 @@ class BatchWindow(QDialog):
             self._t("batch_error", "Failed: {error}").format(error=message),
             "status_error",
         )
+        self._resize_to_content()
 
     # ── ffmpeg ───────────────────────────────────────────────────────────
     def _on_ffmpeg_missing(self) -> None:
@@ -716,6 +802,7 @@ class BatchWindow(QDialog):
             ),
             "status_error",
         )
+        self._resize_to_content()
 
     def _offer_ffmpeg_download(self) -> bool:
         """True when a download was started (and the run will resume)."""
@@ -726,13 +813,7 @@ class BatchWindow(QDialog):
             "ffmpeg is required to convert this file format. Download it now? "
             "(one time, ~{mb} MB)",
         ).format(mb=FFMPEG_DOWNLOAD_MB)
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.NoIcon)  # the icon is what plays the system sound
-        box.setWindowTitle("ffmpeg")
-        box.setText(prompt)
-        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        box.setDefaultButton(QMessageBox.Yes)
-        if box.exec() != QMessageBox.Yes:
+        if not ask_yes_no(self, "ffmpeg", prompt, translate=self._t):
             return False
         log("BATCH ffmpeg download started")
         self.worker.start_ffmpeg_download()
