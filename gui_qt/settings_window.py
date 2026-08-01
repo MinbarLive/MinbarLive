@@ -19,13 +19,13 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
+from gui_qt.dialogs import ask_yes_no, show_message
 from gui_qt.widgets import Dropdown, SegmentedControl
 from providers import (
     PROVIDER_CHOICES,
@@ -244,15 +244,17 @@ class SettingsWindow(QDialog):
         # Turning it OFF asks for confirmation (it changes what the pipeline
         # does with every segment); turning it ON is instant.
         if not checked:
-            answer = QMessageBox.question(
+            confirmed = ask_yes_no(
                 self,
                 self._t("islamic_mode", "Islamic mode"),
                 self._t(
                     "islamic_mode_off_confirm",
                     "Turn off Quran and Athan recognition?",
                 ),
+                default_yes=False,
+                translate=self._t,
             )
-            if answer != QMessageBox.Yes:
+            if not confirmed:
                 self.islamic_check.blockSignals(True)
                 self.islamic_check.setChecked(True)
                 self.islamic_check.blockSignals(False)
@@ -284,12 +286,14 @@ class SettingsWindow(QDialog):
         if not provider:
             return
         if self._panel._running:
-            QMessageBox.information(
+            show_message(
                 self,
                 self._t("api_key_section", "API key"),
                 self._t(
                     "dlg_stop_before_change_key", "Stop the session before changing keys."
                 ),
+                kind="info",
+                translate=self._t,
             )
             return
         from gui_qt.api_keys import ApiKeyDialog
@@ -298,7 +302,7 @@ class SettingsWindow(QDialog):
         if dialog.exec() != QDialog.Accepted or not dialog.key():
             return
         if not save_api_key(provider, dialog.key()):
-            QMessageBox.warning(
+            show_message(
                 self,
                 "MinbarLive",
                 self._t(
@@ -306,6 +310,7 @@ class SettingsWindow(QDialog):
                     "No system keychain was available, so this key is only "
                     "active until you close MinbarLive.",
                 ),
+                translate=self._t,
             )
         self._refresh_key_status()
 
@@ -314,21 +319,28 @@ class SettingsWindow(QDialog):
         if not provider:
             return
         if self._panel._running:
-            QMessageBox.information(
+            show_message(
                 self,
                 self._t("api_key_section", "API key"),
                 self._t("dlg_stop_before_remove", "Stop the session before removing keys."),
+                kind="info",
+                translate=self._t,
             )
             return
-        answer = QMessageBox.question(
+        if not ask_yes_no(
             self,
             self._t("remove_key", "Remove key"),
             self._t("dlg_remove_key_question", "Remove the stored API key?"),
-        )
-        if answer != QMessageBox.Yes:
+            default_yes=False,
+            translate=self._t,
+        ):
             return
         clear_api_key(provider)
-        QMessageBox.information(
-            self, "MinbarLive", self._t("dlg_key_removed", "API key removed.")
+        show_message(
+            self,
+            "MinbarLive",
+            self._t("dlg_key_removed", "API key removed."),
+            kind="info",
+            translate=self._t,
         )
         self._refresh_key_status()

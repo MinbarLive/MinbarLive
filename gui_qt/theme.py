@@ -214,6 +214,18 @@ QLabel#card_symbol {{
     font-weight: 700;
 }}
 QLabel#card_arrow {{ color: {c["muted"]}; font-size: 17px; }}
+/* Severity glyph of a themed message dialog (gui_qt/dialogs.py) — the same
+   tile as a card's symbol, tinted by what the dialog is saying. The colours
+   come after the shared block so they win on equal specificity. */
+QLabel#dialog_icon_info, QLabel#dialog_icon_warn, QLabel#dialog_icon_error {{
+    background-color: {c["panel_soft"]};
+    border-radius: 15px;
+    font-size: 20px;
+    font-weight: 700;
+}}
+QLabel#dialog_icon_info {{ color: {c["accent"]}; }}
+QLabel#dialog_icon_warn {{ color: {c["warning"]}; }}
+QLabel#dialog_icon_error {{ color: {c["danger"]}; }}
 QLabel#field {{ font-size: 13px; font-weight: 600; }}
 QLabel#section {{ font-size: 14px; font-weight: 700; }}
 QLabel#value {{ font-size: 17px; font-weight: 700; }}

@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSplitter,
@@ -46,6 +45,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui_qt.dialogs import ask_yes_no, show_message
 from gui_qt.widgets import Dropdown
 from utils.cost_display import (
     cost_bars,
@@ -589,7 +589,7 @@ class SummaryDialog(QDialog):
                 handle.write(text)
         except OSError as exc:
             log(f"Summary export failed: {exc}", level="ERROR")
-            _warn(self, self._t("summary_save", "Save…"), str(exc))
+            _warn(self, self._t("summary_save", "Save…"), str(exc), self._t)
             return
         log(f"Summary exported to {target}")
         _flash(self.save_btn, self._t("summary_saved", "Saved"),
@@ -606,12 +606,9 @@ def _flash(button: QPushButton, message: str, restore: str, msec: int = 1500) ->
     QTimer.singleShot(msec, button, lambda: button.setText(restore))
 
 
-def _warn(parent: QWidget, title: str, body: str) -> None:
-    box = QMessageBox(parent)
-    box.setIcon(QMessageBox.NoIcon)  # the icon is what plays the system sound
-    box.setWindowTitle(title)
-    box.setText(body)
-    box.exec()
+def _warn(parent: QWidget, title: str, body: str, translate=None) -> None:
+    """Report a failed save/export/delete in the app's own dialog."""
+    show_message(parent, title, body, kind="error", translate=translate)
 
 
 class HistoryWindow(QDialog):
@@ -1068,7 +1065,7 @@ class HistoryWindow(QDialog):
             shutil.copyfile(entry.path, target)
         except OSError as exc:
             log(f"Export failed: {exc}", level="ERROR")
-            _warn(self, self._t("history_export", "Save…"), str(exc))
+            _warn(self, self._t("history_export", "Save…"), str(exc), self._t)
             return
         log(f"Exported to {target}")
 
@@ -1093,7 +1090,7 @@ class HistoryWindow(QDialog):
                 handle.write(text + "\n")
         except OSError as exc:
             log(f"Export failed: {exc}", level="ERROR")
-            _warn(self, self._t("history_export", "Save…"), str(exc))
+            _warn(self, self._t("history_export", "Save…"), str(exc), self._t)
             return
         log(f"Exported to {target}")
 
@@ -1134,7 +1131,7 @@ class HistoryWindow(QDialog):
                 self._remove_if_present(batch_srt_path(entry.path))
         except OSError as exc:
             log(f"Delete failed: {exc}", level="ERROR")
-            _warn(self, self._t("history_delete", "Delete"), str(exc))
+            _warn(self, self._t("history_delete", "Delete"), str(exc), self._t)
             return
         log(f"Deleted: {entry.path}")
         self._reload()
@@ -1145,13 +1142,9 @@ class HistoryWindow(QDialog):
             os.remove(path)
 
     def _confirm(self, title: str, body: str) -> bool:
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.NoIcon)
-        box.setWindowTitle(title)
-        box.setText(body)
-        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        box.setDefaultButton(QMessageBox.No)
-        return box.exec() == QMessageBox.Yes
+        return ask_yes_no(
+            self, title, body, default_yes=False, translate=self._t
+        )
 
     # ── summary dialog ───────────────────────────────────────────────────
     def _on_summarise(self) -> None:

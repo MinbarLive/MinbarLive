@@ -13,10 +13,10 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QVBoxLayout,
 )
 
+from gui_qt.dialogs import show_message
 from providers import (
     PROVIDER_CHOICES,
     get_key_placeholder,
@@ -114,7 +114,7 @@ def ensure_keys(provider_ids: list[str], texts: dict, parent=None) -> bool:
         stored = save_api_key(provider_id, key)
         if not stored:
             # No keychain available: the key works now but is gone on restart.
-            QMessageBox.warning(
+            show_message(
                 parent,
                 "MinbarLive",
                 texts.get(
@@ -122,5 +122,6 @@ def ensure_keys(provider_ids: list[str], texts: dict, parent=None) -> bool:
                     "No system keychain was available, so this key is only "
                     "active until you close MinbarLive.",
                 ),
+                translate=texts.get,
             )
     return True

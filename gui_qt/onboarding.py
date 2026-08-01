@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -43,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.device_list import get_input_devices
+from gui_qt.dialogs import show_message
 from gui_qt.i18n import load_gui_translations
 from gui_qt.icons import app_icon
 from gui_qt.levels import level_fill
@@ -402,7 +402,9 @@ class OnboardingWizard(QDialog):
             # A device that cannot be opened is worth a dialog only when the
             # user asked for the test — not while merely browsing the list.
             if not auto:
-                QMessageBox.warning(self, "MinbarLive", str(exc))
+                show_message(
+                    self, "MinbarLive", str(exc), translate=self._t
+                )
             self._sync_level_button()
             return
         self._level_timer.start(_LEVEL_POLL_MS)
@@ -834,7 +836,7 @@ class OnboardingWizard(QDialog):
             if not save_api_key(pid, key) and pid == provider:
                 session_only = True
         if session_only:
-            QMessageBox.warning(
+            show_message(
                 self,
                 "MinbarLive",
                 self._t(
@@ -842,6 +844,7 @@ class OnboardingWizard(QDialog):
                     "No system keychain was available, so this key is only "
                     "active until you close MinbarLive.",
                 ),
+                translate=self._t,
             )
 
         self.completed = True
