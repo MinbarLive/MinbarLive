@@ -947,6 +947,72 @@ class TestSubtitleHideMode:
         assert panel.subtitle_window is None
 
 
+class TestAnnouncementSurvivesARebuiltOverlay:
+    """An "until stopped" message must outlive the window it is drawn on.
+
+    Its own fixture: this one patches the overlay CLASS rather than
+    _ensure_subtitle_window, because the re-assertion under test lives inside
+    that method.
+    """
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui_qt.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+
+        class FakeOverlay:
+            def __init__(self, **_kwargs):
+                self.text = None
+
+            def set_announcement(self, text):
+                self.text = text
+
+            def clear_announcement(self):
+                self.text = None
+
+            def set_always_on_top(self, enabled):
+                pass
+
+            def set_stopped_hint(self, visible):
+                pass
+
+            def show(self):
+                pass
+
+            def destroy(self):
+                pass
+
+        monkeypatch.setattr(cp, "SubtitleWindow", FakeOverlay)
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        yield p
+        p.close()
+
+    def test_a_rebuilt_overlay_gets_the_message_back(self, panel):
+        panel.settings.subtitle_hide_mode = "never"
+        panel._apply_subtitle_hide_mode()
+        panel.show_announcement("Bitte Handys stummschalten")
+        first = panel.subtitle_window
+        panel._teardown_subtitle_window()  # a monitor or height rebuild
+        panel._ensure_subtitle_window()
+        assert panel.subtitle_window is not first
+        assert panel.subtitle_window.text == "Bitte Handys stummschalten"
+
+    def test_a_cleared_announcement_does_not_come_back(self, panel):
+        panel.settings.subtitle_hide_mode = "never"
+        panel._apply_subtitle_hide_mode()
+        panel.show_announcement("Kurz")
+        panel.clear_announcement()
+        panel._teardown_subtitle_window()
+        panel._ensure_subtitle_window()
+        assert panel.subtitle_window.text is None
+
+
 class TestSessionStartFeedback:
     """A Start can take tens of seconds; the panel has to say so."""
 
@@ -995,9 +1061,7 @@ class TestSessionStartFeedback:
 
     def test_a_failed_start_falls_back_to_stopped(self, panel, qt_app, monkeypatch):
         panel.controller.start = lambda **_k: 1 / 0
-        monkeypatch.setattr(
-            cp_module().QMessageBox, "critical", lambda *a, **k: None
-        )
+        monkeypatch.setattr(cp_module(), "show_message", lambda *a, **k: None)
         panel.on_start()
         for _ in range(40):
             qt_app.processEvents()
@@ -2517,7 +2581,29 @@ class TestBatchWindow:
 
         w, _ = batch
         assert w.width() == bw.BATCH_WINDOW_W
-        assert w.height() == w.layout().totalHeightForWidth(bw.BATCH_WINDOW_W)
+        assert w.height() == w._natural_height()
+
+    def test_the_controls_are_grouped_into_cards(self, batch):
+        # Not one frame around the whole window: every other window in this
+        # tree groups its controls into cards, and one big box read as the odd
+        # one out.
+        from PySide6.QtWidgets import QFrame
+
+        w, _ = batch
+        cards = [
+            f
+            for f in w.body.findChildren(QFrame)
+            if f.objectName() == "card" and f.parent() is w.body
+        ]
+        assert len(cards) == 3
+
+    def test_start_never_scrolls_away(self, batch):
+        # The action bar is outside the scroll area, so however tall the cards
+        # get, Start stays on screen.
+        w, _ = batch
+        assert w.action_bar.parent() is w
+        assert not w.scroll.isAncestorOf(w.start_btn)
+        assert w.scroll.isAncestorOf(w.pick_btn)
 
     def test_more_settings_grows_the_window_and_shrinks_it_back(self, batch, qt_app):
         # Shown, and with an event pass after each toggle: a widget's show/hide
@@ -2528,11 +2614,11 @@ class TestBatchWindow:
         w.show()
         qt_app.processEvents()
         before = w.height()
-        w._toggle_more()
-        qt_app.processEvents()
+        w.more.set_expanded(True)
+        _settle(qt_app)
         assert w.height() > before
-        w._toggle_more()
-        qt_app.processEvents()
+        w.more.set_expanded(False)
+        _settle(qt_app)
         assert w.height() == before
 
     def test_the_progress_bar_is_always_on_screen(self, batch):
@@ -2555,7 +2641,18 @@ class TestBatchWindow:
     def test_bilingual_subtitles_default_on(self, batch):
         # The Tk window defaults it on, and it decides what the .srt contains.
         w, _ = batch
-        assert w.bilingual_check.isChecked()
+        assert w._bilingual_srt()
+
+    def test_a_transcript_only_run_disables_the_subtitle_choice(self, batch):
+        # No SRT is written, so "original + translation" would decide nothing.
+        w, _ = batch
+        w.output_segment.set_current_index(1)  # .txt
+        w._sync_bilingual_state()
+        assert not w.bilingual_segment.isEnabled()
+        assert not w._bilingual_srt()
+        w.output_segment.set_current_index(0)  # .srt
+        w._sync_bilingual_state()
+        assert w.bilingual_segment.isEnabled()
 
     def test_the_picker_button_carries_the_chosen_file(self, batch):
         w, _ = batch
@@ -2619,14 +2716,14 @@ class TestBatchWindow:
     def test_output_format_maps_from_the_segment(self, batch):
         w, _ = batch
         for index, expected in enumerate(("srt", "txt", "both")):
-            w.output_combo.setCurrentIndex(index)
+            w.output_segment.set_current_index(index)
             assert w._output_format() == expected
 
     def test_options_reach_the_processor(self, batch, qt_app):
         w, calls = batch
         w._input_path = "khutbah.mp3"
-        w.output_combo.setCurrentIndex(2)
-        w.bilingual_check.setChecked(True)
+        w.output_segment.set_current_index(2)
+        w.bilingual_segment.set_current_index(1)
         w._on_start()
         # The worker runs on its own thread; wait for it rather than sleeping.
         w.worker._thread.join(timeout=5)
@@ -2765,7 +2862,7 @@ class TestAnnounceWindow:
         from config import ANNOUNCEMENT_FAVORITES_MAX
 
         w, settings, _ = announce
-        monkeypatch.setattr(aw.QMessageBox, "information", lambda *a, **k: None)
+        monkeypatch.setattr(aw, "show_message", lambda *a, **k: None)
         settings.announcement_favorites = []
         for i in range(ANNOUNCEMENT_FAVORITES_MAX):
             w._favorite(f"Favorit {i}")
@@ -2798,6 +2895,80 @@ class TestAnnounceWindow:
         w.send_announcement()
         assert settings.announcement_history == []
 
+    def test_the_window_follows_its_lists_in_BOTH_directions(self, announce, qt_app):
+        # The reported bug: the height was read before the layout had been told
+        # a row was added, so the window lagged one entry behind — it opened
+        # too short for its own content and never shrank again when entries
+        # were deleted.
+        import gui_qt.announce_window as aw
+
+        w, settings, _ = announce
+        w.show()
+        _settle(qt_app)
+        heights = []
+        for count in range(6):
+            settings.announcement_history = [f"Nachricht {i}" for i in range(count)]
+            w._refresh_lists()
+            _settle(qt_app)
+            heights.append(w.height())
+            expected = min(w._natural_height(), aw._MAX_HEIGHT)
+            assert w.height() == expected, f"lagging at {count} entries"
+        # Growing, then all the way back to where it started.
+        assert heights[-1] > heights[1]
+        settings.announcement_history = []
+        w._refresh_lists()
+        _settle(qt_app)
+        assert w.height() == heights[0]
+
+    def test_send_stays_reachable_however_long_the_lists_get(self, announce, qt_app):
+        from config import ANNOUNCEMENT_FAVORITES_MAX, ANNOUNCEMENT_HISTORY_MAX
+
+        w, settings, _ = announce
+        settings.announcement_favorites = [
+            f"Favorit {i}" for i in range(ANNOUNCEMENT_FAVORITES_MAX)
+        ]
+        settings.announcement_history = [
+            f"Nachricht {i}" for i in range(ANNOUNCEMENT_HISTORY_MAX)
+        ]
+        w.show()
+        w._refresh_lists()
+        _settle(qt_app)
+        bottom = w.send_btn.mapTo(w, w.send_btn.rect().bottomLeft()).y()
+        assert bottom <= w.height()
+        # …because the buttons are outside the scroll area, not because the
+        # window grew without limit.
+        assert not w.scroll.isAncestorOf(w.send_btn)
+
+    def test_full_lists_scroll_instead_of_filling_the_screen(self, announce, qt_app):
+        # Five favourites and three recents came to ~1080px — the height of the
+        # screen, for a box you type one line into.
+        import gui_qt.announce_window as aw
+
+        w, settings, _ = announce
+        settings.announcement_favorites = [f"Favorit {i}" for i in range(5)]
+        settings.announcement_history = [f"Nachricht {i}" for i in range(20)]
+        w.show()
+        w._refresh_lists()
+        _settle(qt_app)
+        assert w._natural_height() > aw._MAX_HEIGHT  # it would have grown past it
+        assert w.height() == aw._MAX_HEIGHT
+        assert w.scroll.verticalScrollBar().maximum() > 0  # the rest is reachable
+        screen = w.screen()
+        if screen is not None:
+            assert w.height() <= screen.availableGeometry().height()
+
+    def test_sending_takes_the_window_back_to_the_front(self, announce, qt_app):
+        # Sending can CREATE the always-on-top overlay, which comes up over
+        # this window; the Tk one lifts itself afterwards and so must this.
+        w, _settings, overlay = announce
+        raised = []
+        overlay.bring_to_front = raised.append
+        w.show()
+        _settle(qt_app)
+        w.text.setPlainText("Gleich geht es los")
+        w.send_announcement()
+        assert raised == [w]
+
     def test_favorites_are_excluded_from_recents(self, announce):
         # A favourite would otherwise occupy both lists.
         w, settings, _ = announce
@@ -2815,6 +2986,105 @@ class TestAnnounceWindow:
                 labels.append(layout.itemAt(0).widget().toolTip())
         assert "Doppelt" not in labels
         assert "Einmalig" in labels
+
+
+class TestThemedDialogs:
+    """Message boxes are the app's own dialog, not the platform's.
+
+    QMessageBox draws system chrome that ignores the theme, hard-codes English
+    button labels, and plays the Windows alert sound (the icon is what triggers
+    it) — the Tk tree replaced them long ago.
+    """
+
+    @pytest.fixture
+    def texts(self):
+        from gui_qt.i18n import load_gui_translations
+
+        de = load_gui_translations("de")
+        return lambda key, fallback="": de.get(key, fallback)
+
+    def test_the_buttons_speak_the_gui_language(self, qt_app, texts):
+        from gui_qt.dialogs import MessageDialog
+
+        dialog = MessageDialog(None, "Titel", "Nachricht", translate=texts)
+        assert dialog.ok_btn.text() == "OK"
+        confirm = MessageDialog(
+            None, "Titel", "Nachricht", confirm=True, translate=texts
+        )
+        assert confirm.yes_btn.text() == "Ja"
+        assert confirm.no_btn.text() == "Nein"
+        for w in (dialog, confirm):
+            w.close()
+
+    def test_a_confirm_reports_the_answer(self, qt_app, texts):
+        from PySide6.QtWidgets import QDialog
+
+        from gui_qt.dialogs import MessageDialog
+
+        dialog = MessageDialog(None, "T", "M", confirm=True, translate=texts)
+        dialog.no_btn.click()
+        assert dialog.result() != QDialog.Accepted
+        dialog = MessageDialog(None, "T", "M", confirm=True, translate=texts)
+        dialog.yes_btn.click()
+        assert dialog.result() == QDialog.Accepted
+
+    def test_a_destructive_confirm_defaults_to_no(self, qt_app, texts):
+        from gui_qt.dialogs import MessageDialog
+
+        dialog = MessageDialog(
+            None, "T", "M", confirm=True, default_yes=False, translate=texts
+        )
+        assert dialog.no_btn.isDefault()
+        assert not dialog.yes_btn.isDefault()
+        dialog.close()
+
+    def test_the_severity_decides_the_glyph_colour(self, qt_app):
+        from PySide6.QtWidgets import QLabel
+
+        from gui_qt.dialogs import MessageDialog
+
+        names = {}
+        for kind in ("info", "warn", "error"):
+            dialog = MessageDialog(None, "T", "M", kind=kind)
+            icon = next(
+                w
+                for w in dialog.findChildren(QLabel)
+                if w.objectName().startswith("dialog_icon")
+            )
+            names[kind] = icon.objectName()
+            dialog.close()
+        assert len(set(names.values())) == 3
+
+    def test_a_long_message_is_not_clipped(self, qt_app):
+        from gui_qt.dialogs import MessageDialog
+
+        short = MessageDialog(None, "T", "Kurz")
+        long = MessageDialog(None, "T", "Sehr lang. " * 40)
+        assert long.height() > short.height()
+        # …and the height is the content's, not a fixed box it overflows.
+        assert long.height() == long.layout().totalHeightForWidth(long.width())
+        for w in (short, long):
+            w.close()
+
+    def test_no_qmessagebox_is_left_in_the_qt_tree(self):
+        # A single leftover brings back the system sound and the English
+        # buttons, and it is invisible until someone hits that code path.
+        import pathlib
+        import re
+
+        root = pathlib.Path(__file__).resolve().parents[1] / "gui_qt"
+        offenders = []
+        for path in root.glob("*.py"):
+            if path.name in ("dialogs.py", "theme.py"):
+                continue  # the replacement itself, and one stylesheet selector
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), 1
+            ):
+                if re.search(r"\bQMessageBox\b", line) and not line.lstrip().startswith(
+                    ("#", "``", '"')
+                ):
+                    offenders.append(f"{path.name}:{number}")
+        assert not offenders, offenders
 
 
 class TestOnboardingWizard:

@@ -80,6 +80,8 @@ WIZARD_KEYS = [
     "batch_output_text",
     "batch_output_both",
     "batch_bilingual_srt",
+    "batch_bilingual_off",
+    "batch_bilingual_on",
     "noise_filter",
     "window_on_top_label",
     "hide_subtitle_label",
