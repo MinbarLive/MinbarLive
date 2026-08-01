@@ -183,6 +183,13 @@ QWidget {{
     font-family: "Segoe UI", "Noto Sans", "Segoe UI Symbol", sans-serif;
 }}
 QMainWindow, QDialog, QMessageBox {{ background-color: {c["app_bg"]}; }}
+/* A secondary window presented as an in-app panel (gui_qt/modal_host.py). It
+   has no titlebar there, so it needs an edge of its own to read as a panel
+   sitting ON the dimmed app rather than a hole cut into it. */
+QDialog#modal_panel {{
+    border: 1px solid {c["border"]};
+    border-radius: 14px;
+}}
 QWidget#sidebar {{ background-color: {c["sidebar"]}; }}
 QFrame#card, QFrame#panel {{
     background-color: {c["card"]};
@@ -308,6 +315,16 @@ QPushButton#danger {{ background-color: {c["danger"]}; color: #ffffff; font-weig
 QPushButton#danger:hover {{ background-color: {c["danger_hover"]}; }}
 QPushButton#big {{ font-size: 16px; font-weight: 700; border-radius: 18px; padding: 14px 16px; }}
 QPushButton#icon {{ border-radius: 14px; padding: 0; font-size: 17px; }}
+/* The ✕ an in-app panel floats in its top-right corner, standing in for the
+   titlebar close button it does not have. */
+QPushButton#panel_close {{
+    background-color: {c["panel_soft"]};
+    border-radius: 15px;
+    padding: 0;
+    font-size: 14px;
+    font-weight: 700;
+}}
+QPushButton#panel_close:hover {{ background-color: {c["danger"]}; color: #ffffff; }}
 /* Small inline button (the input meter's Test/Stop), sized to its label. */
 QPushButton#compact {{ padding: 6px 10px; border-radius: 12px; font-size: 12px; }}
 QPushButton#link {{

@@ -54,6 +54,7 @@ from gui_qt.api_keys import activate_stored_keys, ensure_keys
 from gui_qt.dialogs import show_message
 from gui_qt.i18n import load_gui_translations
 from gui_qt.icons import app_icon
+from gui_qt.modal_host import ModalHost
 from gui_qt.pipeline_bridge import PipelineBridge, streaming_enabled
 from gui_qt.subtitle_window import SubtitleWindow
 from gui_qt.theme import current_colors
@@ -102,6 +103,15 @@ from utils.settings import (
 # it clips.
 _COL2_MIN_W = 800
 _COL3_MIN_W = 1030
+# The attributes holding the four secondary windows, in the order they are
+# torn down. One list, because "for every secondary window" is asked three
+# times (always-on-top, a language change, a window-style change).
+_SECONDARY_WINDOWS = (
+    "_settings_window",
+    "_history_window",
+    "_batch_window",
+    "_announce_window",
+)
 # With the log open the sidebar keeps this width and the log takes the rest —
 # the Tk arrangement. The window is only widened when it cannot hold both.
 _SIDEBAR_W_WITH_LOG = 500
@@ -1788,30 +1798,99 @@ class ControlPanel(QMainWindow):
         window is first put on the same footing, as the Tk tree does before it
         lifts the announcement window.
         """
-        set_window_on_top(window, self._effective_always_on_top())
+        if window.isWindow():
+            set_window_on_top(window, self._effective_always_on_top())
         window.raise_()
         window.activateWindow()
 
-    def _show_secondary(self, window: QWidget) -> None:
-        """Show a secondary window carrying the current always-on-top mode.
+    # ── window style ─────────────────────────────────────────────────────
+    def uses_integrated_windows(self) -> bool:
+        """Whether secondary windows open as in-app panels.
 
-        Set before the first show(), while the window has no native surface
-        yet and the flag costs nothing.
+        Unlike the Tk tree there is no platform gate: the Qt host presents
+        panels as child widgets and paints the dim itself, so it needs nothing
+        from the window manager (see gui_qt/modal_host.py).
         """
+        return self.settings.window_style == "integrated"
+
+    @property
+    def modal_host(self) -> ModalHost:
+        """The in-app panel host, created on first use — a windowed-style
+        session never builds one."""
+        host = getattr(self, "_modal_host", None)
+        if host is None:
+            host = self._modal_host = ModalHost(self)
+        return host
+
+    def reopen_secondary_windows(self) -> None:
+        """Close every secondary window and bring the settings window back.
+
+        What a window-style change needs: a window is built either as a real
+        window or as a panel and cannot be converted in place. Deferred by a
+        turn because the caller is a widget inside the window being closed.
+        """
+        QTimer.singleShot(0, self, self._reopen_secondary_windows)
+
+    def _reopen_secondary_windows(self) -> None:
+        self.close_secondary_windows()
+        self.open_settings()
+
+    def close_secondary_windows(self) -> None:
+        """Destroy every secondary window — a language or window-style change
+        rebuilds them all rather than converting them in place."""
+        for name in _SECONDARY_WINDOWS:
+            window = getattr(self, name, None)
+            if window is None:
+                continue
+            # These are destroyed, not merely closed, so anything a window owns
+            # on the app's behalf has to be handed back first — the
+            # announcement window's auto-clear timer is the only one.
+            release = getattr(window, "release", None)
+            if callable(release):
+                release()
+            window.close()
+            window.deleteLater()
+            setattr(self, name, None)
+
+    def _show_secondary(self, window: QWidget) -> None:
+        """Show a secondary window, in the style the settings ask for.
+
+        As a real window it carries the current always-on-top mode, set before
+        the first show() while it has no native surface yet and the flag costs
+        nothing. As a panel it is inside the control panel and inherits
+        everything about its stacking.
+        """
+        if self.uses_integrated_windows():
+            self.modal_host.present(window)
+            return
         if self._effective_always_on_top():
             window.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         window.show()
 
+    def _replace_secondary(self, name: str) -> None:
+        """Drop a closed secondary window before its replacement is built.
+
+        Without this each open/close cycle left a hidden dialog parented to the
+        panel — invisible, but alive, and in integrated mode an accumulating
+        stack of dead child widgets.
+        """
+        window = getattr(self, name, None)
+        if window is not None:
+            window.deleteLater()
+            setattr(self, name, None)
+
     def _open_secondary_windows(self) -> list[QWidget]:
+        """Open secondary windows that carry their own window flags.
+
+        In-app panels are excluded: they are child widgets, and always-on-top
+        is a property of the top-level window they live in.
+        """
         return [
             window
-            for name in (
-                "_settings_window",
-                "_history_window",
-                "_batch_window",
-                "_announce_window",
-            )
-            if (window := getattr(self, name, None)) is not None and window.isVisible()
+            for name in _SECONDARY_WINDOWS
+            if (window := getattr(self, name, None)) is not None
+            and window.isVisible()
+            and window.isWindow()
         ]
 
     def _on_simple_setting(self, attribute: str, checked: bool) -> None:
@@ -1969,9 +2048,9 @@ class ControlPanel(QMainWindow):
     def open_settings(self) -> None:
         existing = getattr(self, "_settings_window", None)
         if existing is not None and existing.isVisible():
-            existing.raise_()
-            existing.activateWindow()
+            self.bring_to_front(existing)
             return
+        self._replace_secondary("_settings_window")
         from gui_qt.settings_window import SettingsWindow
 
         self._settings_window = SettingsWindow(self)
@@ -1983,9 +2062,9 @@ class ControlPanel(QMainWindow):
         existing = getattr(self, "_history_window", None)
         if existing is not None and existing.isVisible():
             existing.show_tab(initial_tab)
-            existing.raise_()
-            existing.activateWindow()
+            self.bring_to_front(existing)
             return
+        self._replace_secondary("_history_window")
         from gui_qt.history_window import HistoryWindow
 
         self._history_window = HistoryWindow(self._t, self, initial_tab=initial_tab)
@@ -1996,9 +2075,9 @@ class ControlPanel(QMainWindow):
         window losing focus; closing it cancels the run."""
         existing = getattr(self, "_batch_window", None)
         if existing is not None and existing.isVisible():
-            existing.raise_()
-            existing.activateWindow()
+            self.bring_to_front(existing)
             return
+        self._replace_secondary("_batch_window")
         from gui_qt.batch_window import BatchWindow
 
         self._batch_window = BatchWindow(self._t, self.settings, self)
@@ -2009,9 +2088,13 @@ class ControlPanel(QMainWindow):
         timed announcement, which must keep running while the window is shut."""
         existing = getattr(self, "_announce_window", None)
         if existing is not None:
-            existing.show()
-            existing.raise_()
-            existing.activateWindow()
+            if existing.isVisible():
+                self.bring_to_front(existing)
+            else:
+                # Back through _show_secondary rather than a bare show(): as a
+                # panel it has to be presented again, or it comes up with no
+                # backdrop, no ✕ and wherever it last sat.
+                self._show_secondary(existing)
             return
         from gui_qt.announce_window import AnnounceWindow
 
@@ -2037,12 +2120,7 @@ class ControlPanel(QMainWindow):
         self.settings.gui_language = code
         save_settings(self.settings)
         self.texts = load_gui_translations(code)
-        for name in ("_settings_window", "_history_window", "_batch_window",
-                     "_announce_window"):
-            window = getattr(self, name, None)
-            if window is not None:
-                window.close()
-                setattr(self, name, None)
+        self.close_secondary_windows()
         geometry = self.saveGeometry()
         self._columns = None
         self._build()
