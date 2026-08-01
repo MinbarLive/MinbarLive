@@ -13,7 +13,10 @@ to the live overlay where it can, which is how the Tk window behaves.
 
 from __future__ import annotations
 
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (
+    QAbstractScrollArea,
+    QApplication,
     QCheckBox,
     QDialog,
     QFrame,
@@ -27,10 +30,11 @@ from PySide6.QtWidgets import (
 
 from gui_qt.dialogs import ask_yes_no, show_message
 from gui_qt.widgets import Dropdown, SegmentedControl
+from gui_qt.window_size import SECONDARY_WINDOW_W, apply_content_size
 from providers import (
     PROVIDER_CHOICES,
     clear_api_key,
-    get_stored_api_key,
+    has_usable_key,
     save_api_key,
 )
 from utils.settings import (
@@ -45,6 +49,18 @@ from version import __version__
 # but it can still hold a streaming-transcription key that needs managing.
 _KEY_PROVIDERS = [*PROVIDER_CHOICES, ("Deepgram", "deepgram")]
 
+# Padding around the card column, the gap between cards, and a card's own
+# inner padding — the batch and announcement windows' numbers, so the three
+# read as one window at three sizes of content.
+_PAD = 16
+_CARD_GAP = 12
+_CARD_PAD = 16
+
+# Order the window-style segments are shown in: separate windows first (the
+# stored default), in-app panels second — the Tk window's order. Deliberately
+# not utils.settings.WINDOW_STYLES, whose order is the validation tuple's.
+_STYLE_SEGMENTS = ("windowed", "integrated")
+
 
 class SettingsWindow(QDialog):
     def __init__(self, panel):
@@ -54,23 +70,30 @@ class SettingsWindow(QDialog):
         self._t = panel._t
         self.setWindowTitle(self._t("settings_title", "Settings"))
         self.setWindowIcon(panel.windowIcon())
-        self.resize(560, 720)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        body = QWidget()
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(16)
+        # A scrolling column of cards — the batch and announcement shape,
+        # minus their action bar: this window has no action to confirm. Every
+        # control writes through as it is changed, so a Close button would only
+        # duplicate the titlebar ✕ (and no other window here carries one).
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
+        self.body = QWidget()
+        layout = QVBoxLayout(self.body)
+        layout.setContentsMargins(_PAD, _PAD, _PAD, _PAD)
+        layout.setSpacing(_CARD_GAP)
 
         hero = QLabel(f"MinbarLive  —  v{__version__}")
         hero.setObjectName("hero")
         subtitle = QLabel(self._t("hero_subtitle", "Live translation control centre"))
         subtitle.setObjectName("muted")
+        subtitle.setWordWrap(True)
         layout.addWidget(hero)
         layout.addWidget(subtitle)
 
@@ -80,23 +103,41 @@ class SettingsWindow(QDialog):
         layout.addWidget(self._api_key_card())
         layout.addStretch(1)
 
-        scroll.setWidget(body)
-        outer.addWidget(scroll)
+        self.scroll.setWidget(self.body)
+        outer.addWidget(self.scroll, 1)
+        self._resize_to_content()
 
-        bottom = QHBoxLayout()
-        bottom.setContentsMargins(18, 10, 18, 14)
-        bottom.addStretch(1)
-        close_btn = QPushButton(self._t("dlg_cancel", "Close"))
-        close_btn.clicked.connect(self.close)
-        bottom.addWidget(close_btn)
-        outer.addLayout(bottom)
+    # ── sizing ───────────────────────────────────────────────────────────
+    def _natural_height(self) -> int:
+        """Height the cards want at the window's width.
+
+        Measured from the card column's own layout rather than ``adjustSize()``
+        — a word-wrapped label's sizeHint reserves a line it does not use at
+        this width, and the surplus inflates whatever can stretch (s26).
+        """
+        layout = self.body.layout()
+        layout.activate()
+        if layout.hasHeightForWidth():
+            return layout.totalHeightForWidth(SECONDARY_WINDOW_W)
+        return layout.totalSizeHint().height()
+
+    def _resize_to_content(self) -> None:
+        """Fixed width, height from the content, capped by the shared rule.
+
+        The card stack is taller than the cap on any normal screen, so this
+        window all but always opens at the cap and scrolls — but it is the same
+        call the batch and announcement windows make, which is what keeps the
+        three the same width and never taller than one another.
+        """
+        QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
+        apply_content_size(self, self._natural_height())
 
     # ── helpers ──────────────────────────────────────────────────────────
     def _card(self, symbol: str, title: str) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
         card.setObjectName("card")
         box = QVBoxLayout(card)
-        box.setContentsMargins(18, 16, 18, 16)
+        box.setContentsMargins(_CARD_PAD, _CARD_PAD, _CARD_PAD, _CARD_PAD)
         box.setSpacing(10)
         heading = QLabel(f"{symbol}  {title}")
         heading.setObjectName("card_title")
@@ -162,6 +203,35 @@ class SettingsWindow(QDialog):
         box.addWidget(self._caption(self._t("subtitle_theme_mode", "Subtitles")))
         box.addWidget(self.subtitle_theme_segment)
 
+        # Window style: settings/history/batch/announcement as in-app panels
+        # over a dimmed control panel, or as classic separate OS windows.
+        #
+        # Offered on every platform, unlike the Tk tree's Windows-only switch:
+        # there the panels are borderless toplevels needing per-window alpha
+        # and cooperative stacking, which X11 without a compositor does not
+        # provide (PR #25 r6). Here they are child widgets and the dim is
+        # painted into the control panel's own back buffer, so nothing is
+        # asked of the window manager at all.
+        self.window_style_segment = SegmentedControl(
+            [
+                self._t("window_style_windowed", "Windows"),
+                self._t("window_style_integrated", "Integrated"),
+            ],
+            self._window_style_index(self.settings.window_style),
+        )
+        self.window_style_segment.changed.connect(self._on_window_style)
+        box.addWidget(self._caption(self._t("window_style_label", "Window style")))
+        box.addWidget(self.window_style_segment)
+        box.addWidget(
+            self._hint(
+                self._t(
+                    "integrated_windows_hint",
+                    "Open settings, history and batch inside the main window "
+                    "(Esc closes) instead of as separate windows.",
+                )
+            )
+        )
+
         # Backdrop opacity lives in the control panel's Display & audio card,
         # beside the height and font-size controls it belongs with.
         return card
@@ -217,6 +287,10 @@ class SettingsWindow(QDialog):
     def _theme_index(mode: str) -> int:
         return THEME_MODES.index(mode) if mode in THEME_MODES else 0
 
+    @staticmethod
+    def _window_style_index(style: str) -> int:
+        return _STYLE_SEGMENTS.index(style) if style in _STYLE_SEGMENTS else 0
+
     # ── handlers ─────────────────────────────────────────────────────────
     def _on_gui_language(self, _index: int) -> None:
         code = self.gui_lang_combo.currentData()
@@ -239,6 +313,18 @@ class SettingsWindow(QDialog):
         if self._overlay():
             self._overlay().set_theme(self.settings.subtitle_theme_mode)
         self._save()
+
+    def _on_window_style(self, index: int) -> None:
+        style = _STYLE_SEGMENTS[index]
+        if style == self.settings.window_style:
+            return
+        self.settings.window_style = style
+        self._save()
+        # Applied at once rather than on next launch. A window cannot change
+        # between a panel and a real window in place — it was built as one —
+        # so every open one is closed, and this window reopens in the new
+        # style. Deferred, because the handler is running inside it.
+        self._panel.reopen_secondary_windows()
 
     def _on_islamic(self, checked: bool) -> None:
         # Turning it OFF asks for confirmation (it changes what the pipeline
@@ -268,18 +354,26 @@ class SettingsWindow(QDialog):
 
     def _refresh_key_status(self) -> None:
         provider = self._selected_key_provider()
-        enabled = bool(provider)
-        self.change_key_btn.setEnabled(enabled)
-        self.remove_key_btn.setEnabled(enabled)
-        if not enabled:
+        if not provider:
             self.key_status.setText("—")
+            self.change_key_btn.setEnabled(False)
+            self.remove_key_btn.setEnabled(False)
             return
-        stored = bool(get_stored_api_key(provider))
+        # has_usable_key, not get_stored_api_key: on a machine with no keychain
+        # a key entered this session is live but unstored, and reporting "no
+        # key saved" for a provider that is about to translate is worse than
+        # imprecise — the operator re-enters a key that was already working.
+        saved = has_usable_key(provider)
         self.key_status.setText(
             self._t("api_key_status_saved", "A key is saved.")
-            if stored
+            if saved
             else self._t("api_key_status_none", "No key saved.")
         )
+        # Change is always available for a chosen provider; Remove only when
+        # there is actually a key to remove. Without this it confirmed and then
+        # reported "API key removed." for a provider that never had one.
+        self.change_key_btn.setEnabled(True)
+        self.remove_key_btn.setEnabled(saved)
 
     def _on_change_key(self) -> None:
         provider = self._selected_key_provider()
@@ -316,7 +410,11 @@ class SettingsWindow(QDialog):
 
     def _on_remove_key(self) -> None:
         provider = self._selected_key_provider()
-        if not provider:
+        # The button is disabled without a key; re-checked here because the
+        # keychain can change under an open window (another MinbarLive, or the
+        # OS credential manager).
+        if not provider or not has_usable_key(provider):
+            self._refresh_key_status()
             return
         if self._panel._running:
             show_message(
