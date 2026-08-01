@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 from gui_qt.api_keys import ensure_keys
 from gui_qt.dialogs import ask_yes_no
 from gui_qt.widgets import Dropdown, Expander, SegmentedControl, field
+from gui_qt.window_size import SECONDARY_WINDOW_W, apply_content_size
 from providers import (
     PROVIDER_CHOICES,
     TRANSCRIPTION_PROVIDER_CHOICES,
@@ -92,23 +93,20 @@ _BILINGUAL_LABELS = (
 )
 _DEFAULT_BILINGUAL_INDEX = 1  # the original above the translation, as in Tk
 
-# Width the window is laid out for (the Tk card's), fixed: the content is a
-# single column of dropdowns and buttons that stretch badly. The height follows
-# the content, which changes with the GUI language and the More-settings
-# expander — see _resize_to_content.
-BATCH_WINDOW_W = 480
+# Width the window is laid out for, fixed: the content is a single column of
+# dropdowns and buttons that stretch badly. Shared with the settings and
+# announcement windows, which are the same shape — see gui_qt/window_size.py.
+# The height follows the content, which changes with the GUI language and the
+# More-settings expander — see _resize_to_content.
+BATCH_WINDOW_W = SECONDARY_WINDOW_W
 
 # Padding around the card column, the gap between cards, and a card's own
-# inner padding. Tighter than the settings window's, which scrolls anyway:
+# inner padding. Tighter than the card padding inside the settings window:
 # this one is sized to its content, and every pixel of padding is one the
 # whole window grows by.
 _PAD = 16
 _CARD_GAP = 12
 _CARD_PAD = 16
-
-# Never taller than this share of the screen. Past it the cards scroll rather
-# than the action bar being pushed off the bottom.
-_MAX_SCREEN_SHARE = 0.92
 
 # Longest picker-button label before the filename is truncated in the middle,
 # so the start AND the extension stay readable.
@@ -353,9 +351,17 @@ class BatchWindow(QDialog):
             _DEFAULT_OUTPUT_INDEX,
         )
         self.output_segment.changed.connect(lambda _i: self._sync_bilingual_state())
-        # No caption of its own: the card is titled "Output" and repeating it
-        # one line down says nothing.
-        box.addWidget(self.output_segment)
+        # Captioned like every other control in the window. It ran bare under
+        # the card's "Output" heading, which left the card's two rows visibly
+        # unbalanced — one titled, one not — and made the heading do double
+        # duty for the whole card AND this one control.
+        box.addWidget(
+            field(
+                self._t("batch_output_files", "Files"),
+                self.output_segment,
+                symbol="▤",
+            )
+        )
 
         # Was a check box; a two-way segment says what each choice PRODUCES
         # instead of leaving "off" unnamed.
@@ -572,19 +578,14 @@ class BatchWindow(QDialog):
         which is not resizable either. Called again whenever the More-settings
         expander changes how tall the cards are.
 
-        Capped at a share of the screen: past that the cards scroll instead of
-        the action bar being pushed off the bottom.
+        The cap comes from the shared rule in gui_qt/window_size.py: past it
+        the cards scroll instead of the action bar being pushed off the bottom.
         """
-        self.setFixedWidth(BATCH_WINDOW_W)
         # Deliver the invalidation the expander posted when it hid or showed
         # its panel: layouts cache heightForWidth, so measuring in the same
         # call would describe the layout as it was one toggle ago.
         QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
-        wanted = self._natural_height()
-        screen = self.screen()
-        if screen is not None:
-            wanted = min(wanted, int(screen.availableGeometry().height() * _MAX_SCREEN_SHARE))
-        self.setFixedHeight(wanted)
+        apply_content_size(self, self._natural_height())
 
     def _set_status(self, text: str, kind: str = "muted") -> None:
         """Status line + its colour. The colour comes from an object name, not

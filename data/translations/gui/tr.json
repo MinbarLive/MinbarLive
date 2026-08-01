@@ -147,6 +147,7 @@
   "batch_more_settings": "Diğer ayarlar",
   "batch_defaults": "Varsayılanı Kullan",
   "batch_output_format": "Çıktı",
+  "batch_output_files": "Oluşturulacak dosyalar",
   "batch_output_srt": "Altyazı (.srt)",
   "batch_output_text": "Transkript (.txt)",
   "batch_output_both": "Her ikisi (.srt + .txt)",

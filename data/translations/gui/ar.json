@@ -147,6 +147,7 @@
   "batch_more_settings": "إعدادات إضافية",
   "batch_defaults": "استخدم الافتراضي",
   "batch_output_format": "الإخراج",
+  "batch_output_files": "الملفات المطلوب إنشاؤها",
   "batch_output_srt": "ترجمات (.srt)",
   "batch_output_text": "تفريغ نصي (.txt)",
   "batch_output_both": "كلاهما (.srt + .txt)",

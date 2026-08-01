@@ -158,6 +158,7 @@
   "batch_more_settings": "More settings",
   "batch_defaults": "Use Default",
   "batch_output_format": "Output",
+  "batch_output_files": "Files to create",
   "batch_output_srt": "Subtitles (.srt)",
   "batch_output_text": "Transcript (.txt)",
   "batch_output_both": "Both (.srt + .txt)",

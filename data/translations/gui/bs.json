@@ -147,6 +147,7 @@
   "batch_more_settings": "Više postavki",
   "batch_defaults": "Koristi zadano",
   "batch_output_format": "Izlaz",
+  "batch_output_files": "Datoteke koje se kreiraju",
   "batch_output_srt": "Titlovi (.srt)",
   "batch_output_text": "Transkript (.txt)",
   "batch_output_both": "Oboje (.srt + .txt)",

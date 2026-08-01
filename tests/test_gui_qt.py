@@ -2900,7 +2900,7 @@ class TestAnnounceWindow:
         # a row was added, so the window lagged one entry behind — it opened
         # too short for its own content and never shrank again when entries
         # were deleted.
-        import gui_qt.announce_window as aw
+        from gui_qt.window_size import SECONDARY_MAX_H
 
         w, settings, _ = announce
         w.show()
@@ -2911,7 +2911,7 @@ class TestAnnounceWindow:
             w._refresh_lists()
             _settle(qt_app)
             heights.append(w.height())
-            expected = min(w._natural_height(), aw._MAX_HEIGHT)
+            expected = min(w._natural_height(), SECONDARY_MAX_H)
             assert w.height() == expected, f"lagging at {count} entries"
         # Growing, then all the way back to where it started.
         assert heights[-1] > heights[1]
@@ -2942,7 +2942,7 @@ class TestAnnounceWindow:
     def test_full_lists_scroll_instead_of_filling_the_screen(self, announce, qt_app):
         # Five favourites and three recents came to ~1080px — the height of the
         # screen, for a box you type one line into.
-        import gui_qt.announce_window as aw
+        from gui_qt.window_size import SECONDARY_MAX_H
 
         w, settings, _ = announce
         settings.announcement_favorites = [f"Favorit {i}" for i in range(5)]
@@ -2950,8 +2950,8 @@ class TestAnnounceWindow:
         w.show()
         w._refresh_lists()
         _settle(qt_app)
-        assert w._natural_height() > aw._MAX_HEIGHT  # it would have grown past it
-        assert w.height() == aw._MAX_HEIGHT
+        assert w._natural_height() > SECONDARY_MAX_H  # it would have grown past it
+        assert w.height() == SECONDARY_MAX_H
         assert w.scroll.verticalScrollBar().maximum() > 0  # the rest is reachable
         screen = w.screen()
         if screen is not None:

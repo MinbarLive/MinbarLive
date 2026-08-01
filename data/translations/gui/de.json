@@ -158,6 +158,7 @@
   "batch_more_settings": "Weitere Einstellungen",
   "batch_defaults": "Standard",
   "batch_output_format": "Ausgabe",
+  "batch_output_files": "Zu erstellende Dateien",
   "batch_output_srt": "Untertitel (.srt)",
   "batch_output_text": "Transkript (.txt)",
   "batch_output_both": "Beides (.srt + .txt)",

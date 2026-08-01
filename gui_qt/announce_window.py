@@ -39,6 +39,7 @@ from config import (
 )
 from gui_qt.dialogs import show_message
 from gui_qt.widgets import Dropdown, field
+from gui_qt.window_size import SECONDARY_WINDOW_W, apply_content_size
 from utils.logging import log
 from utils.settings import save_settings
 
@@ -57,20 +58,13 @@ _DEFAULT_DURATION_INDEX = 1  # 30 seconds
 _PREVIEW_CHARS = 42
 
 # Width the window is laid out for; the height follows the content — see
-# _resize_to_content. Same shape as the batch window.
-ANNOUNCE_WINDOW_W = 520
+# _resize_to_content. Shared with the settings and batch windows, which are the
+# same shape (see gui_qt/window_size.py), so the three open at one size.
+ANNOUNCE_WINDOW_W = SECONDARY_WINDOW_W
 
 _PAD = 16
 _CARD_GAP = 12
 _CARD_PAD = 16
-
-# Never taller than this, whatever the lists add up to: past it the cards
-# scroll. A full five favourites and three recents come to ~1080px, which is a
-# window the height of the screen for a box you type one line into. This keeps
-# the composer and the first list in view and scrolls the rest.
-_MAX_HEIGHT = 700
-# …and never more than this share of a short screen either.
-_MAX_SCREEN_SHARE = 0.92
 
 
 class AnnounceWindow(QDialog):
@@ -124,7 +118,6 @@ class AnnounceWindow(QDialog):
 
         self._refresh_lists()
         self._sync_stop_button()
-        self.setFixedWidth(ANNOUNCE_WINDOW_W)
         self._resize_to_content()
 
     # ── build ────────────────────────────────────────────────────────────
@@ -302,17 +295,11 @@ class AnnounceWindow(QDialog):
         adding or removing a row invalidates the layout through a POSTED event,
         so a height read in the same call describes the list as it was one
         change ago (the window then lagged a row behind, and clipped); and past
-        a share of the screen the window must stop growing and let the cards
-        scroll instead.
+        the shared cap the window must stop growing and let the cards scroll
+        instead.
         """
         QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
-        wanted = min(self._natural_height(), _MAX_HEIGHT)
-        screen = self.screen()
-        if screen is not None:
-            wanted = min(
-                wanted, int(screen.availableGeometry().height() * _MAX_SCREEN_SHARE)
-            )
-        self.resize(self.width(), wanted)
+        apply_content_size(self, self._natural_height())
 
     def _entry_row(self, text: str, *, starred: bool) -> QWidget:
         holder = QWidget()
@@ -426,6 +413,20 @@ class AnnounceWindow(QDialog):
         if self._panel is not None:
             self._panel.clear_announcement()
         self._sync_stop_button()
+
+    def release(self) -> None:
+        """Give up a pending auto-clear before this window is destroyed.
+
+        Closing the window keeps a running announcement — the panel owns that
+        state — but DESTROYING it takes the auto-clear timer with it, and the
+        message would then stay on the overlay for good. The two paths that
+        destroy this window (a GUI-language change and a window-style change)
+        are both rare enough that clearing a timed message early is the lesser
+        surprise. An "until stopped" announcement has no timer to lose and is
+        left alone.
+        """
+        if self._auto_clear.isActive():
+            self.stop_announcement()
 
     def _raise(self) -> None:
         """Keep this window in front, as the Tk one does.

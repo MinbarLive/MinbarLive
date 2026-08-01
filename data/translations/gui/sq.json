@@ -147,6 +147,7 @@
   "batch_more_settings": "Më shumë cilësime",
   "batch_defaults": "Përdor të paracaktuar",
   "batch_output_format": "Dalja",
+  "batch_output_files": "Skedarët që krijohen",
   "batch_output_srt": "Titra (.srt)",
   "batch_output_text": "Transkript (.txt)",
   "batch_output_both": "Të dyja (.srt + .txt)",
