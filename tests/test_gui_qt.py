@@ -51,21 +51,35 @@ PAIRS = [
 
 
 @pytest.fixture(autouse=True)
-def pinned_window_geometry():
-    """Open every panel at its default size.
+def pinned_window_settings():
+    """Open every panel at its default size, in separate windows.
 
     ``load_settings()`` hands out one cached object, and a closing panel writes
     its geometry into it — so without this, one test's window size decides the
     next test's column count (and could reach the real settings.json through
     any unstubbed save).
+
+    ``window_style`` for the same reason: a developer whose settings.json says
+    "integrated" ran the whole suite against in-app panels, where a secondary
+    window is clamped to the control panel instead of opening at its own size.
+    Tests that want that style ask for it.
     """
     from utils.settings import load_settings
 
     settings = load_settings()
-    saved = (settings.window_geometry, settings.window_maximized)
+    saved = (
+        settings.window_geometry,
+        settings.window_maximized,
+        settings.window_style,
+    )
     settings.window_geometry, settings.window_maximized = "", False
+    settings.window_style = "windowed"
     yield
-    settings.window_geometry, settings.window_maximized = saved
+    (
+        settings.window_geometry,
+        settings.window_maximized,
+        settings.window_style,
+    ) = saved
 
 
 @pytest.fixture(scope="session")
@@ -3546,3 +3560,358 @@ class TestApiKeyActivation:
 
         api_keys.activate_stored_keys()
         assert activated == []
+
+
+def _panel(monkeypatch):
+    """A control panel with nothing that reaches the disk or the speakers.
+
+    The overlay is suppressed rather than faked: the default hide policy opens
+    one even while stopped, and these tests care about the panel's own windows.
+    """
+    import gui_qt.control_panel as cp
+
+    monkeypatch.setattr(cp, "save_settings", lambda s: None)
+    monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+    monkeypatch.setattr(cp.ControlPanel, "_ensure_subtitle_window", lambda self: None)
+
+    class FakeController:
+        pass
+
+    return cp.ControlPanel(FakeController())
+
+
+class TestSecondaryWindowSizing:
+    """Settings, batch and announcement are one window at three sizes of
+    content — they used to open 560, 480 and 520 wide under three separate
+    height caps, which read as three unrelated dialogs."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui_qt.announce_window as aw
+        import gui_qt.settings_window as sw
+
+        # The batch window is absent: it persists nothing of its own.
+        for module in (aw, sw):
+            monkeypatch.setattr(module, "save_settings", lambda s: None)
+        p = _panel(monkeypatch)
+        p.resize(1200, 900)
+        yield p
+        p.close_secondary_windows()
+        p.close()
+
+    def test_the_three_windows_share_one_width(self, panel, qt_app):
+        from gui_qt.window_size import SECONDARY_WINDOW_W
+
+        panel.open_settings()
+        panel.open_batch()
+        panel.open_announce()
+        _settle(qt_app)
+        widths = {
+            name: getattr(panel, name).width()
+            for name in ("_settings_window", "_batch_window", "_announce_window")
+        }
+        assert set(widths.values()) == {SECONDARY_WINDOW_W}, widths
+
+    def test_none_of_them_grows_past_the_shared_cap(self, panel, qt_app):
+        from gui_qt.window_size import SECONDARY_MAX_H
+
+        panel.open_settings()
+        panel.open_batch()
+        panel.open_announce()
+        _settle(qt_app)
+        for name in ("_settings_window", "_batch_window", "_announce_window"):
+            assert getattr(panel, name).height() <= SECONDARY_MAX_H, name
+
+    def test_the_collapsed_batch_window_still_fits_under_the_cap(self, panel, qt_app):
+        # Why the cap is 760 and not the announcement window's old 700: the
+        # batch cards come to ~720 with More settings closed, so a tighter cap
+        # opened it already scrolled and left the expander unable to grow the
+        # window at all — it could only ever add a scrollbar.
+        from gui_qt.window_size import SECONDARY_MAX_H
+
+        panel.open_batch()
+        _settle(qt_app)
+        w = panel._batch_window
+        assert w._natural_height() <= SECONDARY_MAX_H
+        assert w.height() == w._natural_height()
+        before = w.height()
+        w.more.set_expanded(True)
+        _settle(qt_app)
+        assert w.height() > before
+
+    def test_a_host_with_less_room_shrinks_the_window(self, qt_app):
+        # The rule an in-app panel goes through: the host declares the room it
+        # has and the window re-measures itself against it.
+        from PySide6.QtCore import QSize
+        from PySide6.QtWidgets import QWidget
+
+        from gui_qt.window_size import SECONDARY_WINDOW_W, content_size
+
+        w = QWidget()
+        assert content_size(w, 400) == QSize(SECONDARY_WINDOW_W, 400)
+        w.host_max_size = QSize(360, 300)
+        assert content_size(w, 400) == QSize(360, 300)
+        w.deleteLater()
+
+
+class TestSettingsWindowKeys:
+    """The API-key card. Remove used to act on providers that had no key."""
+
+    @pytest.fixture
+    def settings_win(self, qt_app, monkeypatch):
+        import gui_qt.settings_window as sw
+
+        monkeypatch.setattr(sw, "save_settings", lambda s: None)
+        p = _panel(monkeypatch)
+        p.open_settings()
+        yield p._settings_window, sw
+        p.close_secondary_windows()
+        p.close()
+
+    @staticmethod
+    def _select(win, provider: str) -> None:
+        win.key_provider_combo.setCurrentIndex(
+            win.key_provider_combo.findData(provider)
+        )
+
+    def test_remove_is_dead_for_a_provider_with_no_key(self, settings_win, monkeypatch):
+        # Regression: Remove was enabled for any chosen provider, so picking one
+        # that had never held a key still asked for confirmation and then
+        # reported "API key removed."
+        win, sw = settings_win
+        monkeypatch.setattr(sw, "has_usable_key", lambda p: False)
+        self._select(win, "anthropic")
+        assert not win.remove_key_btn.isEnabled()
+        assert win.change_key_btn.isEnabled()  # you can still ADD one
+
+    def test_remove_is_live_once_a_key_exists(self, settings_win, monkeypatch):
+        win, sw = settings_win
+        monkeypatch.setattr(sw, "has_usable_key", lambda p: True)
+        self._select(win, "anthropic")
+        assert win.remove_key_btn.isEnabled()
+
+    def test_both_are_dead_while_no_provider_is_chosen(self, settings_win):
+        win, _ = settings_win
+        assert win.key_provider_combo.currentIndex() == 0
+        assert not win.change_key_btn.isEnabled()
+        assert not win.remove_key_btn.isEnabled()
+        assert win.key_status.text() == "—"
+
+    def test_a_key_removed_elsewhere_is_not_removed_again(
+        self, settings_win, monkeypatch
+    ):
+        # The keychain can change under an open window (another MinbarLive, or
+        # the OS credential manager), so the handler re-checks rather than
+        # trusting the button state it was drawn with.
+        win, sw = settings_win
+        monkeypatch.setattr(sw, "has_usable_key", lambda p: True)
+        self._select(win, "anthropic")
+
+        cleared: list[str] = []
+        monkeypatch.setattr(sw, "clear_api_key", lambda p: cleared.append(p))
+        monkeypatch.setattr(sw, "ask_yes_no", lambda *a, **k: True)
+        monkeypatch.setattr(sw, "show_message", lambda *a, **k: None)
+        monkeypatch.setattr(sw, "has_usable_key", lambda p: False)  # vanished
+
+        win._on_remove_key()
+        assert cleared == []
+        assert not win.remove_key_btn.isEnabled()
+
+    def test_a_session_only_key_counts_as_saved(self, settings_win, monkeypatch):
+        # has_usable_key, not get_stored_api_key: with no keychain a key entered
+        # this session is live but unstored, and "no key saved" made the
+        # operator re-enter a key that was already working.
+        win, sw = settings_win
+        monkeypatch.setattr(sw, "has_usable_key", lambda p: True)
+        self._select(win, "openai")
+        assert win.key_status.text() != "—"
+        assert win.remove_key_btn.isEnabled()
+
+
+class TestIntegratedWindows:
+    """Secondary windows presented inside the control panel (window_style)."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui_qt.announce_window as aw
+        import gui_qt.settings_window as sw
+
+        for module in (aw, sw):
+            monkeypatch.setattr(module, "save_settings", lambda s: None)
+        p = _panel(monkeypatch)
+        p.settings.window_style = "integrated"
+        p.resize(1200, 900)
+        p.show()
+        _settle(qt_app)
+        yield p
+        p.close_secondary_windows()
+        p.close()
+
+    def test_the_size_rule_clamps_to_the_control_panel(self):
+        from PySide6.QtCore import QSize
+
+        from gui_qt.modal_host import MIN_PANEL_H, MIN_PANEL_W, clamped_panel_size
+
+        # Room to spare: the panel gets the size it asks for.
+        assert clamped_panel_size(QSize(520, 700), QSize(1400, 1000)) == QSize(520, 700)
+        # A small control panel shrinks it, leaving a dim margin.
+        assert clamped_panel_size(QSize(520, 700), QSize(600, 500)) == QSize(520, 450)
+        # …but never below the point where nothing inside is usable.
+        assert clamped_panel_size(QSize(520, 700), QSize(100, 100)) == QSize(
+            MIN_PANEL_W, MIN_PANEL_H
+        )
+
+    def test_a_presented_window_is_a_child_not_a_window(self, panel, qt_app):
+        panel.open_settings()
+        _settle(qt_app)
+        win = panel._settings_window
+        assert not win.isWindow()
+        assert win.parentWidget() is panel
+        assert panel.modal_host.is_presented(win)
+        assert panel.modal_host._backdrop.isVisible()
+
+    def test_it_is_centred_over_the_control_panel(self, panel, qt_app):
+        panel.open_settings()
+        _settle(qt_app)
+        win = panel._settings_window
+        assert win.geometry().center().x() == pytest.approx(panel.width() // 2, abs=1)
+        assert win.geometry().center().y() == pytest.approx(panel.height() // 2, abs=1)
+
+    def test_escape_closes_the_panel(self, panel, qt_app):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        panel.open_settings()
+        _settle(qt_app)
+        win = panel._settings_window
+        win.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+        _settle(qt_app)
+        assert not win.isVisible()
+        assert not panel.modal_host.active
+        assert not panel.modal_host._backdrop.isVisible()
+
+    def test_a_click_on_the_dim_closes_the_topmost_panel_only(self, panel, qt_app):
+        panel.open_settings()
+        panel.open_batch()
+        _settle(qt_app)
+        host = panel.modal_host
+        assert [p.win for p in host._panels] == [
+            panel._settings_window,
+            panel._batch_window,
+        ]
+        host._on_backdrop_click()
+        _settle(qt_app)
+        # The batch panel goes; the settings panel underneath stays, and the
+        # dim stays with it rather than following the window that closed.
+        assert not panel._batch_window.isVisible()
+        assert panel._settings_window.isVisible()
+        assert host._backdrop.isVisible()
+        host._on_backdrop_click()
+        _settle(qt_app)
+        assert not host.active
+        assert not host._backdrop.isVisible()
+
+    def test_panels_follow_the_control_panel_being_resized(self, panel, qt_app):
+        panel.open_settings()
+        _settle(qt_app)
+        win = panel._settings_window
+        panel.resize(620, 520)
+        _settle(qt_app)
+        assert win.height() <= int(520 * 0.9)
+        assert win.geometry().center().y() == pytest.approx(panel.height() // 2, abs=1)
+        panel.resize(1200, 900)
+        _settle(qt_app)
+        assert win.geometry().center().y() == pytest.approx(panel.height() // 2, abs=1)
+
+    def test_a_timed_announcement_is_not_stranded_by_a_teardown(self, panel, qt_app):
+        # A window-style or GUI-language change DESTROYS the announcement
+        # window, and the auto-clear timer went with it — a "30 seconds"
+        # message then stayed on the overlay for good.
+        panel.open_announce()
+        _settle(qt_app)
+        win = panel._announce_window
+        win.text.setPlainText("Bitte Handys stummschalten")
+        win.duration_combo.setCurrentIndex(1)  # a timed message, not "until stopped"
+        win.send_announcement()
+        assert panel.has_active_announcement()
+        assert win._auto_clear.isActive()
+
+        panel.close_secondary_windows()
+        _settle(qt_app)
+        assert not panel.has_active_announcement()
+
+    def test_an_until_stopped_announcement_survives_a_teardown(self, panel, qt_app):
+        # It owns no timer, so nothing is lost by destroying the window — and
+        # the message is meant to stay up until someone stops it.
+        from config import ANNOUNCEMENT_DURATIONS_SECONDS
+
+        panel.open_announce()
+        _settle(qt_app)
+        win = panel._announce_window
+        win.text.setPlainText("Freitagsgebet 13:30")
+        win.duration_combo.setCurrentIndex(ANNOUNCEMENT_DURATIONS_SECONDS.index(0))
+        win.send_announcement()
+        assert not win._auto_clear.isActive()
+
+        panel.close_secondary_windows()
+        _settle(qt_app)
+        assert panel.has_active_announcement()
+
+    def test_switching_style_saves_it_and_rebuilds_the_windows(
+        self, qt_app, monkeypatch
+    ):
+        import gui_qt.settings_window as sw
+
+        monkeypatch.setattr(sw, "save_settings", lambda s: None)
+        p = _panel(monkeypatch)
+        p.settings.window_style = "windowed"
+        p.open_settings()
+        win = p._settings_window
+        assert win.window_style_segment.current_index() == 0
+
+        reopened: list[bool] = []
+        monkeypatch.setattr(
+            p, "reopen_secondary_windows", lambda: reopened.append(True)
+        )
+        win.window_style_segment._buttons[1].click()
+        assert p.settings.window_style == "integrated"
+        assert p.uses_integrated_windows()
+        assert reopened == [True]  # a window cannot change style in place
+        p.close_secondary_windows()
+        p.close()
+
+    def test_exiting_with_a_panel_open_is_quiet(self):
+        # Regression: the host connected destroyed(), which only ever fires
+        # during teardown — by then the control panel has taken the backdrop
+        # with it, and every exit with a panel open printed
+        # "RuntimeError: Internal C++ object (_Backdrop) already deleted"
+        # out of a Qt slot.
+        import os
+        import pathlib
+        import subprocess
+
+        code = (
+            "import gui_qt.control_panel as cp\n"
+            "from PySide6.QtWidgets import QApplication\n"
+            "cp.save_settings = lambda s: None\n"
+            "cp.activate_stored_keys = lambda: None\n"
+            "cp.ControlPanel._ensure_subtitle_window = lambda self: None\n"
+            "app = QApplication([])\n"
+            "p = cp.ControlPanel(type('C', (), {})())\n"
+            "p.settings.window_style = 'integrated'\n"
+            "p.resize(1000, 800); p.show()\n"
+            "for _ in range(8): app.processEvents()\n"
+            "p.open_settings()\n"
+            "for _ in range(8): app.processEvents()\n"
+            "p.close()\n"
+        )
+        env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            cwd=pathlib.Path(__file__).resolve().parents[1],
+            env=env,
+        )
+        assert "Traceback" not in result.stderr, result.stderr
+        assert result.returncode == 0, result.stderr
