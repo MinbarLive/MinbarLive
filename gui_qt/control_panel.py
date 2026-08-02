@@ -1614,7 +1614,12 @@ class ControlPanel(QMainWindow):
         # Both buttons are inert while a Start is in flight: Start would queue a
         # second session and there is nothing to stop until the pipeline is up.
         self.start_btn.setEnabled(not self._running and not self._starting)
-        self.stop_btn.setEnabled(self._running and not self._stopping)
+        # ``not self._starting`` matters only for a live restart, which is the
+        # one case where a start is in flight while the session counts as
+        # running — stopping halfway through reopening it races the restart.
+        self.stop_btn.setEnabled(
+            self._running and not self._stopping and not self._starting
+        )
         self._rehome_button_focus(focused)
         if self._starting:
             text = self._clean_label("connecting", "Connecting…")
@@ -1727,6 +1732,9 @@ class ControlPanel(QMainWindow):
             self.source_combo.currentText()
         )
         save_settings(self.settings)
+        # Segmented mode re-reads the source per audio segment; a streaming
+        # socket fixed it at connect and has to be reopened.
+        self._restart_pipeline_for_live_change()
 
     def _on_target_changed(self, _index: int) -> None:
         self.settings.target_language = language_canonical_name(
@@ -1960,6 +1968,8 @@ class ControlPanel(QMainWindow):
         if model:
             self.settings.transcription_model = model
             save_settings(self.settings)
+            # A streaming socket is opened with one fixed model.
+            self._restart_pipeline_for_live_change()
 
     def _on_use_default_translation(self, checked: bool) -> None:
         self.settings.use_default_translation_model = checked
@@ -2315,8 +2325,9 @@ class ControlPanel(QMainWindow):
         """Close the cost record and stop both session-scoped timers.
 
         Every path out of a running session goes through here — a normal stop,
-        a failed device switch, and closing the window — so a session can never
-        leave its usage unwritten or a timer running against a dead pipeline.
+        a failure that takes the pipeline down with it, and closing the window
+        — so a session can never leave its usage unwritten or a timer running
+        against a dead pipeline.
         """
         self._inactivity_timer.stop()
         self._cost_flush_timer.stop()
@@ -2360,6 +2371,66 @@ class ControlPanel(QMainWindow):
             flush_cost_history()
         except Exception as exc:  # noqa: BLE001 - the flush is never worth a crash
             log(f"Cost flush failed: {exc}", level="DEBUG")
+
+    # ── live changes that need the stream reopened ───────────────────────
+    def _restart_pipeline_for_live_change(self) -> None:
+        """Reconnect a live stream so a change it cannot apply in place lands.
+
+        The streaming socket fixes the source language and the transcription
+        model at connect, so changing either mid-session does nothing until the
+        stream is reopened — the control confirms a change that is not in
+        effect, which is worse than refusing it. Segmented mode re-reads both
+        per audio segment and needs none of this.
+
+        Off the GUI thread for the same reason Start is: reopening waits on the
+        provider handshake. Expect the same brief audio gap as a manual
+        Stop -> Start.
+        """
+        if not self._running or self._starting or self._stopping:
+            return
+        if self.settings.pipeline_mode != PIPELINE_MODE_STREAMING:
+            return
+        device = self._selected_device()
+        log("Restarting live stream to apply change…", level="INFO")
+        self._start_error = None
+        done = threading.Event()
+
+        def _work() -> None:
+            try:
+                self.controller.restart(input_device=device)
+            except Exception as exc:  # noqa: BLE001 - applied on the GUI thread
+                self._start_error = exc
+            finally:
+                done.set()
+
+        self._starting = True
+        self._sync_running_state()
+        threading.Thread(target=_work, daemon=True, name="pipeline-restart").start()
+        self._await(done, self._finish_restart)
+
+    def _finish_restart(self) -> None:
+        self._starting = False
+        error, self._start_error = self._start_error, None
+        if error is not None:
+            # restart() can fail after its own stop() already ran, so the
+            # session is gone — say so rather than leaving the panel "running".
+            self._running = False
+            self.bridge.stop()
+            self._end_session_tracking("error")
+            log(f"Live restart failed: {error}", level="ERROR")
+            self._sync_running_state()
+            self._refresh_provider_combos()
+            self._apply_subtitle_hide_mode()
+            show_message(
+                self,
+                self._t("error_start_failed", "Start failed"),
+                str(error),
+                kind="error",
+                translate=self._t,
+            )
+            return
+        self._sync_running_state()
+        log("Live stream restarted", level="INFO")
 
     def _on_device_lost(self) -> None:
         # Say so. Stopping silently mid-session leaves the operator watching a

@@ -4135,3 +4135,94 @@ class TestAutoStartOnLaunch:
 
     def test_off(self, qt_app, monkeypatch):
         assert self._build(qt_app, monkeypatch, auto_start=False) == []
+
+
+class TestLiveStreamRestart:
+    """A streaming socket fixes the source language and the transcription model
+    at connect. Changing either mid-session used to save the setting and leave
+    the stream on the old one, so the control confirmed a change that had not
+    landed."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui_qt.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(cp, "ensure_keys", lambda *a, **k: True)
+        monkeypatch.setattr(cp, "show_message", lambda *a, **k: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        class FakeController:
+            def __init__(self):
+                self.restarts: list[object] = []
+                self.done = threading.Event()
+                self.fail = False
+
+            def restart(self, input_device=None):
+                self.restarts.append(input_device)
+                self.done.set()
+                if self.fail:
+                    raise RuntimeError("socket refused")
+
+        controller = FakeController()
+        p = cp.ControlPanel(controller)
+        yield p, controller
+        p.close()
+
+    @staticmethod
+    def _drive(qt_app, controller, p, timeout: float = 5.0) -> None:
+        """Let the restart worker finish and its outcome be applied."""
+        controller.done.wait(timeout)
+        tick = threading.Event()
+        for _ in range(500):
+            qt_app.processEvents()
+            if not p._starting:
+                return
+            tick.wait(0.01)
+
+    def test_streaming_session_reconnects(self, panel, qt_app):
+        p, controller = panel
+        p._running = True
+        p.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+        p._restart_pipeline_for_live_change()
+        self._drive(qt_app, controller, p)
+        assert controller.restarts
+        assert p._running
+
+    def test_segmented_session_does_not(self, panel):
+        p, controller = panel
+        p._running = True
+        p.settings.pipeline_mode = "segmented"
+        p._restart_pipeline_for_live_change()
+        assert controller.restarts == []
+        assert not p._starting
+
+    def test_stopped_panel_does_not(self, panel):
+        p, controller = panel
+        p._running = False
+        p.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+        p._restart_pipeline_for_live_change()
+        assert controller.restarts == []
+
+    def test_stop_is_inert_while_reconnecting(self, panel):
+        p, _controller = panel
+        p._running, p._starting = True, True
+        p._sync_running_state()
+        # Stopping halfway through a reopen races the restart worker.
+        assert not p.stop_btn.isEnabled()
+        assert not p.start_btn.isEnabled()
+
+    def test_a_failed_reconnect_reports_the_session_gone(self, panel, qt_app):
+        p, controller = panel
+        p._running = True
+        controller.fail = True
+        p.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+        p._restart_pipeline_for_live_change()
+        self._drive(qt_app, controller, p)
+        # restart() can fail after its own stop() already ran, so the pipeline
+        # really is down; leaving the panel "running" would strand the operator.
+        assert not p._running
+        assert not p._starting
