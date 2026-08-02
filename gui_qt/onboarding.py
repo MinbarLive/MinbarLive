@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.device_list import get_input_devices
+from gui.device_list import BLACKHOLE_URL, get_input_devices, loopback_supported
 from gui_qt.dialogs import show_message
 from gui_qt.i18n import load_gui_translations
 from gui_qt.icons import app_icon
@@ -316,6 +316,24 @@ class OnboardingWizard(QDialog):
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
         inner.addSpacing(6)
         inner.addWidget(self.device_combo)
+        # Where the platform has no loopback capture (macOS) the list simply
+        # has no system-audio entry; say why, as the Tk wizard does.
+        self._loopback_hint = None
+        if not loopback_supported():
+            # Through _tr, so it follows a language switch on the first step
+            # like every other label here.
+            self._loopback_hint = self._tr(
+                QPushButton(),
+                "macos_loopback_hint",
+                "macOS: system audio needs BlackHole ↗",
+            )
+            self._loopback_hint.setObjectName("link")
+            self._loopback_hint.setFlat(True)
+            self._loopback_hint.setCursor(Qt.PointingHandCursor)
+            self._loopback_hint.clicked.connect(
+                lambda: QDesktopServices.openUrl(QUrl(BLACKHOLE_URL))
+            )
+            inner.addWidget(self._loopback_hint)
         self._level_holder = self._level_row()
         inner.addWidget(self._level_holder)
 

@@ -18,8 +18,8 @@ import os
 import re
 import threading
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QGuiApplication, QPixmap
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -49,7 +49,12 @@ from gui.control_state import (
     subtitle_mode_choices,
     visible_provider_choices,
 )
-from gui.device_list import find_input_device_position, get_input_devices
+from gui.device_list import (
+    BLACKHOLE_URL,
+    find_input_device_position,
+    get_input_devices,
+    loopback_supported,
+)
 from gui_qt.api_keys import activate_stored_keys, ensure_keys
 from gui_qt.dialogs import show_message
 from gui_qt.i18n import load_gui_translations
@@ -562,6 +567,9 @@ class ControlPanel(QMainWindow):
         # appearance) read better with air between them than packed together.
         card.body.setSpacing(12)
         card.body.addLayout(top)
+        hint = self._loopback_hint()
+        if hint is not None:
+            card.body.addWidget(hint)
         card.body.addSpacing(6)
         card.body.addWidget(self._input_level_row())
         card.body.addSpacing(6)
@@ -574,6 +582,30 @@ class ControlPanel(QMainWindow):
         card.body.addSpacing(4)
         card.body.addWidget(self._typography_expander())
         return card
+
+    def _loopback_hint(self) -> QPushButton | None:
+        """Explain the missing "(Loopback)" entries where the platform has none.
+
+        Built only where loopback capture is unavailable (macOS), so the card is
+        untouched on Windows and Linux — as in the Tk panel. Without it the
+        device list simply has no system-audio entry and no reason given.
+
+        A ``#link`` button rather than the Tk version's muted label: that is the
+        Qt tree's existing idiom for an external link, and it makes a clickable
+        hint actually look clickable.
+        """
+        if loopback_supported():
+            return None
+        button = QPushButton(
+            self._t("macos_loopback_hint", "macOS: system audio needs BlackHole ↗")
+        )
+        button.setObjectName("link")
+        button.setFlat(True)
+        button.setCursor(Qt.PointingHandCursor)
+        button.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(BLACKHOLE_URL))
+        )
+        return button
 
     def _input_level_row(self) -> QWidget:
         """dBFS readout · segmented bar · Test button, as in the Tk card."""
