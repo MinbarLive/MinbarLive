@@ -4099,3 +4099,39 @@ class TestSessionTracking:
         monkeypatch.setattr(type(p), "on_stop", lambda self: stopped.append(True))
         p._check_inactivity()
         assert stopped == []
+
+
+class TestAutoStartOnLaunch:
+    """"Start on launch" persisted its checkbox and then did nothing."""
+
+    @staticmethod
+    def _build(qt_app, monkeypatch, *, auto_start: bool):
+        import gui_qt.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        # The wait exists so the window can paint first; no reason to spend it.
+        monkeypatch.setattr(cp, "_AUTO_START_DELAY_MS", 0)
+        started: list[bool] = []
+        monkeypatch.setattr(
+            cp.ControlPanel, "on_start", lambda self: started.append(True)
+        )
+
+        from utils.settings import load_settings
+
+        settings = load_settings()
+        previous, settings.auto_start = settings.auto_start, auto_start
+        try:
+            p = cp.ControlPanel(type("C", (), {})())
+            for _ in range(6):
+                qt_app.processEvents()
+            p.close()
+        finally:
+            settings.auto_start = previous
+        return started
+
+    def test_on(self, qt_app, monkeypatch):
+        assert self._build(qt_app, monkeypatch, auto_start=True) == [True]
+
+    def test_off(self, qt_app, monkeypatch):
+        assert self._build(qt_app, monkeypatch, auto_start=False) == []

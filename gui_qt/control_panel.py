@@ -127,6 +127,10 @@ _LOG_PANEL_MIN_W = 340
 # the check is cheap, and 30 s bounds what a crash can lose.
 _INACTIVITY_CHECK_MS = 15_000
 _COST_FLUSH_MS = 30_000
+# Delay before an auto-started session begins, so the panel is painted and the
+# operator can see what is happening (and reach Stop) before a provider
+# handshake starts. The Tk panel waits the same 700 ms.
+_AUTO_START_DELAY_MS = 700
 # Edge length of the round "?" / swap buttons — the height of the dropdown they
 # sit beside (CONTROL_H), so a control row reads as one row.
 _HELP_BTN_PX = CONTROL_H
@@ -251,6 +255,12 @@ class ControlPanel(QMainWindow):
         # Before the first show(), so an "always" panel comes up on top rather
         # than being recreated a frame later.
         self._apply_always_on_top()
+
+        # Last in __init__ and on a timer, so the panel is fully built and shown
+        # before a start that may block on a provider handshake (or put a
+        # missing-key dialog up) begins.
+        if self.settings.auto_start:
+            QTimer.singleShot(_AUTO_START_DELAY_MS, self.on_start)
 
     def _t(self, key: str, fallback: str) -> str:
         return self.texts.get(key, fallback)
