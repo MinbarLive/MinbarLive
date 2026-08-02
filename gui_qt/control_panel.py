@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config import ICON_PATH_PNG, ICON_PATH_PNG_ON_DARK
+from config import AUTO_STOP_INACTIVITY_SECONDS, ICON_PATH_PNG, ICON_PATH_PNG_ON_DARK
 from gui.control_state import (
     STRATEGY_IDS,
     apply_strategy,
@@ -75,6 +75,12 @@ from providers import (
     TRANSCRIPTION_PROVIDER_CHOICES,
     get_default_model,
     get_model_choices,
+)
+from utils.cost_tracking import (
+    begin_cost_session,
+    cancel_cost_session,
+    end_cost_session,
+    flush_cost_history,
 )
 from utils.logging import log, log_queue
 from utils.settings import (
@@ -116,6 +122,11 @@ _SECONDARY_WINDOWS = (
 # the Tk arrangement. The window is only widened when it cannot hold both.
 _SIDEBAR_W_WITH_LOG = 500
 _LOG_PANEL_MIN_W = 340
+# How often a running session is checked for inactivity, and how often its
+# in-progress cost record is written to disk. Both are the Tk panel's numbers:
+# the check is cheap, and 30 s bounds what a crash can lose.
+_INACTIVITY_CHECK_MS = 15_000
+_COST_FLUSH_MS = 30_000
 # Edge length of the round "?" / swap buttons — the height of the dropdown they
 # sit beside (CONTROL_H), so a control row reads as one row.
 _HELP_BTN_PX = CONTROL_H
@@ -220,6 +231,14 @@ class ControlPanel(QMainWindow):
         self._level_timer = QTimer(self)
         self._level_timer.timeout.connect(self._poll_input_level)
         self._level_timer.start(200)
+        # Session-scoped, unlike the two above: started in _finish_start and
+        # stopped in _end_session_tracking, so neither runs while idle.
+        self._inactivity_timer = QTimer(self)
+        self._inactivity_timer.setInterval(_INACTIVITY_CHECK_MS)
+        self._inactivity_timer.timeout.connect(self._check_inactivity)
+        self._cost_flush_timer = QTimer(self)
+        self._cost_flush_timer.setInterval(_COST_FLUSH_MS)
+        self._cost_flush_timer.timeout.connect(self._flush_cost_session)
 
         # One anonymous request to the GitHub releases API, off the GUI thread;
         # the banner appears only if it answers with a newer version.
@@ -2125,6 +2144,11 @@ class ControlPanel(QMainWindow):
         self._columns = None
         self._build()
         self.restoreGeometry(geometry)
+        log(
+            self._t("log_gui_language_changed", "GUI language changed to: {language}")
+            .format(language=code),
+            level="INFO",
+        )
 
     # ── session ──────────────────────────────────────────────────────────
     def on_start(self) -> None:
@@ -2145,6 +2169,9 @@ class ControlPanel(QMainWindow):
             return
         device = self._selected_device()
         self._ensure_subtitle_window()
+        # Opened before the pipeline so provider threads have somewhere to
+        # record usage from their first call; dropped again if the start fails.
+        begin_cost_session()
 
         self._start_error: Exception | None = None
         done = threading.Event()
@@ -2167,10 +2194,17 @@ class ControlPanel(QMainWindow):
         self._starting = False
         error, self._start_error = self._start_error, None
         if error is not None:
+            # No usage was billed for a start that never ran — drop the session
+            # so it never shows up in the cost history.
+            cancel_cost_session()
             log(f"Start failed: {error}", level="ERROR")
             self._sync_running_state()
             show_message(
-                self, "MinbarLive", str(error), kind="error", translate=self._t
+                self,
+                self._t("error_start_failed", "Start failed"),
+                str(error),
+                kind="error",
+                translate=self._t,
             )
             self._apply_subtitle_hide_mode()
             return
@@ -2187,6 +2221,9 @@ class ControlPanel(QMainWindow):
             show_interim=self.settings.show_interim_transcript,
         )
         self._refresh_provider_combos()
+        self._inactivity_timer.start()
+        self._cost_flush_timer.start()
+        log(self._t("log_started", "Started."), level="INFO")
 
     def _await(self, done: threading.Event, then, interval_ms: int = 100) -> None:
         """Call ``then`` on the GUI thread once ``done`` is set.
@@ -2228,10 +2265,23 @@ class ControlPanel(QMainWindow):
 
     def _finish_stop(self) -> None:
         self._stopping = False
-        self._running = False
         error, self._stop_error = self._stop_error, None
         if error is not None:
+            # The session is still up: leave it marked running so Stop can be
+            # retried, and do NOT close the cost record — a stop that failed
+            # has not completed anything.
             log(f"Stop failed: {error}", level="ERROR")
+            self._sync_running_state()
+            show_message(
+                self,
+                self._t("error_stop_failed", "Stop failed"),
+                str(error),
+                kind="error",
+                translate=self._t,
+            )
+            return
+        self._running = False
+        self._end_session_tracking("completed")
         if self.subtitle_window:
             self.subtitle_window.set_live_text(None)
             self.subtitle_window.set_stopped_hint(True)
@@ -2248,6 +2298,58 @@ class ControlPanel(QMainWindow):
         self._sync_running_state()
         self._refresh_provider_combos()
         self._apply_subtitle_hide_mode()
+        log(self._t("log_stopped", "Stopped."), level="INFO")
+
+    # ── session tracking (cost record + inactivity guard) ────────────────
+    def _end_session_tracking(self, status: str) -> None:
+        """Close the cost record and stop both session-scoped timers.
+
+        Every path out of a running session goes through here — a normal stop,
+        a failed device switch, and closing the window — so a session can never
+        leave its usage unwritten or a timer running against a dead pipeline.
+        """
+        self._inactivity_timer.stop()
+        self._cost_flush_timer.stop()
+        try:
+            end_cost_session(status)
+        except Exception as exc:  # noqa: BLE001 - never block a stop or a close
+            log(f"Could not finalise the cost session: {exc}", level="ERROR")
+
+    def _check_inactivity(self) -> None:
+        """Stop a session that has transcribed nothing for a long while.
+
+        The cost guard for a forgotten session: the pipeline holds its provider
+        connection open and keeps billing until someone notices. The controller
+        only reports the elapsed time — the policy is the panel's, as in Tk.
+        """
+        if not self._running or not self.settings.auto_stop_inactivity:
+            return
+        try:
+            idle = self.controller.seconds_since_last_activity()
+        except Exception as exc:  # noqa: BLE001 - never worth killing a session
+            log(f"Inactivity check failed: {exc}", level="DEBUG")
+            return
+        if idle >= AUTO_STOP_INACTIVITY_SECONDS:
+            log(
+                "Auto-stop: no transcription for "
+                f"{AUTO_STOP_INACTIVITY_SECONDS // 60} minutes — stopping.",
+                level="INFO",
+            )
+            self.on_stop()
+
+    def _flush_cost_session(self) -> None:
+        """Persist the in-progress cost record.
+
+        Provider threads update the tracker in memory only and the record is
+        written on Stop, so without this a crash mid-session loses all of its
+        usage. Low frequency: it exists to bound the loss, not to be current.
+        """
+        if not self._running:
+            return
+        try:
+            flush_cost_history()
+        except Exception as exc:  # noqa: BLE001 - the flush is never worth a crash
+            log(f"Cost flush failed: {exc}", level="DEBUG")
 
     def _on_device_lost(self) -> None:
         # Say so. Stopping silently mid-session leaves the operator watching a
@@ -2283,6 +2385,7 @@ class ControlPanel(QMainWindow):
         except Exception as exc:  # noqa: BLE001 - surfaced to the operator
             log(f"Device switch failed: {exc}", level="ERROR")
             self._running = False
+            self._end_session_tracking("error")
             self._sync_running_state()
             show_message(
                 self, "MinbarLive", str(exc), kind="error", translate=self._t
@@ -2427,6 +2530,9 @@ class ControlPanel(QMainWindow):
                 self.controller.stop()
             except Exception as exc:  # noqa: BLE001 - shutting down anyway
                 log(f"Stop failed: {exc}", level="ERROR")
+            # Whatever the stop did, the usage is real and the process is about
+            # to go away — write the record before it does.
+            self._end_session_tracking("closed")
         self._log_timer.stop()
         self._level_timer.stop()
         self._teardown_subtitle_window()

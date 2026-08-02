@@ -3915,3 +3915,187 @@ class TestIntegratedWindows:
         )
         assert "Traceback" not in result.stderr, result.stderr
         assert result.returncode == 0, result.stderr
+
+
+class TestSessionTracking:
+    """The cost record and the inactivity guard.
+
+    Neither existed in the Qt tree until s30: the Costs tab stayed empty for
+    every ``--qt`` session, and a default-on "stop when idle" checkbox did
+    nothing at all.
+    """
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui_qt.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(cp, "ensure_keys", lambda *a, **k: True)
+        # The overlay is a real top-level window; nothing here needs one.
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+        # Every dialog reachable from here is an error report, and an
+        # unattended modal would hang the run.
+        monkeypatch.setattr(cp, "show_message", lambda *a, **k: None)
+
+        calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            cp, "begin_cost_session", lambda: calls.append(("begin", ""))
+        )
+        monkeypatch.setattr(
+            cp, "cancel_cost_session", lambda: calls.append(("cancel", ""))
+        )
+        monkeypatch.setattr(
+            cp,
+            "end_cost_session",
+            lambda status="completed": calls.append(("end", status)),
+        )
+        monkeypatch.setattr(
+            cp, "flush_cost_history", lambda: calls.append(("flush", ""))
+        )
+
+        class FakeController:
+            def __init__(self):
+                self.idle = 0.0
+                self.stops = 0
+                # The bridge drains both the moment a start succeeds.
+                self.translation_queue = queue.Queue()
+                self.error_queue = queue.Queue()
+
+            def start(self, input_device=None):
+                pass
+
+            def stop(self):
+                self.stops += 1
+
+            def get_live_transcript(self):
+                return "", False
+
+            def seconds_since_last_activity(self):
+                return self.idle
+
+        controller = FakeController()
+        p = cp.ControlPanel(controller)
+        yield p, controller, calls
+        p.close()
+
+    @staticmethod
+    def _mark_started(p) -> None:
+        """Apply a successful start without running the worker thread."""
+        p._start_error = None
+        p._starting = True
+        p._finish_start()
+
+    # -- cost record ------------------------------------------------------
+    def test_start_opens_a_cost_session(self, panel):
+        p, _controller, calls = panel
+        p.on_start()
+        assert ("begin", "") in calls
+
+    def test_failed_start_drops_the_cost_session(self, panel):
+        p, _controller, calls = panel
+        # No usage was billed for a start that never ran, so the session is
+        # cancelled rather than written out as a zero-cost record.
+        p._start_error = RuntimeError("no")
+        p._starting = True
+        p._finish_start()
+        assert ("cancel", "") in calls
+        assert not any(kind == "end" for kind, _ in calls)
+
+    def test_successful_start_runs_the_session_timers(self, panel):
+        p, _controller, _calls = panel
+        self._mark_started(p)
+        assert p._running
+        assert p._inactivity_timer.isActive()
+        assert p._cost_flush_timer.isActive()
+
+    def test_stop_closes_the_cost_session_and_the_timers(self, panel):
+        p, _controller, calls = panel
+        self._mark_started(p)
+        p._stop_error = None
+        p._stopping = True
+        p._finish_stop()
+        assert ("end", "completed") in calls
+        assert not p._inactivity_timer.isActive()
+        assert not p._cost_flush_timer.isActive()
+
+    def test_failed_stop_keeps_the_session_open(self, panel):
+        p, _controller, calls = panel
+        self._mark_started(p)
+        p._stop_error = RuntimeError("stuck")
+        p._stopping = True
+        p._finish_stop()
+        # A stop that failed has completed nothing, and the pipeline may well
+        # still be up: the panel stays running so Stop can be retried, and the
+        # cost record stays open.
+        assert p._running
+        assert not any(kind == "end" for kind, _ in calls)
+
+    def test_close_writes_the_record(self, panel):
+        p, _controller, calls = panel
+        self._mark_started(p)
+        p.close()
+        assert ("end", "closed") in calls
+
+    def test_flush_only_while_running(self, panel):
+        p, _controller, calls = panel
+        p._flush_cost_session()
+        assert not any(kind == "flush" for kind, _ in calls)
+        p._running = True
+        p._flush_cost_session()
+        assert ("flush", "") in calls
+
+    # -- inactivity guard -------------------------------------------------
+    def test_idle_session_is_stopped(self, panel, monkeypatch):
+        import gui_qt.control_panel as cp
+
+        p, controller, _calls = panel
+        p._running = True
+        p.settings.auto_stop_inactivity = True
+        controller.idle = cp.AUTO_STOP_INACTIVITY_SECONDS + 1
+        stopped: list[bool] = []
+        monkeypatch.setattr(type(p), "on_stop", lambda self: stopped.append(True))
+        p._check_inactivity()
+        assert stopped == [True]
+
+    def test_busy_session_is_left_alone(self, panel, monkeypatch):
+        import gui_qt.control_panel as cp
+
+        p, controller, _calls = panel
+        p._running = True
+        p.settings.auto_stop_inactivity = True
+        controller.idle = cp.AUTO_STOP_INACTIVITY_SECONDS - 1
+        stopped: list[bool] = []
+        monkeypatch.setattr(type(p), "on_stop", lambda self: stopped.append(True))
+        p._check_inactivity()
+        assert stopped == []
+
+    def test_the_checkbox_actually_disables_it(self, panel, monkeypatch):
+        import gui_qt.control_panel as cp
+
+        p, controller, _calls = panel
+        p._running = True
+        p.settings.auto_stop_inactivity = False
+        controller.idle = cp.AUTO_STOP_INACTIVITY_SECONDS * 10
+        stopped: list[bool] = []
+        monkeypatch.setattr(type(p), "on_stop", lambda self: stopped.append(True))
+        p._check_inactivity()
+        assert stopped == []
+
+    def test_a_controller_that_raises_does_not_stop_the_session(
+        self, panel, monkeypatch
+    ):
+        p, controller, _calls = panel
+        p._running = True
+        p.settings.auto_stop_inactivity = True
+
+        def _boom():
+            raise RuntimeError("no timestamp")
+
+        controller.seconds_since_last_activity = _boom
+        stopped: list[bool] = []
+        monkeypatch.setattr(type(p), "on_stop", lambda self: stopped.append(True))
+        p._check_inactivity()
+        assert stopped == []
