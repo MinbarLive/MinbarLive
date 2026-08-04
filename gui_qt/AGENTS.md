@@ -92,6 +92,10 @@ confident, wrong passes:
 2. **Pixel probes:** scale widget coordinates by `img.devicePixelRatio()`.
 3. **Pointer probes:** use `QCursor.setPos` (logical), not `SetCursorPos` (physical), and
    assert `QApplication.widgetAt` really is the widget you meant.
+4. **Stub `show_message` before driving any failure path.** `_finish_start`,
+   `_finish_stop` and the batch worker report errors with a real modal dialog — a test
+   that exercises those puts a box on the developer's desktop and blocks the run until
+   it is dismissed (it looked like a 15-second test).
 
 ## The cut-over is gated
 
