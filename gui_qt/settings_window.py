@@ -56,10 +56,12 @@ _PAD = 16
 _CARD_GAP = 12
 _CARD_PAD = 16
 
-# Order the window-style segments are shown in: separate windows first (the
-# stored default), in-app panels second — the Tk window's order. Deliberately
-# not utils.settings.WINDOW_STYLES, whose order is the validation tuple's.
-_STYLE_SEGMENTS = ("windowed", "integrated")
+# Order the window-style segments are shown in: in-app panels first, separate
+# windows second. The default sits on the left, as it does in every other
+# segmented control here, so flipping the default flipped this too.
+# Deliberately not utils.settings.WINDOW_STYLES, whose order is the validation
+# tuple's.
+_STYLE_SEGMENTS = ("integrated", "windowed")
 
 
 class SettingsWindow(QDialog):
@@ -212,25 +214,18 @@ class SettingsWindow(QDialog):
         # provide (PR #25 r6). Here they are child widgets and the dim is
         # painted into the control panel's own back buffer, so nothing is
         # asked of the window manager at all.
+        # Labels built FROM _STYLE_SEGMENTS, not written out beside it: stated
+        # twice, reordering one and not the other silently mislabels both
+        # segments, and the control would then write the opposite setting.
         self.window_style_segment = SegmentedControl(
-            [
-                self._t("window_style_windowed", "Windows"),
-                self._t("window_style_integrated", "Integrated"),
-            ],
+            [self._t(f"window_style_{style}", style.title()) for style in _STYLE_SEGMENTS],
             self._window_style_index(self.settings.window_style),
         )
         self.window_style_segment.changed.connect(self._on_window_style)
         box.addWidget(self._caption(self._t("window_style_label", "Window style")))
         box.addWidget(self.window_style_segment)
-        box.addWidget(
-            self._hint(
-                self._t(
-                    "integrated_windows_hint",
-                    "Open settings, history and batch inside the main window "
-                    "(Esc closes) instead of as separate windows.",
-                )
-            )
-        )
+        # No explanatory line under it: the two segment labels already name the
+        # choice, and the effect is visible the moment either is clicked.
 
         # Backdrop opacity lives in the control panel's Display & audio card,
         # beside the height and font-size controls it belongs with.

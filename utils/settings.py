@@ -425,9 +425,12 @@ class Settings:
     always_on_top_mode: str = "running"
     # Secondary windows open inside the main window over a dim overlay
     # ("integrated") or as classic separate OS windows ("windowed").
-    # Default "windowed" while integrated mode is still being tested on Linux
-    # (borderless keyboard focus varies by window manager).
-    window_style: str = "windowed"
+    # Only new installs land on this: save_settings writes window_style out
+    # explicitly, so anyone who has launched the app keeps whatever they had.
+    # The Tk tree still forces "windowed" off Windows (_use_integrated_windows);
+    # the Qt tree offers it everywhere, since its panels are child widgets and
+    # ask nothing of the window manager.
+    window_style: str = "integrated"
     # Voice-activity noise filter (audio/vad.py): skip/zero-fill non-speech
     # audio (static, hum) that the loudness-based silence gate lets through.
     noise_filter: bool = True
@@ -612,7 +615,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             always_on_top_mode = "running"
         raw_window_style = data.get("window_style")
         window_style = (
-            raw_window_style if raw_window_style in WINDOW_STYLES else "windowed"
+            raw_window_style if raw_window_style in WINDOW_STYLES else "integrated"
         )
         font_size_base = data.get("font_size_base", 40)
         _cached_settings = Settings(

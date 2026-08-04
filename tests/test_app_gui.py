@@ -772,8 +772,8 @@ class TestSettingsRemoveKeyGating:
 
 
 class TestIntegratedWindows:
-    """The window_style setting: separate windows (default, while integrated
-    mode is still tested on Linux) vs in-app panels.
+    """The window_style setting: in-app panels (the default) vs separate
+    windows.
 
     Integrated mode is gated to Windows (see _integrated_windows_supported),
     so the tests that drive a real in-app panel only run there — off Windows
@@ -789,9 +789,13 @@ class TestIntegratedWindows:
         "platforms by test_integrated_is_gated_to_windows",
     )
 
-    def test_windowed_is_the_default(self, make_gui):
+    def test_integrated_is_the_default(self, make_gui):
+        # Only for a fresh install: save_settings writes window_style out, so
+        # anyone who has launched the app keeps whatever they already had.
+        # Off Windows this tree still forces windowed at USE time — the gate
+        # below, not the stored value, is what decides.
         gui, _c, settings = make_gui()
-        assert settings.window_style == "windowed"
+        assert settings.window_style == "integrated"
 
     @_windows_only
     def test_integrated_opens_as_in_app_panel(self, make_gui):
