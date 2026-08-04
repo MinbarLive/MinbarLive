@@ -39,6 +39,11 @@ for anything Qt, pytest included.
 - **Wheel gestures belong to the page, not to controls.** `Dropdown` and `Slider` both
   `event.ignore()` a wheel so the scroll area behind takes it. Don't drop a plain
   `QComboBox`/`QSlider` into the panel.
+- **Every `QTextOption` needs `setTextDirection(Qt.LayoutDirectionAuto)`.** Its default
+  is `LeftToRight`, *not* "work it out" — so an Arabic paragraph lays out LTR and its
+  full stop, a neutral character, lands on the RIGHT. The words still run
+  right-to-left inside the paragraph, which is why it looks almost correct.
+  `QPainter.drawText` is already auto and needs nothing.
 - **Font families come from `gui_qt/fonts.py`, per platform and per script.** Never
   hardcode one: `"Segoe UI"` for all three platforms is what made macOS build its alias
   table on every launch. Arabic gets its own stack because Qt reports the metrics of the

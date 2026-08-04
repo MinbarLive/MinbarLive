@@ -350,6 +350,17 @@ class SubtitleWindow(QWidget):
         layout = QTextLayout(text, font)
         option = QTextOption(Qt.AlignHCenter)
         option.setWrapMode(QTextOption.WordWrap)
+        # QTextOption defaults to LEFT-TO-RIGHT, not to "work it out" — so an
+        # Arabic paragraph was laid out with an LTR base direction and its
+        # full stop, a neutral character, attached to the LTR paragraph and
+        # landed on the RIGHT. The words themselves still ran right-to-left
+        # (that is the bidi algorithm inside the paragraph), which is why it
+        # looked almost correct. LayoutDirectionAuto applies the Unicode
+        # first-strong-character rule instead: Arabic text becomes an RTL
+        # paragraph and its terminator sits at the left, where the sentence
+        # ends; German stays LTR. Verified over both, including lines opening
+        # with a quote, a digit or the elision ellipsis.
+        option.setTextDirection(Qt.LayoutDirectionAuto)
         layout.setTextOption(option)
 
         fm = QFontMetrics(font)

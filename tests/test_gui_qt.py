@@ -4633,3 +4633,40 @@ class TestInkOverhang:
         flat = w._layout_text("Vielmehr merken sie es nicht.", font)[1]
         monkeypatch.setattr(SubtitleWindow, "_ink", staticmethod(lambda t, f: (0, 12)))
         assert w._layout_text("Vielmehr merken sie es nicht.", font)[1] == flat + 12
+
+
+class TestParagraphDirection:
+    """A trailing full stop belongs at the END of the sentence, which for
+    Arabic is its LEFT edge. QTextOption defaults its text direction to
+    LEFT-TO-RIGHT rather than to "work it out", so every line was laid out as
+    an LTR paragraph: the words still ran right-to-left (bidi does that inside
+    the paragraph regardless), but the terminator — a neutral character —
+    attached to the paragraph and landed on the right."""
+
+    @staticmethod
+    def _direction(w, text: str) -> str:
+        from gui_qt.fonts import subtitle_font
+
+        layout, _height = w._layout_text(text, subtitle_font(40, text=text))
+        line = layout.lineAt(0)
+        # Where the first logical character sits vs. where the cursor lands
+        # after the last one. In an RTL paragraph the last one is further left.
+        return "rtl" if line.cursorToX(len(text))[0] < line.cursorToX(0)[0] else "ltr"
+
+    def test_an_arabic_sentence_is_an_rtl_paragraph(self, overlay):
+        w = overlay(SUBTITLE_MODE_STATIC)
+        assert self._direction(w, "وكل بدعة ضلالة.") == "rtl"
+
+    def test_arabic_opening_on_a_neutral_is_still_rtl(self, overlay):
+        # The live line elides with a leading ellipsis, and a quoted verse
+        # opens on a quotation mark — neither is a strong character, so the
+        # paragraph direction has to come from the first Arabic letter after.
+        w = overlay(SUBTITLE_MODE_STATIC)
+        assert self._direction(w, "…وكل بدعة ضلالة.") == "rtl"
+        assert self._direction(w, '"وكل بدعة ضلالة."') == "rtl"
+
+    def test_german_stays_ltr(self, overlay):
+        w = overlay(SUBTITLE_MODE_STATIC)
+        assert self._direction(w, "Und die Geschichte widerlegt das.") == "ltr"
+        # Including with an honorific in the middle of it.
+        assert self._direction(w, "dass Allah ﷻ es erzählt hat.") == "ltr"
