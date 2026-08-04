@@ -4990,3 +4990,88 @@ class TestLiveLineDirection:
         layout, _h = w._layout_text(german, subtitle_font(40, text=german))
         line = layout.lineAt(0)
         assert line.cursorToX(len(german))[0] > line.cursorToX(0)[0]
+
+
+class TestHonorificClearance:
+    """ﷺ/ﷻ are excluded from the ink measurement on purpose — they are far
+    taller than the script around them, and measuring them pushes their whole
+    paragraph away from the one above. Ignoring them outright let the ligature
+    climb INTO the line above instead, which is what a German translation
+    carrying one did on Linux."""
+
+    def test_a_ligature_never_reaches_above_its_own_line(self, overlay):
+        from PySide6.QtGui import QFontMetrics
+
+        from gui_qt.fonts import subtitle_font
+        from gui_qt.subtitle_window import SubtitleWindow
+
+        overlay(SUBTITLE_MODE_STATIC)  # an app + theme exist
+        for text in (
+            "dass Allah ﷻ mit euch wetteifert.",
+            "قال ﷺ",
+            "ﷻ",
+        ):
+            font = subtitle_font(51, text=text)
+            fm = QFontMetrics(font)
+            reclaim = SubtitleWindow._ink(text, font)[0]
+            whole = fm.tightBoundingRect(text.strip())
+            assert reclaim <= fm.ascent() + whole.top(), (
+                f"{text!r} reclaims past its own ink"
+            )
+
+    def test_a_line_without_one_is_measured_exactly_as_before(self, overlay):
+        from PySide6.QtGui import QFontMetrics
+
+        from gui_qt.fonts import subtitle_font
+        from gui_qt.subtitle_window import _STACK_INK_GAP_EM, SubtitleWindow
+
+        overlay(SUBTITLE_MODE_STATIC)
+        text = "Vielmehr merken sie es nicht."
+        font = subtitle_font(51, text=text)
+        fm = QFontMetrics(font)
+        expected = max(
+            0,
+            round(
+                fm.ascent()
+                + fm.tightBoundingRect(text).top()
+                - _STACK_INK_GAP_EM * font.pixelSize()
+            ),
+        )
+        assert SubtitleWindow._ink(text, font)[0] == expected
+
+
+class TestAmpersandInACheckboxLabel:
+    """A translated "&" was painted as nothing at all.
+
+    ``QAbstractButton`` reads a single "&" as a mnemonic marker, so the German
+    and English "Alten Verlauf & Batch-Dateien …" lost the character and bound
+    a stray Alt+Space. The escape has to happen at the widget: the Tk tree
+    reads the same JSON and would print "&&" verbatim.
+    """
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+        p = cp.ControlPanel(type("C", (), {})())
+        yield p
+        p.subtitle_window = None
+        p.close()
+
+    def test_no_check_claims_a_mnemonic(self, panel):
+        for attribute, box in panel._other_checks.items():
+            assert box.shortcut().isEmpty(), (
+                f"{attribute} bound {box.shortcut().toString()} from its label"
+            )
+
+    def test_the_ampersand_survives_to_the_painted_label(self, panel):
+        # Qt strips one "&" of every pair at paint time, so the escaped text
+        # holds twice as many as the source string it came from.
+        box = panel._other_checks["auto_cleanup_content"]
+        source = panel._t("auto_cleanup_content", "Clean up recordings")
+        assert box.text().count("&") == source.count("&") * 2
+        assert box.text().replace("&&", "&") == source

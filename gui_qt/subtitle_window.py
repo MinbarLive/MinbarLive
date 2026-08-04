@@ -329,13 +329,22 @@ class SubtitleWindow(QWidget):
         # from the box's ascent line down to the tallest ink in the line.
         leading = metrics.ascent() + ink.top()
         em = font.pixelSize() or font.pointSize()
+        reclaim = max(0, round(leading - _STACK_INK_GAP_EM * em))
+        # ...but never so far that a ligature we chose not to measure ends up
+        # ABOVE the line before it. A honorific is much taller than the script
+        # around it, so "ignore it" alone let it climb into the previous line —
+        # visible wherever a German translation carries one. Clamping to its
+        # real ink, with no clearance term of its own, keeps the trade the
+        # comment on _HONORIFIC_LIGATURE_RE describes (the ligature sits closer
+        # than a normal line would) while stopping it short of touching.
+        if _HONORIFIC_LIGATURE_RE.search(text):
+            whole = metrics.tightBoundingRect(text.strip())
+            if not whole.isEmpty():
+                reclaim = min(reclaim, max(0, metrics.ascent() + whole.top()))
         # No clearance term on the overhang: the line BELOW already holds
         # _STACK_INK_GAP_EM back through its own reclaim, and adding it at both
         # ends would double the gap this whole mechanism exists to close.
-        return (
-            max(0, round(leading - _STACK_INK_GAP_EM * em)),
-            max(0, ink.bottom() - metrics.descent()),
-        )
+        return reclaim, max(0, ink.bottom() - metrics.descent())
 
     @classmethod
     def _reclaim(cls, text: str, font: QFont) -> int:
