@@ -4993,31 +4993,98 @@ class TestLiveLineDirection:
 
 
 class TestHonorificClearance:
-    """ﷺ/ﷻ are excluded from the ink measurement on purpose — they are far
-    taller than the script around them, and measuring them pushes their whole
-    paragraph away from the one above. Ignoring them outright let the ligature
-    climb INTO the line above instead, which is what a German translation
-    carrying one did on Linux."""
+    """ﷺ/ﷻ come from whichever family has the glyph, not the one we asked for,
+    and that family can draw them far taller than the line around them. Every
+    way of paying for that in the SPACING was tried and reported as a bug:
+    measuring them pushed the whole paragraph away from the one above,
+    ignoring them let the ligature climb into it, and clamping the reclaim
+    spread the paragraph's own rows apart. The ligature is made to fit
+    instead."""
 
-    def test_a_ligature_never_reaches_above_its_own_line(self, overlay):
-        from PySide6.QtGui import QFontMetrics
+    OVERSIZED = "dass Allah ﷻ mit euch wetteifert."
 
+    class _TallMetrics:
+        """Metrics whose ligature overflows the box, as a Linux fallback's do.
+
+        The rule cannot be exercised with a real font here: Segoe UI's
+        ligature already fits, which is the no-op case below.
+        """
+
+        def __init__(self, ascent: int = 20, descent: int = 5):
+            self._ascent, self._descent = ascent, descent
+
+        def ascent(self):
+            return self._ascent
+
+        def descent(self):
+            return self._descent
+
+        def tightBoundingRect(self, _text):  # noqa: N802 - Qt API shape
+            from PySide6.QtCore import QRect
+
+            return QRect(0, -60, 40, 70)  # 60 above the baseline, 10 below
+
+    def test_an_oversized_ligature_is_scaled_into_the_line(self, overlay):
         from gui_qt.fonts import subtitle_font
         from gui_qt.subtitle_window import SubtitleWindow
 
         overlay(SUBTITLE_MODE_STATIC)  # an app + theme exist
-        for text in (
-            "dass Allah ﷻ mit euch wetteifert.",
-            "قال ﷺ",
-            "ﷻ",
-        ):
-            font = subtitle_font(51, text=text)
-            fm = QFontMetrics(font)
-            reclaim = SubtitleWindow._ink(text, font)[0]
-            whole = fm.tightBoundingRect(text.strip())
-            assert reclaim <= fm.ascent() + whole.top(), (
-                f"{text!r} reclaims past its own ink"
-            )
+        font = subtitle_font(51, text=self.OVERSIZED)
+        metrics = self._TallMetrics()
+        fitted = SubtitleWindow._fitted_format("ﷻ", font, metrics)
+        assert fitted is not None, "an overflowing ligature was left at full size"
+        scaled = fitted.font().pixelSize()
+        assert scaled < font.pixelSize()
+        # Small enough that its ink now sits inside the ascent it has to share.
+        assert 60 * scaled / font.pixelSize() <= metrics.ascent() + 1
+
+    def test_a_ligature_that_already_fits_is_left_alone(self, overlay):
+        # The Windows case, and the point of the whole design: where the glyph
+        # fits, nothing about the layout changes at all.
+        from gui_qt.fonts import subtitle_font
+        from gui_qt.subtitle_window import SubtitleWindow
+
+        overlay(SUBTITLE_MODE_STATIC)
+        font = subtitle_font(51, text=self.OVERSIZED)
+        from PySide6.QtGui import QFontMetrics
+
+        metrics = QFontMetrics(font)
+        if -metrics.tightBoundingRect("ﷻ").top() <= metrics.ascent():
+            assert SubtitleWindow._honorific_formats(self.OVERSIZED, font) == []
+
+    def test_each_ligature_gets_its_own_span(self, overlay, monkeypatch):
+        # With the fit forced, so the mapping is checked on a machine whose
+        # own ligatures need no scaling.
+        from PySide6.QtGui import QTextCharFormat
+
+        from gui_qt.fonts import subtitle_font
+        from gui_qt.subtitle_window import SubtitleWindow
+
+        overlay(SUBTITLE_MODE_STATIC)
+        monkeypatch.setattr(
+            SubtitleWindow,
+            "_fitted_format",
+            staticmethod(lambda glyph, font, metrics: QTextCharFormat()),
+        )
+        text = "Allah ﷻ und der Gesandte ﷺ sagten."
+        formats = SubtitleWindow._honorific_formats(text, subtitle_font(51))
+        assert [(f.start, f.length) for f in formats] == [
+            (text.index("ﷻ"), 1),
+            (text.index("ﷺ"), 1),
+        ]
+
+    def test_a_honorific_does_not_change_the_paragraph_rhythm(self, overlay):
+        """The regression that clamping caused: a translation carrying a
+        ligature had its OWN rows spread apart to make room for it."""
+        from gui_qt.fonts import subtitle_font
+        from gui_qt.subtitle_window import SubtitleWindow
+
+        overlay(SUBTITLE_MODE_STATIC)
+        plain = "dass Allah mit euch wetteifert."
+        font = subtitle_font(51, text=plain)
+        assert SubtitleWindow._ink(self.OVERSIZED, font) == SubtitleWindow._ink(
+            plain, font
+        )
 
     def test_a_line_without_one_is_measured_exactly_as_before(self, overlay):
         from PySide6.QtGui import QFontMetrics

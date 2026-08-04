@@ -40,6 +40,7 @@ from PySide6.QtGui import (
     QGuiApplication,
     QPainter,
     QPainterPath,
+    QTextCharFormat,
     QTextLayout,
     QTextOption,
 )
@@ -329,22 +330,17 @@ class SubtitleWindow(QWidget):
         # from the box's ascent line down to the tallest ink in the line.
         leading = metrics.ascent() + ink.top()
         em = font.pixelSize() or font.pointSize()
-        reclaim = max(0, round(leading - _STACK_INK_GAP_EM * em))
-        # ...but never so far that a ligature we chose not to measure ends up
-        # ABOVE the line before it. A honorific is much taller than the script
-        # around it, so "ignore it" alone let it climb into the previous line —
-        # visible wherever a German translation carries one. Clamping to its
-        # real ink, with no clearance term of its own, keeps the trade the
-        # comment on _HONORIFIC_LIGATURE_RE describes (the ligature sits closer
-        # than a normal line would) while stopping it short of touching.
-        if _HONORIFIC_LIGATURE_RE.search(text):
-            whole = metrics.tightBoundingRect(text.strip())
-            if not whole.isEmpty():
-                reclaim = min(reclaim, max(0, metrics.ascent() + whole.top()))
+        # Excluding the honorifics is safe because _honorific_formats has
+        # already made sure they FIT the line: nothing is being ignored that
+        # could reach outside the box measured here.
+        #
         # No clearance term on the overhang: the line BELOW already holds
         # _STACK_INK_GAP_EM back through its own reclaim, and adding it at both
         # ends would double the gap this whole mechanism exists to close.
-        return reclaim, max(0, ink.bottom() - metrics.descent())
+        return (
+            max(0, round(leading - _STACK_INK_GAP_EM * em)),
+            max(0, ink.bottom() - metrics.descent()),
+        )
 
     @classmethod
     def _reclaim(cls, text: str, font: QFont) -> int:
@@ -378,6 +374,68 @@ class SubtitleWindow(QWidget):
             return Qt.LayoutDirectionAuto
         return Qt.RightToLeft if rtl > ltr else Qt.LeftToRight
 
+    @staticmethod
+    def _honorific_formats(text: str, font: QFont) -> list:
+        """Shrink any ﷺ/ﷻ in ``text`` until it fits the line it sits in.
+
+        The ligature is drawn by whichever family happens to have the glyph,
+        not the one we asked for, and on Linux that family draws it far taller
+        than the line around it. Every way of accounting for that in the
+        SPACING is a bad trade: measure it and the honorific pushes its whole
+        paragraph away from the one above; ignore it and it climbs into that
+        paragraph; clamp it and the paragraph's own rows spread apart to make
+        room (all three were seen, in that order).
+
+        So the ligature is made to fit instead. A per-character format is the
+        one thing that can, and it costs nothing where the glyph already fits
+        — on Windows, Segoe UI's ligature is no taller than the cap height and
+        this returns nothing at all.
+        """
+        matches = list(_HONORIFIC_LIGATURE_RE.finditer(text))
+        if not matches:
+            return []
+        metrics = QFontMetrics(font)
+        formats: list = []
+        cache: dict[str, QTextCharFormat | None] = {}
+        for match in matches:
+            glyph = match.group(0)
+            if glyph not in cache:
+                cache[glyph] = SubtitleWindow._fitted_format(glyph, font, metrics)
+            char_format = cache[glyph]
+            if char_format is None:
+                continue
+            span = QTextLayout.FormatRange()
+            span.start = match.start()
+            span.length = len(glyph)
+            span.format = char_format
+            formats.append(span)
+        return formats
+
+    @staticmethod
+    def _fitted_format(glyph: str, font: QFont, metrics: QFontMetrics):
+        """A format that scales ``glyph`` into the font's own box, or None.
+
+        None means it already fits — the common case, and the one where this
+        whole mechanism must stay invisible.
+        """
+        ink = metrics.tightBoundingRect(glyph)
+        if ink.isEmpty():
+            return None
+        # ink.top() is negative above the baseline; ink.bottom() positive below.
+        above, below = -ink.top(), ink.bottom()
+        scale = 1.0
+        if above > metrics.ascent():
+            scale = min(scale, metrics.ascent() / above)
+        if below > metrics.descent():
+            scale = min(scale, metrics.descent() / below)
+        if scale >= 1.0:
+            return None
+        smaller = QFont(font)
+        smaller.setPixelSize(max(1, round((font.pixelSize() or 1) * scale)))
+        char_format = QTextCharFormat()
+        char_format.setFont(smaller)
+        return char_format
+
     def _layout_text(
         self, text: str, font: QFont, direction=Qt.LayoutDirectionAuto
     ) -> tuple[QTextLayout, int]:
@@ -407,6 +465,12 @@ class SubtitleWindow(QWidget):
         # it where first-strong is the wrong rule — see _dominant_direction.
         option.setTextDirection(direction)
         layout.setTextOption(option)
+        # Before any measuring: a ligature left at full size changes the line's
+        # ascent, and then every figure below is taken from a box the text does
+        # not actually occupy.
+        formats = self._honorific_formats(text, font)
+        if formats:
+            layout.setFormats(formats)
 
         fm = QFontMetrics(font)
         reclaim, overhang = self._ink(text, font)
