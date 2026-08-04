@@ -285,17 +285,26 @@ class SubtitleWindow(QWidget):
         return max(12, min(120, int(self.width() / self._source_font_size_base)))
 
     @staticmethod
-    def _reclaim(text: str, font: QFont) -> int:
-        """Blank band above ``text``'s ink that stacking may close up.
+    def _ink(text: str, font: QFont) -> tuple[int, int]:
+        """``(reclaim, overhang)`` for one line of ``text``.
 
-        A font box reserves the whole ascent whether the glyphs use it or not,
-        and that leftover is what makes metric-spaced lines read as
+        ``reclaim`` is the blank band above the ink that stacking may close
+        up. A font box reserves the whole ascent whether the glyphs use it or
+        not, and that leftover is what makes metric-spaced lines read as
         double-spaced. Reclaiming it pulls the lines visually together while
         leaving ``_STACK_INK_GAP_EM`` of clearance, so the ink never touches.
 
-        MEASURED from the string, where the Tk overlay had to guess. It
-        approximated this with a per-script table (``_INK_TOP_EM_ARABIC`` and
-        friends) because a Tk canvas bbox reports metrics, not ink, and the
+        ``overhang`` is the opposite problem at the other end: ink that reaches
+        BELOW the font's descent, which the box does not account for. Arabic
+        descends deeper than a Latin-derived descent metric allows for, and
+        deeper still when the glyphs come from a fallback family — Qt reports
+        the metrics of the family it was asked for and paints from whichever
+        one has the glyph. That is what made an Arabic original overlap its
+        German translation on Linux.
+
+        Both MEASURED from the string, where the Tk overlay had to guess. It
+        approximated the first with a per-script table (``_INK_TOP_EM_ARABIC``
+        and friends) because a Tk canvas bbox reports metrics, not ink, and the
         figures had to be re-derived per font family — they broke on Linux.
         ``tightBoundingRect`` is the real ink of the real glyphs, so Arabic,
         Latin, diacritics and any script added later are simply correct, on
@@ -305,16 +314,27 @@ class SubtitleWindow(QWidget):
         # gets a sensible gap from whatever else is in it.
         measured = _HONORIFIC_LIGATURE_RE.sub("", text).strip()
         if not measured:
-            return 0
+            return 0, 0
         metrics = QFontMetrics(font)
         ink = metrics.tightBoundingRect(measured)
         if ink.isEmpty():
-            return 0
+            return 0, 0
         # ink.top() is negative above the baseline, so this is the distance
         # from the box's ascent line down to the tallest ink in the line.
         leading = metrics.ascent() + ink.top()
         em = font.pixelSize() or font.pointSize()
-        return max(0, round(leading - _STACK_INK_GAP_EM * em))
+        # No clearance term on the overhang: the line BELOW already holds
+        # _STACK_INK_GAP_EM back through its own reclaim, and adding it at both
+        # ends would double the gap this whole mechanism exists to close.
+        return (
+            max(0, round(leading - _STACK_INK_GAP_EM * em)),
+            max(0, ink.bottom() - metrics.descent()),
+        )
+
+    @classmethod
+    def _reclaim(cls, text: str, font: QFont) -> int:
+        """Blank band above ``text``'s ink that stacking may close up."""
+        return cls._ink(text, font)[0]
 
     def _layout_text(self, text: str, font: QFont) -> tuple[QTextLayout, int]:
         """``text`` wrapped to the content width, at a tightened line rhythm.
@@ -333,7 +353,11 @@ class SubtitleWindow(QWidget):
         layout.setTextOption(option)
 
         fm = QFontMetrics(font)
-        pitch = max(1, fm.lineSpacing() - self._reclaim(text, font))
+        reclaim, overhang = self._ink(text, font)
+        # ``overhang`` also has to widen the pitch, not just the block's foot:
+        # two wrapped lines of the same Arabic sentence stack at this distance
+        # and would collide with each other otherwise.
+        pitch = max(1, fm.lineSpacing() - reclaim + overhang)
         width = self._content_width()
         count, y = 0, 0.0
         layout.beginLayout()
@@ -350,8 +374,9 @@ class SubtitleWindow(QWidget):
             return layout, 0
         # The last line keeps its full box: baseline distances have to stay
         # constant for the rhythm to READ as even, so only the space ABOVE a
-        # line is ever reclaimed, never its descent.
-        return layout, (count - 1) * pitch + fm.ascent() + fm.descent()
+        # line is ever reclaimed, never its descent — plus whatever ink hangs
+        # below that descent, or the next block starts inside this one.
+        return layout, (count - 1) * pitch + fm.ascent() + fm.descent() + overhang
 
     def _measure(self, text: str, font: QFont) -> int:
         """Height ``text`` occupies at ``font`` within the content width."""

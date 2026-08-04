@@ -4599,3 +4599,37 @@ class TestFontStacks:
         assert subtitle_font(40, text="dass Allah ﷻ es sagt.").families() == (
             ui_families()
         )
+
+
+class TestInkOverhang:
+    """Qt reports the metrics of the family it was ASKED for and paints missing
+    glyphs from whichever family has them. Arabic drawn in a Latin-only family
+    therefore measures against a descent its glyphs go straight through, and
+    the original overlapped its translation (seen on Linux, where the UI family
+    has no Arabic at all)."""
+
+    def test_a_blocks_height_covers_the_ink_it_draws(self, overlay):
+        from PySide6.QtGui import QFontMetrics
+
+        from gui_qt.fonts import subtitle_font
+
+        w = overlay(SUBTITLE_MODE_STATIC)
+        for text in ("بل لا يشعرون أنه فتنة.", "Vielmehr merken sie es nicht."):
+            font = subtitle_font(w._translation_px(), text=text)
+            _layout, height = w._layout_text(text, font)
+            fm = QFontMetrics(font)
+            ink_bottom = fm.ascent() + fm.tightBoundingRect(text).bottom()
+            assert height >= ink_bottom, f"{text!r} draws below its own box"
+
+    def test_the_measured_overhang_reaches_the_block_height(self, overlay, monkeypatch):
+        # The guard only engages where the metrics under-report, which no
+        # Windows font does — so the wiring is pinned directly.
+        w = overlay(SUBTITLE_MODE_STATIC)
+        from gui_qt.fonts import subtitle_font
+        from gui_qt.subtitle_window import SubtitleWindow
+
+        font = subtitle_font(40, text="Vielmehr merken sie es nicht.")
+        monkeypatch.setattr(SubtitleWindow, "_ink", staticmethod(lambda t, f: (0, 0)))
+        flat = w._layout_text("Vielmehr merken sie es nicht.", font)[1]
+        monkeypatch.setattr(SubtitleWindow, "_ink", staticmethod(lambda t, f: (0, 12)))
+        assert w._layout_text("Vielmehr merken sie es nicht.", font)[1] == flat + 12
