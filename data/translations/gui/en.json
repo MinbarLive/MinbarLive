@@ -18,7 +18,7 @@
   "theme_light": "Light",
   "islamic_mode": "Islamic mode",
   "islamic_mode_enabled": "Enabled",
-  "islamic_mode_hint": "Quran verse & Athan recognition and Islamic translation style. \n Off = general translator for any content.",
+  "islamic_mode_hint": "Quran verse & Athan recognition and Islamic translation style.\nOff = general translator for any content.",
   "islamic_mode_off_confirm": "Turn off Islamic mode? Quran verse recognition, Athan detection and the Islamic translation style will be disabled — the app becomes a general translator.",
   "font": "Fontsize:",
   "height": "Height:",

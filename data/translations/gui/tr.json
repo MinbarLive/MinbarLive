@@ -18,7 +18,7 @@
   "theme_light": "Açık",
   "islamic_mode": "İslami mod",
   "islamic_mode_enabled": "Etkin",
-  "islamic_mode_hint": "Kur'an ayeti ve ezan tanıma ile İslami çeviri üslubu. \n Kapalı = her içerik için genel çevirmen.",
+  "islamic_mode_hint": "Kur'an ayeti ve ezan tanıma ile İslami çeviri üslubu.\nKapalı = her içerik için genel çevirmen.",
   "islamic_mode_off_confirm": "İslami mod kapatılsın mı? Ayet tanıma, ezan algılama ve İslami çeviri üslubu devre dışı kalır — uygulama genel bir çevirmen olur.",
   "font": "Yazı Tipi:",
   "height": "Yükseklik:",
