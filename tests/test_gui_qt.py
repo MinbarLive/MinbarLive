@@ -5262,6 +5262,36 @@ class TestOverlayFitsTheScreen:
         assert w._fit_timer.isActive()
 
 
+class TestMacOsOverlayStacking:
+    """Nothing a Qt client can ask for puts a window above the macOS Dock or
+    menu bar: a stays-on-top window floats above other applications and still
+    below both. A full-height overlay therefore lost its bottom strip — the
+    disclaimer pill — behind the Dock."""
+
+    def test_macos_is_laid_out_inside_the_work_area(self, overlay, monkeypatch):
+        import gui_qt.subtitle_window as sw
+
+        w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
+        monkeypatch.setattr(sw, "_MACOS", True)
+        w._apply_geometry()
+        available = w._screen().availableGeometry()
+        assert w.geometry().bottom() == available.bottom()
+        assert w.width() == available.width()
+
+    def test_everywhere_else_a_topmost_overlay_still_covers_the_taskbar(
+        self, overlay, monkeypatch
+    ):
+        # Windows and X11 paint a topmost overlay over the taskbar, and OBS
+        # captures the whole frame because of it. Don't level that down.
+        import gui_qt.subtitle_window as sw
+
+        w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
+        monkeypatch.setattr(sw, "_MACOS", False)
+        w._apply_geometry()
+        screen = w._screen().geometry()
+        assert w.geometry().bottom() == screen.bottom()
+
+
 class TestDropdownPopupPlacement:
     """The list has to open BELOW its box. Refusing the native popup was only
     half of it: the list's rectangle still came from the platform style, and

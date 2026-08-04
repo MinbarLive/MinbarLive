@@ -29,6 +29,7 @@ colour is forbidden in subtitle text.
 from __future__ import annotations
 
 import re
+import sys
 import unicodedata
 from dataclasses import dataclass, field
 
@@ -124,6 +125,16 @@ FEED_ANIM_FRAME_MS = 30
 FEED_ANIM_EASE = 0.3  # fraction of the remaining gap closed per frame
 FEED_ANIM_MIN_STEP = 2.0  # px/frame floor, or the tail of a slide crawls
 FEED_ANIM_SNAP_PX = 1.0  # within this, land on the target and stop
+
+
+# macOS keeps the Dock and the menu bar above every window level a Qt client
+# can ask for — a stays-on-top window floats above other applications and still
+# under both — so the overlay is laid out inside the work area there whatever
+# its stacking, or its bottom strip disappears behind the Dock. The Tk overlay
+# reached the same conclusion (_MACOS_MENU_BAR_HEIGHT). A module constant
+# rather than an inline check, so a test can drive the other platform's branch
+# without faking sys.platform for the whole process.
+_MACOS = sys.platform == "darwin"
 
 
 @dataclass
@@ -289,13 +300,22 @@ class SubtitleWindow(QWidget):
         inside the work area instead, ending above the taskbar. Same reasoning
         the Tk overlay applies to the macOS Dock, which is always above it.
 
+        macOS is the exception to all of it: nothing puts a window above the
+        Dock or the menu bar there — a stays-on-top window sits at the floating
+        window level, which is still below both — so a full-height overlay lost
+        its bottom strip, disclaimer pill and all, behind the Dock. It is laid
+        out inside the work area whatever the stacking, which is the same call
+        the Tk overlay makes (gui/subtitle_window.py _set_screen_position) and
+        what the README already tells macOS users to expect.
+
         Qt reports both rectangles in logical units already, so there is no DPI
         arithmetic here — that is what gui/scaling.py does by hand.
         """
         screen = self._screen()
         if screen is None:
             return
-        g = screen.geometry() if is_window_on_top(self) else screen.availableGeometry()
+        over_the_taskbar = is_window_on_top(self) and not _MACOS
+        g = screen.geometry() if over_the_taskbar else screen.availableGeometry()
         h = max(1, int(g.height() * self._height_percent / 100))
         self.setGeometry(QRect(g.x(), g.y() + g.height() - h, g.width(), h))
         self._fit_timer.start()
