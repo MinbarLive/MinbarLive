@@ -1,14 +1,12 @@
-"""Qt settings window.
+"""Settings window: hero, then General, Appearance, Islamic mode, API keys.
 
-Card order and contents follow ``gui/settings_view.py`` exactly — hero, then
-General, Appearance, Islamic mode, API keys. That is deliberate: everything
-about a *running session* (subtitle mode, height, hide policy, providers,
-models) lives on the control panel in the Tk tree, and moving half of it in
-here would leave operators hunting for controls that used to be one glance
-away.
+What is NOT here is deliberate. Everything about a *running session* — subtitle
+mode, height, hide policy, providers, models — lives on the control panel, one
+glance away. Moving half of it in here would leave operators hunting for
+controls mid-session.
 
-There is no Save/Cancel: every control writes through immediately and applies
-to the live overlay where it can, which is how the Tk window behaves.
+There is no Save/Cancel: every control writes through immediately and applies to
+the live overlay where it can.
 """
 
 from __future__ import annotations

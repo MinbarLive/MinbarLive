@@ -1,16 +1,17 @@
-"""Regression tests for the Qt GUI tree (issue #44).
+"""Regression tests for the Qt GUI (issue #44).
 
 Every test here locks in a defect that reached a real run. They are written
 against behaviour, not pixels — the layout assertions check where blocks are
 placed, which is what actually broke.
 
-PySide6 is not in requirements.txt while the shipping GUI is still
-CustomTkinter, so the whole module skips when it is absent.
+The module skips if PySide6 is missing, and the control-panel half imports
+lazily (``cp_module()``) so the file still collects without a display.
 
-Note on headless CI: QT_QPA_PLATFORM=offscreen works for these tests, but on
-Windows that platform plugin loads NO system fonts and renders every glyph as
-tofu. Geometry still measures, so these pass; anything asserting on rendered
-text appearance would not.
+Note on headless runs: ``QT_QPA_PLATFORM=offscreen`` is not a substitute for a
+real display. Four tests fail there and pass on the real platform, and on
+Windows that plugin loads NO system fonts and renders every glyph as tofu —
+geometry still measures, so these pass, but anything asserting on rendered text
+appearance would not.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import threading
 
 import pytest
 
-pytest.importorskip("PySide6", reason="Qt GUI tree is optional during migration")
+pytest.importorskip("PySide6", reason="PySide6 not installed")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 

@@ -1,17 +1,19 @@
-"""Control-panel decisions derived from Settings — deliberately Tk-free.
+"""Control-panel decisions derived from Settings — deliberately toolkit-free.
 
 These rules (which providers need a key, which subtitle modes are offered,
 what a Processing Strategy choice does to the settings) are policy, not
 presentation: they read and write a ``Settings`` object and never touch a
-widget. They used to live as methods on ``AppGUI``, which meant the only way
-to exercise them was to build an entire window — so in practice they were
+widget. They used to live as methods on the panel class, which meant the only
+way to exercise them was to build an entire window — so in practice they were
 never tested at all.
 
-Keeping them here means the rules can be unit-tested headlessly, and the
-mixin in gui/app_gui.py is left with what actually needs Tk: reading the
-dropdowns, repainting them, and prompting for keys.
+Keeping them here means the rules unit-test headlessly in milliseconds, and the
+panel is left with what genuinely needs widgets: reading the dropdowns,
+repainting them, and prompting for keys. New control-panel logic that only
+reads or writes ``Settings`` belongs in this file.
 
-Nothing in this module may import tkinter/customtkinter.
+**Nothing in this module may import a GUI toolkit** — a test imports it in a
+subprocess and asserts none appears in ``sys.modules``.
 """
 
 from __future__ import annotations

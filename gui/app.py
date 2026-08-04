@@ -1,12 +1,16 @@
-"""Qt application bootstrap.
+"""Qt application bootstrap — builds the QApplication, then the wizard or panel.
 
-Entered from ``main.py --qt``. Tk and Qt cannot share a process, so exactly
-one GUI tree runs per launch and the flag chooses which.
+Entered from ``main.py``, which passes no flag: this is the only GUI.
 
-Note what is absent: no ``enable_windows_dpi_awareness`` call, no manual
-scaling setup, no reveal-delay dance. Qt is per-monitor DPI aware and paints
-before showing, so the ``_reveal_when_drawn`` machinery (and the Windows-only
-``<Map>`` event that made the whole panel invisible on macOS) has no analogue.
+Note what is absent, because each one was load-bearing under Tk and is a
+mistake to add back: no ``enable_windows_dpi_awareness`` call (Qt asks for the
+per-monitor-aware-v2 context itself when the QApplication is built, and warns
+"SetProcessDpiAwarenessContext() failed: Access is denied." if the process was
+marked aware first — so calling it at import took the setting away from Qt; the
+frozen EXE gets its awareness from ``MinbarLive.manifest``), no manual scaling
+setup, and no reveal-delay dance. Qt paints before showing, so the old
+``_reveal_when_drawn`` machinery — and the Windows-only ``<Map>`` event that
+made the whole panel invisible on macOS — has no analogue here.
 """
 
 from __future__ import annotations

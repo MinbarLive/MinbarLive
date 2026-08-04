@@ -1,13 +1,10 @@
-"""Qt first-run setup wizard.
+"""First-run setup wizard. Five steps: appearance, languages, input device,
+provider + API key, disclaimer.
 
-Port of ``gui/onboarding.py``. Five steps: appearance, languages, input
-device, provider + API key, disclaimer.
-
-Layout follows the Tk wizard: a centred title and step counter as persistent
-chrome, and every step's own heading, sub-line and controls *inside* one card
-that fills the remaining height. The two deliberate departures are the
-appearance choice (a segmented Dark|Light control rather than a dropdown) and
-the provider step's general note, which sits at the top of the card instead of
+Layout: a centred title and step counter as persistent chrome, and every step's
+own heading, sub-line and controls *inside* one card that fills the remaining
+height. Appearance is a segmented Dark|Light control rather than a dropdown,
+and the provider step's general note sits at the top of the card rather than
 below the caveats.
 
 The finish logic is a close port rather than a fresh design — it encodes

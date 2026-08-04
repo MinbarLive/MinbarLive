@@ -1,10 +1,9 @@
-"""Qt session history viewer + summary dialog.
+"""Session history viewer + summary dialog.
 
-Port of ``gui/history_view.py``, including its four tabs (sessions, batch runs,
-cost and logs), its list-row shape, the batch SRT|TXT preview toggle, the spend
-chart on the cost tab and the separate "Summarise session" dialog. A "session"
-is one daily history file — the writer logs per day and does not delimit
-sessions within a day, so the list shows days.
+Four tabs — sessions, batch runs, cost and logs — plus the batch SRT|TXT
+preview toggle, the spend chart on the cost tab and a separate "Summarise
+session" dialog. A "session" is one daily history file: the writer logs per day
+and does not delimit sessions within a day, so the list shows days.
 
 All parsing comes from ``utils/history.py``, ``utils/cost_display.py`` and
 ``utils/cost_tracking.py``, none of which imports a GUI toolkit; this module

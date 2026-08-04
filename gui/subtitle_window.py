@@ -1,29 +1,28 @@
-"""Subtitle overlay (Qt) — the audience-facing window.
+"""Subtitle overlay — the audience-facing window.
 
-Port of ``gui/subtitle_window.py``. The behaviour is intended to match; what
-changes is how much machinery it takes, and three whole classes of bug that
-stop being possible:
+Two things this module deliberately does NOT do, each of which was a whole
+class of bug in the CustomTkinter overlay it replaced:
 
-* **No text shaping layer.** ``_reshape_rtl`` and its ``_TK_HANDLES_ARABIC`` /
-  ``_TK_SHAPES_ARABIC`` platform branches are gone: logical text goes straight
-  to Qt, which shapes and bidi-orders it with HarfBuzz everywhere.
-* **No manual line wrapping.** The Tk version wrapped text itself, and wrapping
-  *shaped* text is what put the end of an RTL sentence on the first line. Qt
-  still breaks every line here — ``QTextLayout`` wraps after shaping — this
-  module only chooses where each finished line SITS.
+* **No text shaping layer.** Logical text goes straight to Qt, which shapes and
+  bidi-orders it with HarfBuzz on every platform. Never reintroduce a
+  reshaping call — ``arabic-reshaper``/``python-bidi`` and their per-platform
+  branches were removed on purpose.
+* **No manual line wrapping.** Wrapping *shaped* text is what used to put the
+  end of an RTL sentence on the first line. ``QTextLayout`` breaks every line
+  here, after shaping; this module only chooses where each finished line SITS.
 
-Ink measurement, on the other hand, had to come back. An earlier pass dropped
-``_stack_overlap`` on the grounds that ``QFontMetrics.lineSpacing()`` is a real
-baseline rhythm and therefore the correct model. It is a real rhythm, but a
-looser one than the overlay had: Segoe UI's line spacing is ~1.33 em, of which
-~0.29 em is blank band above the cap height, and against the Tk overlay
-side by side the Qt one read as double-spaced (wrapped lines, bilingual pairs
-and the gaps between blocks alike). ``_reclaim`` closes that band back up, on
-the same measured terms Tk used — see it for why the figure is per-script.
+Ink measurement, on the other hand, is necessary and was once removed by
+mistake. An earlier pass dropped it on the grounds that
+``QFontMetrics.lineSpacing()`` is a real baseline rhythm and therefore the
+correct model. It is a real rhythm, but a looser one than an overlay wants:
+Segoe UI's line spacing is ~1.33 em, of which ~0.29 em is blank band above the
+cap height, and the result read as double-spaced — wrapped lines, bilingual
+pairs and the gaps between blocks alike. ``_reclaim`` closes that band back up;
+see it for why the figure is per-script.
 
-Transparency is genuine per-pixel alpha, not the ``-transparentcolor`` green
-chroma key, so anti-aliased glyph edges no longer fringe over video and no
-colour is forbidden in subtitle text.
+Transparency is genuine per-pixel alpha, not a chroma key, so anti-aliased
+glyph edges never fringe over video and no colour is forbidden in subtitle
+text.
 """
 
 from __future__ import annotations

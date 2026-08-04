@@ -1,9 +1,17 @@
-"""Shared Qt controls that mirror the CustomTkinter ones.
+"""The shared controls: segmented button, dropdown, slider, and the
+always-on-top helpers.
 
-Qt has no equivalent of ``CTkSegmentedButton``, and the Tk panel uses it for
-every either/or choice (themes, window style, and the two 3-way selectors
-added in PR #22). Rebuilding it here keeps the Qt tree's arrangement identical
-to the UI users already know, rather than substituting dropdowns.
+Qt ships no segmented button, and the panel uses one for every either/or choice
+(theme, window style, and the two 3-way selectors added in PR #22). It is
+rebuilt here rather than substituted with dropdowns, which is a decision about
+the UI users already know, not a technical one.
+
+Always-on-top goes through ``set_window_on_top``/``is_window_on_top`` and never
+through ``setWindowFlag`` — that recreates the native window (a white flash; it
+used to make the overlay vanish outright). ``QWidget.windowFlags()`` is
+deliberately not trusted as the state, because on X11 the flag is really the
+``_NET_WM_STATE_ABOVE`` property and Qt's xcb plugin only writes it while the
+window is unmapped.
 """
 
 from __future__ import annotations

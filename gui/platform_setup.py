@@ -1,9 +1,10 @@
 """Process-level Qt platform choices, made before the QApplication exists.
 
 Deliberately importable on its own: it must run before the first Qt window,
-which under ``--qt`` is the already-running dialog, and it has no business
-pulling the control panel in that early. Nothing here imports PySide6 either —
-these are environment variables the platform plugins read when they load.
+which is the already-running dialog rather than the panel, and it has no
+business pulling the control panel in that early. Nothing here imports PySide6
+either — these are environment variables the platform plugins read when they
+load.
 """
 
 from __future__ import annotations

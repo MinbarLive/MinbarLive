@@ -1,19 +1,17 @@
-"""Controller -> GUI handoff as Qt signals.
+"""Controller → GUI handoff as Qt signals.
 
-The Tk panel reaches the pipeline by polling: ``after(50, ...)`` re-armed
-forever to drain ``translation_queue``, ``after(1000, ...)`` for
-``error_queue``, plus bookkeeping to cancel every pending job on close (a
-missed cancellation is what printed ``invalid command name <lambda>`` on
-shutdown).
+A worker thread *blocks* on the controller's queue and emits a signal per item;
+Qt delivers it to the GUI thread through the event loop (a queued connection
+across threads). So there is no polling interval to tune, no latency floor of
+half a poll period, and no timer job to leak on close — the panel used to poll
+``translation_queue`` every 50 ms and ``error_queue`` every second, and a missed
+cancellation of one of those jobs is what printed ``invalid command name
+<lambda>`` on shutdown.
 
-Here a worker thread *blocks* on the queue and emits a signal. Qt delivers it
-to the GUI thread through the event loop automatically (queued connection
-across threads), so there is no polling interval to tune, no latency floor of
-half a poll period, and no ``after`` job to leak.
-
-The controller is untouched — this reads the same queues the Tk panel reads.
-Only the live transcript is still sampled on a timer, because the controller
-exposes it as a getter (``get_live_transcript``) rather than a queue.
+The controller knows nothing about this: it still just fills the queues. The one
+exception is the in-progress live transcript, which it exposes as a getter
+(``get_live_transcript``) rather than a queue, so that one really is sampled on
+a timer.
 """
 
 from __future__ import annotations

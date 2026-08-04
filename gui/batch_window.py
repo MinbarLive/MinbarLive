@@ -1,15 +1,15 @@
-"""Qt batch / file window: turn a recording into subtitles.
+"""Batch / file window: turn a recording into subtitles.
 
-Port of ``gui/batch_view.py``, including its control ORDER: settings first
-(languages, output format, subtitle content, then the collapsed "More settings"
-expander with the four engine dropdowns), THEN the file picker, then progress,
-status and the action buttons. Picking a file is the last thing you do before
-pressing Start, so it sits next to Start — not at the top.
+The control ORDER is deliberate: settings first (languages, output format,
+subtitle content, then the collapsed "More settings" expander with the four
+engine dropdowns), THEN the file picker, then progress, status and the action
+buttons. Picking a file is the last thing you do before pressing Start, so it
+sits next to Start — not at the top.
 
-Laid out as a hero plus three cards over a fixed action bar, rather than as the
-Tk window's single frame: every other window in this tree (settings, history,
-announcement) groups its controls into cards, and one box around everything
-read as the odd one out. The cards scroll; Start never does.
+Laid out as a hero plus three cards over a fixed action bar: every other window
+here (settings, history, announcement) groups its controls into cards, and one
+box around everything read as the odd one out. The cards scroll; Start never
+does.
 
 The batch job is configured independently of the live app: nothing here writes
 to the main settings. The pipeline itself is ``batch/processor.py``, reused

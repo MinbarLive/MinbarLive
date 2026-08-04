@@ -1,10 +1,10 @@
-"""Font selection for the Qt GUI.
+"""Font selection.
 
-Deliberately small. The Tk tree needs a parallel module of shaping helpers
-(``_reshape_rtl``, ``_ARABIC_BLOCK_RE``, ``_TK_HANDLES_ARABIC``,
-``_TK_SHAPES_ARABIC``) because Tk cannot shape Arabic consistently across
-platforms. Qt lays text out with HarfBuzz on every platform, so none of that
-exists here: pass logical text straight to Qt and it shapes and bidi-orders it.
+Deliberately small, and it stays that way: there are **no shaping helpers here
+and there must never be any again**. The CustomTkinter tree needed a parallel
+module of them (``_reshape_rtl`` and its per-platform branches) because Tk
+cannot shape Arabic consistently across platforms. Qt lays text out with
+HarfBuzz everywhere — pass it logical text and it shapes and bidi-orders it.
 
 What remains are two real differences we still care about, both keyed off
 ``is_arabic_text``: Latin source/live lines render italic while Arabic does not

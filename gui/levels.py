@@ -1,9 +1,8 @@
-"""Input-level scale shared by both GUI trees.
+"""The dBFS scale behind the input-level meter.
 
-Toolkit-free on purpose, like ``gui/palette.py`` and ``gui/i18n.py``:
-the Qt panel and wizard need the dBFS mapping, and reaching into
-``gui/audio_level_bar.py`` for it would pull CustomTkinter — and with it all
-of tkinter — into a process that has no Tk in it.
+Toolkit-free on purpose, like ``gui/palette.py`` and ``gui/i18n.py``: the panel
+and the wizard both draw the meter, and the mapping is arithmetic that should
+be testable without building either of them.
 """
 
 from __future__ import annotations

@@ -1,8 +1,7 @@
-"""GUI string loading — shared by both GUI trees.
+"""GUI string loading from ``data/translations/gui/*.json``.
 
-Moved out of ``gui/app_gui.py`` (which imports Tk) so the Qt tree can load the
-same ``data/translations/gui/*.json`` files without dragging CustomTkinter in.
-Imports no GUI toolkit.
+Imports no GUI toolkit, deliberately: the strings are needed before there is a
+window (the already-running dialog, the wizard) and by tests that build none.
 
 English is always the base layer: a translation file that is missing a key
 falls back to the English string rather than showing a raw key.

@@ -1,8 +1,7 @@
-"""Qt announcement window: show a message large on the subtitle screen.
+"""Announcement window: show a message large on the subtitle screen.
 
-Port of ``gui/announce_view.py``. Recents and favourites are plain lists on
-``Settings``, so the state model is reused unchanged; this renders it and asks
-the control panel to put the message on the overlay.
+Recents and favourites are plain lists on ``Settings``; this window renders them
+and asks the control panel to put the message on the overlay.
 
 Going through the panel matters: with the default hide policy there is no
 overlay while the pipeline is stopped, and "the talk starts in 10 minutes" is

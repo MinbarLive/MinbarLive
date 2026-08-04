@@ -1,10 +1,9 @@
-"""The "a newer release exists" strip, for the Qt tree.
+"""The "a newer release exists" strip.
 
-Port of the banner in ``gui/app_gui.py``. It sits between the panel header and
-the cards, appears only when the check finds a release newer than the running
-version, opens the release page when clicked and can be dismissed for the
-session. Without it the ``check_for_updates`` setting has a checkbox in the Qt
-settings window and nothing behind it.
+It sits between the panel header and the cards, appears only when the check
+finds a release newer than the running version, opens the release page when
+clicked and can be dismissed for the session. Without it the
+``check_for_updates`` setting would have a checkbox and nothing behind it.
 
 The check itself is ``utils/update_check.py``: one anonymous request to the
 GitHub releases API, which never raises.

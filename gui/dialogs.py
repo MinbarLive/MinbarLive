@@ -1,15 +1,13 @@
-"""Themed message and confirm dialogs for the Qt tree.
+"""Themed message and confirm dialogs. **Every box in the app goes through here
+— never ``QMessageBox``**, and a test fails if one reappears.
 
 Qt's ``QMessageBox`` statics draw the platform's own dialog: a blue system
 icon, system-coloured chrome that ignores the app theme, and English "OK" /
-"Yes" / "No" whatever the GUI language is — and the icon is what plays the
-Windows alert sound on every appearance. The Tk tree replaced them long ago
-(``WidgetFactoryMixin._alert`` / ``._confirm`` over ``show_message``); this is
-that dialog, in Qt.
+"Yes" / "No" whatever the GUI language is. The icon is also what plays the
+Windows alert sound on every single appearance.
 
-Same shape as the Tk one: a card with a glyph tile coloured by severity, the
-title beside it, the message below, and localized buttons. Return accepts,
-Escape cancels.
+The shape here: a card with a glyph tile coloured by severity, the title beside
+it, the message below, and localized buttons. Return accepts, Escape cancels.
 """
 
 from __future__ import annotations

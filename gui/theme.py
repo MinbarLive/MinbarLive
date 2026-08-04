@@ -1,9 +1,10 @@
-"""Qt theming built from the shared palette.
+"""Theming: one stylesheet string, built from ``gui/palette.py`` and applied to
+the whole application, so changing theme is a single ``apply_theme`` call.
 
-Qt styles widgets with stylesheets, so the Tk tree's per-widget registries
-(``_cards``, ``_labels``, ``_buttons``, ``_combos``, ... each re-coloured by
-hand on every theme switch) collapse into one stylesheet string applied to the
-application. Changing theme is then a single ``apply_theme`` call.
+Don't reintroduce per-widget colour registries — lists of every card, label,
+button and combo, each re-coloured by hand on every theme switch. That is what
+this replaced, and every widget added without being registered was a bug that
+only appeared after a theme switch.
 
 Two things a stylesheet alone cannot do, so they live in a ``QProxyStyle``
 here (``_ControlStyle``):

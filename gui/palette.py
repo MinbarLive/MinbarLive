@@ -1,8 +1,8 @@
-"""Theme palettes — the single source of truth for both GUI trees.
+"""Theme palettes — the single source of truth for every colour in the app.
 
-Moved verbatim out of ``gui/widgets.py::WidgetFactoryMixin._palette`` so the Tk
-and Qt trees cannot drift apart during the migration. Imports no GUI toolkit:
-these are plain hex strings, and ``gui/widgets.py`` still reads them from here.
+Imports no GUI toolkit: these are plain hex strings. ``gui/theme.py`` builds the
+stylesheet from them and ``gui/subtitle_window.py`` paints from them, so a
+colour is defined once and never re-typed into a widget.
 """
 
 LIGHT: dict[str, str] = {

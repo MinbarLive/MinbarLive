@@ -1,15 +1,19 @@
-"""Qt control panel.
+"""The control panel: four cards in a reflowing 1/2/3-column grid, a header
+button row, and a collapsible log panel on the right.
 
-Layout parity with the CustomTkinter panel is deliberate: the same four cards,
-in the same order, in the same reflowing 1/2/3-column grid, with the same
-header button row and the same collapsible log panel on the right. Operators
-know where things are, and "it moved" is a real cost.
+The arrangement was carried over from the CustomTkinter panel deliberately and
+should not be "modernised" without a reason an operator would recognise: they
+know where things are, and "it moved" is a real cost. That includes the control
+types — segmented buttons for the theme and both 3-way selectors, −/+ steppers
+for font size and scroll speed, a slider only for height. Don't swap in
+dropdowns.
 
-What is NOT ported is the measurement machinery the Tk panel needs to achieve
-that layout — ``_responsive_scale``, ``_align_advanced_card``'s idle-requeueing
-correction loop (the one that divided by the wrong scale factor and froze the
-panel in PR #43), ``_collapsed_margin``, ``window_work_area``. Qt layouts do
-that arithmetic; only the column count is ours to decide.
+What is deliberately absent is the measurement machinery Tk needed to achieve
+that layout: a manual responsive scale factor, an idle-requeueing correction
+loop for card alignment (which divided by the wrong scale factor and froze the
+panel in PR #43), collapsed-margin arithmetic, work-area probing. Qt layouts do
+that arithmetic. Only the column count is ours to decide — see the responsive
+card grid section below.
 """
 
 from __future__ import annotations

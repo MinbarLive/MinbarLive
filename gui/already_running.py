@@ -1,11 +1,13 @@
-"""The "MinbarLive is already running" dialog, for the Qt tree.
+"""The "MinbarLive is already running" dialog.
 
-``main.py`` shows this from its single-instance guard, before any GUI exists.
-It needs a Qt twin of the CustomTkinter dialog because that one must never run
-under ``--qt``: the two toolkits are not meant to share a process (the Tk one
-leaves a live Tcl interpreter beside the Qt one), and building a Tk window sets
-the process DPI awareness to per-monitor **v1** — measured, 0 → 2 through
-shcore — before Qt gets to ask for the v2 context it wants.
+``main.py`` shows this from its single-instance guard, before any other GUI
+exists — which is why it builds its own QApplication and why
+``gui/platform_setup.py`` has to run before it rather than before the panel.
+
+It must stay Qt, and not fall back to anything simpler that happens to be in
+the standard library: building a Tk window sets the process DPI awareness to
+per-monitor **v1** (measured: 0 → 2 through shcore) before Qt gets to ask for
+the v2 context it wants, and Qt cannot take it back.
 """
 
 from __future__ import annotations
