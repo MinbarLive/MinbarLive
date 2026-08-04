@@ -55,7 +55,8 @@ from config import (
 )
 from gui_qt.fonts import is_arabic_text, source_font, subtitle_font
 from gui_qt.palette import palette
-from gui_qt.widgets import is_window_on_top, set_window_on_top
+from gui_qt.widgets import is_window_on_top, needs_remap, set_window_on_top
+from utils.logging import log
 from utils.settings import (
     BACKDROP_OPACITY_MAX,
     BACKDROP_OPACITY_MIN,
@@ -228,8 +229,11 @@ class SubtitleWindow(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         # Before set_always_on_top, which re-places the window: _apply_geometry
-        # arms this timer. Parented, so it dies with the window — a fit check
-        # that outlived the overlay would call into a deleted C++ object.
+        # arms this timer and fills these in. Parented, so it dies with the
+        # window — a fit check that outlived the overlay would call into a
+        # deleted C++ object.
+        self._requested: QRect | None = None
+        self._remapped = False
         self._fit_timer = QTimer(self)
         self._fit_timer.setSingleShot(True)
         self._fit_timer.setInterval(GEOMETRY_FIT_MS)
@@ -317,25 +321,61 @@ class SubtitleWindow(QWidget):
         over_the_taskbar = is_window_on_top(self) and not _MACOS
         g = screen.geometry() if over_the_taskbar else screen.availableGeometry()
         h = max(1, int(g.height() * self._height_percent / 100))
-        self.setGeometry(QRect(g.x(), g.y() + g.height() - h, g.width(), h))
+        # Kept, because it is a REQUEST: _fit_to_screen compares it against what
+        # the window manager actually did.
+        self._requested = QRect(g.x(), g.y() + g.height() - h, g.width(), h)
+        self._remapped = False
+        self.setGeometry(self._requested)
         self._fit_timer.start()
 
     def _fit_to_screen(self) -> None:
-        """Shrink the overlay into the rectangle the WM actually granted.
+        """Make what the window manager granted match what was asked for.
 
-        Only ever shrinks, and only when the window really does hang off the
-        screen — see GEOMETRY_FIT_MS for when that happens and where it cannot
-        be detected. On a platform that places windows exactly (Windows, and
-        X11 when nothing is in the way) the measurement matches the request and
-        this returns without touching anything.
+        Two things can go wrong, in this order. **The move can be refused.** An
+        X11 WM applies a mapped window's geometry at its own discretion, and
+        the one place it always honours a position is the next map — the same
+        rule that makes _NET_WM_STATE_ABOVE unwritable while mapped
+        (gui_qt/widgets.needs_remap). That is why lowering the overlay's height
+        left the top edge where it was and walked the footer UP: the size was
+        applied and the move was not. So the request is made again with the
+        window unmapped, exactly as the Tk overlay does it
+        (_set_screen_position(force_redraw=True)) — once per placement, or a
+        WM that simply will not comply would flash the overlay forever.
 
-        The window keeps its top edge, so nothing that lays out from the top of
-        the content area has to be shifted; the modes recompute from the
-        window's size on the next paint, as they do after any height change.
+        **Or the rectangle can be refused outright** — GNOME keeps a frameless
+        window clear of its struts — and then the overlay hangs off the bottom
+        of the screen with the disclaimer pill on it. Nothing can be done about
+        the position at that point, so it is shrunk into what is on screen.
+        Only ever shrinks, keeps the top edge, and ignores an implausible
+        measurement.
+
+        On a platform that places windows exactly, both checks see the request
+        honoured and this returns without touching anything.
         """
         screen = self._screen()
         if screen is None or not self.isVisible():
             return
+        if self._requested is not None and self.geometry() != self._requested:
+            granted = self.geometry()
+            log(
+                "Overlay geometry: asked for "
+                f"{self._requested.width()}x{self._requested.height()}"
+                f"+{self._requested.x()}+{self._requested.y()}, "
+                f"the window manager gave {granted.width()}x{granted.height()}"
+                f"+{granted.x()}+{granted.y()}",
+                level="INFO",
+            )
+            if needs_remap() and not self._remapped:
+                self._remapped = True
+                # QWidget's own hide/show, never this class's: hide() drops the
+                # live transcript and show() re-enters _apply_geometry.
+                QWidget.hide(self)
+                self.setGeometry(self._requested)
+                QWidget.show(self)
+                # Re-checked once the map has been through the WM, in case the
+                # rectangle itself was refused too.
+                self._fit_timer.start()
+                return
         g = screen.geometry()
         have = self.geometry()
         fit_w = min(have.width(), g.x() + g.width() - have.x())

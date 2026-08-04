@@ -42,16 +42,20 @@ def is_window_on_top(window: QWidget) -> bool:
     return bool(flags & Qt.WindowStaysOnTopHint)
 
 
-# Platforms where the stays-on-top flag does NOT reach an already-mapped
-# window. X11 carries it as the _NET_WM_STATE_ABOVE property, which Qt's xcb
-# plugin only writes while the window is unmapped (updateNetWmStateBeforeMap),
+# Platforms where what a window ASKS FOR only takes effect while it is
+# unmapped. X11 carries always-on-top as the _NET_WM_STATE_ABOVE property,
+# which Qt's xcb plugin only writes before mapping (updateNetWmStateBeforeMap),
 # so setting the flag on a visible window changes nothing at all — the setting
-# simply had no effect on Linux. Wayland has no always-on-top protocol to
-# begin with; see gui_qt/app.py, which asks for xcb first for that reason.
+# simply had no effect on Linux. The same rule reaches geometry: a window
+# manager is free to refuse a mapped window's move, and honours the position on
+# the next map (gui_qt/subtitle_window.py _fit_to_screen, and the Tk overlay's
+# withdraw/deiconify in _set_screen_position). Wayland has no always-on-top
+# protocol at all; see gui_qt/app.py, which asks for xcb first for that reason.
 _REMAP_TO_RESTACK = ("xcb", "wayland")
 
 
-def _needs_remap() -> bool:
+def needs_remap() -> bool:
+    """Whether this platform applies such a request only on the next map."""
     return QGuiApplication.platformName().split(":")[0] in _REMAP_TO_RESTACK
 
 
@@ -75,7 +79,7 @@ def set_window_on_top(window: QWidget, on_top: bool) -> None:
     if is_window_on_top(window) == on_top:
         return
     handle = window.windowHandle()
-    if handle is None or _needs_remap():
+    if handle is None or needs_remap():
         visible = window.isVisible()
         window.setWindowFlag(Qt.WindowStaysOnTopHint, on_top)
         # setWindowFlag re-parents, which hides the widget; only a window that
