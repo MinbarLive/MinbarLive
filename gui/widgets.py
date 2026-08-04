@@ -76,7 +76,14 @@ def set_window_on_top(window: QWidget, on_top: bool) -> None:
     the window is re-created and shown again there. It is the flash Windows
     was spared, in exchange for the setting working at all.
     """
-    if is_window_on_top(window) == on_top:
+    if is_window_on_top(window) == on_top and not needs_remap():
+        # Skipped only where the cached flag is the truth. On X11 it is not:
+        # the state lives in a property the window manager owns, and a window
+        # that has been re-mapped since (the overlay's geometry repair does
+        # that) can carry the flag in Qt and sit at the bottom of the stack on
+        # screen. Re-asserting costs a flash; believing a stale flag cost the
+        # overlay entirely — the panel obeyed the setting and the subtitles
+        # were left under the browser.
         return
     handle = window.windowHandle()
     if handle is None or needs_remap():
@@ -87,6 +94,11 @@ def set_window_on_top(window: QWidget, on_top: bool) -> None:
         # an overlay re-applies its geometry for the new stacking.
         if visible:
             window.show()
+            # A window the toolkit just destroyed and rebuilt is a NEW window to
+            # the WM, and it decides where to map it — under everything else,
+            # for one that never takes focus. Callers apply this to the overlay
+            # first and the panel last, so the panel still ends up in front.
+            window.raise_()
         return
     flags = handle.flags()
     handle.setFlags(

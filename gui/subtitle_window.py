@@ -372,6 +372,12 @@ class SubtitleWindow(QWidget):
                 QWidget.hide(self)
                 self.setGeometry(self._requested)
                 QWidget.show(self)
+                # Re-mapping hands the stacking back to the window manager, and
+                # a window that never takes focus can come back under every
+                # other application. An overlay nobody can see is worse than
+                # one briefly in front of the panel — and clicking the panel
+                # puts it back, which is not true the other way round.
+                self.raise_()
                 # Re-checked once the map has been through the WM, in case the
                 # rectangle itself was refused too.
                 self._fit_timer.start()
@@ -1246,13 +1252,18 @@ class SubtitleWindow(QWidget):
     def set_always_on_top(self, enabled: bool) -> None:
         """Toggle the stays-on-top flag, and re-place the overlay for it.
 
-        The flag goes through set_window_on_top, which does not recreate the
-        native window — so the overlay neither vanishes nor flashes. The
-        geometry still has to be recomputed: only a topmost window paints over
-        the taskbar, so a non-topmost overlay is laid out above it instead.
+        The flag goes through set_window_on_top, which on Windows does not
+        recreate the native window — so the overlay neither vanishes nor
+        flashes there. The geometry still has to be recomputed: only a topmost
+        window paints over the taskbar, so a non-topmost overlay is laid out
+        above it instead.
+
+        No early return on a matching flag: on X11 the flag Qt holds is not
+        what the window manager is doing (see widgets.set_window_on_top), and
+        this window is re-mapped behind Qt's back by its own geometry repair.
+        Skipping the call there left the panel obeying the setting while the
+        overlay sat under the browser.
         """
-        if is_window_on_top(self) == enabled:
-            return
         set_window_on_top(self, enabled)
         self._apply_geometry()
 

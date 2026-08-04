@@ -4943,6 +4943,58 @@ class TestAlwaysOnTopAcrossPlatforms:
         finally:
             window.close()
 
+    def test_a_matching_flag_is_re_asserted_where_the_wm_owns_the_state(
+        self, qt_app, monkeypatch
+    ):
+        """The overlay went missing while the panel obeyed the setting.
+
+        On X11 the flag Qt holds is not what the window manager is doing — the
+        overlay is re-mapped behind Qt's back by its own geometry repair — so
+        an early return on a matching flag left it under the browser. Windows,
+        where the flag IS the truth, still returns early and never flashes.
+        """
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
+
+        import gui.widgets as widgets
+
+        window = QWidget()
+        window.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        calls = []
+        monkeypatch.setattr(
+            QWidget, "setWindowFlag", lambda self, f, on=True: calls.append((f, on))
+        )
+        try:
+            monkeypatch.setattr(widgets, "needs_remap", lambda: False)
+            widgets.set_window_on_top(window, True)
+            assert calls == [], "the cheap platform re-applied a flag it already had"
+
+            monkeypatch.setattr(widgets, "needs_remap", lambda: True)
+            widgets.set_window_on_top(window, True)
+            assert calls == [(Qt.WindowStaysOnTopHint, True)]
+        finally:
+            window.close()
+
+    def test_a_re_mapped_window_is_raised_again(self, qt_app, monkeypatch):
+        # setWindowFlag builds a NEW native window, and the WM decides where to
+        # map it — under everything else, for one that never takes focus.
+        from PySide6.QtWidgets import QWidget
+
+        import gui.widgets as widgets
+
+        monkeypatch.setattr(widgets, "needs_remap", lambda: True)
+        raised = []
+        monkeypatch.setattr(QWidget, "raise_", lambda self: raised.append(self))
+        window = QWidget()
+        window.show()
+        _settle(qt_app)
+        try:
+            widgets.set_window_on_top(window, True)
+            _settle(qt_app)
+            assert raised == [window]
+        finally:
+            window.close()
+
     def test_a_hidden_window_is_not_shown_by_the_toggle(self, qt_app, monkeypatch):
         from PySide6.QtWidgets import QWidget
 
