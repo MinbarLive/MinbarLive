@@ -5045,8 +5045,8 @@ class TestAmpersandInACheckboxLabel:
 
     ``QAbstractButton`` reads a single "&" as a mnemonic marker, so the German
     and English "Alten Verlauf & Batch-Dateien …" lost the character and bound
-    a stray Alt+Space. The escape has to happen at the widget: the Tk tree
-    reads the same JSON and would print "&&" verbatim.
+    a stray Alt+Space. The translations carry Qt's "&&" escape, which is why
+    this guards the JSON rather than the widget.
     """
 
     @pytest.fixture
@@ -5068,10 +5068,27 @@ class TestAmpersandInACheckboxLabel:
                 f"{attribute} bound {box.shortcut().toString()} from its label"
             )
 
-    def test_the_ampersand_survives_to_the_painted_label(self, panel):
-        # Qt strips one "&" of every pair at paint time, so the escaped text
-        # holds twice as many as the source string it came from.
-        box = panel._other_checks["auto_cleanup_content"]
-        source = panel._t("auto_cleanup_content", "Clean up recordings")
-        assert box.text().count("&") == source.count("&") * 2
-        assert box.text().replace("&&", "&") == source
+    def test_every_language_escapes_its_ampersands(self):
+        """Every "&" in a checkbox label must come in a pair.
+
+        Reads the files rather than building six panels: an unescaped "&" is a
+        property of the translation, and the next language to gain one should
+        fail here whether or not it is the language under test.
+        """
+        import glob
+        import json
+        import re
+
+        keys = ("show_footer", "auto_stop_inactivity", "noise_filter",
+                "auto_cleanup_logs", "auto_cleanup_content",
+                "auto_start_on_launch")
+        for path in glob.glob("data/translations/gui/*.json"):
+            with open(path, encoding="utf-8") as fh:
+                texts = json.load(fh)
+            for key in keys:
+                text = texts.get(key)
+                if text is None:
+                    continue
+                assert not re.search(r"(?<!&)&(?!&)", text), (
+                    f"{path}:{key} has an unescaped '&' — Qt paints it as nothing"
+                )
