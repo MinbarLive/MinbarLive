@@ -17,7 +17,14 @@ from pathlib import Path
 # process is already marked aware. Qt handles DPI natively, so this call is not
 # merely redundant there — it actively takes the setting away from Qt.
 _QT_MODE = "--qt" in sys.argv
-if not _QT_MODE:
+if _QT_MODE:
+    # Same rule from the other side: the platform plugin is chosen when the
+    # QApplication is built, and under --qt that can be the already-running
+    # dialog below.
+    from gui_qt.platform_setup import prepare_qt_platform
+
+    prepare_qt_platform()
+else:
     from utils.windows_dpi import enable_windows_dpi_awareness
 
     enable_windows_dpi_awareness()

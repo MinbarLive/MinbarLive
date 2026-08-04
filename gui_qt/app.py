@@ -19,6 +19,7 @@ from gui_qt.control_panel import ControlPanel
 from gui_qt.icons import app_icon
 from gui_qt.onboarding import run_onboarding
 from gui_qt.theme import apply_theme
+from utils.logging import log
 from utils.settings import load_settings
 
 
@@ -28,6 +29,11 @@ def run(controller) -> int:
     # creates it, and Qt allows only one QApplication per process.
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("MinbarLive")
+    # Which platform plugin actually loaded decides what the overlay can do:
+    # under Wayland a window cannot be positioned or kept on top at all
+    # (gui_qt/platform_setup.py asks for xcb first because of it), so a bug
+    # report about either has to start here.
+    log(f"Qt platform plugin: {app.platformName()}", level="INFO")
     # Application-wide and before the first window, so every window — including
     # the overlay, which nobody else sets an icon on — inherits it the moment
     # its native window is created. Without this Qt shows its own default.

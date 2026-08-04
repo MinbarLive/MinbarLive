@@ -14,6 +14,11 @@ for anything Qt, pytest included.
 ./venv/Scripts/python.exe -m pytest tests/test_gui_qt.py -q
 ```
 
+On Linux the tree asks for `QT_QPA_PLATFORM=xcb;wayland` (`gui_qt/platform_setup.py`),
+because a Wayland client can neither place its own windows nor stay on top — the two
+things the overlay is made of. Every launch logs which plugin actually loaded; a bug
+report about overlay position or stacking starts with that line.
+
 ## Hard rules
 
 - **Nothing here may import a Tk-importing module.** The toolkit-free shared modules are
