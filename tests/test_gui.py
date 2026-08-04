@@ -25,7 +25,7 @@ pytest.importorskip("PySide6", reason="Qt GUI tree is optional during migration"
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from gui_qt.subtitle_window import SubtitleWindow  # noqa: E402
+from gui.subtitle_window import SubtitleWindow  # noqa: E402
 from utils.settings import (  # noqa: E402
     PIPELINE_MODE_STREAMING,
     SUBTITLE_MODE_CONTINUOUS,
@@ -38,7 +38,7 @@ from utils.settings import (  # noqa: E402
 def cp_module():
     """The control-panel module, imported lazily so this file still collects
     without a display."""
-    import gui_qt.control_panel as cp
+    import gui.control_panel as cp
 
     return cp
 
@@ -273,7 +273,7 @@ class TestFooterReserve:
         # It used to be derived from the subtitle size, so at a large font the
         # disclaimer grew into a banner. The Tk overlay draws it at a constant
         # 14pt bold.
-        from gui_qt.subtitle_window import PILL_FONT_PX
+        from gui.subtitle_window import PILL_FONT_PX
 
         w = overlay(SUBTITLE_MODE_STATIC, show_footer=True, font_size_base=40)
         small = w._pill_font()
@@ -380,7 +380,7 @@ class TestLifecycle:
         # (the overlay vanished for good) and it repaints from an empty surface
         # (a white flash). The flag goes to the QWindow instead, so the native
         # window has to survive every toggle.
-        from gui_qt.widgets import is_window_on_top
+        from gui.widgets import is_window_on_top
 
         w = overlay(SUBTITLE_MODE_CONTINUOUS)
         w.show()
@@ -465,14 +465,14 @@ class TestWindowIcon:
     vertical lockup — mark, wordmark and tagline — at every one of its sizes."""
 
     def test_the_icon_covers_the_sizes_windows_asks_for(self, qt_app):
-        from gui_qt.icons import ICON_SIZES, app_icon
+        from gui.icons import ICON_SIZES, app_icon
 
         icon = app_icon()
         assert icon is not None and not icon.isNull()
         assert set(ICON_SIZES) <= {size.width() for size in icon.availableSizes()}
 
     def test_the_taskbar_size_is_drawn_and_square(self, qt_app):
-        from gui_qt.icons import app_icon
+        from gui.icons import app_icon
 
         pixmap = app_icon().pixmap(24, 24)
         # The returned pixmap is in DEVICE pixels — 30x30 on a 125% display.
@@ -502,7 +502,7 @@ class TestWindowIcon:
             assert abs(above - below) <= 1, f"not vertically centred: {box}"
 
     def test_utils_icons_does_not_pull_tk_into_the_process(self):
-        # gui_qt/control_panel.py and gui_qt/icons.py both call logo_mark, and
+        # gui/control_panel.py and gui/icons.py both call logo_mark, and
         # a module-level "import tkinter" there loaded 50-odd Tk modules into
         # the Qt process. Run in a subprocess: the suite imports the Tk tree
         # elsewhere, so sys.modules in THIS process proves nothing.
@@ -526,17 +526,17 @@ class TestWindowIcon:
         import subprocess
 
         modules = (
-            "gui_qt.app",
-            "gui_qt.already_running",
-            "gui_qt.api_keys",
-            "gui_qt.announce_window",
-            "gui_qt.batch_window",
-            "gui_qt.control_panel",
-            "gui_qt.history_window",
-            "gui_qt.onboarding",
-            "gui_qt.settings_window",
-            "gui_qt.subtitle_window",
-            "gui_qt.update_banner",
+            "gui.app",
+            "gui.already_running",
+            "gui.api_keys",
+            "gui.announce_window",
+            "gui.batch_window",
+            "gui.control_panel",
+            "gui.history_window",
+            "gui.onboarding",
+            "gui.settings_window",
+            "gui.subtitle_window",
+            "gui.update_banner",
         )
         code = (
             "import sys, importlib\n"
@@ -559,7 +559,7 @@ class TestNoTextShapingLayer:
     def test_gui_qt_does_not_use_arabic_reshaper_or_bidi(self):
         import pathlib
 
-        root = pathlib.Path(__file__).resolve().parent.parent / "gui_qt"
+        root = pathlib.Path(__file__).resolve().parent.parent / "gui"
         offenders = [
             p.name
             for p in root.glob("*.py")
@@ -581,7 +581,7 @@ class TestSegmentedControl:
     """The Tk panel uses CTkSegmentedButton for every either/or choice."""
 
     def test_exclusive_selection_and_signal(self, qt_app):
-        from gui_qt.widgets import SegmentedControl
+        from gui.widgets import SegmentedControl
 
         seg = SegmentedControl(["Nie", "Wenn gestoppt", "Immer"], current=0)
         picked: list[int] = []
@@ -595,7 +595,7 @@ class TestSegmentedControl:
         assert [b.isChecked() for b in seg._buttons] == [False, False, True]
 
     def test_corner_rounding_property_marks_the_ends(self, qt_app):
-        from gui_qt.widgets import SegmentedControl
+        from gui.widgets import SegmentedControl
 
         seg = SegmentedControl(["a", "b", "c"])
         assert [b.property("seg") for b in seg._buttons] == ["first", "middle", "last"]
@@ -607,7 +607,7 @@ class TestSegmentedControl:
     def test_programmatic_set_does_not_emit(self, qt_app):
         # set_current_index is used to sync state; emitting would risk a loop
         # with handlers that write back.
-        from gui_qt.widgets import SegmentedControl
+        from gui.widgets import SegmentedControl
 
         seg = SegmentedControl(["a", "b"])
         fired: list[int] = []
@@ -621,7 +621,7 @@ class TestSubtitleModeLabels:
     def test_translated_label_never_leaks_into_settings(self, qt_app, monkeypatch):
         # Regression guard: the combo shows "Echtzeit" but Settings must
         # receive "realtime".
-        import gui_qt.control_panel as cp
+        import gui.control_panel as cp
 
         monkeypatch.setattr(cp, "save_settings", lambda s: None)
 
@@ -657,7 +657,7 @@ class TestDeviceHotSwap:
 
     @pytest.fixture
     def panel(self, qt_app, monkeypatch):
-        import gui_qt.control_panel as cp
+        import gui.control_panel as cp
 
         monkeypatch.setattr(cp, "save_settings", lambda s: None)
         # Keyring access is machine-dependent; keep the test hermetic.
@@ -763,7 +763,7 @@ class TestDeviceHotSwap:
         assert controller.swaps == []  # it is already the running device
 
     def test_a_failed_start_drops_the_parked_device(self, panel, monkeypatch):
-        import gui_qt.control_panel as cp
+        import gui.control_panel as cp
 
         # _finish_start reports a failed start with a REAL modal dialog, which
         # a test run must never put on the developer's desktop.
@@ -788,7 +788,7 @@ class TestControlPanelLayout:
 
     @pytest.fixture
     def panel(self, qt_app, monkeypatch):
-        import gui_qt.control_panel as cp
+        import gui.control_panel as cp
 
         monkeypatch.setattr(cp, "save_settings", lambda s: None)
         monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
@@ -916,7 +916,7 @@ class TestSourceLanguageChoices:
 
     @pytest.fixture
     def panel(self, qt_app, monkeypatch):
-        import gui_qt.control_panel as cp
+        import gui.control_panel as cp
 
         monkeypatch.setattr(cp, "save_settings", lambda s: None)
         monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
@@ -964,7 +964,7 @@ class TestSubtitleHideMode:
 
     @pytest.fixture
     def panel(self, qt_app, monkeypatch):
-        import gui_qt.control_panel as cp
+        import gui.control_panel as cp
 
         monkeypatch.setattr(cp, "save_settings", lambda s: None)
         monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
@@ -1051,7 +1051,7 @@ class TestAnnouncementSurvivesARebuiltOverlay:
 
     @pytest.fixture
     def panel(self, qt_app, monkeypatch):
-        import gui_qt.control_panel as cp
+        import gui.control_panel as cp
 
         monkeypatch.setattr(cp, "save_settings", lambda s: None)
         monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
@@ -1379,7 +1379,7 @@ class TestLevelMeterZones:
     """
 
     def test_consecutive_zones_share_an_edge_exactly(self):
-        from gui_qt.widgets import AudioLevelBar as Bar
+        from gui.widgets import AudioLevelBar as Bar
 
         bounds = (0.0, Bar.GREEN_END, Bar.RED_START, 1.0)
         # Odd widths included: they are where rounding used to disagree.
@@ -1393,7 +1393,7 @@ class TestLevelMeterZones:
             assert spans[0][0] == 0 and spans[-1][1] == width
 
     def test_a_zone_never_reaches_into_the_next(self):
-        from gui_qt.widgets import AudioLevelBar as Bar
+        from gui.widgets import AudioLevelBar as Bar
 
         # The translucent zone map is drawn amber-then-red; one pixel of
         # overlap composited twice and showed as a dark seam.
@@ -1406,8 +1406,8 @@ class TestNoStrayTopLevelWindows:
     """Little boxes flashed across the screen before the panel opened."""
 
     def test_a_card_never_shows_a_parentless_widget(self, qt_app):
-        from gui_qt.theme import apply_theme
-        from gui_qt.widgets import Card
+        from gui.theme import apply_theme
+        from gui.widgets import Card
 
         apply_theme(qt_app, "dark")
         before = {w for w in qt_app.topLevelWidgets() if w.isVisible()}
@@ -1428,8 +1428,8 @@ class TestCardPadding:
     def test_a_collapsed_card_is_padded_evenly(self, qt_app):
         from PySide6.QtWidgets import QLabel
 
-        from gui_qt.theme import apply_theme
-        from gui_qt.widgets import Card
+        from gui.theme import apply_theme
+        from gui.widgets import Card
 
         apply_theme(qt_app, "dark")
         # Standalone, not the panel's card: a child of a live layout is resized
@@ -1598,7 +1598,7 @@ class TestEqualColumnHeights:
         assert self._top(panel.advanced_card) == before
 
     def test_always_on_top_covers_the_control_panel(self, panel, qt_app):
-        from gui_qt.widgets import is_window_on_top
+        from gui.widgets import is_window_on_top
         from utils.settings import ALWAYS_ON_TOP_MODES
 
         panel.show()
@@ -1619,7 +1619,7 @@ class TestControlRowHeights:
 
     @pytest.fixture
     def panel(self, qt_app, monkeypatch):
-        from gui_qt.theme import apply_theme
+        from gui.theme import apply_theme
 
         cp = cp_module()
         monkeypatch.setattr(cp, "save_settings", lambda s: None)
@@ -1647,7 +1647,7 @@ class TestControlRowHeights:
     def test_the_small_buttons_match_the_dropdowns(self, panel):
         from PySide6.QtWidgets import QPushButton
 
-        from gui_qt.widgets import CONTROL_H
+        from gui.widgets import CONTROL_H
 
         assert panel.mode_combo.height() == CONTROL_H
         widgets = [
@@ -1826,7 +1826,7 @@ class TestControlChrome:
     def test_a_checked_box_draws_a_white_tick_on_accent(self, qt_app):
         from PySide6.QtWidgets import QCheckBox
 
-        from gui_qt.theme import apply_theme
+        from gui.theme import apply_theme
 
         apply_theme(qt_app, "light")
         box = QCheckBox("Originaltext anzeigen")
@@ -1847,7 +1847,7 @@ class TestControlChrome:
     def test_an_unchecked_box_is_not_filled(self, qt_app):
         from PySide6.QtWidgets import QCheckBox
 
-        from gui_qt.theme import apply_theme
+        from gui.theme import apply_theme
 
         apply_theme(qt_app, "light")
         box = QCheckBox("Aus")
@@ -1855,8 +1855,8 @@ class TestControlChrome:
         assert self._accent_pixels(box.grab().toImage()) < 20
 
     def test_the_dropdown_paints_a_chevron_not_a_block(self, qt_app):
-        from gui_qt.theme import apply_theme
-        from gui_qt.widgets import Dropdown
+        from gui.theme import apply_theme
+        from gui.widgets import Dropdown
 
         apply_theme(qt_app, "light")
         combo = Dropdown(["Deutsch", "English"])
@@ -1900,8 +1900,8 @@ class TestControlChrome:
         widget.style().polish(widget)
 
     def test_a_hovered_dropdown_lights_up(self, qt_app):
-        from gui_qt.theme import apply_theme, current_colors
-        from gui_qt.widgets import Dropdown
+        from gui.theme import apply_theme, current_colors
+        from gui.widgets import Dropdown
 
         apply_theme(qt_app, "light")
         combo = Dropdown(["Deutsch", "English"])
@@ -1911,8 +1911,8 @@ class TestControlChrome:
         assert self._fill(combo) == current_colors()["panel_soft"]
 
     def test_a_disabled_dropdown_stays_inert(self, qt_app):
-        from gui_qt.theme import apply_theme, current_colors
-        from gui_qt.widgets import Dropdown
+        from gui.theme import apply_theme, current_colors
+        from gui.widgets import Dropdown
 
         apply_theme(qt_app, "light")
         combo = Dropdown(["Deutsch"])
@@ -1924,8 +1924,8 @@ class TestControlChrome:
     def test_the_level_meter_shows_its_zones_while_silent(self, qt_app):
         # The operator needs to see how much headroom is left before amber and
         # red, not discover the boundaries by clipping.
-        from gui_qt.theme import apply_theme, current_colors
-        from gui_qt.widgets import AudioLevelBar
+        from gui.theme import apply_theme, current_colors
+        from gui.widgets import AudioLevelBar
 
         apply_theme(qt_app, "light")
         bar = AudioLevelBar(height=14)
@@ -1953,8 +1953,8 @@ class TestControlChrome:
         from PySide6.QtCore import QPoint, QPointF, Qt
         from PySide6.QtGui import QWheelEvent
 
-        from gui_qt.theme import apply_theme
-        from gui_qt.widgets import Dropdown
+        from gui.theme import apply_theme
+        from gui.widgets import Dropdown
 
         apply_theme(qt_app, "light")
         combo = Dropdown([f"Sprache {i}" for i in range(8)])
@@ -1978,8 +1978,8 @@ class TestControlChrome:
     def test_picking_an_entry_releases_the_focus_ring(self, qt_app):
         from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-        from gui_qt.theme import apply_theme
-        from gui_qt.widgets import Dropdown
+        from gui.theme import apply_theme
+        from gui.widgets import Dropdown
 
         apply_theme(qt_app, "light")
         window = QWidget()
@@ -2000,8 +2000,8 @@ class TestControlChrome:
     def test_the_popup_caps_how_many_rows_it_shows(self, qt_app):
         # A dozen-plus languages/models/devices otherwise open a popup taller
         # than the window it belongs to.
-        from gui_qt.theme import apply_theme
-        from gui_qt.widgets import Dropdown
+        from gui.theme import apply_theme
+        from gui.widgets import Dropdown
 
         apply_theme(qt_app, "light")
         combo = Dropdown([f"Sprache {i}" for i in range(14)])
@@ -2024,8 +2024,8 @@ class TestControlChrome:
         # base size therefore lives in the application font, in points.
         from PySide6.QtCore import qInstallMessageHandler
 
-        from gui_qt.theme import apply_theme
-        from gui_qt.widgets import Dropdown
+        from gui.theme import apply_theme
+        from gui.widgets import Dropdown
 
         apply_theme(qt_app, "light")
         assert qt_app.font().pointSizeF() > 0, "base font is not point-sized"
@@ -2049,7 +2049,7 @@ class TestControlChrome:
         # Declaring ::item at all makes QStyleSheetStyle paint the rows, and it
         # then ignores the view's selection-background-color — so both states
         # need explicit rules or the open list has no highlight at all.
-        from gui_qt.theme import stylesheet
+        from gui.theme import stylesheet
 
         sheet = stylesheet("light")
         hover = sheet.index("QComboBox QAbstractItemView::item:hover")
@@ -2062,7 +2062,7 @@ class TestControlChrome:
         # Qt follows CSS specificity, so the two-pseudo-state hover rule beats a
         # plain ":focus" and pointing at a focused combo erased its accent ring.
         # The ":enabled:focus" twin ties on specificity and must come LATER.
-        from gui_qt.theme import stylesheet
+        from gui.theme import stylesheet
 
         sheet = stylesheet("light")
         assert sheet.index("QComboBox:enabled:focus") > sheet.index(
@@ -2072,14 +2072,14 @@ class TestControlChrome:
 
 def row_text(window, index: int) -> str:
     """Title + detail line of one history list row, as the delegate has them."""
-    from gui_qt.history_window import RowDelegate
+    from gui.history_window import RowDelegate
 
     item = window.entry_list.item(index)
     return f"{item.text()}\n{item.data(RowDelegate.SUB_ROLE)}"
 
 
 def row_tag(window, index: int) -> str:
-    from gui_qt.history_window import RowDelegate
+    from gui.history_window import RowDelegate
 
     return window.entry_list.item(index).data(RowDelegate.TAG_ROLE)
 
@@ -2089,7 +2089,7 @@ class TestHistoryWindow:
 
     @pytest.fixture
     def history(self, qt_app, monkeypatch):
-        import gui_qt.history_window as hw
+        import gui.history_window as hw
         from utils.history import HistoryEntry, HistorySession
 
         sessions = [
@@ -2171,7 +2171,7 @@ class TestHistoryWindow:
     def test_opens_at_the_windowed_size(self, history):
         # Tk opens this viewer at 900x560; the port asked for 1180x720, which
         # covered the panel behind it.
-        import gui_qt.history_window as hw
+        import gui.history_window as hw
 
         make, _ = history
         w = make()
@@ -2185,14 +2185,14 @@ class TestHistoryWindow:
         # QSplitter::handle width never reached it, and the panes ended up
         # overlapping by a pixel — so the list border sat directly against the
         # transcript border. The gap lives in the right pane's own margin.
-        import gui_qt.history_window as hw
+        import gui.history_window as hw
 
         make, _ = history
         w = make()
         assert w.detail.parentWidget().layout().contentsMargins().left() >= hw.PANE_GAP
 
     def test_a_saved_summary_is_marked_on_the_row(self, history):
-        import gui_qt.history_window as hw
+        import gui.history_window as hw
 
         make, _ = history
         w = make()
@@ -2209,7 +2209,7 @@ class TestHistoryWindow:
     def test_summarise_is_hidden_where_there_is_no_transcript(
         self, history, monkeypatch
     ):
-        import gui_qt.history_window as hw
+        import gui.history_window as hw
 
         monkeypatch.setattr(hw, "list_log_files", lambda: [])
         make, _ = history
@@ -2247,7 +2247,7 @@ class TestHistoryWindow:
         assert w.detail.toPlainText() != first
 
     def test_empty_state(self, qt_app, monkeypatch):
-        import gui_qt.history_window as hw
+        import gui.history_window as hw
 
         monkeypatch.setattr(hw, "list_history_sessions", lambda: [])
 
@@ -2259,7 +2259,7 @@ class TestHistoryWindow:
             w.close()
 
     def test_unreadable_session_does_not_raise(self, history, monkeypatch):
-        import gui_qt.history_window as hw
+        import gui.history_window as hw
 
         make, _ = history
 
@@ -2276,7 +2276,7 @@ class TestHistoryBatchTab:
 
     @pytest.fixture
     def batch(self, qt_app, monkeypatch, tmp_path):
-        import gui_qt.history_window as hw
+        import gui.history_window as hw
         from utils.history import BatchRun
 
         srt = tmp_path / "both.srt"
@@ -2346,7 +2346,7 @@ class TestHistoryBatchTab:
         assert w.format_bar.isHidden()
 
     def test_the_toggle_does_not_leak_onto_another_tab(self, batch, monkeypatch):
-        import gui_qt.history_window as hw
+        import gui.history_window as hw
 
         monkeypatch.setattr(hw, "list_log_files", lambda: [])
         make, _ = batch
@@ -2365,7 +2365,7 @@ class TestHistoryBatchTab:
         # runs of the same lecture apart.
         from PySide6.QtCore import Qt
 
-        from gui_qt.history_window import RowDelegate
+        from gui.history_window import RowDelegate
 
         make, runs = batch
         w = make()
@@ -2376,7 +2376,7 @@ class TestHistoryBatchTab:
     def test_it_can_open_straight_onto_this_tab(self, qt_app, batch):
         # "Show in history" after a batch run must land on the run, not on the
         # session list — as it does in the Tk viewer.
-        import gui_qt.history_window as hw
+        import gui.history_window as hw
 
         _make, runs = batch
         w = hw.HistoryWindow(lambda key, fallback="": fallback, initial_tab="batch")
@@ -2392,7 +2392,7 @@ class TestHistoryCostTab:
 
     @pytest.fixture
     def cost(self, qt_app, monkeypatch):
-        import gui_qt.history_window as hw
+        import gui.history_window as hw
 
         sessions = [
             {
@@ -2500,7 +2500,7 @@ class TestAlreadyRunningDialog:
 
     @pytest.fixture
     def dialog(self, qt_app):
-        from gui_qt.already_running import AlreadyRunningDialog
+        from gui.already_running import AlreadyRunningDialog
 
         made = AlreadyRunningDialog({})
         yield made
@@ -2521,22 +2521,23 @@ class TestAlreadyRunningDialog:
         dialog.cancel_btn.click()
         assert dialog.result() == QDialog.Rejected
 
-    def test_qt_mode_never_reaches_the_tk_dialog(self, monkeypatch):
+    def test_the_entry_point_shows_this_dialog(self, monkeypatch):
+        # It used to branch on main._QT_MODE, with a CustomTkinter dialog on
+        # the other side. There is one dialog now, and the guard is that
+        # main.py reaches THIS one — a second instance is otherwise announced
+        # by nothing at all.
         import types
 
         import main
 
-        monkeypatch.setattr(main, "_QT_MODE", True)
         calls = []
         monkeypatch.setitem(
             sys.modules,
-            "gui_qt.already_running",
+            "gui.already_running",
             types.SimpleNamespace(
                 show_already_running_dialog=lambda: calls.append(1) or True
             ),
         )
-        # customtkinter must not even be imported on this path.
-        monkeypatch.setitem(sys.modules, "customtkinter", None)
         assert main._show_already_running_dialog() is True
         assert calls == [1]
 
@@ -2564,7 +2565,7 @@ class TestUpdateBanner:
 
     @pytest.fixture
     def banner(self, qt_app, monkeypatch):
-        import gui_qt.update_banner as ub
+        import gui.update_banner as ub
         from utils.update_check import UpdateInfo
 
         ub.reset_cache()
@@ -2628,7 +2629,7 @@ class TestBatchWindow:
         import sys
         import types
 
-        import gui_qt.batch_window as bw
+        import gui.batch_window as bw
         from utils.settings import load_settings
 
         calls: dict = {}
@@ -2671,7 +2672,7 @@ class TestBatchWindow:
         # The port asked for a fixed 640x700 and towered over the Tk window.
         # Width is the Tk card's; the height follows the content and must not
         # be the sizeHint, which reserves a line a wrapped label never uses.
-        import gui_qt.batch_window as bw
+        import gui.batch_window as bw
 
         w, _ = batch
         assert w.width() == bw.BATCH_WINDOW_W
@@ -2869,7 +2870,7 @@ class TestBatchWindow:
 class TestAnnounceWindow:
     @pytest.fixture
     def announce(self, qt_app, monkeypatch):
-        import gui_qt.announce_window as aw
+        import gui.announce_window as aw
         from utils.settings import load_settings
 
         monkeypatch.setattr(aw, "save_settings", lambda s: None)
@@ -2952,7 +2953,7 @@ class TestAnnounceWindow:
         assert not w._auto_clear.isActive()
 
     def test_favorites_toggle_and_cap(self, announce, monkeypatch):
-        import gui_qt.announce_window as aw
+        import gui.announce_window as aw
         from config import ANNOUNCEMENT_FAVORITES_MAX
 
         w, settings, _ = announce
@@ -2994,7 +2995,7 @@ class TestAnnounceWindow:
         # a row was added, so the window lagged one entry behind — it opened
         # too short for its own content and never shrank again when entries
         # were deleted.
-        from gui_qt.window_size import SECONDARY_MAX_H
+        from gui.window_size import SECONDARY_MAX_H
 
         w, settings, _ = announce
         w.show()
@@ -3036,7 +3037,7 @@ class TestAnnounceWindow:
     def test_full_lists_scroll_instead_of_filling_the_screen(self, announce, qt_app):
         # Five favourites and three recents came to ~1080px — the height of the
         # screen, for a box you type one line into.
-        from gui_qt.window_size import SECONDARY_MAX_H
+        from gui.window_size import SECONDARY_MAX_H
 
         w, settings, _ = announce
         settings.announcement_favorites = [f"Favorit {i}" for i in range(5)]
@@ -3092,13 +3093,13 @@ class TestThemedDialogs:
 
     @pytest.fixture
     def texts(self):
-        from gui_qt.i18n import load_gui_translations
+        from gui.i18n import load_gui_translations
 
         de = load_gui_translations("de")
         return lambda key, fallback="": de.get(key, fallback)
 
     def test_the_buttons_speak_the_gui_language(self, qt_app, texts):
-        from gui_qt.dialogs import MessageDialog
+        from gui.dialogs import MessageDialog
 
         dialog = MessageDialog(None, "Titel", "Nachricht", translate=texts)
         assert dialog.ok_btn.text() == "OK"
@@ -3113,7 +3114,7 @@ class TestThemedDialogs:
     def test_a_confirm_reports_the_answer(self, qt_app, texts):
         from PySide6.QtWidgets import QDialog
 
-        from gui_qt.dialogs import MessageDialog
+        from gui.dialogs import MessageDialog
 
         dialog = MessageDialog(None, "T", "M", confirm=True, translate=texts)
         dialog.no_btn.click()
@@ -3123,7 +3124,7 @@ class TestThemedDialogs:
         assert dialog.result() == QDialog.Accepted
 
     def test_a_destructive_confirm_defaults_to_no(self, qt_app, texts):
-        from gui_qt.dialogs import MessageDialog
+        from gui.dialogs import MessageDialog
 
         dialog = MessageDialog(
             None, "T", "M", confirm=True, default_yes=False, translate=texts
@@ -3135,7 +3136,7 @@ class TestThemedDialogs:
     def test_the_severity_decides_the_glyph_colour(self, qt_app):
         from PySide6.QtWidgets import QLabel
 
-        from gui_qt.dialogs import MessageDialog
+        from gui.dialogs import MessageDialog
 
         names = {}
         for kind in ("info", "warn", "error"):
@@ -3150,7 +3151,7 @@ class TestThemedDialogs:
         assert len(set(names.values())) == 3
 
     def test_a_long_message_is_not_clipped(self, qt_app):
-        from gui_qt.dialogs import MessageDialog
+        from gui.dialogs import MessageDialog
 
         short = MessageDialog(None, "T", "Kurz")
         long = MessageDialog(None, "T", "Sehr lang. " * 40)
@@ -3166,7 +3167,7 @@ class TestThemedDialogs:
         import pathlib
         import re
 
-        root = pathlib.Path(__file__).resolve().parents[1] / "gui_qt"
+        root = pathlib.Path(__file__).resolve().parents[1] / "gui"
         offenders = []
         for path in root.glob("*.py"):
             if path.name in ("dialogs.py", "theme.py"):
@@ -3186,7 +3187,7 @@ class TestOnboardingWizard:
 
     @pytest.fixture
     def wizard(self, qt_app, tmp_path, monkeypatch):
-        import gui_qt.onboarding as ob
+        import gui.onboarding as ob
         import providers
         import utils.settings as S
 
@@ -3289,7 +3290,7 @@ class TestOnboardingWizard:
         assert saved.get("anthropic") == "sk-ant-test"
 
     def test_run_onboarding_no_ops_once_completed(self, wizard, qt_app):
-        import gui_qt.onboarding as ob
+        import gui.onboarding as ob
 
         w, _, _ = wizard
         self._complete(w)
@@ -3329,7 +3330,7 @@ class TestWizardInputMeter:
 
     @pytest.fixture
     def wizard(self, qt_app, monkeypatch):
-        import gui_qt.onboarding as ob
+        import gui.onboarding as ob
 
         monkeypatch.setattr(ob, "save_settings", lambda s: None)
         controller = self.FakeController()
@@ -3344,14 +3345,14 @@ class TestWizardInputMeter:
         assert "dBFS" in w.level_value.text()
 
     def test_entering_the_device_step_starts_a_preview(self, wizard):
-        import gui_qt.onboarding as ob
+        import gui.onboarding as ob
 
         w, controller = wizard
         w.stack.setCurrentIndex(ob._DEVICE_STEP)
         assert controller.started, "no preview started on the device step"
 
     def test_leaving_the_step_releases_the_device(self, wizard):
-        import gui_qt.onboarding as ob
+        import gui.onboarding as ob
 
         w, controller = wizard
         w.stack.setCurrentIndex(ob._DEVICE_STEP)
@@ -3376,7 +3377,7 @@ class TestWizardInputMeter:
         w._start_level_preview(auto=True)  # must not raise or dialog
 
     def test_it_builds_without_a_controller(self, qt_app, monkeypatch):
-        import gui_qt.onboarding as ob
+        import gui.onboarding as ob
 
         monkeypatch.setattr(ob, "save_settings", lambda s: None)
         w = ob.OnboardingWizard(qt_app)
@@ -3419,7 +3420,7 @@ class TestWizardInputMeter:
 class TestWizardProviderList:
     @pytest.fixture
     def wizard(self, qt_app, monkeypatch):
-        import gui_qt.onboarding as ob
+        import gui.onboarding as ob
 
         monkeypatch.setattr(ob, "save_settings", lambda s: None)
         w = ob.OnboardingWizard(qt_app)
@@ -3521,7 +3522,7 @@ class TestWizardLanguageSwitch:
 
     @pytest.fixture
     def wizard(self, qt_app, monkeypatch):
-        import gui_qt.onboarding as ob
+        import gui.onboarding as ob
 
         monkeypatch.setattr(ob, "save_settings", lambda s: None)
         w = ob.OnboardingWizard(qt_app)
@@ -3530,7 +3531,7 @@ class TestWizardLanguageSwitch:
         w.close()
 
     def test_later_steps_are_relabelled(self, wizard):
-        from gui_qt.i18n import load_gui_translations
+        from gui.i18n import load_gui_translations
 
         de = load_gui_translations("de")
         wizard.gui_lang_combo.setCurrentIndex(wizard.gui_lang_combo.findData("de"))
@@ -3540,7 +3541,7 @@ class TestWizardLanguageSwitch:
         assert wizard.next_btn.text() == de["wizard_next"]
 
     def test_the_theme_segment_is_relabelled(self, wizard):
-        from gui_qt.i18n import load_gui_translations
+        from gui.i18n import load_gui_translations
         from utils.settings import THEME_MODES
 
         de = load_gui_translations("de")
@@ -3561,7 +3562,7 @@ class TestPipelineBridge:
     def test_queue_items_become_qt_signals(self, qt_app):
         from PySide6.QtCore import QTimer
 
-        from gui_qt.pipeline_bridge import PipelineBridge
+        from gui.pipeline_bridge import PipelineBridge
 
         class FakeController:
             def __init__(self):
@@ -3590,7 +3591,7 @@ class TestPipelineBridge:
     def test_audio_device_lost_is_routed_separately(self, qt_app):
         from PySide6.QtCore import QTimer
 
-        from gui_qt.pipeline_bridge import PipelineBridge
+        from gui.pipeline_bridge import PipelineBridge
 
         class FakeController:
             def __init__(self):
@@ -3620,7 +3621,7 @@ class TestApiKeyActivation:
         # key in module state and raises until set_api_key() is called, so
         # has_usable_key() could be True while Start failed with
         # "OpenAI API key is not configured."
-        import gui_qt.api_keys as api_keys
+        import gui.api_keys as api_keys
         import providers.openai.client as client
 
         activated: list[str] = []
@@ -3631,7 +3632,7 @@ class TestApiKeyActivation:
         assert activated == ["sk-test-key"]
 
     def test_nothing_activated_when_no_key_is_stored(self, monkeypatch):
-        import gui_qt.api_keys as api_keys
+        import gui.api_keys as api_keys
         import providers.openai.client as client
 
         activated: list[str] = []
@@ -3648,7 +3649,7 @@ def _panel(monkeypatch):
     The overlay is suppressed rather than faked: the default hide policy opens
     one even while stopped, and these tests care about the panel's own windows.
     """
-    import gui_qt.control_panel as cp
+    import gui.control_panel as cp
 
     monkeypatch.setattr(cp, "save_settings", lambda s: None)
     monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
@@ -3667,8 +3668,8 @@ class TestSecondaryWindowSizing:
 
     @pytest.fixture
     def panel(self, qt_app, monkeypatch):
-        import gui_qt.announce_window as aw
-        import gui_qt.settings_window as sw
+        import gui.announce_window as aw
+        import gui.settings_window as sw
 
         # The batch window is absent: it persists nothing of its own.
         for module in (aw, sw):
@@ -3680,7 +3681,7 @@ class TestSecondaryWindowSizing:
         p.close()
 
     def test_the_three_windows_share_one_width(self, panel, qt_app):
-        from gui_qt.window_size import SECONDARY_WINDOW_W
+        from gui.window_size import SECONDARY_WINDOW_W
 
         panel.open_settings()
         panel.open_batch()
@@ -3693,7 +3694,7 @@ class TestSecondaryWindowSizing:
         assert set(widths.values()) == {SECONDARY_WINDOW_W}, widths
 
     def test_none_of_them_grows_past_the_shared_cap(self, panel, qt_app):
-        from gui_qt.window_size import SECONDARY_MAX_H
+        from gui.window_size import SECONDARY_MAX_H
 
         panel.open_settings()
         panel.open_batch()
@@ -3707,7 +3708,7 @@ class TestSecondaryWindowSizing:
         # batch cards come to ~720 with More settings closed, so a tighter cap
         # opened it already scrolled and left the expander unable to grow the
         # window at all — it could only ever add a scrollbar.
-        from gui_qt.window_size import SECONDARY_MAX_H
+        from gui.window_size import SECONDARY_MAX_H
 
         panel.open_batch()
         _settle(qt_app)
@@ -3725,7 +3726,7 @@ class TestSecondaryWindowSizing:
         from PySide6.QtCore import QSize
         from PySide6.QtWidgets import QWidget
 
-        from gui_qt.window_size import SECONDARY_WINDOW_W, content_size
+        from gui.window_size import SECONDARY_WINDOW_W, content_size
 
         w = QWidget()
         assert content_size(w, 400) == QSize(SECONDARY_WINDOW_W, 400)
@@ -3739,7 +3740,7 @@ class TestSettingsWindowKeys:
 
     @pytest.fixture
     def settings_win(self, qt_app, monkeypatch):
-        import gui_qt.settings_window as sw
+        import gui.settings_window as sw
 
         monkeypatch.setattr(sw, "save_settings", lambda s: None)
         p = _panel(monkeypatch)
@@ -3813,8 +3814,8 @@ class TestIntegratedWindows:
 
     @pytest.fixture
     def panel(self, qt_app, monkeypatch):
-        import gui_qt.announce_window as aw
-        import gui_qt.settings_window as sw
+        import gui.announce_window as aw
+        import gui.settings_window as sw
 
         for module in (aw, sw):
             monkeypatch.setattr(module, "save_settings", lambda s: None)
@@ -3830,7 +3831,7 @@ class TestIntegratedWindows:
     def test_the_size_rule_clamps_to_the_control_panel(self):
         from PySide6.QtCore import QSize
 
-        from gui_qt.modal_host import MIN_PANEL_H, MIN_PANEL_W, clamped_panel_size
+        from gui.modal_host import MIN_PANEL_H, MIN_PANEL_W, clamped_panel_size
 
         # Room to spare: the panel gets the size it asks for.
         assert clamped_panel_size(QSize(520, 700), QSize(1400, 1000)) == QSize(520, 700)
@@ -3860,10 +3861,10 @@ class TestIntegratedWindows:
     def test_the_panel_rule_actually_reaches_the_widget(self, panel, qt_app):
         from PySide6.QtGui import QPalette
 
-        from gui_qt.theme import apply_theme
+        from gui.theme import apply_theme
 
         # The panel is only styled if there IS a sheet: nothing applies one on
-        # the way to a ControlPanel, only gui_qt/app.py does.
+        # the way to a ControlPanel, only gui/app.py does.
         apply_theme(qt_app, "dark")
         panel.open_settings()
         _settle(qt_app)
@@ -3993,8 +3994,8 @@ class TestIntegratedWindows:
     def test_switching_style_saves_it_and_rebuilds_the_windows(
         self, qt_app, monkeypatch
     ):
-        import gui_qt.settings_window as sw
-        from gui_qt.settings_window import _STYLE_SEGMENTS
+        import gui.settings_window as sw
+        from gui.settings_window import _STYLE_SEGMENTS
 
         monkeypatch.setattr(sw, "save_settings", lambda s: None)
         p = _panel(monkeypatch)
@@ -4032,7 +4033,7 @@ class TestIntegratedWindows:
         import subprocess
 
         code = (
-            "import gui_qt.control_panel as cp\n"
+            "import gui.control_panel as cp\n"
             "from PySide6.QtWidgets import QApplication\n"
             "cp.save_settings = lambda s: None\n"
             "cp.activate_stored_keys = lambda: None\n"
@@ -4068,7 +4069,7 @@ class TestSessionTracking:
 
     @pytest.fixture
     def panel(self, qt_app, monkeypatch):
-        import gui_qt.control_panel as cp
+        import gui.control_panel as cp
 
         monkeypatch.setattr(cp, "save_settings", lambda s: None)
         monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
@@ -4190,7 +4191,7 @@ class TestSessionTracking:
 
     # -- inactivity guard -------------------------------------------------
     def test_idle_session_is_stopped(self, panel, monkeypatch):
-        import gui_qt.control_panel as cp
+        import gui.control_panel as cp
 
         p, controller, _calls = panel
         p._running = True
@@ -4202,7 +4203,7 @@ class TestSessionTracking:
         assert stopped == [True]
 
     def test_busy_session_is_left_alone(self, panel, monkeypatch):
-        import gui_qt.control_panel as cp
+        import gui.control_panel as cp
 
         p, controller, _calls = panel
         p._running = True
@@ -4214,7 +4215,7 @@ class TestSessionTracking:
         assert stopped == []
 
     def test_the_checkbox_actually_disables_it(self, panel, monkeypatch):
-        import gui_qt.control_panel as cp
+        import gui.control_panel as cp
 
         p, controller, _calls = panel
         p._running = True
@@ -4247,7 +4248,7 @@ class TestAutoStartOnLaunch:
 
     @staticmethod
     def _build(qt_app, monkeypatch, *, auto_start: bool):
-        import gui_qt.control_panel as cp
+        import gui.control_panel as cp
 
         monkeypatch.setattr(cp, "save_settings", lambda s: None)
         monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
@@ -4286,7 +4287,7 @@ class TestLiveStreamRestart:
 
     @pytest.fixture
     def panel(self, qt_app, monkeypatch):
-        import gui_qt.control_panel as cp
+        import gui.control_panel as cp
 
         monkeypatch.setattr(cp, "save_settings", lambda s: None)
         monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
@@ -4381,7 +4382,7 @@ class TestHistoryNarrowLayout:
 
     @pytest.fixture
     def history(self, qt_app, monkeypatch):
-        import gui_qt.history_window as hw
+        import gui.history_window as hw
 
         monkeypatch.setattr(hw, "list_history_sessions", list)
         window = hw.HistoryWindow(lambda key, fallback="": fallback)
@@ -4445,7 +4446,7 @@ class TestHistoryNarrowLayout:
                 assert corner.y() <= history.height()
 
     def test_an_in_app_panel_keeps_its_actions_reachable(self, qt_app, monkeypatch):
-        import gui_qt.history_window as hw
+        import gui.history_window as hw
 
         monkeypatch.setattr(hw, "list_history_sessions", list)
         panel = _panel(monkeypatch)
@@ -4478,7 +4479,7 @@ class TestBatchRunLock:
 
     @pytest.fixture
     def batch(self, qt_app):
-        import gui_qt.batch_window as bw
+        import gui.batch_window as bw
         from utils.settings import load_settings
 
         # No save_settings stub: the batch window is configured independently
@@ -4538,7 +4539,7 @@ class TestBatchFilePicker:
     "switch to All files" is not something an AV volunteer knows to do."""
 
     def test_it_offers_every_format_the_tk_picker_did(self):
-        from gui_qt.batch_window import _MEDIA_EXTENSIONS
+        from gui.batch_window import _MEDIA_EXTENSIONS
 
         tk_offered = {
             "wav", "mp3", "m4a", "aac", "flac", "ogg", "opus", "mp4", "mkv",
@@ -4547,7 +4548,7 @@ class TestBatchFilePicker:
         assert tk_offered <= set(_MEDIA_EXTENSIONS)
 
     def test_the_patterns_are_wildcards_qt_understands(self):
-        from gui_qt.batch_window import _MEDIA_EXTENSIONS
+        from gui.batch_window import _MEDIA_EXTENSIONS
 
         # Built into "*.ext *.ext" — a stray dot or space silently filters out
         # everything, which reads as "no media files in this folder".
@@ -4566,26 +4567,26 @@ class TestFontStacks:
     def test_every_requested_family_exists(self, qt_app):
         from PySide6.QtGui import QFontDatabase
 
-        from gui_qt.theme import app_families
+        from gui.theme import app_families
 
         missing = [f for f in app_families() if not QFontDatabase.hasFamily(f)]
         assert not missing, f"requesting fonts this machine lacks: {missing}"
 
     def test_the_application_font_is_the_platform_stack(self, qt_app):
-        from gui_qt.theme import app_families, apply_theme
+        from gui.theme import app_families, apply_theme
 
         apply_theme(qt_app, "light")
         assert qt_app.font().families() == app_families()
 
     def test_arabic_is_measured_with_a_family_that_has_arabic(self, qt_app):
-        from gui_qt.fonts import arabic_families, source_font, subtitle_font
+        from gui.fonts import arabic_families, source_font, subtitle_font
 
         arabic = "بل لا يشعرون"
         assert subtitle_font(40, text=arabic).families() == arabic_families()
         assert source_font(40, arabic).families() == arabic_families()
 
     def test_latin_keeps_the_interface_stack(self, qt_app):
-        from gui_qt.fonts import source_font, subtitle_font, ui_families
+        from gui.fonts import source_font, subtitle_font, ui_families
 
         german = "Vielmehr merken sie es nicht."
         assert subtitle_font(40, text=german).families() == ui_families()
@@ -4594,7 +4595,7 @@ class TestFontStacks:
     def test_an_honorific_does_not_make_a_german_line_arabic(self, qt_app):
         # ﷺ/ﷻ are Arabic-block code points the translator inserts into
         # otherwise-Latin lines; classing those as Arabic would restyle them.
-        from gui_qt.fonts import subtitle_font, ui_families
+        from gui.fonts import subtitle_font, ui_families
 
         assert subtitle_font(40, text="dass Allah ﷻ es sagt.").families() == (
             ui_families()
@@ -4615,7 +4616,7 @@ class TestFontStacks:
 
         from PySide6.QtGui import QFontDatabase
 
-        from gui_qt.theme import stylesheet
+        from gui.theme import stylesheet
 
         for family in re.findall(r"font-family:\s*(.+?);", stylesheet("dark")):
             for name in [n.strip().strip('"') for n in family.split(",")]:
@@ -4634,7 +4635,7 @@ class TestInkOverhang:
     def test_a_blocks_height_covers_the_ink_it_draws(self, overlay):
         from PySide6.QtGui import QFontMetrics
 
-        from gui_qt.fonts import subtitle_font
+        from gui.fonts import subtitle_font
 
         w = overlay(SUBTITLE_MODE_STATIC)
         for text in ("بل لا يشعرون أنه فتنة.", "Vielmehr merken sie es nicht."):
@@ -4648,14 +4649,105 @@ class TestInkOverhang:
         # The guard only engages where the metrics under-report, which no
         # Windows font does — so the wiring is pinned directly.
         w = overlay(SUBTITLE_MODE_STATIC)
-        from gui_qt.fonts import subtitle_font
-        from gui_qt.subtitle_window import SubtitleWindow
+        from gui.fonts import subtitle_font
+        from gui.subtitle_window import SubtitleWindow
 
         font = subtitle_font(40, text="Vielmehr merken sie es nicht.")
         monkeypatch.setattr(SubtitleWindow, "_ink", staticmethod(lambda t, f: (0, 0)))
         flat = w._layout_text("Vielmehr merken sie es nicht.", font)[1]
         monkeypatch.setattr(SubtitleWindow, "_ink", staticmethod(lambda t, f: (0, 12)))
         assert w._layout_text("Vielmehr merken sie es nicht.", font)[1] == flat + 12
+
+
+class TestPairInkGap:
+    """A source line and its translation are one utterance and have to read as
+    one. The join was closed at the top only — the translation's blank band —
+    and the source's UNUSED DESCENT was left in: Noto Sans Arabic reserves 35 px
+    of descent at 48 px text and an Arabic line draws 19 into it, so on Linux
+    the original floated 20 px above its translation where Segoe UI, whose
+    Arabic ink reaches its descent line exactly, put it at 4."""
+
+    @staticmethod
+    def _ink_gap(w, block) -> int:
+        """Distance from the source's lowest ink to the translation's highest."""
+        from PySide6.QtGui import QFontMetrics
+
+        trans_font, src_font = w._block_fonts(block)
+        fm_s, fm_t = QFontMetrics(src_font), QFontMetrics(trans_font)
+        source_h = w._measure(block.source, src_font)
+        source_ink_bottom = fm_s.ascent() + fm_s.tightBoundingRect(block.source).bottom()
+        trans_ink_top = (
+            source_h
+            + w._pair_gap(block)
+            + fm_t.ascent()
+            + fm_t.tightBoundingRect(block.translation).top()
+        )
+        return trans_ink_top - source_ink_bottom
+
+    def _block(self, w):
+        from gui.subtitle_window import Block
+
+        return Block(translation=PAIRS[0][0], source=PAIRS[0][1])
+
+    def test_a_reserved_descent_the_source_never_draws_into_is_closed(
+        self, overlay, monkeypatch
+    ):
+        # Forced, because no Windows font reserves one: Segoe UI's Arabic ink
+        # reaches its descent line, so the slack there is genuinely zero.
+        from gui.subtitle_window import SubtitleWindow
+
+        w = overlay(SUBTITLE_MODE_REALTIME, bilingual_mode=True)
+        block = self._block(w)
+        _trans, src_font = w._block_fonts(block)
+        here = SubtitleWindow._descent_slack(block.source, src_font)
+        before = w._pair_gap(block)
+        monkeypatch.setattr(
+            SubtitleWindow, "_descent_slack", staticmethod(lambda text, font: 16)
+        )
+        # Whatever this machine's own slack was, the gap moves by the difference.
+        assert w._pair_gap(block) == before + here - 16
+
+    def test_the_slack_is_what_the_font_reserves_and_does_not_use(self, overlay):
+        from PySide6.QtGui import QFontMetrics
+
+        from gui.fonts import source_font
+        from gui.subtitle_window import SubtitleWindow
+
+        overlay(SUBTITLE_MODE_STATIC)
+        text = PAIRS[0][1]
+        font = source_font(48, text)
+        fm = QFontMetrics(font)
+        expected = max(0, fm.descent() - fm.tightBoundingRect(text).bottom())
+        assert SubtitleWindow._descent_slack(text, font) == expected
+
+    def test_a_font_that_uses_its_whole_descent_is_left_alone(self, overlay):
+        # The Windows case: nothing about the layout changes where the ink
+        # already reaches the descent line.
+        from PySide6.QtGui import QFontMetrics
+
+        from gui.fonts import source_font
+        from gui.subtitle_window import SubtitleWindow
+
+        overlay(SUBTITLE_MODE_STATIC)
+        text = PAIRS[0][1]
+        font = source_font(48, text)
+        fm = QFontMetrics(font)
+        if fm.tightBoundingRect(text).bottom() >= fm.descent():
+            assert SubtitleWindow._descent_slack(text, font) == 0
+
+    def test_the_pair_ends_up_ink_to_ink(self, overlay):
+        """What the whole mechanism is for: the gap the constant names.
+
+        PAIR_GAP plus the clearance _reclaim holds back, and nothing else —
+        no font's reserved-but-unused space on either side of the join.
+        """
+        from gui.subtitle_window import _STACK_INK_GAP_EM, PAIR_GAP
+
+        w = overlay(SUBTITLE_MODE_REALTIME, bilingual_mode=True)
+        block = self._block(w)
+        _trans, src_font = w._block_fonts(block)
+        clearance = round(_STACK_INK_GAP_EM * src_font.pixelSize())
+        assert abs(self._ink_gap(w, block) - (PAIR_GAP + clearance)) <= 2
 
 
 class TestParagraphDirection:
@@ -4668,7 +4760,7 @@ class TestParagraphDirection:
 
     @staticmethod
     def _direction(w, text: str) -> str:
-        from gui_qt.fonts import subtitle_font
+        from gui.fonts import subtitle_font
 
         layout, _height = w._layout_text(text, subtitle_font(40, text=text))
         line = layout.lineAt(0)
@@ -4777,7 +4869,7 @@ class TestFeedEndsAtTheFooter:
         )
 
     def test_the_pills_keep_their_clearance(self, overlay):
-        from gui_qt.subtitle_window import FOOTER_MARGIN, PILL_CLEARANCE
+        from gui.subtitle_window import FOOTER_MARGIN, PILL_CLEARANCE
 
         w = overlay(SUBTITLE_MODE_STATIC, show_footer=True)
         # The Tk overlay reserves the pill, 10 px under it and 8 px above it;
@@ -4796,7 +4888,7 @@ class TestDropdownPopup:
     def test_the_style_refuses_the_platform_popup(self, qt_app):
         from PySide6.QtWidgets import QStyle
 
-        from gui_qt.theme import apply_theme
+        from gui.theme import apply_theme
 
         apply_theme(qt_app, "light")
         style = qt_app.style()
@@ -4806,8 +4898,8 @@ class TestDropdownPopup:
     def test_the_popup_is_a_plain_item_view(self, qt_app):
         from PySide6.QtWidgets import QListView
 
-        from gui_qt.theme import apply_theme
-        from gui_qt.widgets import Dropdown
+        from gui.theme import apply_theme
+        from gui.widgets import Dropdown
 
         apply_theme(qt_app, "light")
         combo = Dropdown(["Deutsch", "English"])
@@ -4830,9 +4922,9 @@ class TestAlwaysOnTopAcrossPlatforms:
     ):
         from PySide6.QtWidgets import QWidget
 
-        import gui_qt.widgets as widgets
+        import gui.widgets as widgets
 
-        monkeypatch.setattr(widgets, "_needs_remap", lambda: True)
+        monkeypatch.setattr(widgets, "needs_remap", lambda: True)
         window = QWidget()
         window.show()
         _settle(qt_app)
@@ -4854,9 +4946,9 @@ class TestAlwaysOnTopAcrossPlatforms:
     def test_a_hidden_window_is_not_shown_by_the_toggle(self, qt_app, monkeypatch):
         from PySide6.QtWidgets import QWidget
 
-        import gui_qt.widgets as widgets
+        import gui.widgets as widgets
 
-        monkeypatch.setattr(widgets, "_needs_remap", lambda: True)
+        monkeypatch.setattr(widgets, "needs_remap", lambda: True)
         window = QWidget()
         try:
             widgets.set_window_on_top(window, True)
@@ -4881,7 +4973,7 @@ class TestInterimTranscriptToggle:
             return ("interim", False)
 
     def _bridge(self, *, show_interim: bool):
-        from gui_qt.pipeline_bridge import PipelineBridge
+        from gui.pipeline_bridge import PipelineBridge
 
         bridge = PipelineBridge(self._Controller())
         bridge.start(streaming=True, show_interim=show_interim)
@@ -4910,7 +5002,7 @@ class TestInterimTranscriptToggle:
 
     def test_it_never_samples_a_segmented_session(self, qt_app):
         # Only a streaming pipeline has an in-progress transcript to sample.
-        from gui_qt.pipeline_bridge import PipelineBridge
+        from gui.pipeline_bridge import PipelineBridge
 
         bridge = PipelineBridge(self._Controller())
         bridge.start(streaming=False, show_interim=True)
@@ -5006,7 +5098,7 @@ class TestLiveLineDirection:
         # Deliberately NOT counted: a translation legitimately opens in one
         # script and quotes the other, and counting would flip a German
         # sentence carrying a long Arabic quotation.
-        from gui_qt.fonts import subtitle_font
+        from gui.fonts import subtitle_font
 
         w = overlay(SUBTITLE_MODE_STATIC)
         german = 'Er sagte: "وكل بدعة ضلالة وكل ضلالة في النار".'
@@ -5048,8 +5140,8 @@ class TestHonorificClearance:
             return QRect(0, -60, 40, 70)  # 60 above the baseline, 10 below
 
     def test_an_oversized_ligature_is_scaled_into_the_line(self, overlay):
-        from gui_qt.fonts import subtitle_font
-        from gui_qt.subtitle_window import SubtitleWindow
+        from gui.fonts import subtitle_font
+        from gui.subtitle_window import SubtitleWindow
 
         overlay(SUBTITLE_MODE_STATIC)  # an app + theme exist
         font = subtitle_font(51, text=self.OVERSIZED)
@@ -5064,8 +5156,8 @@ class TestHonorificClearance:
     def test_a_ligature_that_already_fits_is_left_alone(self, overlay):
         # The Windows case, and the point of the whole design: where the glyph
         # fits, nothing about the layout changes at all.
-        from gui_qt.fonts import subtitle_font
-        from gui_qt.subtitle_window import SubtitleWindow
+        from gui.fonts import subtitle_font
+        from gui.subtitle_window import SubtitleWindow
 
         overlay(SUBTITLE_MODE_STATIC)
         font = subtitle_font(51, text=self.OVERSIZED)
@@ -5080,8 +5172,8 @@ class TestHonorificClearance:
         # own ligatures need no scaling.
         from PySide6.QtGui import QTextCharFormat
 
-        from gui_qt.fonts import subtitle_font
-        from gui_qt.subtitle_window import SubtitleWindow
+        from gui.fonts import subtitle_font
+        from gui.subtitle_window import SubtitleWindow
 
         overlay(SUBTITLE_MODE_STATIC)
         monkeypatch.setattr(
@@ -5099,8 +5191,8 @@ class TestHonorificClearance:
     def test_a_honorific_does_not_change_the_paragraph_rhythm(self, overlay):
         """The regression that clamping caused: a translation carrying a
         ligature had its OWN rows spread apart to make room for it."""
-        from gui_qt.fonts import subtitle_font
-        from gui_qt.subtitle_window import SubtitleWindow
+        from gui.fonts import subtitle_font
+        from gui.subtitle_window import SubtitleWindow
 
         overlay(SUBTITLE_MODE_STATIC)
         plain = "dass Allah mit euch wetteifert."
@@ -5112,8 +5204,8 @@ class TestHonorificClearance:
     def test_a_line_without_one_is_measured_exactly_as_before(self, overlay):
         from PySide6.QtGui import QFontMetrics
 
-        from gui_qt.fonts import subtitle_font
-        from gui_qt.subtitle_window import _STACK_INK_GAP_EM, SubtitleWindow
+        from gui.fonts import subtitle_font
+        from gui.subtitle_window import _STACK_INK_GAP_EM, SubtitleWindow
 
         overlay(SUBTITLE_MODE_STATIC)
         text = "Vielmehr merken sie es nicht."
@@ -5160,15 +5252,15 @@ class TestHonorificClearance:
         """
         from PySide6.QtGui import QFontMetrics
 
-        from gui_qt.fonts import subtitle_font
-        from gui_qt.subtitle_window import SubtitleWindow
+        from gui.fonts import subtitle_font
+        from gui.subtitle_window import SubtitleWindow
 
         w = overlay(SUBTITLE_MODE_STATIC)
         font = subtitle_font(51, text=self.OVERSIZED)
         monkeypatch.setattr(
             SubtitleWindow, "_honorific_formats", staticmethod(self._oversized_run)
         )
-        # Bound first: a QTextLine borrows from its layout (gui_qt/AGENTS.md).
+        # Bound first: a QTextLine borrows from its layout (gui/AGENTS.md).
         layout, _height = w._layout_text(self.OVERSIZED, font)
         line = layout.lineAt(0)
         assert line.ascent() > QFontMetrics(font).ascent(), "the run is not tall"
@@ -5180,7 +5272,7 @@ class TestHonorificClearance:
     def test_a_line_of_one_font_keeps_its_box_top(self, overlay):
         # The correction is for borrowed metrics only: an ordinary line — every
         # line on Windows — is placed exactly where it always was.
-        from gui_qt.fonts import subtitle_font
+        from gui.fonts import subtitle_font
 
         w = overlay(SUBTITLE_MODE_STATIC)
         text = "Vielmehr merken sie es nicht."
@@ -5234,7 +5326,7 @@ class TestOverlayFitsTheScreen:
     def test_an_implausible_measurement_is_ignored(self, qt_app, overlay):
         from PySide6.QtCore import QPoint
 
-        from gui_qt.subtitle_window import MIN_FITTED_HEIGHT
+        from gui.subtitle_window import MIN_FITTED_HEIGHT
 
         w, g = self._placed(qt_app, overlay)
         height = w.height()
@@ -5253,6 +5345,52 @@ class TestOverlayFitsTheScreen:
         w._fit_to_screen()
         assert w.height() == 400
 
+    def test_a_refused_move_is_asked_for_again_unmapped(
+        self, qt_app, overlay, monkeypatch
+    ):
+        """The height slider's bug: the WM applied the size and not the move.
+
+        An X11 WM honours a position on the next map — the rule that also
+        governs _NET_WM_STATE_ABOVE — so the request is repeated with the
+        window unmapped rather than left as a window that shrank from its top.
+        """
+        from PySide6.QtCore import QPoint
+
+        import gui.subtitle_window as sw
+
+        w, g = self._placed(qt_app, overlay)
+        monkeypatch.setattr(sw, "needs_remap", lambda: True)
+        # The window manager's answer: the size, at the old position.
+        moved = QPoint(g.x(), g.y())
+        w.move(moved)
+        _settle(qt_app)
+        assert w.pos() == moved
+        w._fit_to_screen()
+        _settle(qt_app)
+        assert w.geometry() == w._requested, "the refused move was not re-made"
+        assert w.isVisible(), "the overlay was left unmapped"
+
+    def test_a_window_manager_that_will_not_comply_is_not_fought_forever(
+        self, qt_app, overlay, monkeypatch
+    ):
+        # One remap per placement: a WM that refuses again would otherwise
+        # flash the overlay on every check.
+        from PySide6.QtCore import QPoint
+
+        import gui.subtitle_window as sw
+
+        w, g = self._placed(qt_app, overlay)
+        monkeypatch.setattr(sw, "needs_remap", lambda: True)
+        remaps = []
+        monkeypatch.setattr(
+            sw.QWidget, "hide", lambda self: remaps.append(self.geometry())
+        )
+        monkeypatch.setattr(sw.QWidget, "show", lambda self: None)
+        w.move(QPoint(g.x(), g.y()))
+        w._fit_to_screen()
+        w._fit_to_screen()
+        assert len(remaps) == 1
+
     def test_every_placement_arms_the_check(self, overlay):
         # The answer only arrives once the WM has replied, so the read-back is
         # queued rather than done inside _apply_geometry.
@@ -5269,7 +5407,7 @@ class TestMacOsOverlayStacking:
     disclaimer pill — behind the Dock."""
 
     def test_macos_is_laid_out_inside_the_work_area(self, overlay, monkeypatch):
-        import gui_qt.subtitle_window as sw
+        import gui.subtitle_window as sw
 
         w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
         monkeypatch.setattr(sw, "_MACOS", True)
@@ -5283,7 +5421,7 @@ class TestMacOsOverlayStacking:
     ):
         # Windows and X11 paint a topmost overlay over the taskbar, and OBS
         # captures the whole frame because of it. Don't level that down.
-        import gui_qt.subtitle_window as sw
+        import gui.subtitle_window as sw
 
         w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
         monkeypatch.setattr(sw, "_MACOS", False)
@@ -5302,7 +5440,7 @@ class TestDropdownPopupPlacement:
         from PySide6.QtCore import QRect
         from PySide6.QtWidgets import QStyle, QStyleOptionComboBox
 
-        from gui_qt.theme import apply_theme
+        from gui.theme import apply_theme
 
         apply_theme(qt_app, "dark")
         option = QStyleOptionComboBox()
@@ -5321,7 +5459,7 @@ class TestDropdownPopupPlacement:
         from PySide6.QtCore import QRect
         from PySide6.QtWidgets import QProxyStyle, QStyle, QStyleOptionComboBox
 
-        from gui_qt.theme import _ControlStyle
+        from gui.theme import _ControlStyle
 
         over_the_box = QRect(10, -60, 300, 160)
 
@@ -5358,7 +5496,7 @@ class TestLinuxPlatformSetup:
     def test_x11_is_asked_for_before_wayland(self):
         # A Wayland client can neither place its own windows nor stay on top,
         # and the overlay is nothing but those two things.
-        from gui_qt.platform_setup import linux_environment
+        from gui.platform_setup import linux_environment
 
         assert linux_environment({})["QT_QPA_PLATFORM"] == "xcb;wayland"
 
@@ -5366,13 +5504,13 @@ class TestLinuxPlatformSetup:
         # "qt.text.font.db.warning=false" was the first attempt, and the lines
         # kept coming out on Ubuntu: a rule naming one severity silences
         # nothing if the messages carry another.
-        from gui_qt.platform_setup import linux_environment
+        from gui.platform_setup import linux_environment
 
         rules = linux_environment({})["QT_LOGGING_RULES"]
         assert rules == "qt.text.font.db=false"
 
     def test_an_operators_own_settings_are_left_alone(self):
-        from gui_qt.platform_setup import linux_environment
+        from gui.platform_setup import linux_environment
 
         env = {"QT_QPA_PLATFORM": "wayland", "QT_LOGGING_RULES": "*.debug=true"}
         assert linux_environment(env) == {}
@@ -5383,7 +5521,7 @@ class TestLinuxPlatformSetup:
     def test_no_other_platform_is_touched(self):
         import os
 
-        from gui_qt.platform_setup import prepare_qt_platform
+        from gui.platform_setup import prepare_qt_platform
 
         before = dict(os.environ)
         prepare_qt_platform()

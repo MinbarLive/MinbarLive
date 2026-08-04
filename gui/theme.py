@@ -27,8 +27,8 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QProxyStyle, QStyle
 
-from gui_qt.fonts import arabic_families, mono_families, ui_families
-from gui_qt.palette import palette
+from gui.fonts import arabic_families, mono_families, ui_families
+from gui.palette import palette
 
 # Indicator edge length in logical px, for both check boxes and radio buttons.
 _INDICATOR_PX = 20
@@ -72,7 +72,7 @@ def _css_families() -> str:
     which made Qt build its whole alias table hunting for it and then say so:
     "Populating font family aliases took 134 ms. Replace uses of missing font
     family "Sans-serif" with one that exists to avoid this cost." The stack in
-    front of it is already filtered to families this machine has (gui_qt/fonts.py).
+    front of it is already filtered to families this machine has (gui/fonts.py).
     """
     return ", ".join(f'"{f}"' for f in app_families())
 
@@ -81,7 +81,7 @@ def _css_mono_families() -> str:
     """The log panel's monospace stack as a CSS ``font-family`` value.
 
     Same rule, same reason: no ``monospace`` tail, and the families come from
-    gui_qt/fonts.py so a Windows name is not asked for on a Mac.
+    gui/fonts.py so a Windows name is not asked for on a Mac.
     """
     return ", ".join(f'"{f}"' for f in mono_families())
 
@@ -250,7 +250,7 @@ def stylesheet(theme_mode: str) -> str:
    apply_theme(). A stylesheet "font-size: Npx" leaves QFont.pointSize() at -1,
    and QComboBox::showPopup feeds the combo's point size straight back into
    QFont::setPointSize, which warns on every dropdown open. */
-/* The family list is this platform's, from gui_qt/fonts.py: naming families
+/* The family list is this platform's, from gui/fonts.py: naming families
    that do not exist here makes Qt build its alias table on the first layout
    and print "Replace uses of missing font family ..." for the privilege. */
 QWidget {{
@@ -258,7 +258,7 @@ QWidget {{
     font-family: {_css_families()};
 }}
 QMainWindow, QDialog, QMessageBox {{ background-color: {c["app_bg"]}; }}
-/* A secondary window presented as an in-app panel (gui_qt/modal_host.py). It
+/* A secondary window presented as an in-app panel (gui/modal_host.py). It
    has no titlebar there, so it needs an edge of its own to read as a panel
    sitting ON the dimmed app rather than a hole cut into it.
    The edge is drawn by the surface BEHIND the panel, not by the panel: a
@@ -303,7 +303,7 @@ QLabel#card_symbol {{
     font-weight: 700;
 }}
 QLabel#card_arrow {{ color: {c["muted"]}; font-size: 17px; }}
-/* Severity glyph of a themed message dialog (gui_qt/dialogs.py) — the same
+/* Severity glyph of a themed message dialog (gui/dialogs.py) — the same
    tile as a card's symbol, tinted by what the dialog is saying. The colours
    come after the shared block so they win on equal specificity. */
 QLabel#dialog_icon_info, QLabel#dialog_icon_warn, QLabel#dialog_icon_error {{
@@ -459,7 +459,7 @@ QComboBox:disabled, QLineEdit:disabled {{ color: {c["muted"]}; }}
    the "1998" frame. Flattening it removes the arrow along with the bevel, and
    the usual CSS replacement (a zero-sized box with transparent side borders)
    degenerates to a filled rectangle under a QProxyStyle. So the chevron is
-   painted by ``gui_qt.widgets.Dropdown`` instead; here it is only suppressed. */
+   painted by ``gui.widgets.Dropdown`` instead; here it is only suppressed. */
 QComboBox::drop-down {{
     subcontrol-origin: padding;
     subcontrol-position: center right;
@@ -636,7 +636,7 @@ def _apply_app_font(app) -> None:
     combo boxes.
     """
     font = app.font()
-    # Per platform, and filtered to what is installed (gui_qt/fonts.py). The
+    # Per platform, and filtered to what is installed (gui/fonts.py). The
     # symbol family trails the text ones as a glyph fallback: the field
     # captions and card badges carry symbols (▣ ◉ ⌁ ⇶ ≋) the text families do
     # not cover, and Qt substitutes per character rather than per label.

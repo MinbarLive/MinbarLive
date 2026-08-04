@@ -97,29 +97,12 @@ def test_legacy_fallback_is_best_effort(monkeypatch):
     user32.SetProcessDPIAware.assert_called_once_with()
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows DPI API only")
-def test_main_bootstrap_is_per_monitor_aware_in_fresh_process():
-    """The real entry point must set DPI awareness before any Tk HWND exists."""
-
-    probe = """
-import ctypes
-import main
-
-user32 = ctypes.windll.user32
-user32.GetThreadDpiAwarenessContext.restype = ctypes.c_void_p
-user32.GetAwarenessFromDpiAwarenessContext.argtypes = [ctypes.c_void_p]
-user32.GetAwarenessFromDpiAwarenessContext.restype = ctypes.c_int
-context = user32.GetThreadDpiAwarenessContext()
-print(user32.GetAwarenessFromDpiAwarenessContext(context))
-"""
-    completed = subprocess.run(
-        [sys.executable, "-c", probe],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.stdout.strip() == "2"
+# There is no bootstrap test any more: main.py deliberately does NOT call
+# enable_windows_dpi_awareness. Qt asks for the per-monitor-aware-v2 context
+# itself when the QApplication is built, and warns "SetProcessDpiAwarenessContext()
+# failed: Access is denied." if the process was marked aware first — so calling
+# it at import took the setting away from Qt. The frozen EXE gets its awareness
+# from MinbarLive.manifest. The helper below is still exercised directly.
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows DPI API only")

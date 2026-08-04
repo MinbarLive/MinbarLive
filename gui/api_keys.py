@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from gui_qt.dialogs import show_message
+from gui.dialogs import show_message
 from providers import (
     PROVIDER_CHOICES,
     get_key_placeholder,

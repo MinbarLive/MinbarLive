@@ -5,7 +5,7 @@ Shared project context for AI coding agents and new contributors. Committed and 
 - Personal working agreement for the maintainer's sessions: `CLAUDE.md` (local, gitignored).
 - Current branch state and next steps: `.claude/HANDOFF.md` (local, not auto-loaded).
 - Session-by-session history: `.claude/DEVLOG.md` (local, not auto-loaded).
-- Directory-scoped rules: [gui/AGENTS.md](gui/AGENTS.md), [gui_qt/AGENTS.md](gui_qt/AGENTS.md).
+- Directory-scoped rules: [gui/AGENTS.md](gui/AGENTS.md), [gui/AGENTS.md](gui/AGENTS.md).
 - Step-by-step procedures live as skills in [.claude/skills/](.claude/skills/).
 
 ---
@@ -28,7 +28,7 @@ audience-facing phone app. That distinction drives most product decisions below.
 ## Tech Stack
 
 - **Language:** Python 3.10+
-- **GUI:** CustomTkinter (`gui/`, shipped) — PySide6/Qt (`gui_qt/`, migration in progress, issue #44)
+- **GUI:** PySide6/Qt (`gui/`) — the CustomTkinter tree it replaced is gone (issue #44)
 - **Audio:** `sounddevice` + ring buffer, webrtcvad noise gate, WAV segment writing
 - **RAG:** in-memory cosine similarity over precomputed Quran verse embeddings — no vector DB
 - **Packaging:** PyInstaller (`MinbarLive.spec` → Windows EXE, Linux AppImage, macOS .app)
@@ -94,8 +94,7 @@ with inline comments. Read them there — they are not duplicated in this file.
 | `providers/__init__.py` | Provider factories driven by the `ai_provider` setting |
 | `providers/<id>/` | Per-provider implementations — the only place importing each SDK |
 | `batch/` | File/batch processing: `processor.py`, `srt_writer.py`, `text_writer.py` |
-| `gui/` | CustomTkinter tree (shipped) — see [gui/AGENTS.md](gui/AGENTS.md) |
-| `gui_qt/` | PySide6 tree (migration) — see [gui_qt/AGENTS.md](gui_qt/AGENTS.md) |
+| `gui/` | PySide6 tree, the only GUI — see [gui/AGENTS.md](gui/AGENTS.md) |
 | `utils/settings.py` | User-preferences dataclass, model lists, fallback chains, `GUI_LANGUAGES` |
 | `utils/keyring_storage.py` | OS keychain integration |
 | `utils/api_key_manager.py` | API key prompting and storage |
@@ -152,7 +151,7 @@ ruff check .                            # lint
 pyinstaller MinbarLive.spec             # Windows EXE
 ```
 
-Qt work needs the venv — `./venv/Scripts/python.exe`, see [gui_qt/AGENTS.md](gui_qt/AGENTS.md).
+Qt work needs the venv — `./venv/Scripts/python.exe`, see [gui/AGENTS.md](gui/AGENTS.md).
 
 Test conventions:
 
@@ -207,10 +206,10 @@ Do not revisit without a new explicit decision.
 | Streaming (`openai_realtime`) is the shipped transcription default | Same measurement. Chunk and semantic both stay as the *segmented* strategies (chunk is the segmented default; semantic's sentence heuristics are Arabic-tuned) — don't remove either |
 | **API keys are NEVER written to disk** (2026-07-29, PR #43) | Supersedes the earlier "OpenAI-only plaintext fallback" exception. No keychain ⇒ session-only for every provider; a legacy plaintext key is migrated into the keychain or deleted. `has_insecure_key_fallback()` was deleted — don't reintroduce a caller |
 | Integrated window style is Windows-only **in `gui/`**; `windowed` is what that tree falls back to (2026-07-25, PR #25) | X11 without a compositor ignores per-window alpha, so the dim backdrop renders solid black and borderless panels don't stack. Gated in `_use_integrated_windows()` |
-| **`integrated` is the default window style** (2026-08-04) | Maintainer's call after using the Qt panels. Applies to new installs only — `save_settings` writes `window_style` out, so an existing `settings.json` keeps its value. `gui/` still gates it to Windows at use time; `gui_qt/` offers it everywhere, because its panels are child widgets and the dim is painted into the control panel's own back buffer, so nothing is asked of the window manager |
+| **`integrated` is the default window style** (2026-08-04) | Maintainer's call after using the Qt panels. Applies to new installs only — `save_settings` writes `window_style` out, so an existing `settings.json` keeps its value. `gui/` still gates it to Windows at use time; `gui/` offers it everywhere, because its panels are child widgets and the dim is painted into the control panel's own back buffer, so nothing is asked of the window manager |
 | Window behaviour is two 3-way selectors, not four checkboxes (2026-07-24, PR #22) | `subtitle_hide_mode` (never/stopped/always) and `always_on_top_mode` (never/running/always) replace the old booleans; old values migrate on load |
 | Qt migration uses QtWidgets only — no QML (2026-07-30, #44) | The Phase 0 spike hit 60 fps, per-pixel alpha and correct Arabic with plain `QWidget`/`QPainter`. QtQuick needs `PySide6-Addons` (634 MB) and is a second language for contributors |
 | Qt keeps the Tk control arrangement (2026-07-30, #44) | Segmented buttons for themes and both 3-way selectors, −/+ steppers for font size and scroll speed, slider only for height. Don't swap in dropdowns |
 | Qt subtitle backdrop defaults to opacity 75 (alpha 190/255) (2026-07-30, #44) | Reviewed against live video and chosen. Adjustable 0–100; a test pins the default. The control exists to adjust it, not to replace the decision |
-| **The Qt tree asks for X11 (xcb) before Wayland on Linux** (2026-08-04, #44) | A Wayland client cannot position its own windows and has no always-on-top protocol — the subtitle overlay is exactly those two things, and under Wayland the compositor centred it and the always-on-top setting did nothing. `gui_qt/platform_setup.py` sets `QT_QPA_PLATFORM=xcb;wayland` (fallback kept, so a session without XWayland still starts); an explicit `QT_QPA_PLATFORM` always wins. The plugin that loaded is logged at startup |
+| **The Qt tree asks for X11 (xcb) before Wayland on Linux** (2026-08-04, #44) | A Wayland client cannot position its own windows and has no always-on-top protocol — the subtitle overlay is exactly those two things, and under Wayland the compositor centred it and the always-on-top setting did nothing. `gui/platform_setup.py` sets `QT_QPA_PLATFORM=xcb;wayland` (fallback kept, so a session without XWayland still starts); an explicit `QT_QPA_PLATFORM` always wins. The plugin that loaded is logged at startup |
 | **Don't cut over to Qt before Linux/macOS verification** (2026-07-30, #44) | The migration exists to fix issues #35/#39, which are Linux/macOS bugs — and no Qt code has ever run there. Deleting the working Tk tree first would be reckless |

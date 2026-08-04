@@ -15,10 +15,10 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from gui_qt.control_panel import ControlPanel
-from gui_qt.icons import app_icon
-from gui_qt.onboarding import run_onboarding
-from gui_qt.theme import apply_theme
+from gui.control_panel import ControlPanel
+from gui.icons import app_icon
+from gui.onboarding import run_onboarding
+from gui.theme import apply_theme
 from utils.logging import log
 from utils.settings import load_settings
 
@@ -31,7 +31,7 @@ def run(controller) -> int:
     app.setApplicationName("MinbarLive")
     # Which platform plugin actually loaded decides what the overlay can do:
     # under Wayland a window cannot be positioned or kept on top at all
-    # (gui_qt/platform_setup.py asks for xcb first because of it), so a bug
+    # (gui/platform_setup.py asks for xcb first because of it), so a bug
     # report about either has to start here.
     platform = app.platformName()
     log(f"Qt platform plugin: {platform}", level="INFO")

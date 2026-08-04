@@ -7,7 +7,7 @@ Three windows that differ by 40 px of width read as three unrelated dialogs
 rather than one app.
 
 The height cap is the smallest of :data:`SECONDARY_MAX_H`, a share of the
-screen, and the room an in-app host has (see ``gui_qt/modal_host.py``, which
+screen, and the room an in-app host has (see ``gui/modal_host.py``, which
 sets ``window.host_max_size``). Past it the cards scroll rather than the
 action bar being pushed off the bottom.
 """

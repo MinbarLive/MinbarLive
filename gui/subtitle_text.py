@@ -1,6 +1,6 @@
 """Subtitle text that is not a widget: the footer wording and the block splitter.
 
-Toolkit-free on purpose (see ``gui_qt/levels.py``). Both overlays need these,
+Toolkit-free on purpose (see ``gui/levels.py``). Both overlays need these,
 and importing them from ``gui/subtitle_window.py`` — a 2,800-line tkinter
 module — pulled Tk into the Qt process for two constants and one function.
 """

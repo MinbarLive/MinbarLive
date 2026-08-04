@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from config import AUTO_STOP_INACTIVITY_SECONDS, ICON_PATH_PNG, ICON_PATH_PNG_ON_DARK
+from gui.api_keys import activate_stored_keys, ensure_keys
 from gui.control_state import (
     STRATEGY_IDS,
     apply_strategy,
@@ -55,15 +56,14 @@ from gui.device_list import (
     get_input_devices,
     loopback_supported,
 )
-from gui_qt.api_keys import activate_stored_keys, ensure_keys
-from gui_qt.dialogs import show_message
-from gui_qt.i18n import load_gui_translations
-from gui_qt.icons import app_icon
-from gui_qt.modal_host import ModalHost
-from gui_qt.pipeline_bridge import PipelineBridge, streaming_enabled
-from gui_qt.subtitle_window import SubtitleWindow
-from gui_qt.theme import current_colors
-from gui_qt.widgets import (
+from gui.dialogs import show_message
+from gui.i18n import load_gui_translations
+from gui.icons import app_icon
+from gui.modal_host import ModalHost
+from gui.pipeline_bridge import PipelineBridge, streaming_enabled
+from gui.subtitle_window import SubtitleWindow
+from gui.theme import current_colors
+from gui.widgets import (
     CONTROL_H,
     AudioLevelBar,
     Card,
@@ -332,7 +332,7 @@ class ControlPanel(QMainWindow):
     def _apply_window_icon(self) -> None:
         """Taskbar + title-bar icon. Set on the window as well as on the
         QApplication so the two can never disagree — both come from the one
-        cached QIcon, built from the logo's mark (see gui_qt/icons.py)."""
+        cached QIcon, built from the logo's mark (see gui/icons.py)."""
         icon = app_icon()
         if icon is not None:
             self.setWindowIcon(icon)
@@ -381,7 +381,7 @@ class ControlPanel(QMainWindow):
 
         # Between the header and the cards, as in the Tk panel. Hidden unless
         # the check finds a release newer than the running version.
-        from gui_qt.update_banner import UpdateBanner
+        from gui.update_banner import UpdateBanner
 
         self.update_banner = UpdateBanner(self._t)
         side.addWidget(self.update_banner)
@@ -1889,7 +1889,7 @@ class ControlPanel(QMainWindow):
 
         Unlike the Tk tree there is no platform gate: the Qt host presents
         panels as child widgets and paints the dim itself, so it needs nothing
-        from the window manager (see gui_qt/modal_host.py).
+        from the window manager (see gui/modal_host.py).
         """
         return self.settings.window_style == "integrated"
 
@@ -2058,7 +2058,7 @@ class ControlPanel(QMainWindow):
         # diverge, and dark-theme text on a light card is invisible.
         colors = current_colors()
         if snapshot is not None:
-            from gui_qt.levels import level_fill
+            from gui.levels import level_fill
 
             value = level_fill(snapshot.rms_dbfs)
             self.level_bar.set_value(value)
@@ -2133,7 +2133,7 @@ class ControlPanel(QMainWindow):
             self.bring_to_front(existing)
             return
         self._replace_secondary("_settings_window")
-        from gui_qt.settings_window import SettingsWindow
+        from gui.settings_window import SettingsWindow
 
         self._settings_window = SettingsWindow(self)
         self._show_secondary(self._settings_window)
@@ -2147,7 +2147,7 @@ class ControlPanel(QMainWindow):
             self.bring_to_front(existing)
             return
         self._replace_secondary("_history_window")
-        from gui_qt.history_window import HistoryWindow
+        from gui.history_window import HistoryWindow
 
         self._history_window = HistoryWindow(self._t, self, initial_tab=initial_tab)
         self._show_secondary(self._history_window)
@@ -2160,7 +2160,7 @@ class ControlPanel(QMainWindow):
             self.bring_to_front(existing)
             return
         self._replace_secondary("_batch_window")
-        from gui_qt.batch_window import BatchWindow
+        from gui.batch_window import BatchWindow
 
         self._batch_window = BatchWindow(self._t, self.settings, self)
         self._show_secondary(self._batch_window)
@@ -2178,7 +2178,7 @@ class ControlPanel(QMainWindow):
                 # backdrop, no ✕ and wherever it last sat.
                 self._show_secondary(existing)
             return
-        from gui_qt.announce_window import AnnounceWindow
+        from gui.announce_window import AnnounceWindow
 
         self._announce_window = AnnounceWindow(self._t, self.settings, self)
         self._show_secondary(self._announce_window)
@@ -2186,7 +2186,7 @@ class ControlPanel(QMainWindow):
     def apply_theme_mode(self, theme_mode: str) -> None:
         """Re-theme the whole application — one stylesheet call, where the Tk
         tree walks per-widget registries to recolour every widget by hand."""
-        from gui_qt.theme import apply_theme
+        from gui.theme import apply_theme
 
         apply_theme(QApplication.instance(), theme_mode)
         self.level_bar.update()

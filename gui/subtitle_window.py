@@ -1,277 +1,161 @@
-"""Dedicated subtitle window (full-screen) for displaying translations."""
+"""Subtitle overlay (Qt) — the audience-facing window.
+
+Port of ``gui/subtitle_window.py``. The behaviour is intended to match; what
+changes is how much machinery it takes, and three whole classes of bug that
+stop being possible:
+
+* **No text shaping layer.** ``_reshape_rtl`` and its ``_TK_HANDLES_ARABIC`` /
+  ``_TK_SHAPES_ARABIC`` platform branches are gone: logical text goes straight
+  to Qt, which shapes and bidi-orders it with HarfBuzz everywhere.
+* **No manual line wrapping.** The Tk version wrapped text itself, and wrapping
+  *shaped* text is what put the end of an RTL sentence on the first line. Qt
+  still breaks every line here — ``QTextLayout`` wraps after shaping — this
+  module only chooses where each finished line SITS.
+
+Ink measurement, on the other hand, had to come back. An earlier pass dropped
+``_stack_overlap`` on the grounds that ``QFontMetrics.lineSpacing()`` is a real
+baseline rhythm and therefore the correct model. It is a real rhythm, but a
+looser one than the overlay had: Segoe UI's line spacing is ~1.33 em, of which
+~0.29 em is blank band above the cap height, and against the Tk overlay
+side by side the Qt one read as double-spaced (wrapped lines, bilingual pairs
+and the gaps between blocks alike). ``_reclaim`` closes that band back up, on
+the same measured terms Tk used — see it for why the figure is per-script.
+
+Transparency is genuine per-pixel alpha, not the ``-transparentcolor`` green
+chroma key, so anti-aliased glyph edges no longer fringe over video and no
+colour is forbidden in subtitle text.
+"""
 
 from __future__ import annotations
 
-import os
 import re
 import sys
-import tkinter as tk
-from dataclasses import dataclass
-from screeninfo import get_monitors
+import unicodedata
+from dataclasses import dataclass, field
 
-_WHITESPACE_RE = re.compile(r"\s+")
-
-try:
-    import arabic_reshaper
-    from bidi.algorithm import get_display as bidi_get_display
-
-    _ARABIC_SUPPORT = True
-except ImportError:
-    _ARABIC_SUPPORT = False
-
-# Arabic-block codepoints that survive reshaping (؟ ، ؛ ٪ and Arabic-Indic
-# digits have no presentation forms; reshaped letters become U+FBxx/FExx).
-_ARABIC_BLOCK_RE = re.compile(r"[؀-ۿݐ-ݿࢠ-ࣿ]")
-# Windows Tk (GDI/Uniscribe) runs its own Arabic bidi+shaping pass over any
-# string still containing Arabic-block codepoints. Pure presentation-form
-# strings don't trigger it — that's why the reshape+bidi pipeline normally
-# renders correctly here.
-_TK_HANDLES_ARABIC = sys.platform == "win32"
-# macOS Tk draws EVERY string through CoreText: tkMacOSXFont.c builds an
-# NSAttributedString and lays it out with CTTypesetterCreateWithAttributedString
-# — no paragraph style, no kCTTypesetterOptionForcedEmbeddingLevel — so the full
-# bidi algorithm and contextual shaping always run, including over the
-# presentation forms arabic_reshaper emits (those are strong RTL too). Handing
-# CoreText our already-visual string therefore reorders it a second time: the
-# reversed, disconnected Arabic reported on macOS in both the overlay and the
-# control panel's dropdowns. Unlike Windows this is unconditional — there is no
-# "safe" pre-shaped case to keep — so macOS always gets the logical text.
-_TK_SHAPES_ARABIC = sys.platform == "darwin"
-
-
-def _reshape_rtl(text: str) -> str:
-    """Reshape and apply bidi algorithm to Arabic/RTL text for correct rendering.
-
-    Tkinter does not natively handle Arabic text shaping or RTL direction
-    on all platforms, so we pre-process the text with arabic-reshaper and
-    python-bidi before passing it to the canvas. Non-Arabic text is
-    returned unchanged.
-    """
-    if _TK_SHAPES_ARABIC or not _ARABIC_SUPPORT:
-        return text
-    try:
-        reshaped = arabic_reshaper.reshape(text)
-        visual = bidi_get_display(reshaped)
-    except Exception as exc:
-        # A silent fallback renders Arabic reversed with disconnected
-        # letters — make the cause visible so it can be diagnosed.
-        try:
-            from utils.logging import log
-
-            log(f"RTL reshaping failed, rendering raw text: {exc}", level="WARNING")
-        except Exception:
-            pass
-        return text
-    if _TK_HANDLES_ARABIC and _ARABIC_BLOCK_RE.search(visual):
-        # ؟ ، ؛ or Arabic digits survived reshaping: their presence makes
-        # Windows Tk re-run bidi over our already-visual string, reversing
-        # it back to logical order with disconnected letters (the "breaks
-        # only with ؟/!" bug). Tk renders the plain logical text correctly
-        # on its own in exactly these cases — hand it the original text.
-        return text
-    return visual
-
-
-if _ARABIC_SUPPORT:
-    # Warm up the reshaper's lazy config load at import time, so the first
-    # rendered Arabic line pays no first-call cost (and any init failure
-    # surfaces here, once, instead of on live subtitles).
-    _reshape_rtl("تهيئة")
-
-
-# Public alias so other GUI widgets (gui/dropdown.py) can reuse the same
-# per-platform RTL shaping without importing a private name.
-reshape_rtl = _reshape_rtl
-
+from PySide6.QtCore import QPointF, QRect, Qt, QTimer
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QFontMetricsF,
+    QGuiApplication,
+    QPainter,
+    QPainterPath,
+    QTextCharFormat,
+    QTextLayout,
+    QTextOption,
+)
+from PySide6.QtWidgets import QWidget
 
 from config import (
-    ICON_PATH,
-    ICON_PATH_PNG,
-    LINE_SPACING,
-    MARGIN_BOTTOM,
     REALTIME_BLOCK_SPACING,
     REALTIME_LIVE_MAX_ROWS,
     REALTIME_MAX_BLOCK_CHARS,
 )
-from utils.icons import ICO_SUPPORTED, scaled_icon_photo
+from gui.fonts import is_arabic_text, source_font, subtitle_font
+from gui.palette import palette
+from gui.widgets import is_window_on_top, needs_remap, set_window_on_top
+from utils.logging import log
 from utils.settings import (
+    BACKDROP_OPACITY_MAX,
+    BACKDROP_OPACITY_MIN,
+    DEFAULT_BACKDROP_OPACITY,
     SUBTITLE_MODE_CONTINUOUS,
     SUBTITLE_MODE_REALTIME,
     SUBTITLE_MODE_STATIC,
 )
 
-# The footer wording and the block splitter live in gui_qt/subtitle_text.py,
-# which imports no GUI toolkit, so the Qt overlay can share them without
-# pulling this tkinter module into a process that has no Tk in it. Re-exported
-# because this module's callers and tests import them from here.
-from gui_qt.subtitle_text import (  # noqa: E402, F401 - re-exported
-    DEFAULT_FOOTER,
-    FOOTER_TRANSLATIONS,
-    split_display_chunks,
-)
+# Gap between the source line and its translation inside one block, ON TOP of
+# whatever _reclaim closes up. They are one utterance and have to read as one:
+# in the Tk overlay the Arabic sits almost on its translation, and anything
+# more here separated them into two unrelated lines.
+PAIR_GAP = 2
 
-# Any Arabic-script character, incl. the presentation forms the reshaper
-# emits — checked on rendered text to pick the source/live-line font.
-_ARABIC_ANY_RE = re.compile(
-    r"[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]"
-)
+# Ink that must remain between two stacked lines, so they never actually touch.
+# Tuned against the Tk overlay side by side: it is the only thing standing
+# between "one utterance" and "two lines that happen to be near each other".
+_STACK_INK_GAP_EM = 0.04
 
-# Ink classification for _stack_overlap. Deliberately biased LOOSE: the
-# classes reserve more headroom than the ink probe measured, so a wrong
-# guess can only widen the gap, never let letters touch.
-# Capital letters with diacritics (Ä Ü Š İ Ç …) reach well above plain caps.
-_TALL_DIACRITIC_RE = re.compile(r"[À-ÖØ-ÞĀ-ɏ̀-ͯ]")
-
-# How high a line's tallest ink reaches above the baseline, as a fraction of
-# the font's em — one value per ink class. Ink-probe measured on Segoe UI at
-# 64pt (2026-07-15); cap height is ~0.70 em across sans families, so these
-# travel between fonts. What does NOT travel is the blank space above the
-# ink, which is (font ascent − ink top) and therefore font-specific: Segoe UI
-# has an unusually deep ascent (1.07 em), Arial/Helvetica-class fonts 0.90 em.
-# That is why _stack_overlap measures the ascent instead of assuming it.
-# A -topmost Tk window on macOS sits at kCGUtilityWindowLevel, which is BELOW
-# the Dock (kCGDockWindowLevel) and the menu bar (tkMacOSXWm.c) — unlike
-# Windows, where a topmost overlay paints over the taskbar. Covering the whole
-# screen there only hides the overlay's own edges: the disclaimer pill ends up
-# behind the Dock. So on macOS the overlay is laid out inside the usable area
-# instead. The menu bar is always the top inset and the Dock takes the rest
-# (bottom — or a side, in which case the usable *width* shrinks and the whole
-# height loss is the menu bar). Only the menu bar's exact height has to be
-# assumed: 24 pt classic, 25 pt since Big Sur, taller on notched displays.
-# Being a few pixels out just shifts the overlay; it can never push content
-# back under the Dock. A Dock on the LEFT is not distinguishable from one on
-# the right, so the overlay keeps the monitor's left edge either way.
-_MACOS_MENU_BAR_HEIGHT = 25
-
-
-def _macos_work_area(
-    monitor: tuple[int, int, int, int],
-    usable: tuple[int, int] | None,
-    menu_bar_height: int = _MACOS_MENU_BAR_HEIGHT,
-) -> tuple[int, int, int, int]:
-    """Fit a monitor rectangle into the usable size macOS reports for it."""
-    if usable is None:
-        return monitor
-    x, y, width, height = monitor
-    usable_w = max(1, min(usable[0], width))
-    usable_h = max(1, min(usable[1], height))
-    top = min(menu_bar_height, height - usable_h)
-    return (x, y + top, usable_w, usable_h)
-
-
-_INK_TOP_EM_ARABIC = 1.05  # marks reach the ascent line
-_INK_TOP_EM_TALL_DIACRITIC = 0.86
-_INK_TOP_EM_PLAIN = 0.70  # cap height
-# Visual gap kept between the two ink edges.
-_STACK_INK_GAP_EM = 0.09
-# The Allah honorifics the translator inserts into TARGET-language lines
-# (Allah ﷻ, Muhammad ﷺ) are Arabic presentation-form ligatures but render
-# within plain Latin ink bounds (probed 33/30px vs plain text 35px below the
-# box top at 64pt) — they must not push a German line into the loose Arabic
-# headroom class.
+# Honorific ligatures (ﷺ, ﷻ). Excluded when measuring how tall a line's ink is:
+# they are far taller than the script around them, and one of them in a line of
+# German would otherwise widen the gap above the WHOLE line — the honorific
+# would visibly push its own paragraph away from the one above it. Letting the
+# ligature sit a little closer is the lesser evil, and it is the same trade the
+# Tk overlay makes (gui/subtitle_window.py _HONORIFIC_LIGATURE_RE).
 _HONORIFIC_LIGATURE_RE = re.compile(r"[ﷺﷻ]")
+# Distance from the window's bottom edge to the footer pill, and between pills.
+FOOTER_MARGIN = 18
+# Clearance kept between the lowest subtitle line and the topmost pill. The Tk
+# overlay reserves the same 8 px (_draw_canvas_footer). Without it the feed,
+# which is anchored to the bottom of the content area, lands its last line
+# directly on the disclaimer.
+PILL_CLEARANCE = 8
+# Pill text size. Fixed, never derived from the subtitle size: the Tk overlay
+# draws its footer at a constant 14pt bold, which is ~19 logical px at 96 DPI.
+PILL_FONT_PX = 19
+PILL_GAP = 12
+# Side margin as a fraction of window width, so a line never runs edge to edge.
+SIDE_MARGIN_RATIO = 0.06
+# Continuous mode advances by this many pixels per frame at speed 1.0.
+SCROLL_PIXELS_PER_FRAME = 1.0
+FRAME_MS = 16
+
+# A window manager can grant a different rectangle than the one asked for. An
+# X11 WM may honour the requested SIZE but not the requested POSITION — GNOME
+# keeps a frameless window clear of its top bar and dock — and a full-monitor
+# overlay pushed down by that much loses its bottom strip, which is where the
+# disclaimer pill lives, off the bottom of the screen. What was granted is
+# only knowable once the WM has replied, so it is read back shortly after each
+# placement rather than in _apply_geometry, exactly as the Tk overlay does it
+# (gui/subtitle_window.py _fit_geometry_to_monitor).
+#
+# This cannot rescue a Wayland session: there a client is not told where it
+# was put, and the position Qt reports back is the one we asked for.
+GEOMETRY_FIT_MS = 250
+# Floors for that repair: below these the measurement is likelier to be wrong
+# than the window, and a sliver of an overlay helps nobody.
+MIN_FITTED_WIDTH = 240
+MIN_FITTED_HEIGHT = 120
+
+# Realtime feed: a new block moves the feed's TARGET, and the visible offset
+# eases toward it instead of jumping a whole block's height the instant the
+# translation lands. The Tk overlay's figures (LIVE_FEED_ANIM_* in
+# gui/subtitle_window.py), which were tuned on real sessions.
+FEED_ANIM_FRAME_MS = 30
+FEED_ANIM_EASE = 0.3  # fraction of the remaining gap closed per frame
+FEED_ANIM_MIN_STEP = 2.0  # px/frame floor, or the tail of a slide crawls
+FEED_ANIM_SNAP_PX = 1.0  # within this, land on the target and stop
 
 
-# Continuous scroll settings
-SCROLL_INTERVAL_MS = 30  # Milliseconds between scroll updates (~33 fps)
-
-# Live (in-progress) transcript line: runaway guard only — how much of the
-# line is actually visible is decided by REALTIME_LIVE_MAX_ROWS when the text
-# is wrapped in _render_live_line. This has to stay well above one utterance's
-# worth of text: it slides forward word by word, which shifts every wrap
-# boundary with it, so once it bites, the last rendered row is an arbitrary
-# short remainder that never grows to fill the width (the "one or two words,
-# then gone" flicker). Truncation happens on the logical (pre-RTL-shaping)
-# text so bidi ordering stays correct.
-LIVE_TEXT_MAX_CHARS = 1000
-
-# Top padding of the live-feed mode's top-down layout
-LIVE_FEED_TOP_MARGIN = 24
-
-# Realtime feed: ease the top-down scroll toward its target instead of
-# snapping, so an added subtitle glides the feed up (much easier to read than
-# an instant jump). Tuned for a ~300 ms ease-out at ~33 fps.
-LIVE_FEED_ANIM_FRAME_MS = SCROLL_INTERVAL_MS
-LIVE_FEED_ANIM_EASE = 0.3  # fraction of the remaining gap closed per frame
-LIVE_FEED_ANIM_MIN_STEP = 2.0  # px/frame floor so the tail doesn't crawl
-LIVE_FEED_ANIM_SNAP_PX = 1.0  # within this, snap to target and stop
-
-# Static mode also supports very shallow output windows (down to 5% of the
-# monitor height). Below this surface height its normal card padding would use
-# more room than the text itself, so spacing contracts proportionally while
-# the ordinary layout remains byte-for-byte unchanged at common heights.
-STATIC_COMPACT_LAYOUT_HEIGHT = 160
-STATIC_MIN_FIT_FONT_SIZE = 6
-STATIC_CARD_OUTLINE_ALLOWANCE = 2
-# A visible disclaimer pill plus one bilingual subtitle pair cannot remain
-# legible in a 54 px-tall 1080p surface. Keep the requested percentage in the
-# settings, but protect the actual audience window with a small physical floor
-# whenever the footer is present. Footer-free overlays still honour true 5%.
-MIN_FOOTER_SURFACE_HEIGHT = 96
-# Floor for the "shrink the overlay into what the WM actually granted" repair
-# (_fit_geometry_to_monitor). Below these, the measurement is more likely to be
-# wrong than the window: leave the overlay alone rather than crush it.
-MIN_FITTED_OVERLAY_WIDTH = 240
-MIN_FITTED_OVERLAY_HEIGHT = 120
-
-
-def _prefers_reduced_motion() -> bool:
-    """Return the operating-system animation preference when available.
-
-    The environment override is intentionally undocumented UI plumbing: it
-    keeps render harnesses/tests deterministic without adding another public
-    setting.  On Windows the value follows "Show animations in Windows".
-    Unsupported platforms retain the existing gentle feed movement.
-    """
-    override = os.environ.get("MINBARLIVE_REDUCED_MOTION", "").strip().lower()
-    if override in {"1", "true", "yes", "on"}:
-        return True
-    if override in {"0", "false", "no", "off"}:
-        return False
-    if sys.platform != "win32":
-        return False
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        SPI_GETCLIENTAREAANIMATION = 0x1042
-        enabled = wintypes.BOOL()
-        ok = ctypes.windll.user32.SystemParametersInfoW(
-            SPI_GETCLIENTAREAANIMATION, 0, ctypes.byref(enabled), 0
-        )
-        return bool(ok) and not bool(enabled.value)
-    except Exception:
-        return False
+# macOS keeps the Dock and the menu bar above every window level a Qt client
+# can ask for — a stays-on-top window floats above other applications and still
+# under both — so the overlay is laid out inside the work area there whatever
+# its stacking, or its bottom strip disappears behind the Dock. The Tk overlay
+# reached the same conclusion (_MACOS_MENU_BAR_HEIGHT). A module constant
+# rather than an inline check, so a test can drive the other platform's branch
+# without faking sys.platform for the whole process.
+_MACOS = sys.platform == "darwin"
 
 
 @dataclass
-class _SubtitleBlock:
-    """Canvas items of one rendered subtitle (translation + optional source).
+class Block:
+    """One settled utterance: a translation, optionally with its original."""
 
-    ``line_items``/``source_items`` are lists of (text_id, box_id) canvas-item
-    pairs; box_id is None when the line has no background card (non-static
-    modes). ``text_id`` is the anchor item positioning works against — in
-    static mode that is the last (bottom) line's text item.
-    """
-
-    text_id: int
-    height: int  # total pixel height of the block incl. source lines
-    line_items: list[tuple[int, int | None]] | None = None  # static per-line cards
-    source_items: list[tuple[int, int | None]] | None = None  # bilingual source
-    # Keep the logical, unshaped strings. Canvas text is already wrapped and
-    # RTL-shaped, so reconstructing from itemcget() during a live font change
-    # would either preserve stale line breaks or shape Arabic a second time.
-    logical_text: str = ""
-    logical_source: str | None = None
+    translation: str
+    source: str | None = None
+    # Absolute top edge in content coordinates. Continuous mode only: assigned
+    # when the block is added and decremented every frame as it scrolls up.
+    # Realtime and static lay out from scratch each paint and ignore it.
+    y: float = field(default=0.0, repr=False)
 
 
-class SubtitleWindow(tk.Toplevel):
-    """Full-screen window that renders subtitles in various modes."""
+class SubtitleWindow(QWidget):
+    """Frameless, always-on-top, per-pixel-alpha subtitle overlay."""
 
     def __init__(
         self,
-        master: tk.Tk,
-        on_close,
+        on_close=None,
         monitor_index: int = 1,
         font_size_base: int = 40,
         source_font_size_base: float = 40 / 0.7,
@@ -282,2543 +166,1213 @@ class SubtitleWindow(tk.Toplevel):
         scroll_speed: float = 1.0,
         transparent_static: bool = False,
         window_height_percent: int = 100,
+        backdrop_opacity: int = DEFAULT_BACKDROP_OPACITY,
         show_footer: bool = True,
-        adaptive_catchup: bool = False,
         theme_mode: str = "dark",
         bilingual_mode: bool = False,
         always_on_top: bool = True,
+        adaptive_catchup: bool = False,
         on_stop=None,
     ):
-        super().__init__(master)
-        # Build fully transparent: a fresh Toplevel paints white with a
-        # caption until the dark background + borderless styling below land
-        # — the "white window pops up" flash. Revealed at the end of
-        # __init__. Same -alpha 0→1 pattern as the settings/batch windows
-        # (withdraw() is the vanish trap — see gui/settings_view.py).
-        try:
-            self.attributes("-alpha", 0.0)
-        except tk.TclError:
-            pass
-        is_windows = sys.platform == "win32"
+        super().__init__()
         self._on_close = on_close
         self._on_stop = on_stop
         self._monitor_index = monitor_index
         self._target_language = target_language
-        self._subtitle_mode = subtitle_mode  # static or continuous
-        self._scroll_animation_id = None  # For cancelling continuous scroll animation
-        self._scroll_speed = scroll_speed  # Current scroll speed (pixels per frame)
-        self._transparent_static = (
-            transparent_static  # Transparent background for static mode
-        )
-        self._window_height_percent = max(5, min(100, window_height_percent))
-        self._show_footer = show_footer  # Show/hide footer disclaimer
-        self._adaptive_catchup = adaptive_catchup
-        self._bilingual_mode = bilingual_mode  # Show original text above translation
-        # Keep the overlay above other windows (user setting). Off = the
-        # overlay stays in normal stacking even as a partial/transparent
-        # overlay. Applied via _apply_topmost / set_always_on_top.
-        self._always_on_top = always_on_top
-        self._effective_scroll_speed = scroll_speed
+        self._mode = subtitle_mode
+        self._scroll_speed = scroll_speed
+        self._transparent_static = transparent_static
+        self._height_percent = window_height_percent
+        self._backdrop_opacity = backdrop_opacity
+        self._show_footer = show_footer
         self._theme_mode = theme_mode
-        self._theme_palettes = {
-            "dark": {
-                "bg_color": "#040914",
-                "primary_text": "#ffffff",
-                "secondary_text": "#c7d2e3",
-                "card_fill": "#0a0a0a",
-                "card_outline": "",
-                "footer_bg": "#0e1828",
-                "footer_fg": "#f4d18a",
-                "footer_outline": "#8f6a29",
-            },
-            "light": {
-                "bg_color": "#eef3fb",
-                "primary_text": "#000000",
-                "secondary_text": "#54657d",
-                "card_fill": "#ffffff",
-                "card_outline": "",
-                "footer_bg": "#f6f9ff",
-                "footer_fg": "#3b4f67",
-                "footer_outline": "#d8e1ee",
-            },
-        }
-        # Empty overrides deliberately mean "follow the active theme". Keep the
-        # raw values separate from the effective colours so a light/dark switch
-        # can move the defaults without discarding a custom operator choice.
-        self._translation_text_color_override = (translation_text_color or "").strip()
-        self._source_text_color_override = (source_text_color or "").strip()
-        self._box_padding_x = 18
-        self._box_padding_y = 6
-        self._box_radius = 8
-        self._line_gap = 8
-        # Bounding-box gap between a source line and its translation in
-        # static mode, where each line has its own background card (cards
-        # must not overlap). The text-only modes use _stack_overlap instead
-        # so source/translation and wrapped rows sit visibly tighter.
-        self._pair_gap = 2
-        self._transparent_key_color = "#00fe00"
-        self._font_family = "Segoe UI Semibold" if is_windows else "Helvetica"
-        # Regular-weight family for the italic source/live styling (the main
-        # family bakes Semibold into its name, so "not bold" needs its own).
-        self._slant_font_family = "Segoe UI" if is_windows else "Helvetica"
-        self._footer_font_family = "Segoe UI" if is_windows else "Helvetica"
-        # {font spec: (em px, ascent px)} for the ink-aware line stacking.
-        self._font_metrics_cache: dict[tuple, tuple[float, float]] = {}
-        # Declared here, not with the other delayed jobs below: the first one
-        # is scheduled by _set_screen_position further down in __init__, and a
-        # later `= None` would orphan it (uncancellable callback).
-        self._geometry_fit_job: str | None = None
-        self._apply_theme_palette(self._theme_mode)
-
-        self.configure(bg=self._bg_color)
-
-        # Configure window to be borderless but still visible to OBS/screen
-        # capture. On Windows/Linux we avoid overrideredirect(True) because it
-        # makes the window invisible to OBS window capture there; macOS is the
-        # exception (see _setup_borderless_window), where it is the only way to
-        # drop the title bar and the window stays in the CoreGraphics window
-        # list regardless. Its side effect there: the overlay no longer takes
-        # keyboard focus, so the Escape shortcut below is Windows/Linux only.
-        self._setup_borderless_window()
-
-        # Esc stops the translation (like the Stop button) but never closes
-        # the overlay or the app — a mis-hit shouldn't take the display down
-        # mid-session. The close protocol routes to on_close, which the panel
-        # wires to close just this overlay, never the whole app.
-        self.bind("<Escape>", self._on_escape)
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-
-        # Position on correct monitor BEFORE showing
-        self._set_screen_position()
-
-        self.canvas = tk.Canvas(self, bg=self._bg_color, highlightthickness=0)
-        self.canvas.place(relx=0, rely=0.0, relwidth=1, relheight=1.0)
-
-        # Font size base (divisor for calculating font size)
+        self._bilingual = bilingual_mode
         self._font_size_base = font_size_base
-        try:
-            source_base = float(source_font_size_base)
-        except (TypeError, ValueError):
-            source_base = 40 / 0.7
-        self._source_font_size_base = max(20.0, min(120.0, source_base))
+        self._source_font_size_base = source_font_size_base
+        self._translation_color = translation_text_color
+        self._source_color = source_text_color
 
-        footer_text = FOOTER_TRANSLATIONS.get(target_language, DEFAULT_FOOTER)
-        self.footer = tk.Label(
-            self,
-            text=footer_text,
-            font=(self._footer_font_family, 14, "bold"),
-            fg=self._footer_fg,
-            bg=self._footer_bg,
-            bd=0,
-            padx=18,
-            pady=10,
-            highlightthickness=1,
-            highlightbackground=self._footer_outline,
-        )
-
-        self.subtitle_stack: list[_SubtitleBlock] = []
-        self.line_spacing = LINE_SPACING
-        self.margin_bottom = MARGIN_BOTTOM
-        self._canvas_footer_items: list[int] = []  # canvas item IDs for pill footer
-        self._stopped_hint = False  # "translation stopped" pill while idle
-        self._stopped_hint_items: list[int] = []
-        # Live (in-progress) transcript line — Realtime mode only, never part
-        # of the stack. "Settled" = utterance finished, translation in flight
-        # (rendered in the primary color instead of the muted one).
-        self._live_text = ""
+        self._blocks: list[Block] = []
+        self._live_text: str | None = None
         self._live_settled = False
-        self._live_items: list[tuple[int, int | None]] = []
-        # Realtime mode: accumulated upward scroll of the top-down layout
-        # (chat-style — content only ever moves up, never back down).
-        # _live_feed_scroll is the *rendered* offset; it eases toward
-        # _live_feed_scroll_target so shifts glide instead of snapping.
-        self._live_feed_scroll = 0.0
-        self._live_feed_scroll_target = 0.0
-        self._feed_anim_job: str | None = None
-        # Delayed/animated Tk callbacks are tracked so every teardown path can
-        # cancel them — a callback firing on a destroyed/hidden surface is the
-        # classic Tk crash. _reduced_motion snaps the feed instead of easing it
-        # when the OS asks for no animation (accessibility / OBS determinism).
-        self._delayed_font_job: str | None = None
-        self._continuous_start_job: str | None = None
-        self._reduced_motion = _prefers_reduced_motion()
-        self._destroying = False
-        self._is_hidden = False
-        # Announcement overlay (megaphone): a big centred operator message.
-        # Drawn above the subtitles and the live line but below the disclaimer
-        # pills (kept visible). The text/timer are owned by AppGUI so an
-        # announcement survives a translation stop and window recreation — this
-        # window only renders whatever text it was last given.
-        self._announcement_text = ""
-        self._announcement_items: list[int] = []
+        self._announcement: str | None = None
+        self._stopped_hint = False
+        self._scroll_offset = 0.0
+        # Where the feed is easing TO (see _step_feed_anim). Kept apart
+        # from _scroll_offset so a new block can move the destination
+        # without moving what is on screen this frame.
+        self._feed_target = 0.0
+        self._adaptive_catchup = adaptive_catchup
+        self._effective_scroll_speed = scroll_speed
 
-        self.update_idletasks()
-        self.canvas_width = self.canvas.winfo_width()
-        self.canvas_height = self.canvas.winfo_height()
-        self._update_font()
-        self._update_footer_visibility()
+        # A REAL window, not a Qt.Tool: a tool window is kept out of the
+        # taskbar and the alt-tab list, and out of OBS's window-capture list
+        # with it. The Tk overlay goes to some length for the same thing
+        # (stripping the caption by hand but forcing WS_EX_APPWINDOW), because
+        # window capture is how most operators put subtitles into a stream.
+        # It still never takes focus, and that is deliberately done with
+        # WA_ShowWithoutActivating rather than Qt.WindowDoesNotAcceptFocus:
+        # the latter sets WS_EX_NOACTIVATE, and Windows documents such a window
+        # as staying OFF the taskbar unless WS_EX_APPWINDOW is forced on too —
+        # which is exactly the flag the Tk overlay sets by hand. Whether the
+        # button appeared was then down to when the shell looked, so it came
+        # and went between runs. WA_ShowWithoutActivating gives the half that
+        # matters (showing the overlay never pulls focus off the panel) with no
+        # taskbar side effect, and the window is transparent to the mouse
+        # anyway, so it cannot be clicked into focus either.
+        self.setWindowFlag(Qt.Window, True)
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        # The title OBS lists it under; kept identical to the Tk overlay's so
+        # an existing capture source keeps matching.
+        self.setWindowTitle("MinbarLive Subtitles")
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        # Before set_always_on_top, which re-places the window: _apply_geometry
+        # arms this timer and fills these in. Parented, so it dies with the
+        # window — a fit check that outlived the overlay would call into a
+        # deleted C++ object.
+        self._requested: QRect | None = None
+        self._remapped = False
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.setInterval(GEOMETRY_FIT_MS)
+        self._fit_timer.timeout.connect(self._fit_to_screen)
+        self.set_always_on_top(always_on_top)
 
-        # Fully built and styled — reveal. Restored BEFORE the transparent
-        # mode below: that path manages its own alpha (macOS) and must win.
-        try:
-            self.attributes("-alpha", 1.0)
-        except tk.TclError:
-            pass
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setInterval(FRAME_MS)
+        self._scroll_timer.timeout.connect(self._advance_scroll)
+        self._feed_timer = QTimer(self)
+        self._feed_timer.setInterval(FEED_ANIM_FRAME_MS)
+        self._feed_timer.timeout.connect(self._step_feed_anim)
 
-        if self._transparent_static and self._subtitle_mode == SUBTITLE_MODE_STATIC:
-            self._apply_transparent_mode()
+        self._apply_geometry()
+        self._sync_scroll_timer()
 
-        self._delayed_font_job = self.after(100, self._delayed_font_update)
+    # ── colours ──────────────────────────────────────────────────────────
+    @property
+    def _colors(self) -> dict[str, str]:
+        return palette(self._theme_mode)
 
-        if self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
-            self._continuous_start_job = self.after(
-                150, self._start_continuous_scroll
+    def _translation_qcolor(self) -> QColor:
+        return QColor(self._translation_color or self._colors["text"])
+
+    def _source_qcolor(self) -> QColor:
+        return QColor(self._source_color or self._colors["muted"])
+
+    def _history_qcolor(self) -> QColor:
+        """Translation colour for a block that is no longer the newest.
+
+        Deliberately the theme's muted tone and never the configured SOURCE
+        colour, even though they default to the same value: the dim means
+        "already said", not "this is the original", and a custom source colour
+        must not bleed into it (the rule gui/subtitle_window.py states at
+        _render_feed_positions).
+        """
+        return QColor(self._colors["muted"])
+
+    def _transparent_static_active(self) -> bool:
+        """Transparent backdrop is a static-mode option only."""
+        return self._mode == SUBTITLE_MODE_STATIC and self._transparent_static
+
+    def _backdrop(self) -> QColor:
+        """Window backdrop, drawn behind everything else."""
+        if self._transparent_static_active():
+            # Fully transparent: contrast comes from per-line cards instead, so
+            # the text stays readable over arbitrary video.
+            return QColor(0, 0, 0, 0)
+        base = QColor(self._colors["app_bg"])
+        base.setAlpha(round(self._backdrop_opacity * 255 / 100))
+        return base
+
+    # ── geometry ─────────────────────────────────────────────────────────
+    def _screen(self):
+        screens = QGuiApplication.screens()
+        if not screens:
+            return None
+        idx = max(0, min(self._monitor_index, len(screens) - 1))
+        return screens[idx]
+
+    def _apply_geometry(self) -> None:
+        """Occupy the bottom ``height_percent`` of the chosen screen.
+
+        Which bottom depends on the stacking: a topmost window paints OVER the
+        Windows taskbar, so it can have the whole screen. A window that is not
+        topmost is painted over BY the taskbar, which would swallow the
+        disclaimer pill and the last line of every subtitle — so it is laid out
+        inside the work area instead, ending above the taskbar. Same reasoning
+        the Tk overlay applies to the macOS Dock, which is always above it.
+
+        macOS is the exception to all of it: nothing puts a window above the
+        Dock or the menu bar there — a stays-on-top window sits at the floating
+        window level, which is still below both — so a full-height overlay lost
+        its bottom strip, disclaimer pill and all, behind the Dock. It is laid
+        out inside the work area whatever the stacking, which is the same call
+        the Tk overlay makes (gui/subtitle_window.py _set_screen_position) and
+        what the README already tells macOS users to expect.
+
+        Qt reports both rectangles in logical units already, so there is no DPI
+        arithmetic here — that is what gui/scaling.py does by hand.
+        """
+        screen = self._screen()
+        if screen is None:
+            return
+        over_the_taskbar = is_window_on_top(self) and not _MACOS
+        g = screen.geometry() if over_the_taskbar else screen.availableGeometry()
+        h = max(1, int(g.height() * self._height_percent / 100))
+        # Kept, because it is a REQUEST: _fit_to_screen compares it against what
+        # the window manager actually did.
+        self._requested = QRect(g.x(), g.y() + g.height() - h, g.width(), h)
+        self._remapped = False
+        self.setGeometry(self._requested)
+        self._fit_timer.start()
+
+    def _fit_to_screen(self) -> None:
+        """Make what the window manager granted match what was asked for.
+
+        Two things can go wrong, in this order. **The move can be refused.** An
+        X11 WM applies a mapped window's geometry at its own discretion, and
+        the one place it always honours a position is the next map — the same
+        rule that makes _NET_WM_STATE_ABOVE unwritable while mapped
+        (gui/widgets.needs_remap). That is why lowering the overlay's height
+        left the top edge where it was and walked the footer UP: the size was
+        applied and the move was not. So the request is made again with the
+        window unmapped, exactly as the Tk overlay does it
+        (_set_screen_position(force_redraw=True)) — once per placement, or a
+        WM that simply will not comply would flash the overlay forever.
+
+        **Or the rectangle can be refused outright** — GNOME keeps a frameless
+        window clear of its struts — and then the overlay hangs off the bottom
+        of the screen with the disclaimer pill on it. Nothing can be done about
+        the position at that point, so it is shrunk into what is on screen.
+        Only ever shrinks, keeps the top edge, and ignores an implausible
+        measurement.
+
+        On a platform that places windows exactly, both checks see the request
+        honoured and this returns without touching anything.
+        """
+        screen = self._screen()
+        if screen is None or not self.isVisible():
+            return
+        if self._requested is not None and self.geometry() != self._requested:
+            granted = self.geometry()
+            log(
+                "Overlay geometry: asked for "
+                f"{self._requested.width()}x{self._requested.height()}"
+                f"+{self._requested.x()}+{self._requested.y()}, "
+                f"the window manager gave {granted.width()}x{granted.height()}"
+                f"+{granted.x()}+{granted.y()}",
+                level="INFO",
             )
-
-    def _setup_borderless_window(self):
-        """Configure a borderless window that remains visible to OBS/screen capture.
-
-        Unlike overrideredirect(True), this approach keeps the window in the
-        window manager's control, making it visible to OBS Window Capture.
-
-        Platform-specific approaches:
-        - Windows: Remove decorations via wm_attributes, use -toolwindow to hide from taskbar
-        - macOS: Use -fullscreen or manual geometry with -toolwindow
-        - Linux: Remove decorations via _MOTIF_WM_HINTS or fallback methods
-        """
-        # Give the window a title so OBS can identify it
-        self.title("MinbarLive Subtitles")
-
-        # The window deliberately stays in the taskbar/alt-tab (OBS window
-        # capture needs WS_EX_APPWINDOW) — without an explicit icon it shows
-        # Tk's default feather there. Same pattern as _set_toplevel_icon in
-        # gui/widgets.py; no titlebar to re-theme here (caption is stripped
-        # below).
-        icon_loaded = False
-        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
-            try:
-                self.iconbitmap(ICON_PATH)
-                icon_loaded = True
-            except Exception:
-                pass
-        if not icon_loaded and os.path.exists(ICON_PATH_PNG):
-            try:
-                self.iconphoto(False, scaled_icon_photo(ICON_PATH_PNG))
-            except Exception:
-                pass
-
-        # Store hwnd for later use (Windows only)
-        self._hwnd = None
-
-        if sys.platform == "win32":
-            # Windows: Create a borderless window visible to OBS
-            # We use Windows-specific styling to remove the title bar completely
-            try:
-                # Get the window handle and modify window styles to remove decorations
-                # This needs to happen after the window is mapped
-                self.update_idletasks()
-
-                # Use Windows API via ctypes to remove window decorations
-                # while keeping the window visible to capture software
-                import ctypes
-
-                # Window style constants
-                GWL_STYLE = -16
-                GWL_EXSTYLE = -20
-                WS_CAPTION = 0x00C00000  # Title bar
-                WS_THICKFRAME = 0x00040000  # Sizing border
-                WS_MINIMIZEBOX = 0x00020000
-                WS_MAXIMIZEBOX = 0x00010000
-                WS_SYSMENU = 0x00080000  # System menu
-                WS_EX_APPWINDOW = 0x00040000
-                WS_EX_TOOLWINDOW = 0x00000080
-
-                # Get window handle
-                self._hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
-
-                # Get current style
-                style = ctypes.windll.user32.GetWindowLongW(self._hwnd, GWL_STYLE)
-
-                # Remove title bar and borders but keep it a normal window
-                style = style & ~WS_CAPTION & ~WS_THICKFRAME
-                style = style & ~WS_MINIMIZEBOX & ~WS_MAXIMIZEBOX & ~WS_SYSMENU
-
-                # Apply new style
-                ctypes.windll.user32.SetWindowLongW(self._hwnd, GWL_STYLE, style)
-
-                # Get and modify extended style to ensure it shows in window lists
-                ex_style = ctypes.windll.user32.GetWindowLongW(self._hwnd, GWL_EXSTYLE)
-                # Remove toolwindow style, add APPWINDOW to ensure it appears in capture lists
-                ex_style = (ex_style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
-                ctypes.windll.user32.SetWindowLongW(self._hwnd, GWL_EXSTYLE, ex_style)
-
-                # Note: We don't call SetWindowPos here - _set_screen_position will
-                # handle positioning with _apply_window_position()
-
-            except Exception:
-                # Fallback: just use overrideredirect if ctypes fails
-                self._hwnd = None
-                self.overrideredirect(True)
-
-        elif sys.platform == "darwin":
-            # macOS: overrideredirect is the only thing that actually removes
-            # the title bar here. ::tk::unsupported::MacWindowStyle only sets
-            # the window class, and Tk applies the resulting style mask when it
-            # CREATES the NSWindow — CustomTkinter has already mapped this one
-            # by then, so the "plain" call was a silent no-op and the overlay
-            # kept a draggable title bar that covered the first subtitle block.
-            # overrideredirect clears NSTitledWindowMask on the live window
-            # (tkMacOSXWm.c) and makes it non-activating, which is what an
-            # audience overlay wants — nothing here reacts to clicks.
-            # It also clears Tk's topmost flag (same function, no transient
-            # container), so _apply_topmost() must run afterwards; it does, at
-            # the end of the _set_screen_position() call below.
-            try:
-                self.wm_attributes("-fullscreen", False)
-            except tk.TclError:
-                pass
-            self.overrideredirect(True)
-
-        else:
-            # Linux/Other: Use EWMH hints to remove decorations
-            try:
-                # Try to set _MOTIF_WM_HINTS to remove decorations
-                # This keeps the window in the WM's control
-                self.wm_attributes("-type", "splash")
-            except tk.TclError:
-                try:
-                    # Alternative: try dock type
-                    self.wm_attributes("-type", "dock")
-                except tk.TclError:
-                    # Final fallback
-                    self.overrideredirect(True)
-
-    def _delayed_font_update(self):
-        """Update font after window is fully rendered."""
-        self._delayed_font_job = None
-        self.update_idletasks()
-        self.canvas_width = self.canvas.winfo_width()
-        self.canvas_height = self.canvas.winfo_height()
-        if self.canvas_width > 0:
-            self._update_font()
-            self._update_footer_visibility()
-
-    def _apply_theme_palette(self, theme_mode: str):
-        """Load the active visual palette for subtitle rendering."""
-        if theme_mode not in self._theme_palettes:
-            theme_mode = "dark"
-        palette = self._theme_palettes[theme_mode]
-        self._theme_mode = theme_mode
-        self._bg_color = palette["bg_color"]
-        self._primary_text = palette["primary_text"]
-        self._secondary_text = palette["secondary_text"]
-        self._translation_text = (
-            getattr(self, "_translation_text_color_override", "") or self._primary_text
-        )
-        self._source_text = (
-            getattr(self, "_source_text_color_override", "") or self._secondary_text
-        )
-        self._card_fill = palette["card_fill"]
-        self._card_outline = palette["card_outline"]
-        self._footer_bg = palette["footer_bg"]
-        self._footer_fg = palette["footer_fg"]
-        self._footer_outline = palette["footer_outline"]
-        # Footer is always app orange with black text, regardless of theme
-        self._footer_bg = "#F5820D"
-        self._footer_fg = "#000000"
-        self._footer_outline = "#c06308"
-
-    def set_theme(self, theme_mode: str):
-        """Apply a new theme and repaint the current subtitle content."""
-        self._apply_theme_palette(theme_mode)
-        self.footer.configure(
-            bg=self._footer_bg,
-            fg=self._footer_fg,
-            highlightbackground=self._footer_outline,
-        )
-        if self._canvas_footer_items:
-            self._draw_canvas_footer()
-        self._refresh_stopped_hint()
-        if self._subtitle_mode == SUBTITLE_MODE_STATIC and self._transparent_static:
-            self._apply_transparent_mode()
-        else:
-            self._apply_opaque_mode()
-        self._refresh_subtitles()
-        self._render_announcement()
-
-    def _update_footer_visibility(self):
-        """Draw or hide the footer pill and keep subtitle spacing readable."""
-        if self._show_footer:
-            # Rounded pill footer in every mode (continuous/static/live) so the
-            # disclaimer looks identical everywhere. margin_bottom is set inside
-            # _draw_canvas_footer to keep subtitles clear of the pill.
-            self.footer.place_forget()
-            self._draw_canvas_footer()
-        else:
-            self._remove_canvas_footer()
-            self.footer.place_forget()
-            self.margin_bottom = 8
-        # The stopped-hint pill sits relative to the footer pill, so every
-        # site that redraws the footer (resize, monitor, mode, height changes)
-        # must reposition the hint too.
-        self._refresh_stopped_hint()
-
-    def _draw_canvas_footer(self):
-        """Draw the footer as a centred rounded pill directly on the canvas."""
-        import tkinter.font as tkfont
-
-        self._remove_canvas_footer()
-        if not self.canvas_width or not self.canvas_height:
+            if needs_remap() and not self._remapped:
+                self._remapped = True
+                # QWidget's own hide/show, never this class's: hide() drops the
+                # live transcript and show() re-enters _apply_geometry.
+                QWidget.hide(self)
+                self.setGeometry(self._requested)
+                QWidget.show(self)
+                # Re-checked once the map has been through the WM, in case the
+                # rectangle itself was refused too.
+                self._fit_timer.start()
+                return
+        g = screen.geometry()
+        have = self.geometry()
+        fit_w = min(have.width(), g.x() + g.width() - have.x())
+        fit_h = min(have.height(), g.y() + g.height() - have.y())
+        if fit_w < MIN_FITTED_WIDTH or fit_h < MIN_FITTED_HEIGHT:
             return
+        if (fit_w, fit_h) == (have.width(), have.height()):
+            return  # the request was granted
+        self.resize(fit_w, fit_h)
+        self.update()
 
-        footer_text = FOOTER_TRANSLATIONS.get(self._target_language, DEFAULT_FOOTER)
-        font_spec = (self._footer_font_family, 13, "bold")
-        font_obj = tkfont.Font(family=self._footer_font_family, size=13, weight="bold")
-        text_w = font_obj.measure(footer_text)
-        text_h = font_obj.metrics("linespace")
+    # ── layout helpers ───────────────────────────────────────────────────
+    def _content_width(self) -> int:
+        return max(1, int(self.width() * (1 - 2 * SIDE_MARGIN_RATIO)))
 
-        pad_x, pad_y = 22, 9
-        margin_h = 20  # min horizontal margin from canvas edge
-        max_pill_w = self.canvas_width - margin_h * 2
-        pill_w = min(text_w + pad_x * 2, max_pill_w)
-        pill_h = text_h + pad_y * 2
-        radius = pill_h / 2  # fully rounded ends (capsule shape)
+    # ``font_size_base`` and ``source_font_size_base`` are DIVISORS, not pixel
+    # sizes: the rendered size is the window width divided by the base, so text
+    # keeps its proportion on any monitor. Smaller base => larger text.
+    def _translation_px(self) -> int:
+        if not self.width():
+            return 24
+        return max(12, min(120, int(self.width() / self._font_size_base)))
 
-        cx = self.canvas_width / 2
-        # sit 10 px above the very bottom
-        y2 = self.canvas_height - 10
-        y1 = y2 - pill_h
-        x1 = cx - pill_w / 2
-        x2 = cx + pill_w / 2
+    def _source_px(self) -> int:
+        if not self.width():
+            return 17
+        return max(12, min(120, int(self.width() / self._source_font_size_base)))
 
-        bg_id = self.canvas.create_polygon(
-            self._rounded_rect_points(x1, y1, x2, y2, radius),
-            smooth=True,
-            splinesteps=18,
-            fill=self._footer_bg,
-            outline=self._footer_outline,
-            width=1,
-        )
-        text_id = self.canvas.create_text(
-            cx,
-            (y1 + y2) / 2,
-            text=_reshape_rtl(footer_text),
-            fill=self._footer_fg,
-            font=font_spec,
-            anchor="center",
-            justify="center",
-            width=int(pill_w - pad_x * 2),
-        )
-        self._canvas_footer_items = [bg_id, text_id]
-        self.margin_bottom = pill_h + 18  # 10 px gap + pill + 8 px clearance above
+    @staticmethod
+    def _ink(text: str, font: QFont) -> tuple[int, int]:
+        """``(reclaim, overhang)`` for one line of ``text``.
 
-    def _remove_canvas_footer(self):
-        """Delete canvas-drawn pill footer items."""
-        for item_id in self._canvas_footer_items:
-            self.canvas.delete(item_id)
-        self._canvas_footer_items = []
+        ``reclaim`` is the blank band above the ink that stacking may close
+        up. A font box reserves the whole ascent whether the glyphs use it or
+        not, and that leftover is what makes metric-spaced lines read as
+        double-spaced. Reclaiming it pulls the lines visually together while
+        leaving ``_STACK_INK_GAP_EM`` of clearance, so the ink never touches.
 
-    def _raise_footer(self):
-        """Keep the disclaimer pill above the subtitle text in the canvas
-        z-order — items stack in creation order, so freshly added subtitles
-        (and the live line) would otherwise draw over the warning as they
-        scroll through its area.
+        ``overhang`` is the opposite problem at the other end: ink that reaches
+        BELOW the font's descent, which the box does not account for. Arabic
+        descends deeper than a Latin-derived descent metric allows for, and
+        deeper still when the glyphs come from a fallback family — Qt reports
+        the metrics of the family it was asked for and paints from whichever
+        one has the glyph. That is what made an Arabic original overlap its
+        German translation on Linux.
 
-        The announcement card is raised first (above subtitles/live line), then
-        the two pills on top of it — the operator message covers the subtitles
-        but the disclaimer stays visible (user decision)."""
-        for item_id in self._announcement_items:
-            self.canvas.tag_raise(item_id)
-        for item_id in self._stopped_hint_items:
-            self.canvas.tag_raise(item_id)
-        for item_id in self._canvas_footer_items:
-            self.canvas.tag_raise(item_id)
-
-    def _cancel_after_job(self, attribute: str) -> None:
-        """Cancel one tracked Tk callback without leaking Tcl errors.
-
-        Window destruction, monitor changes and stop actions can race a
-        callback that has just fired.  Clearing the attribute first makes
-        cancellation idempotent and prevents a later cleanup path from
-        cancelling a recycled Tcl callback id.
+        Both MEASURED from the string, where the Tk overlay had to guess. It
+        approximated the first with a per-script table (``_INK_TOP_EM_ARABIC``
+        and friends) because a Tk canvas bbox reports metrics, not ink, and the
+        figures had to be re-derived per font family — they broke on Linux.
+        ``tightBoundingRect`` is the real ink of the real glyphs, so Arabic,
+        Latin, diacritics and any script added later are simply correct, on
+        every platform, with nothing to keep in step.
         """
-        job = getattr(self, attribute, None)
-        setattr(self, attribute, None)
-        if job is None:
-            return
-        try:
-            self.after_cancel(job)
-        except (tk.TclError, TypeError):
-            pass
+        # Honorifics excluded: see _HONORIFIC_LIGATURE_RE. Their own line still
+        # gets a sensible gap from whatever else is in it.
+        measured = _HONORIFIC_LIGATURE_RE.sub("", text).strip()
+        if not measured:
+            return 0, 0
+        metrics = QFontMetrics(font)
+        ink = metrics.tightBoundingRect(measured)
+        if ink.isEmpty():
+            return 0, 0
+        # ink.top() is negative above the baseline, so this is the distance
+        # from the box's ascent line down to the tallest ink in the line.
+        leading = metrics.ascent() + ink.top()
+        em = font.pixelSize() or font.pointSize()
+        # Excluding the honorifics is safe because _honorific_formats has
+        # already made sure they FIT the line: nothing is being ignored that
+        # could reach outside the box measured here.
+        #
+        # No clearance term on the overhang: the line BELOW already holds
+        # _STACK_INK_GAP_EM back through its own reclaim, and adding it at both
+        # ends would double the gap this whole mechanism exists to close.
+        return (
+            max(0, round(leading - _STACK_INK_GAP_EM * em)),
+            max(0, ink.bottom() - metrics.descent()),
+        )
 
-    def _cancel_animation_jobs(self) -> None:
-        """Cancel every delayed/animated callback owned by this window."""
-        for attribute in (
-            "_delayed_font_job",
-            "_continuous_start_job",
-            "_scroll_animation_id",
-            "_feed_anim_job",
-            "_geometry_fit_job",
+    @classmethod
+    def _reclaim(cls, text: str, font: QFont) -> int:
+        """Blank band above ``text``'s ink that stacking may close up."""
+        return cls._ink(text, font)[0]
+
+    @staticmethod
+    def _descent_slack(text: str, font: QFont) -> int:
+        """Descent box that ``text`` does not draw into.
+
+        The mirror of ``_reclaim`` at the other end of a line, and used at ONE
+        join: between a source line and the translation under it. Everywhere
+        else the upper line keeps its whole descent zone deliberately — the eye
+        measures baselines, so tucking a descender-less line closer makes it an
+        outlier (the rule gui/subtitle_window.py states at _stack_overlap).
+
+        That rule costs nothing on Windows, where Segoe UI's Arabic ink reaches
+        exactly its descent line. It costs 16 px per pair on Linux, where Noto
+        Sans Arabic reserves 35 px of descent at 48 px text and an Arabic line
+        draws 19 px into it: the original floated a fifth of an em above its
+        own translation there and sat on it here. Measured, so the join is
+        ink-to-ink on both — and provably unchanged wherever the slack is zero.
+        """
+        measured = _HONORIFIC_LIGATURE_RE.sub("", text).strip()
+        if not measured:
+            return 0
+        metrics = QFontMetrics(font)
+        ink = metrics.tightBoundingRect(measured)
+        if ink.isEmpty():
+            return 0
+        # Never both this and _ink's overhang: ink past the descent is one, ink
+        # short of it the other.
+        return max(0, metrics.descent() - ink.bottom())
+
+    @staticmethod
+    def _dominant_direction(text: str):
+        """Base direction from which script the line is MOSTLY in.
+
+        Unicode decides a paragraph's direction from its first strong
+        character, and Qt's LayoutDirectionAuto follows that — correct in
+        general, and wrong for a live transcript, because a streaming STT
+        prefixes artefact markers like ``<noise>``. Five Latin letters then
+        make an entire Arabic sentence an LTR paragraph and its full stop
+        lands at the right, which is where the sentence STARTS.
+
+        Deliberately not used for settled subtitles: a translation line
+        legitimately opens in one script and quotes the other, and counting
+        would flip a German sentence that happens to carry a long Arabic
+        quotation. A transcript row is one language plus noise.
+        """
+        rtl = ltr = 0
+        for ch in text:
+            bidi = unicodedata.bidirectional(ch)
+            if bidi == "L":
+                ltr += 1
+            elif bidi in ("R", "AL"):
+                rtl += 1
+        if rtl == ltr:
+            return Qt.LayoutDirectionAuto
+        return Qt.RightToLeft if rtl > ltr else Qt.LeftToRight
+
+    @staticmethod
+    def _honorific_formats(text: str, font: QFont) -> list:
+        """Shrink any ﷺ/ﷻ in ``text`` until it fits the line it sits in.
+
+        The ligature is drawn by whichever family happens to have the glyph,
+        not the one we asked for, and on Linux that family draws it far taller
+        than the line around it. Every way of accounting for that in the
+        SPACING is a bad trade: measure it and the honorific pushes its whole
+        paragraph away from the one above; ignore it and it climbs into that
+        paragraph; clamp it and the paragraph's own rows spread apart to make
+        room (all three were seen, in that order).
+
+        So the ligature is made to fit instead. A per-character format is the
+        one thing that can, and it costs nothing where the glyph already fits
+        — on Windows, Segoe UI's ligature is no taller than the cap height and
+        this returns nothing at all.
+        """
+        matches = list(_HONORIFIC_LIGATURE_RE.finditer(text))
+        if not matches:
+            return []
+        metrics = QFontMetrics(font)
+        formats: list = []
+        cache: dict[str, QTextCharFormat | None] = {}
+        for match in matches:
+            glyph = match.group(0)
+            if glyph not in cache:
+                cache[glyph] = SubtitleWindow._fitted_format(glyph, font, metrics)
+            char_format = cache[glyph]
+            if char_format is None:
+                continue
+            span = QTextLayout.FormatRange()
+            span.start = match.start()
+            span.length = len(glyph)
+            span.format = char_format
+            formats.append(span)
+        return formats
+
+    @staticmethod
+    def _fitted_format(glyph: str, font: QFont, metrics: QFontMetrics):
+        """A format that scales ``glyph`` into the font's own box, or None.
+
+        None means it already fits — the common case, and the one where this
+        whole mechanism must stay invisible.
+        """
+        ink = metrics.tightBoundingRect(glyph)
+        if ink.isEmpty():
+            return None
+        # ink.top() is negative above the baseline; ink.bottom() positive below.
+        above, below = -ink.top(), ink.bottom()
+        scale = 1.0
+        if above > metrics.ascent():
+            scale = min(scale, metrics.ascent() / above)
+        if below > metrics.descent():
+            scale = min(scale, metrics.descent() / below)
+        if scale >= 1.0:
+            return None
+        smaller = QFont(font)
+        smaller.setPixelSize(max(1, round((font.pixelSize() or 1) * scale)))
+        char_format = QTextCharFormat()
+        char_format.setFont(smaller)
+        return char_format
+
+    def _layout_text(
+        self, text: str, font: QFont, direction=Qt.LayoutDirectionAuto
+    ) -> tuple[QTextLayout, int]:
+        """``text`` wrapped to the content width, at a tightened line rhythm.
+
+        Qt does the line breaking — after shaping and bidi, so an RTL sentence
+        cannot be broken in the wrong place — and this only sets where each
+        finished line sits: one ``_reclaim`` closer than the font's own line
+        spacing would put it.
+
+        Returns the laid-out object (draw it with ``QTextLayout.draw``) and the
+        height it occupies, so measuring and drawing can never disagree.
+        """
+        layout = QTextLayout(text, font)
+        option = QTextOption(Qt.AlignHCenter)
+        option.setWrapMode(QTextOption.WordWrap)
+        # QTextOption defaults to LEFT-TO-RIGHT, not to "work it out" — so an
+        # Arabic paragraph was laid out with an LTR base direction and its
+        # full stop, a neutral character, attached to the LTR paragraph and
+        # landed on the RIGHT. The words themselves still ran right-to-left
+        # (that is the bidi algorithm inside the paragraph), which is why it
+        # looked almost correct. LayoutDirectionAuto applies the Unicode
+        # first-strong-character rule instead: Arabic text becomes an RTL
+        # paragraph and its terminator sits at the left, where the sentence
+        # ends; German stays LTR. Verified over both, including lines opening
+        # with a quote, a digit or the elision ellipsis. ``direction`` overrides
+        # it where first-strong is the wrong rule — see _dominant_direction.
+        option.setTextDirection(direction)
+        layout.setTextOption(option)
+        # Before any measuring: a ligature left at full size changes the line's
+        # ascent, and then every figure below is taken from a box the text does
+        # not actually occupy.
+        formats = self._honorific_formats(text, font)
+        if formats:
+            layout.setFormats(formats)
+
+        fm = QFontMetrics(font)
+        base_ascent = QFontMetricsF(font).ascent()
+        reclaim, overhang = self._ink(text, font)
+        # ``overhang`` also has to widen the pitch, not just the block's foot:
+        # two wrapped lines of the same Arabic sentence stack at this distance
+        # and would collide with each other otherwise.
+        pitch = max(1, fm.lineSpacing() - reclaim + overhang)
+        width = self._content_width()
+        count, y = 0, 0.0
+        layout.beginLayout()
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(width)
+            # Placed by its BASELINE, not by the top of its box. A line's
+            # ascent is the tallest of the font engines that actually drew it,
+            # including the fallback family a honorific comes from — and that
+            # family's ascent can be far larger than the one every figure here
+            # is measured from, even after _honorific_formats has scaled the
+            # glyph's INK to fit. Setting the box top on our own rhythm then
+            # drops the line by the difference, and the blank band that opens
+            # above it is the honorific visibly pushing its paragraph away from
+            # the one before it. Correcting for the excess puts the baseline
+            # back on the rhythm the block was measured at.
+            #
+            # Only ever pulls a line UP: an ascent BELOW the asked-for font's
+            # is that font's own business (the metrics here are its own), and
+            # dropping the line to meet it would move text that is already
+            # where it belongs. Measured against the UNROUNDED ascent, so a
+            # line drawn entirely in the font we asked for comes out at exactly
+            # its old position — QFontMetrics rounds to whole pixels and
+            # QTextLine does not, and that difference alone would have shifted
+            # every line on every platform.
+            line.setPosition(QPointF(0, y - max(0.0, line.ascent() - base_ascent)))
+            y += pitch
+            count += 1
+        layout.endLayout()
+        if not count:
+            return layout, 0
+        # The last line keeps its full box: baseline distances have to stay
+        # constant for the rhythm to READ as even, so only the space ABOVE a
+        # line is ever reclaimed, never its descent — plus whatever ink hangs
+        # below that descent, or the next block starts inside this one.
+        return layout, (count - 1) * pitch + fm.ascent() + fm.descent() + overhang
+
+    def _measure(self, text: str, font: QFont) -> int:
+        """Height ``text`` occupies at ``font`` within the content width."""
+        return self._layout_text(text, font)[1]
+
+    def _block_fonts(self, block: Block) -> tuple[QFont, QFont | None]:
+        trans = subtitle_font(self._translation_px(), text=block.translation)
+        src = None
+        if self._bilingual and block.source:
+            src = source_font(self._source_px(), block.source)
+        return trans, src
+
+    def _pair_gap(self, block: Block) -> int:
+        """Space between a block's source line and its translation.
+
+        Closed at BOTH ends, which no other join is: the translation's blank
+        band above its ink (``_reclaim``) and the source's unused descent below
+        its own (``_descent_slack``). What is left is PAIR_GAP of real ink
+        distance on any font on any platform — the pair is one utterance and
+        has to read as one, and a family that reserves a deep descent it does
+        not use had it floating a fifth of an em above its own translation.
+        """
+        trans_font, src_font = self._block_fonts(block)
+        # Deliberately allowed to go NEGATIVE: the reclaim is normally larger
+        # than PAIR_GAP, and clamping at zero threw the remainder away and left
+        # the pair as far apart as before. The boxes overlap; the INK cannot,
+        # because _reclaim already holds _STACK_INK_GAP_EM back. Tk stacks the
+        # same way (_stack_rows_tight positions at bbox top + overlap).
+        gap = PAIR_GAP - self._reclaim(block.translation, trans_font)
+        if src_font is not None and block.source:
+            gap -= self._descent_slack(block.source, src_font)
+        return gap
+
+    def _measure_block(self, block: Block) -> int:
+        trans_font, src_font = self._block_fonts(block)
+        h = self._measure(block.translation, trans_font)
+        if src_font is not None and block.source:
+            h += self._measure(block.source, src_font) + self._pair_gap(block)
+        return h
+
+    def _block_gap(self, block: Block) -> int:
+        """Space above ``block`` when it follows another.
+
+        REALTIME_BLOCK_SPACING is shared with the Tk overlay, which positions
+        ink-aware and so gets the gap the number describes. Qt stacks metric
+        boxes, so the same constant has to give back the incoming block's blank
+        band to land in the same place.
+        """
+        trans_font, src_font = self._block_fonts(block)
+        if src_font is not None and block.source:
+            first_text, first_font = block.source, src_font
+        else:
+            first_text, first_font = block.translation, trans_font
+        # Not clamped at zero, for the reason given in _pair_gap — though a
+        # block usually opens on an Arabic source line, whose ink reaches the
+        # ascent and reclaims nothing, so this mostly IS the constant.
+        return REALTIME_BLOCK_SPACING - self._reclaim(first_text, first_font)
+
+    def _live_gap(self) -> int:
+        """Space between the last settled block and the live line.
+
+        The same distance one block keeps from the next, so the feed has a
+        single rhythm — the Tk overlay puts REALTIME_BLOCK_SPACING here too.
+        """
+        return REALTIME_BLOCK_SPACING - self._reclaim(
+            self._live_text or "", self._live_font()
+        )
+
+    def _draw_card(self, p: QPainter, text: str, font: QFont, rect: QRect) -> None:
+        """Rounded backing card behind one line, sized to the text it holds.
+
+        Only used when the backdrop is transparent: without it the subtitle
+        would have to compete with whatever video is underneath.
+        """
+        fm = QFontMetrics(font)
+        tw = min(fm.horizontalAdvance(text), rect.width())
+        pad_x, pad_y = 20, 8
+        cw = min(rect.width(), tw + pad_x * 2)
+        cx = rect.x() + (rect.width() - cw) // 2
+        path = QPainterPath()
+        path.addRoundedRect(cx, rect.y() - pad_y, cw, rect.height() + pad_y * 2, 14, 14)
+        p.fillPath(path, QColor(0, 0, 0, 150))
+
+    def _draw_block(
+        self, p: QPainter, block: Block, x: int, y: int, newest: bool = True
+    ) -> int:
+        """Draw ``block`` with its top edge at ``y``; return the height used.
+
+        ``newest`` carries the full translation colour; everything above it is
+        history and drops to the muted tone, so the eye lands on the line
+        being spoken now without having to search for it.
+        """
+        trans_font, src_font = self._block_fonts(block)
+        w = self._content_width()
+        cards = self._transparent_static_active()
+        used = 0
+        if src_font is not None and block.source:
+            layout, sh = self._layout_text(block.source, src_font)
+            if cards:
+                self._draw_card(p, block.source, src_font, QRect(x, y, w, sh))
+            p.setPen(self._source_qcolor())
+            layout.draw(p, QPointF(x, y))
+            used += sh + self._pair_gap(block)
+        layout, th = self._layout_text(block.translation, trans_font)
+        if cards:
+            self._draw_card(p, block.translation, trans_font, QRect(x, y + used, w, th))
+        p.setPen(self._translation_qcolor() if newest else self._history_qcolor())
+        layout.draw(p, QPointF(x, y + used))
+        return used + th
+
+    # ── painting ─────────────────────────────────────────────────────────
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setRenderHint(QPainter.TextAntialiasing, True)
+        p.fillRect(self.rect(), self._backdrop())
+
+        if self._announcement:
+            self._paint_announcement(p)
+        elif self._mode == SUBTITLE_MODE_REALTIME:
+            self._paint_realtime(p)
+        elif self._mode == SUBTITLE_MODE_CONTINUOUS:
+            self._paint_continuous(p)
+        else:
+            self._paint_static(p)
+
+        # Pills paint last so they always sit above subtitle text. In the Tk
+        # version z-order followed canvas item creation order, so every new
+        # item had to be followed by an explicit _raise_footer() call.
+        self._paint_pills(p)
+
+    def _paint_realtime(self, p: QPainter) -> None:
+        """Top-down feed: settled blocks stack from the top, live line below.
+
+        Once the feed reaches the bottom it shifts up chat-style so the newest
+        line stays visible. The shift only ever grows — content must never
+        slide back down, which would read as the text jumping around.
+        """
+        x = int(self.width() * SIDE_MARGIN_RATIO)
+        top = int(self.height() * 0.06)
+        heights = [self._measure_block(b) for b in self._blocks]
+        # The advance past each block: its own height plus the gap whatever
+        # comes NEXT wants above it. One list, used by all three passes below,
+        # so the total, the draw loop and the eviction compensation cannot
+        # disagree — if they did, the feed would jump every time a block
+        # scrolled off. ``followers`` is empty when there are no blocks —
+        # [*[], None] would be a one-element list against zero heights.
+        #
+        # Nothing follows the last block unless the live line does, and then
+        # its advance is its height alone. Charging a trailing gap regardless
+        # reserved a block's worth of empty space under the newest subtitle
+        # and held the whole feed that far off the footer; the Tk overlay ends
+        # at the last block's foot (_feed_natural_layout).
+        followers = [*self._blocks[1:], None] if self._blocks else []
+        live_gap = self._live_gap() if self._live_text else 0
+        advances = [
+            h + (self._block_gap(nxt) if nxt is not None else live_gap)
+            for h, nxt in zip(heights, followers, strict=True)
+        ]
+
+        total = sum(advances)
+        if self._live_text:
+            total += self._live_line_height()
+        overflow = top + total - self._content_height()
+        if overflow > self._feed_target:
+            # The TARGET moves at once; the rendered offset eases toward it in
+            # _step_feed_anim, so the feed slides up the way the Tk overlay
+            # does instead of teleporting a whole block's height on arrival.
+            self._feed_target = overflow
+            self._start_feed_anim()
+
+        y = top - self._scroll_offset
+        evicted = 0
+        newest = len(self._blocks) - 1
+        for i, (block, h, advance) in enumerate(
+            zip(self._blocks, heights, advances, strict=True)
         ):
-            self._cancel_after_job(attribute)
+            if y + h < 0:  # scrolled off the top edge
+                evicted += 1
+            else:
+                self._draw_block(p, block, x, int(y), newest=i == newest)
+            y += advance
+        if self._live_text:
+            self._draw_live_line(p, x, int(y))
 
-    def destroy(self):
-        """Destroy the OBS surface after cancelling all of its Tk jobs."""
-        if getattr(self, "_destroying", False):
-            return
-        self._destroying = True
-        self._cancel_animation_jobs()
-        super().destroy()
+        if evicted:
+            # Drop what is off-screen and shorten the shift by the same extent,
+            # so the remaining blocks do not jump (eviction-compensated).
+            drop = sum(advances[:evicted])
+            del self._blocks[:evicted]
+            self._scroll_offset -= drop
+            self._feed_target -= drop
 
-    def set_stopped_hint(self, visible: bool):
-        """Show or remove the "translation stopped" pill.
+    def _place_continuous(self, block: Block) -> None:
+        """Assign a new block's absolute y so it is visible straight away.
 
-        Shown while the window stays open with the pipeline stopped (the
-        default subtitle_hide_mode="never" setup), so the audience knows
-        missing subtitles are deliberate. The text comes from
-        status_messages in the target language, fetched at draw time so
-        language and theme changes pick up the current wording.
+        Anchored so its bottom sits at the bottom of the content area — a
+        subtitle must appear the moment it arrives, not after scrolling up
+        into view. It is pushed lower only when the previous block still
+        occupies that space, which is what creates a genuine backlog for
+        ``get_subtitle_backlog_count`` and adaptive catch-up to drain.
         """
-        self._stopped_hint = visible
-        if visible:
-            # A stopped audience surface must be visually still, and must not
-            # leave Tk callbacks alive after the operator tears it down.
-            self._cancel_after_job("_continuous_start_job")
-            self._cancel_after_job("_scroll_animation_id")
-            self._cancel_after_job("_feed_anim_job")
-        elif self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
-            self._start_continuous_scroll()
-        elif self._subtitle_mode == SUBTITLE_MODE_REALTIME:
-            self._ensure_feed_anim()
-        self._refresh_stopped_hint()
+        anchor = self._content_height() - self._measure_block(block)
+        if self._blocks:
+            last = self._blocks[-1]
+            stacked = last.y + self._measure_block(last) + self._block_gap(block)
+            block.y = max(anchor, stacked)
+        else:
+            block.y = anchor
 
-    def _refresh_stopped_hint(self):
-        """(Re)draw or remove the stopped-hint pill above the footer pill.
+    def _paint_continuous(self, p: QPainter) -> None:
+        """Steady upward scroll; new text appears at the bottom."""
+        x = int(self.width() * SIDE_MARGIN_RATIO)
+        limit = self._content_height()
+        survivors: list[Block] = []
+        newest = len(self._blocks) - 1
+        for i, block in enumerate(self._blocks):
+            h = self._measure_block(block)
+            if block.y + h < 0:  # scrolled fully past the top edge
+                continue
+            survivors.append(block)
+            if block.y <= limit:  # otherwise still queued below the viewport
+                self._draw_block(p, block, x, int(block.y), newest=i == newest)
+        # Each block carries its own absolute y, so dropping off-screen blocks
+        # cannot shift the survivors — no offset compensation needed.
+        self._blocks = survivors
 
-        Tied to ``_show_footer`` (user decision) — it rides on the same
-        disclaimer real estate, so turning the footer off also clears this."""
-        for item_id in self._stopped_hint_items:
-            self.canvas.delete(item_id)
-        self._stopped_hint_items = []
-        if (
-            not self._stopped_hint
-            or not self._show_footer
-            or not self.canvas_width
-            or not self.canvas_height
-        ):
+    def _paint_static(self, p: QPainter) -> None:
+        """Only the newest block, vertically centred."""
+        if not self._blocks:
             return
-        import tkinter.font as tkfont
+        block = self._blocks[-1]
+        x = int(self.width() * SIDE_MARGIN_RATIO)
+        h = self._measure_block(block)
+        self._draw_block(p, block, x, max(0, (self._content_height() - h) // 2))
 
+    def _live_font(self) -> QFont:
+        """Font of the in-progress transcript line.
+
+        The FULL translation size, as the Tk overlay draws it (_live_font_for):
+        the live line is the sentence being spoken, not a footnote to it — and
+        Arabic renders bold and upright there, like a translation line, Latin
+        italic and regular. This used to be handed ``_font_size_base``, which
+        is a divisor and not a pixel size at all, so the line came out at a
+        size unrelated to everything around it — and to the height reserved for
+        it, which was already measured at the translation size.
+        """
+        text = self._live_text or ""
+        px = self._translation_px()
+        if is_arabic_text(text):
+            return subtitle_font(px, text=text)
+        return source_font(px, text)
+
+    def _live_line_height(self) -> int:
+        fm = QFontMetrics(self._live_font())
+        return fm.height() * REALTIME_LIVE_MAX_ROWS
+
+    def _live_rows(self) -> str:
+        """The tail of the live text that fits in REALTIME_LIVE_MAX_ROWS rows.
+
+        Wrapped greedily from the START, then only the last rows are kept —
+        the Tk overlay's rule (_render_live_line). Row boundaries therefore
+        stay put as the interim grows: the visible row fills up to the edge,
+        and the next word starts a fresh one that grows from the middle again.
+
+        This deliberately does not elide. ``QFontMetrics.elidedText`` was doing
+        the truncation before, which slid the text along one character at a
+        time instead of turning the row over — and it re-ordered RTL text on
+        the way, which is how the live line ended up with its full stop at the
+        wrong end while the settled lines below it were correct.
+        """
+        text = self._live_text or ""
+        if not text:
+            return ""
+        layout, _height = self._layout_live(text)
+        extra = layout.lineCount() - REALTIME_LIVE_MAX_ROWS
+        if extra <= 0:
+            return text
+        # Everything from the first VISIBLE row onward; the wrap point is a
+        # word boundary, so the leading space belongs to the row above.
+        return text[layout.lineAt(extra).textStart() :].lstrip()
+
+    def _layout_live(self, text: str) -> tuple[QTextLayout, int]:
+        """Lay ``text`` out as the live line — one direction rule, one font."""
+        return self._layout_text(
+            text, self._live_font(), self._dominant_direction(text)
+        )
+
+    def _draw_live_line(self, p: QPainter, x: int, y: int) -> None:
+        """In-progress transcript: muted while speaking, primary once settled."""
+        text = self._live_rows()
+        if not text:
+            return
+        layout, _height = self._layout_live(text)
+        p.setPen(self._translation_qcolor() if self._live_settled else self._source_qcolor())
+        layout.draw(p, QPointF(x, y))
+
+    def _pill_font(self) -> QFont:
+        """Fixed size and bold, exactly as the Tk overlay draws it.
+
+        The pills are a disclaimer and a status note, not subtitle content, so
+        they must not grow with the subtitle font — at a large size the
+        disclaimer took a third of the overlay.
+        """
+        return subtitle_font(PILL_FONT_PX, bold=True)
+
+    def _pill_height(self) -> int:
+        return QFontMetrics(self._pill_font()).height() + 16
+
+    def _footer_text(self) -> str:
+        from gui.subtitle_text import DEFAULT_FOOTER, FOOTER_TRANSLATIONS
+
+        return FOOTER_TRANSLATIONS.get(self._target_language, DEFAULT_FOOTER)
+
+    def _stopped_text(self) -> str:
         from utils.user_messages import get_user_message
 
-        text = get_user_message("app_stopped")
-        font_spec = (self._footer_font_family, 13, "bold")
-        font_obj = tkfont.Font(family=self._footer_font_family, size=13, weight="bold")
-        pad_x, pad_y = 22, 9
-        line_h = font_obj.metrics("linespace")
-        # The pause mark is DRAWN, not typed: every media-control code point
-        # (U+23F8, U+275A, …) either has no glyph in Tk on Windows — it came
-        # out as a tofu box — or carries side bearings so wide that two bars
-        # read as two loose blocks. Drawn bars give the proportions of a real
-        # pause icon at any font size.
+        # Reads the target language from settings itself, so it re-localises
+        # whenever the pill is repainted.
+        return get_user_message("app_stopped")
+
+    def reserved_bottom(self) -> int:
+        """Height at the bottom the pills occupy — subtitles must stay above it.
+
+        Computed before any content is laid out, so a block can never be drawn
+        underneath the disclaimer.
+        """
+        r = 0
+        if self._show_footer:
+            r += self._pill_height() + FOOTER_MARGIN
+        if self._stopped_hint:
+            r += self._pill_height() + PILL_GAP
+        # Once, above whichever pill ends up topmost — and only when there is
+        # one, so nothing is held back from an overlay that shows neither.
+        return r + PILL_CLEARANCE if r else 0
+
+    def _content_height(self) -> int:
+        return max(1, self.height() - self.reserved_bottom())
+
+    def _pill(
+        self,
+        p: QPainter,
+        text: str,
+        bottom: int,
+        fill: QColor,
+        fg: QColor,
+        *,
+        pause_icon: bool = False,
+    ) -> int:
+        """Draw a centred rounded pill with its bottom edge at ``bottom``.
+
+        ``pause_icon`` prefixes two bars. They are DRAWN, not typed: every
+        media-control code point (U+23F8, U+275A, …) either has no glyph or
+        carries side bearings so wide that the pair reads as two loose blocks
+        — the same conclusion the Tk overlay reached.
+        """
+        font = self._pill_font()
+        fm = QFontMetrics(font)
+        pad_x = 18
+        line_h = fm.height()
         bar_w = max(2, round(line_h * 0.17))
         bar_h = round(line_h * 0.66)
         bar_gap = max(2, round(bar_w * 0.75))
-        icon_w = bar_w * 2 + bar_gap
-        icon_gap = round(pad_x * 0.45)  # icon to text
-        text_w = font_obj.measure(text)
-        pill_w = min(
-            icon_w + icon_gap + text_w + pad_x * 2, self.canvas_width - 40
+        icon_w = (bar_w * 2 + bar_gap) if pause_icon else 0
+        icon_gap = round(pad_x * 0.5) if pause_icon else 0
+        w = fm.horizontalAdvance(text) + icon_w + icon_gap + pad_x * 2
+        h = self._pill_height()
+        x = (self.width() - w) // 2
+        y = bottom - h
+        path = QPainterPath()
+        path.addRoundedRect(x, y, w, h, h / 2, h / 2)
+        p.fillPath(path, fill)
+        if pause_icon:
+            # A pause mark is symmetric, so it needs no mirroring for RTL.
+            mid_y = y + h / 2
+            for i in range(2):
+                bar = QPainterPath()
+                bar.addRoundedRect(
+                    x + pad_x + i * (bar_w + bar_gap),
+                    mid_y - bar_h / 2,
+                    bar_w,
+                    bar_h,
+                    bar_w * 0.35,
+                    bar_w * 0.35,
+                )
+                p.fillPath(bar, fg)
+        p.setFont(font)
+        p.setPen(fg)
+        p.drawText(
+            QRect(x + pad_x + icon_w + icon_gap, y, w - pad_x * 2 - icon_w - icon_gap, h),
+            int(Qt.AlignVCenter | Qt.AlignLeft) if pause_icon else int(Qt.AlignCenter),
+            text,
         )
-        pill_h = line_h + pad_y * 2
-        cx = self.canvas_width / 2
-        # Directly above the disclaimer pill when it is shown (both pills use
-        # the same font, so their heights match), else in its bottom spot.
-        y2 = self.canvas_height - 10
-        if self._canvas_footer_items:
-            y2 -= pill_h + 8
-        y1 = y2 - pill_h
-        bg_id = self.canvas.create_polygon(
-            self._rounded_rect_points(
-                cx - pill_w / 2, y1, cx + pill_w / 2, y2, pill_h / 2
-            ),
-            smooth=True,
-            splinesteps=18,
-            fill=self._card_fill,
-            outline=self._card_outline,
-            width=1,
-        )
-        # Icon left, text right — a pause mark is symmetric, so it needs no
-        # mirroring for right-to-left target languages.
-        mid_y = (y1 + y2) / 2
-        left = cx - pill_w / 2 + pad_x
-        bar_ids = [
-            self.canvas.create_polygon(
-                self._rounded_rect_points(
-                    x, mid_y - bar_h / 2, x + bar_w, mid_y + bar_h / 2, bar_w * 0.35
-                ),
-                smooth=True,
-                splinesteps=8,
-                fill=self._secondary_text,
-                outline="",
+        return y
+
+    def _paint_pills(self, p: QPainter) -> None:
+        """Footer last-but-one, stopped hint stacked directly above it."""
+        bottom = self.height() - FOOTER_MARGIN
+        if self._show_footer:
+            bottom = self._pill(
+                p,
+                self._footer_text(),
+                bottom,
+                QColor(self._colors["warning"]),
+                QColor("#111827"),
+            ) - PILL_GAP
+        if self._stopped_hint:
+            c = self._colors
+            self._pill(
+                p,
+                self._stopped_text(),
+                bottom,
+                QColor(c["card"]),
+                QColor(c["muted"]),
+                pause_icon=True,
             )
-            for x in (left, left + bar_w + bar_gap)
-        ]
-        text_id = self.canvas.create_text(
-            left + icon_w + icon_gap,
-            mid_y,
-            text=_reshape_rtl(text),
-            fill=self._secondary_text,
-            font=font_spec,
-            anchor="w",
-            justify="left",
-            width=int(pill_w - pad_x * 2 - icon_w - icon_gap),
-        )
-        self._stopped_hint_items = [bg_id, *bar_ids, text_id]
 
-    def set_announcement(self, text: str):
-        """Show (or replace) the big centred announcement card, or clear it
-        when ``text`` is empty. Idempotent — re-setting the same text is a
-        no-op so AppGUI can re-assert it cheaply on every window it creates."""
-        text = (text or "").strip()
-        if text == self._announcement_text:
-            return
-        self._announcement_text = text
-        self._render_announcement()
+    def _paint_announcement(self, p: QPainter) -> None:
+        block = Block(self._announcement or "")
+        x = int(self.width() * SIDE_MARGIN_RATIO)
+        h = self._measure_block(block)
+        self._draw_block(p, block, x, max(0, (self._content_height() - h) // 2))
 
-    def clear_announcement(self):
-        """Remove the announcement card from the canvas."""
-        self.set_announcement("")
+    # ── scrolling ────────────────────────────────────────────────────────
+    def _sync_scroll_timer(self) -> None:
+        if self._mode == SUBTITLE_MODE_CONTINUOUS:
+            self._scroll_timer.start()
+        else:
+            self._scroll_timer.stop()
 
-    def _remove_announcement_items(self):
-        for item_id in self._announcement_items:
-            self.canvas.delete(item_id)
-        self._announcement_items = []
+    # ── realtime feed animation ──────────────────────────────────────────
+    def _start_feed_anim(self) -> None:
+        """Ease the feed up to its target rather than jumping there.
 
-    def _render_announcement(self):
-        """(Re)draw the announcement card centred on the canvas, big enough to
-        read across a hall. Removed when there is no announcement text."""
-        import tkinter.font as tkfont
-
-        self._remove_announcement_items()
-        if (
-            not self._announcement_text
-            or not self.canvas_width
-            or not self.canvas_height
-        ):
-            return
-
-        # A touch smaller than the max subtitle size so a longer message wraps
-        # to a few lines inside the card instead of overflowing the screen.
-        size = max(28, min(72, int(self.canvas_width / 22)))
-        font_spec = (self._font_family, size, "bold")
-        font_obj = tkfont.Font(family=self._font_family, size=size, weight="bold")
-
-        max_text_w = int(self.canvas_width * 0.8)
-        # Honour the operator's explicit line breaks, then width-wrap each
-        # paragraph (a blank line stays blank for spacing).
-        lines: list[str] = []
-        for paragraph in self._announcement_text.split("\n"):
-            lines.extend(self._wrap_text_to_lines(paragraph, max_text_w, font_spec))
-
-        pad_x, pad_y = 44, 32
-        line_h = font_obj.metrics("linespace")
-        text_w = max((font_obj.measure(line) for line in lines), default=0)
-        text_h = line_h * len(lines)
-        card_w = min(text_w + pad_x * 2, self.canvas_width - 40)
-        card_h = min(text_h + pad_y * 2, self.canvas_height - 40)
-        cx = self.canvas_width / 2
-        cy = self.canvas_height / 2
-        x1, x2 = cx - card_w / 2, cx + card_w / 2
-        y1, y2 = cy - card_h / 2, cy + card_h / 2
-
-        bg_id = self.canvas.create_polygon(
-            self._rounded_rect_points(x1, y1, x2, y2, 24),
-            smooth=True,
-            splinesteps=18,
-            fill=self._card_fill,
-            outline=self._card_outline,
-            width=1,
-        )
-        # lines are already shaped by _wrap_text_to_lines — do NOT reshape.
-        text_id = self.canvas.create_text(
-            cx,
-            cy,
-            text="\n".join(lines),
-            fill=self._primary_text,
-            font=font_spec,
-            anchor="center",
-            justify="center",
-        )
-        self._announcement_items = [bg_id, text_id]
-        # Keep the disclaimer pills above the card (see _raise_footer).
-        self._raise_footer()
-
-    def _update_font(self):
-        """Recalculate font based on canvas width and font size base (divisor)."""
-        font_size = (
-            int(self.canvas_width / self._font_size_base) if self.canvas_width else 24
-        )
-        font_size = max(12, min(font_size, 120))  # Clamp between 12 and 120
-        self._current_font_size = font_size
-        self.font = (self._font_family, font_size, "bold")
-        # Original text has its own divisor so it can be sized independently of
-        # the translation. Synthetic render harnesses may not carry the field —
-        # derive the historical 70% from the translation divisor for those.
-        source_base = getattr(self, "_source_font_size_base", self._font_size_base / 0.7)
-        source_size = int(self.canvas_width / source_base) if self.canvas_width else 17
-        source_size = max(12, min(source_size, 120))
-        self._current_source_font_size = source_size
-        self.source_font = (self._font_family, source_size, "bold")
-        # Latin-script source/live text: italic + regular weight, so it reads
-        # apart from the bold upright translation even in the same script.
-        # Arabic keeps the upright fonts — it has no italic tradition (Tk
-        # would fake a slant) and the script itself already differs.
-        self.source_font_latin = (self._slant_font_family, source_size, "italic")
-        self.live_font_latin = (self._slant_font_family, font_size, "italic")
-
-    def _source_font_for(self, text: str):
-        return self.source_font if _ARABIC_ANY_RE.search(text) else self.source_font_latin
-
-    def _live_font_for(self, text: str):
-        return self.font if _ARABIC_ANY_RE.search(text) else self.live_font_latin
-
-    def _translation_fill(self) -> str:
-        """Effective translation colour (override or theme)."""
-        return getattr(self, "_translation_text", self._primary_text)
-
-    def _source_fill(self) -> str:
-        """Effective original/live colour (override or theme)."""
-        return getattr(self, "_source_text", self._secondary_text)
-
-    def increase_font(self):
-        """Increase subtitle font size."""
-        new_base = max(20, self._font_size_base - 5)
-        if new_base == self._font_size_base:
-            return
-        self._font_size_base = new_base
-        self._update_font()
-        self._refresh_subtitles(reflow=True)
-
-    def decrease_font(self):
-        """Decrease subtitle font size."""
-        new_base = min(80, self._font_size_base + 5)
-        if new_base == self._font_size_base:
-            return
-        self._font_size_base = new_base
-        self._update_font()
-        self._refresh_subtitles(reflow=True)
-
-    def set_language(self, language: str):
-        """Update the footer text based on target language."""
-        self._target_language = language
-        footer_text = FOOTER_TRANSLATIONS.get(language, DEFAULT_FOOTER)
-        self.footer.configure(text=footer_text)
-        if self._canvas_footer_items:
-            self._draw_canvas_footer()
-        self._refresh_stopped_hint()
-
-    def set_show_footer(self, enabled: bool):
-        """Show or hide the footer disclaimer."""
-        self._show_footer = enabled
-        self._update_footer_visibility()
-        self._reposition_subtitles()
-
-    def get_font_size_base(self) -> int:
-        """Get current font size base (divisor) value for settings persistence."""
-        return self._font_size_base
-
-    def get_current_font_size(self) -> int:
-        """Get the actual rendered font pixel size."""
-        return getattr(self, "_current_font_size", 24)
-
-    def set_source_font_size_base(self, value: float) -> None:
-        """Set the original-text divisor and reflow the active surface."""
-        try:
-            new_base = max(20.0, min(120.0, float(value)))
-        except (TypeError, ValueError):
-            return
-        if new_base == getattr(self, "_source_font_size_base", None):
-            return
-        self._source_font_size_base = new_base
-        self._update_font()
-        self._refresh_subtitles(reflow=True)
-
-    def increase_source_font(self) -> None:
-        """Increase original-text and live-transcript font size."""
-        current = getattr(self, "_source_font_size_base", self._font_size_base / 0.7)
-        self.set_source_font_size_base(current - 5.0)
-
-    def decrease_source_font(self) -> None:
-        """Decrease original-text and live-transcript font size."""
-        current = getattr(self, "_source_font_size_base", self._font_size_base / 0.7)
-        self.set_source_font_size_base(current + 5.0)
-
-    def get_source_font_size_base(self) -> float:
-        """Get the original-text divisor for settings persistence."""
-        return getattr(self, "_source_font_size_base", self._font_size_base / 0.7)
-
-    def get_current_source_font_size(self) -> int:
-        """Get the actual rendered original-text pixel size."""
-        return getattr(self, "_current_source_font_size", 17)
-
-    def set_translation_text_color(self, color: str | None) -> None:
-        """Apply a translation colour live; empty restores the theme default."""
-        self._translation_text_color_override = (color or "").strip()
-        self._translation_text = (
-            self._translation_text_color_override or self._primary_text
-        )
-        self._refresh_subtitles()
-
-    def set_source_text_color(self, color: str | None) -> None:
-        """Apply an original-text colour live; empty restores the theme default."""
-        self._source_text_color_override = (color or "").strip()
-        self._source_text = self._source_text_color_override or self._secondary_text
-        self._refresh_subtitles()
-
-    def get_translation_text_color(self) -> str:
-        """Return the saved override; empty means "use the theme colour"."""
-        return getattr(self, "_translation_text_color_override", "")
-
-    def get_source_text_color(self) -> str:
-        """Return the saved override; empty means "use the theme colour"."""
-        return getattr(self, "_source_text_color_override", "")
-
-    def increase_scroll_speed(self) -> float:
-        """Increase continuous scroll speed."""
-        self._scroll_speed = min(5.0, self._scroll_speed + 0.5)  # Max 5 px/frame
-        self._effective_scroll_speed = max(
-            self._effective_scroll_speed, self._scroll_speed
-        )
-        return self._scroll_speed
-
-    def decrease_scroll_speed(self) -> float:
-        """Decrease continuous scroll speed."""
-        self._scroll_speed = max(0.5, self._scroll_speed - 0.5)  # Min 0.5 px/frame
-        self._effective_scroll_speed = min(
-            self._effective_scroll_speed, self._scroll_speed
-        )
-        return self._scroll_speed
-
-    def set_adaptive_catchup(self, enabled: bool):
-        """Enable or disable adaptive catch-up for subtitle rendering."""
-        self._adaptive_catchup = enabled
-
-    def set_bilingual_mode(self, enabled: bool):
-        """Show or hide the original text above the translation.
-
-        Applies to subtitles added after the change; existing ones stay
-        as-is. Since 2026-07-15 this no longer gates the live transcript
-        line — that follows its own "Show live transcript" setting.
+        Only the top-down feed animates. Continuous mode has its own steady
+        scroll and static mode replaces its block outright, so neither has a
+        gap to close.
         """
-        self._bilingual_mode = enabled
-        self._render_live_line()
-
-    def set_live_text(self, text: str | None, settled: bool = False):
-        """Update or remove the live (in-progress) transcript line.
-
-        ``settled`` marks a finished utterance whose translation is still
-        in flight — the line turns to the primary text color in place
-        ("finished") until the translation subtitle replaces it.
-
-        Called on every GUI poll tick in streaming mode; no-ops when
-        nothing changed, so the frequent calls are cheap.
-        """
-        text = (text or "").strip()
-        if len(text) > LIVE_TEXT_MAX_CHARS:
-            # Show the tail of a long utterance, word-aligned, truncated on
-            # the logical text (before RTL shaping).
-            tail = text[-LIVE_TEXT_MAX_CHARS:].split(" ", 1)[-1]
-            text = "… " + tail
-        if text == self._live_text and settled == self._live_settled:
+        if self._mode != SUBTITLE_MODE_REALTIME or self._stopped_hint:
             return
-        self._live_text = text
-        self._live_settled = settled
-        self._render_live_line()
-
-    def _remove_live_items(self):
-        for text_id, box_id in self._live_items:
-            self.canvas.delete(text_id)
-            if box_id:
-                self.canvas.delete(box_id)
-        self._live_items = []
-
-    def _render_live_line(self):
-        """(Re)draw the live line — Realtime mode only.
-
-        A text block at the feed's writing cursor, below the last settled
-        translation (see _layout_live_feed): full subtitle size, muted
-        while the speaker is still talking, primary ("finished") once the
-        utterance settled and its translation is in flight. The other
-        modes never show the live line.
-        """
-        self._remove_live_items()
-        if self._subtitle_mode != SUBTITLE_MODE_REALTIME:
+        if self._feed_target - self._scroll_offset < FEED_ANIM_SNAP_PX:
             return
-        if not self._live_text:
-            # The live line is gated solely by the "Show live transcript"
-            # setting — the GUI mirrors "" while it is off. "Show original
-            # text" only affects settled bilingual blocks (decoupled
-            # 2026-07-15; supersedes the 2026-07-14 coupling — the two
-            # switches were confusingly both required).
-            self._layout_live_feed()
-            return
+        if not self._feed_timer.isActive():
+            self._feed_timer.start()
 
-        # Use the maintained canvas_width/height attributes — every resize
-        # path keeps them current. Re-reading winfo here is stale when called
-        # synchronously inside set_window_height_percent (the <Configure>
-        # event hasn't been processed yet) and clobbered the fresh size,
-        # corrupting the feed scroll target.
-        max_width = self.canvas_width - 140
-        live_font = self._live_font_for(self._live_text)
-        lines = self._wrap_text_to_lines(self._live_text, max_width, live_font)
-        # Show only the newest row(s): a long interim otherwise wraps to
-        # several rows and shoves the settled history up by that much at once
-        # (the feed never scrolls back down). The full utterance still
-        # arrives as the settled translation block. Wrapping is greedy from
-        # the start of the text, so row boundaries stay put as the interim
-        # grows: the visible row fills up to the edge and the next word starts
-        # a fresh one.
-        if len(lines) > REALTIME_LIVE_MAX_ROWS:
-            lines = lines[-REALTIME_LIVE_MAX_ROWS:]
-        text_id = self.canvas.create_text(
-            self.canvas_width / 2,
-            self.canvas_height,
-            text="\n".join(lines),
-            fill=self._translation_fill()
-            if self._live_settled
-            else self._source_fill(),
-            font=live_font,
-            anchor="s",
-            justify="center",
+    def _step_feed_anim(self) -> None:
+        """One eased frame toward the target, then repaint."""
+        gap = self._feed_target - self._scroll_offset
+        if gap < FEED_ANIM_SNAP_PX:
+            # Close the last sub-pixel outright: easing toward it forever
+            # would repaint every frame for movement nobody can see.
+            self._scroll_offset = self._feed_target
+            self._feed_timer.stop()
+            self.update()
+            return
+        # A floor under the eased step, or the tail of a long slide crawls.
+        self._scroll_offset = min(
+            self._scroll_offset + max(gap * FEED_ANIM_EASE, FEED_ANIM_MIN_STEP),
+            self._feed_target,
         )
-        self._live_items = [(text_id, None)]
-        self._layout_live_feed()
-        self._raise_footer()
-
-    def _layout_live_feed(self):
-        """Top-down feed layout (Realtime mode): settled blocks stack from
-        the top, the live line writes below the last one. When content
-        reaches the bottom limit everything shifts up (chat-style, never
-        back down) and blocks that leave through the top edge are deleted.
-
-        The upward shift is eased (see _step_feed_anim) instead of applied
-        instantly, so an added subtitle glides the feed up rather than
-        snapping — much easier to follow while reading."""
-        if self._subtitle_mode != SUBTITLE_MODE_REALTIME:
-            return
-        _bottoms, content_bottom = self._feed_natural_layout()
-        if content_bottom is None:
-            return
-        limit = self.canvas_height - self.margin_bottom
-
-        # Grow the target scroll so the newest content reaches the bottom
-        # limit. Monotonic: never lower it, so the feed doesn't jump back down
-        # when the live line shrinks or clears between utterances.
-        needed = content_bottom - limit
-        if needed > self._live_feed_scroll_target:
-            self._live_feed_scroll_target = needed
-
-        # A large gap (window resize, mode switch, big backlog) reads worse as
-        # a long slide than as an instant settle — snap those; ease the normal
-        # one-subtitle append.
-        if self._live_feed_scroll_target - self._live_feed_scroll > max(limit, 1):
-            self._live_feed_scroll = self._live_feed_scroll_target
-
-        if self._reduced_motion:
-            self._live_feed_scroll = self._live_feed_scroll_target
-
-        self._render_feed_positions()
-        if not self._reduced_motion:
-            self._ensure_feed_anim()
-
-    def _feed_natural_layout(self):
-        """Bottoms of each settled block and the overall content bottom at
-        zero scroll (Realtime feed). Returns (None, None) when there is
-        nothing to lay out."""
-        cursor = LIVE_FEED_TOP_MARGIN
-        bottoms: list[float] = []
-        for block in self.subtitle_stack:
-            bottoms.append(cursor + block.height)
-            # Wider than continuous mode's line_spacing so a bilingual pair
-            # (tight _pair_gap inside) reads as one group per utterance.
-            cursor = bottoms[-1] + REALTIME_BLOCK_SPACING
-        if self._live_items:
-            live_h = self._measure_block_height(
-                self._live_items[0][0], self._live_items, None
-            )
-            return bottoms, cursor + live_h
-        if bottoms:
-            return bottoms, bottoms[-1]
-        return None, None
-
-    def _render_feed_positions(self):
-        """Draw the feed at the current (animated) rendered scroll and evict
-        blocks that have scrolled off the top edge."""
-        bottoms, content_bottom = self._feed_natural_layout()
-        if content_bottom is None:
-            # Nothing left to show — reset so the next content starts at top.
-            self._live_feed_scroll = 0.0
-            self._live_feed_scroll_target = 0.0
-            return
-        cx = self.canvas_width / 2
-        scroll = self._live_feed_scroll
-
-        last = len(self.subtitle_stack) - 1
-        for i, (block, natural_bottom) in enumerate(
-            zip(self.subtitle_stack, bottoms, strict=True)
-        ):
-            # Newest block carries the translation colour; older ones keep the
-            # theme's muted tone — that dim is history emphasis, not the source
-            # role, so a custom source colour must not bleed into it.
-            fill = self._translation_fill() if i == last else self._secondary_text
-            if block.line_items:
-                # Multi-row block: bottom row anchors the block, the rows
-                # above re-chain at the tight ink-aware distance.
-                self._stack_rows_tight(block.line_items, natural_bottom - scroll)
-                for line_id, _box_id in block.line_items:
-                    self.canvas.itemconfig(line_id, fill=fill)
-                anchor_id = block.line_items[0][0]
-            else:
-                self.canvas.coords(block.text_id, cx, natural_bottom - scroll)
-                self.canvas.itemconfig(block.text_id, fill=fill)
-                anchor_id = block.text_id
-            self._position_source_above(anchor_id, block.source_items)
-
-        if self._live_items:
-            self.canvas.coords(self._live_items[0][0], cx, content_bottom - scroll)
-
-        # Evict blocks fully above the top edge (by their on-screen position).
-        # Compensate both scroll values so survivors keep their positions.
-        while self.subtitle_stack and bottoms and (bottoms[0] - scroll) <= 0:
-            evicted = self.subtitle_stack.pop(0)
-            self._delete_item(evicted)
-            # Must mirror _feed_natural_layout's block spacing exactly, or
-            # the scroll compensation drifts per eviction.
-            extent = evicted.height + REALTIME_BLOCK_SPACING
-            self._live_feed_scroll -= extent
-            self._live_feed_scroll_target -= extent
-            bottoms.pop(0)
-
-    def _ensure_feed_anim(self):
-        """Start the ease-to-target scroll animation if it isn't already
-        running and there's a gap left to close."""
-        if self._feed_anim_job is not None:
-            return
-        if (
-            self._destroying
-            or self._is_hidden
-            or self._stopped_hint
-            or self._reduced_motion
-            or self._subtitle_mode != SUBTITLE_MODE_REALTIME
-        ):
-            return
-        if self._live_feed_scroll_target - self._live_feed_scroll < LIVE_FEED_ANIM_SNAP_PX:
-            return
-        self._feed_anim_job = self.after(
-            LIVE_FEED_ANIM_FRAME_MS, self._step_feed_anim
-        )
-
-    def _step_feed_anim(self):
-        """One eased frame of the top-down feed scroll toward its target."""
-        self._feed_anim_job = None
-        if (
-            self._destroying
-            or self._is_hidden
-            or self._stopped_hint
-            or self._reduced_motion
-            or self._subtitle_mode != SUBTITLE_MODE_REALTIME
-        ):
-            return
-        gap = self._live_feed_scroll_target - self._live_feed_scroll
-        if gap <= LIVE_FEED_ANIM_SNAP_PX:
-            self._live_feed_scroll = self._live_feed_scroll_target
-            self._render_feed_positions()
-            return
-        step = max(gap * LIVE_FEED_ANIM_EASE, LIVE_FEED_ANIM_MIN_STEP)
-        self._live_feed_scroll = min(
-            self._live_feed_scroll + step, self._live_feed_scroll_target
-        )
-        self._render_feed_positions()
-        # Eviction inside the render may have closed the gap; re-check.
-        remaining = self._live_feed_scroll_target - self._live_feed_scroll
-        if remaining >= LIVE_FEED_ANIM_SNAP_PX:
-            self._feed_anim_job = self.after(
-                LIVE_FEED_ANIM_FRAME_MS, self._step_feed_anim
-            )
+        self.update()
 
     def get_subtitle_backlog_count(self) -> int:
-        """Estimate how many subtitles are waiting below the visible anchor line."""
-        if self._subtitle_mode != SUBTITLE_MODE_CONTINUOUS:
-            return 0
+        """How many blocks are queued below the visible anchor line.
 
-        visible_anchor = self.canvas_height - self.margin_bottom
-        backlog = 0
-        for block in self.subtitle_stack:
-            coords = self.canvas.coords(block.text_id)
-            if coords and coords[1] > visible_anchor:
-                backlog += 1
-        return backlog
+        Continuous mode only — the other modes do not queue.
+        """
+        if self._mode != SUBTITLE_MODE_CONTINUOUS:
+            return 0
+        limit = self._content_height()
+        return sum(1 for b in self._blocks if b.y > limit)
 
     def _current_scroll_speed(self) -> float:
-        """Compute smoothed scroll speed with optional readability-first catch-up."""
-        target_speed = self._scroll_speed
-        if self._adaptive_catchup and self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
-            backlog = self.get_subtitle_backlog_count()
-            # Readability-first: accelerate gently and cap at 2x.
-            multiplier = min(2.0, 1.0 + (0.25 * backlog))
-            target_speed = self._scroll_speed * multiplier
+        """Smoothed scroll speed, with optional readability-first catch-up.
 
-        self._effective_scroll_speed = (0.85 * self._effective_scroll_speed) + (
-            0.15 * target_speed
+        Accelerates gently and caps at 2x so a backlog is worked off without
+        the text becoming unreadable, then EMA-smoothed so the speed change
+        itself is not visible as a jolt.
+        """
+        target = self._scroll_speed
+        if self._adaptive_catchup and self._mode == SUBTITLE_MODE_CONTINUOUS:
+            target *= min(2.0, 1.0 + 0.25 * self.get_subtitle_backlog_count())
+        self._effective_scroll_speed = (
+            0.85 * self._effective_scroll_speed + 0.15 * target
         )
         return self._effective_scroll_speed
 
-    def set_transparent_static(self, enabled: bool):
-        """Enable or disable transparent background for static mode."""
-        self._transparent_static = enabled
-        if self._subtitle_mode == SUBTITLE_MODE_STATIC:
-            if enabled:
-                self._apply_transparent_mode()
-            else:
-                self._apply_opaque_mode()
-            # Refresh subtitles to apply new style
-            self._refresh_subtitles()
+    def _advance_scroll(self) -> None:
+        step = SCROLL_PIXELS_PER_FRAME * self._current_scroll_speed()
+        for block in self._blocks:
+            block.y -= step
+        self.update()
 
-    def _apply_transparent_mode(self):
-        """Make the window background transparent on desktop and keyable in OBS.
+    # ── public API ───────────────────────────────────────────────────────
+    def add_subtitle(self, text: str, source_text: str | None = None) -> None:
+        """Append a settled utterance.
 
-        Platform-specific transparency:
-        - Windows: -transparentcolor makes green invisible on desktop
-        - macOS: -transparent attribute with transparent background
-        - Linux: Compositor-dependent, uses alpha channel if available
+        Long realtime blocks are split at sentence boundaries so one 12 s
+        utterance does not land as a wall of text. Display-only: no extra API
+        calls, and a bilingual pair is never split (the halves have no
+        per-sentence alignment).
         """
-        # Use a dedicated chroma key that does not appear in the control panel.
-        chroma_color = self._transparent_key_color
+        if not text:
+            return
+        from gui.subtitle_text import split_display_chunks
 
-        if sys.platform == "win32":
-            # Windows: use transparent color (chroma green becomes invisible)
-            self.configure(bg=chroma_color)
-            self.canvas.configure(bg=chroma_color)
-            self.wm_attributes("-transparentcolor", chroma_color)
-
-        elif sys.platform == "darwin":
-            # macOS: use native transparency
-            try:
-                self.wm_attributes("-transparent", True)
-                # Use systemTransparent for true transparency
-                self.configure(bg="systemTransparent")
-                self.canvas.configure(bg="systemTransparent")
-            except tk.TclError:
-                # Fallback to chroma key if transparency not supported
-                self.configure(bg=chroma_color)
-                self.canvas.configure(bg=chroma_color)
-
+        if self._mode == SUBTITLE_MODE_REALTIME and not source_text:
+            chunks = split_display_chunks(text, REALTIME_MAX_BLOCK_CHARS)
         else:
-            # Linux: Try compositor alpha transparency
-            try:
-                # Set background to a color we can make transparent
-                self.configure(bg=chroma_color)
-                self.canvas.configure(bg=chroma_color)
-                # Request RGBA visual for true transparency
-                # This works with compositing window managers (KDE, GNOME, etc.)
-                self.wait_visibility()
-                self.wm_attributes("-alpha", 0.99)  # Triggers RGBA mode
-                # Now we can use transparent areas
-                self.configure(bg="")
-                self.canvas.configure(bg="")
-            except tk.TclError:
-                # Fallback to chroma key for OBS
-                self.configure(bg=chroma_color)
-                self.canvas.configure(bg=chroma_color)
+            chunks = [text]
+        for i, chunk in enumerate(chunks):
+            block = Block(chunk, source_text if i == 0 else None)
+            if self._mode == SUBTITLE_MODE_CONTINUOUS:
+                self._place_continuous(block)
+            self._blocks.append(block)
+        self.update()
 
-        # Make always-on-top so subtitles stay visible over other windows
-        # (respects the user's always_on_top setting).
-        self._apply_topmost()
+    def set_live_text(self, text: str | None, settled: bool = False) -> None:
+        self._live_text = text or None
+        self._live_settled = settled
+        self.update()
 
-    def _apply_opaque_mode(self):
-        """Restore the polished opaque subtitle surface."""
-        if sys.platform == "win32":
-            try:
-                self.wm_attributes("-transparentcolor", "")
-            except tk.TclError:
-                pass
-        else:
-            try:
-                self.wm_attributes("-alpha", 1.0)
-            except tk.TclError:
-                pass
+    def set_subtitle_mode(self, mode: str) -> None:
+        self._mode = mode
+        self._scroll_offset = self._feed_target = 0.0
+        self._feed_timer.stop()
+        if mode == SUBTITLE_MODE_CONTINUOUS:
+            # Blocks carried over from another mode have no meaningful y yet:
+            # re-stack them from the bottom so the newest stays visible.
+            self._restack_continuous()
+        self._sync_scroll_timer()
+        self.update()
 
-        self.configure(bg=self._bg_color)
-        self.canvas.configure(bg=self._bg_color)
-
-        self._apply_topmost()
-
-    def set_subtitle_mode(self, mode: str):
-        """Set subtitle display mode: realtime, continuous or static."""
-        # Stop any running animation
-        self._cancel_after_job("_continuous_start_job")
-        self._cancel_after_job("_scroll_animation_id")
-
-        old_mode = self._subtitle_mode
-        self._subtitle_mode = mode
-        self._effective_scroll_speed = self._scroll_speed
-        # Clear existing subtitles when changing mode
-        self._clear_all_subtitles()
-
-        # Handle transparent mode when switching to/from static
-        if mode == SUBTITLE_MODE_STATIC and self._transparent_static:
-            self._apply_transparent_mode()
-        elif old_mode == SUBTITLE_MODE_STATIC and self._transparent_static:
-            # Switching away from static transparent mode
-            self._apply_opaque_mode()
-
-        # Start continuous scroll animation if needed
-        if mode == SUBTITLE_MODE_CONTINUOUS and not self._stopped_hint:
-            self._start_continuous_scroll()
-
-        # Recalculate margin since static mode uses a tighter footer gap
-        self._update_footer_visibility()
-
-        # Re-anchor the live line against the new mode's footer margin
-        self._render_live_line()
-        # The announcement card is mode-independent; redraw to restore its
-        # z-order above the freshly re-added subtitle items.
-        self._render_announcement()
+    def _restack_continuous(self) -> None:
+        """Re-place every block bottom-up, newest anchored at the bottom edge."""
+        y = self._content_height()
+        for block in reversed(self._blocks):
+            h = self._measure_block(block)
+            y -= h
+            block.y = y
+            # The gap belongs to the block that follows it, so it is this
+            # block's own — the same rule _paint_realtime stacks by.
+            y -= self._block_gap(block)
 
     def get_subtitle_mode(self) -> str:
-        """Get current subtitle mode."""
-        return self._subtitle_mode
+        return self._mode
 
-    def _delete_item(self, block: _SubtitleBlock):
-        """Delete all canvas objects belonging to one subtitle entry."""
-        self.canvas.delete(block.text_id)
-        for group in (block.line_items, block.source_items):
-            if group:
-                for group_text_id, box_id in group:
-                    if group_text_id and group_text_id != block.text_id:
-                        self.canvas.delete(group_text_id)
-                    if box_id:
-                        self.canvas.delete(box_id)
+    def set_bilingual_mode(self, enabled: bool) -> None:
+        self._bilingual = enabled
+        self.update()
 
-    @staticmethod
-    def _block_text_ids(block: _SubtitleBlock) -> list[int]:
-        """Return each text item in a block exactly once."""
-        ids: list[int] = []
-        seen: set[int] = set()
-        for item_id, _box_id in block.line_items or [(block.text_id, None)]:
-            if item_id and item_id not in seen:
-                ids.append(item_id)
-                seen.add(item_id)
-        for item_id, _box_id in block.source_items or []:
-            if item_id and item_id not in seen:
-                ids.append(item_id)
-                seen.add(item_id)
-        return ids
+    def set_theme(self, theme_mode: str) -> None:
+        self._theme_mode = theme_mode
+        self.update()
 
-    def _block_bbox(self, block: _SubtitleBlock) -> tuple[int, int, int, int] | None:
-        """Bounding box of all source and translation text in one block."""
-        boxes = [
-            bbox
-            for item_id in self._block_text_ids(block)
-            if (bbox := self.canvas.bbox(item_id)) is not None
-        ]
-        if not boxes:
-            return None
-        return (
-            min(box[0] for box in boxes),
-            min(box[1] for box in boxes),
-            max(box[2] for box in boxes),
-            max(box[3] for box in boxes),
-        )
+    def set_language(self, language: str) -> None:
+        self._target_language = language
+        self.update()
 
-    def _move_block(self, block: _SubtitleBlock, dy: float) -> None:
-        """Move every text/background item belonging to a block vertically."""
-        moved: set[int] = set()
-        for group in (
-            block.line_items or [(block.text_id, None)],
-            block.source_items or [],
-        ):
-            for text_id, box_id in group:
-                for item_id in (text_id, box_id):
-                    if item_id and item_id not in moved:
-                        self.canvas.move(item_id, 0, dy)
-                        moved.add(item_id)
+    def set_show_footer(self, enabled: bool) -> None:
+        self._show_footer = enabled
+        self.update()
 
-    def _move_block_to_top(self, block: _SubtitleBlock, top: float) -> None:
-        bbox = self._block_bbox(block)
-        if bbox is not None:
-            self._move_block(block, top - bbox[1])
+    def set_stopped_hint(self, visible: bool) -> None:
+        self._stopped_hint = visible
+        self.update()
 
-    def _measure_block_height(self, text_id, line_items, source_items) -> int:
-        """Total pixel height of a subtitle block (source + translation)."""
-        ids = [li[0] for li in line_items] if line_items else [text_id]
-        if source_items:
-            ids += [si[0] for si in source_items]
-        tops: list[int] = []
-        bottoms: list[int] = []
-        for item_id in ids:
-            bbox = self.canvas.bbox(item_id)
-            if bbox:
-                tops.append(bbox[1])
-                bottoms.append(bbox[3])
-        return (max(bottoms) - min(tops)) if tops else 75
+    def set_announcement(self, text: str) -> None:
+        self._announcement = text
+        self.update()
 
-    def _font_em_and_ascent(self, font_spec) -> tuple[float, float]:
-        """(em height, ascent) of a Tk font spec, both in pixels.
+    def clear_announcement(self) -> None:
+        self._announcement = None
+        self.update()
 
-        Tk font sizes are POINTS, so the pixel em depends on the display DPI
-        and is measured against a font of a known PIXEL size rather than
-        assumed. Cached per spec — this runs per row per animation frame."""
-        import tkinter.font as tkfont
-
-        # Lazily healed: the scripted render harnesses build this window with
-        # object.__new__ and only the attributes they render with.
-        cache = getattr(self, "_font_metrics_cache", None)
-        if cache is None:
-            cache = self._font_metrics_cache = {}
-        key = tuple(font_spec)
-        cached = cache.get(key)
-        if cached is not None:
-            return cached
-        try:
-            font_obj = tkfont.Font(font=font_spec)
-            ascent = float(font_obj.metrics("ascent"))
-            linespace = float(font_obj.metrics("linespace"))
-            reference = tkfont.Font(font=font_spec)
-            reference.configure(size=-1000)  # same family/style, em = 1000 px
-            em = 1000.0 * linespace / float(reference.metrics("linespace"))
-        except (tk.TclError, ZeroDivisionError, ValueError):
-            # No usable metrics (headless/synthetic harness): fall back to the
-            # nominal size as the em and Segoe UI's ascent ratio.
-            em = float(self._current_font_size)
-            ascent = 1.07 * em
-        cache[key] = (em, ascent)
-        return em, ascent
-
-    def _stack_overlap(self, lower_text: str) -> int:
-        """How far a line's bounding box may overlap the box of `lower_text`
-        (translation font) directly below it.
-
-        Tk boxes are font-METRIC sized: even at zero box gap the glyphs can
-        sit ~0.5em apart, because the lower font's leading above its tallest
-        ink is blank pixels inside the box. Overlapping by that amount pulls
-        the lines visually together while the ink itself can never touch.
-
-        That leading is the font's ascent minus its ink top, and it varies
-        per FAMILY: Segoe UI (Windows) carries ~0.37 em of it, an
-        Arial/Helvetica-class font (the Linux fallback) barely 0.20 em, and
-        Helvetica clones like Nimbus Sans none at all. Hardcoding the Windows
-        figure overlapped real ink on Linux, so both terms are measured from
-        the live font — a family without leading simply gets no overlap.
-
-        The upper line always keeps its full descent zone, even when its
-        text has no descenders: baseline distances must stay CONSTANT for
-        the spacing to READ as even — the eye measures baselines, not
-        descender tips, so tucking a descender-less line closer makes it an
-        outlier (live-session feedback 2026-07-15)."""
-        em, ascent = self._font_em_and_ascent(self.font)
-        lower_text = _HONORIFIC_LIGATURE_RE.sub("", lower_text)
-        if _ARABIC_ANY_RE.search(lower_text):
-            ink_top = _INK_TOP_EM_ARABIC
-        elif _TALL_DIACRITIC_RE.search(lower_text):
-            ink_top = _INK_TOP_EM_TALL_DIACRITIC
-        else:
-            ink_top = _INK_TOP_EM_PLAIN
-        leading = ascent - ink_top * em
-        return max(0, round(leading - _STACK_INK_GAP_EM * em))
-
-    def _stack_rows_tight(self, line_items, bottom_y: float | None = None):
-        """Position a multi-row Realtime block's rows bottom-up so each row
-        sits at the tight ink-aware distance above the one below
-        (_stack_overlap). `bottom_y` anchors the bottom row; None keeps its
-        current position (e.g. re-chaining after a font change)."""
-        cx = self.canvas_width / 2
-        below_id = below_text = None
-        for line_id, _box_id in reversed(line_items):
-            if below_id is None:
-                if bottom_y is not None:
-                    self.canvas.coords(line_id, cx, bottom_y)
-            else:
-                self.canvas.coords(
-                    line_id,
-                    cx,
-                    self.canvas.bbox(below_id)[1] + self._stack_overlap(below_text),
-                )
-            below_id = line_id
-            below_text = self.canvas.itemcget(line_id, "text")
-
-    def _position_source_above(self, text_id: int, source_items):
-        """Anchor the source text directly above the translation text.
-
-        Used in Realtime and continuous mode, where the source is a single
-        canvas text item; static mode positions per-line source cards itself.
-        In Realtime mode `text_id` is the block's TOP row when the
-        translation wraps to several per-row items.
-        """
-        if not source_items:
-            return
-        bbox = self.canvas.bbox(text_id)
-        if not bbox:
-            return
-        lower_first_line = self.canvas.itemcget(text_id, "text").split("\n")[0]
-        source_y = bbox[1] + self._stack_overlap(lower_first_line)
-        for source_id, _box_id in source_items:
-            self.canvas.coords(source_id, self.canvas_width / 2, source_y)
-
-    def _clear_all_subtitles(self):
-        """Remove all subtitle items from the canvas."""
-        for block in self.subtitle_stack:
-            self._delete_item(block)
-        self.subtitle_stack.clear()
-        if self._feed_anim_job is not None:
-            self.after_cancel(self._feed_anim_job)
-            self._feed_anim_job = None
-        self._live_feed_scroll = 0.0
-        self._live_feed_scroll_target = 0.0
-
-    def _on_escape(self, _event=None):
-        """Esc → stop the translation (never close). No-op when no stop
-        callback is wired (e.g. a standalone render harness)."""
-        if self._on_stop is not None:
-            self._on_stop()
-
-    def hide(self):
-        """Make the window fully invisible on screen AND in OBS.
-
-        Uses the Windows DWM color-key transparency so that OBS Window Capture
-        (which uses Windows Graphics Capture) also sees a fully transparent
-        window instead of a frozen last frame.
-        """
-        # A hidden surface must be visually still and must not leave animation
-        # callbacks alive that would fire against an invisible/torn-down window.
-        self._is_hidden = True
-        self._cancel_animation_jobs()
-
-        # 1. Remove all subtitle text from the canvas (incl. the live line)
-        self._clear_all_subtitles()
-        self._live_text = ""
-        self._live_settled = False
-        self._remove_live_items()
-
-        # 2. Hide the footer (both label and canvas pill) and the stopped
-        # hint (the flag survives, so show() restores the pill)
-        self.footer.place_forget()
-        self._remove_canvas_footer()
-        for item_id in self._stopped_hint_items:
-            self.canvas.delete(item_id)
-        self._stopped_hint_items = []
-        # Remove the announcement card too; the text is kept so show() can
-        # restore it (the flag survives, like the stopped hint).
-        self._remove_announcement_items()
-
-        if sys.platform == "win32":
-            chroma_color = self._transparent_key_color
-            self.configure(bg=chroma_color)
-            self.canvas.configure(bg=chroma_color)
-            self.wm_attributes("-transparentcolor", chroma_color)
-        else:
-            self.attributes("-alpha", 0.0)
-
-    def show(self):
-        """Restore the window to full visibility (reverses hide())."""
-        self._is_hidden = False
-        if sys.platform == "win32":
-            try:
-                self.wm_attributes("-transparentcolor", "")
-            except tk.TclError:
-                pass
-        else:
-            self.attributes("-alpha", 1.0)
-
-        if self._subtitle_mode == SUBTITLE_MODE_STATIC and self._transparent_static:
-            self._apply_transparent_mode()
-        else:
-            self._apply_opaque_mode()
-        if self._show_footer:
-            self._update_footer_visibility()
-        else:
-            self._refresh_stopped_hint()
-        self._render_announcement()
-        # hide() cancelled the ticker; resume it now that the surface is back.
-        if self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS and not self._stopped_hint:
-            self._start_continuous_scroll()
-
-    def _rounded_rect_points(
-        self, x1: float, y1: float, x2: float, y2: float, radius: float
-    ) -> list[float]:
-        """Build polygon points for a rounded rectangle on the canvas."""
-        radius = max(0, min(radius, (x2 - x1) / 2, (y2 - y1) / 2))
-        return [
-            x1 + radius,
-            y1,
-            x1 + radius,
-            y1,
-            x2 - radius,
-            y1,
-            x2 - radius,
-            y1,
-            x2,
-            y1,
-            x2,
-            y1 + radius,
-            x2,
-            y1 + radius,
-            x2,
-            y2 - radius,
-            x2,
-            y2 - radius,
-            x2,
-            y2,
-            x2 - radius,
-            y2,
-            x2 - radius,
-            y2,
-            x1 + radius,
-            y2,
-            x1 + radius,
-            y2,
-            x1,
-            y2,
-            x1,
-            y2 - radius,
-            x1,
-            y2 - radius,
-            x1,
-            y1 + radius,
-            x1,
-            y1 + radius,
-            x1,
-            y1,
-        ]
-
-    def _create_line_background(self, bbox: tuple[int, int, int, int]) -> int:
-        """Create a tight dark background strip behind one rendered line."""
-        padding_y = self._static_card_padding_y()
-        x1 = bbox[0] - self._box_padding_x
-        y1 = bbox[1] - padding_y
-        x2 = bbox[2] + self._box_padding_x
-        y2 = bbox[3] + padding_y
-        return self.canvas.create_polygon(
-            self._rounded_rect_points(x1, y1, x2, y2, self._box_radius),
-            smooth=True,
-            splinesteps=18,
-            fill=self._card_fill,
-            outline=self._card_outline,
-            width=1,
-        )
-
-    def _update_line_background(self, box_id: int, bbox: tuple[int, int, int, int]):
-        """Resize a rounded line background after font or position changes."""
-        padding_y = self._static_card_padding_y()
-        x1 = bbox[0] - self._box_padding_x
-        y1 = bbox[1] - padding_y
-        x2 = bbox[2] + self._box_padding_x
-        y2 = bbox[3] + padding_y
-        self.canvas.itemconfig(
-            box_id,
-            fill=self._card_fill,
-            outline=self._card_outline,
-            width=1,
-        )
-        self.canvas.coords(
-            box_id,
-            *self._rounded_rect_points(x1, y1, x2, y2, self._box_radius),
-        )
-
-    def _static_spacing_token(self, normal: int, minimum: int) -> int:
-        """Scale one vertical token only for unusually shallow static surfaces."""
-        if getattr(self, "_subtitle_mode", None) != SUBTITLE_MODE_STATIC:
-            return normal
-        height = max(
-            1, int(getattr(self, "canvas_height", STATIC_COMPACT_LAYOUT_HEIGHT))
-        )
-        scale = min(1.0, height / STATIC_COMPACT_LAYOUT_HEIGHT)
-        return max(minimum, min(normal, round(normal * scale)))
-
-    def _static_card_padding_y(self) -> int:
-        return self._static_spacing_token(self._box_padding_y, 2)
-
-    def _static_line_spacing(self) -> int:
-        return self._static_spacing_token(self._line_gap, 2)
-
-    def _static_pair_spacing(self) -> int:
-        return self._static_spacing_token(self._pair_gap, 1)
-
-    def _static_top_margin(self) -> int:
-        return self._static_spacing_token(16, 2)
-
-    def _static_pair_height(
-        self,
-        text: str,
-        source: str,
-        translation_font,
-        source_font,
-    ) -> int:
-        """Estimate the vertical ink/card extent of one static subtitle pair."""
-        import tkinter.font as tkfont
-
-        max_width = max(1, self.canvas_width - 140)
-        line_gap = self._static_line_spacing()
-        pair_gap = self._static_pair_spacing()
-        translation_lines = self._wrap_text_to_lines(
-            text, max_width, translation_font
-        )
-        translation_line_height = tkfont.Font(font=translation_font).metrics(
-            "linespace"
-        )
-        height = (
-            len(translation_lines) * translation_line_height
-            + max(0, len(translation_lines) - 1) * line_gap
-        )
-        if source:
-            source_lines = self._wrap_text_to_lines(source, max_width, source_font)
-            source_line_height = tkfont.Font(font=source_font).metrics("linespace")
-            height += (
-                pair_gap
-                + len(source_lines) * source_line_height
-                + max(0, len(source_lines) - 1) * line_gap
-            )
-        # Only the outermost card padding expands the pair's total extent;
-        # neighbouring line cards deliberately sit close together.
-        return height + (2 * self._static_card_padding_y()) + (
-            2 * STATIC_CARD_OUTLINE_ALLOWANCE
-        )
-
-    def _static_fonts_for_content(self, text: str, source: str):
-        """Preserve the configured size ratio while fitting a static pair.
-
-        Static mode cannot scroll. Exceptionally long bilingual utterances are
-        therefore reduced only as much as needed to keep every line readable
-        between the top margin and footer. The operator's configured sizes are
-        untouched and apply again to the next shorter block.
-        """
-        translation_size = self._current_font_size
-        source_size = self._current_source_font_size
-        available_height = max(
-            1,
-            self.canvas_height - self.margin_bottom - self._static_top_margin(),
-        )
-
-        while True:
-            translation_font = (self._font_family, translation_size, "bold")
-            source_font = (
-                (self._font_family, source_size, "bold")
-                if _ARABIC_ANY_RE.search(source)
-                else (self._slant_font_family, source_size, "italic")
-            )
-            required_height = self._static_pair_height(
-                text, source, translation_font, source_font
-            )
-            if required_height <= available_height or (
-                translation_size <= STATIC_MIN_FIT_FONT_SIZE
-                and source_size <= STATIC_MIN_FIT_FONT_SIZE
-            ):
-                return translation_font, source_font
-
-            scale = max(0.5, min(0.92, available_height / required_height))
-            next_translation = max(
-                STATIC_MIN_FIT_FONT_SIZE, int(translation_size * scale)
-            )
-            next_source = max(STATIC_MIN_FIT_FONT_SIZE, int(source_size * scale))
-            if (
-                next_translation == translation_size
-                and translation_size > STATIC_MIN_FIT_FONT_SIZE
-            ):
-                next_translation -= 1
-            if next_source == source_size and source_size > STATIC_MIN_FIT_FONT_SIZE:
-                next_source -= 1
-            translation_size, source_size = next_translation, next_source
-
-    def _wrap_text_to_lines(self, text: str, max_width: int, font=None) -> list[str]:
-        """Split text into rendered lines that fit within max_width pixels.
-
-        Wrapping happens on the LOGICAL text (reading order) and every line
-        is shaped individually afterwards. Wrapping the already-shaped
-        visual-order string (the previous approach) put the sentence END of
-        RTL text on the first line and, with a degenerate width, stacked
-        words in reverse order. The returned lines are shaped and ready for
-        canvas.create_text().
-        """
-        import tkinter.font as tkfont
-
-        shaped_text = _reshape_rtl(text)
-        if max_width <= 0:
-            # Canvas not laid out yet — render unwrapped rather than
-            # producing one reversed word per line.
-            return [shaped_text]
-
-        font_obj = tkfont.Font(font=font or self.font)
-
-        # If the whole shaped text already fits, return it as one line.
-        if font_obj.measure(shaped_text) <= max_width:
-            return [shaped_text]
-
-        # Fill lines with LOGICAL words, measuring the shaped candidate so
-        # widths reflect the actual rendered glyphs.
-        words = text.split()
-        lines: list[str] = []
-        current_line: list[str] = []
-
-        for word in words:
-            test_line = " ".join(current_line + [word])
-            if font_obj.measure(_reshape_rtl(test_line)) <= max_width or not (
-                current_line
-            ):
-                current_line.append(word)
-            else:
-                lines.append(_reshape_rtl(" ".join(current_line)))
-                current_line = [word]
-
-        if current_line:
-            lines.append(_reshape_rtl(" ".join(current_line)))
-
-        return lines if lines else [shaped_text]
-
-    def _create_outlined_text(
-        self, x: float, y: float, text: str, font=None, fill=None
-    ) -> tuple:
-        """Create per-line subtitle cards for the static display mode."""
-        font = font or self.font
-        fill = fill or self._translation_fill()
-        # Use the maintained size rather than winfo_width(): immediately after
-        # a native monitor/height resize Tk can still report the old surface.
-        max_width = self.canvas_width - 140
-        lines = self._wrap_text_to_lines(text, max_width, font)
-
-        import tkinter.font as tkfont
-
-        font_obj = tkfont.Font(font=font)
-        line_height = font_obj.metrics("linespace")
-        line_gap = self._static_line_spacing()
-        line_items = []
-        current_y = y
-
-        # lines are already shaped by _wrap_text_to_lines – do NOT reshape again.
-        for line_text in reversed(lines):
-            text_id = self.canvas.create_text(
-                x,
-                current_y,
-                text=line_text,
-                fill=fill,
-                font=font,
-                anchor="s",
-                justify="center",
-            )
-
-            bbox = self.canvas.bbox(text_id)
-            if bbox:
-                box_id = self._create_line_background(bbox)
-                self.canvas.tag_raise(text_id, box_id)
-            else:
-                box_id = None
-
-            line_items.append((text_id, box_id))
-            current_y -= line_height + line_gap
-
-        line_items.reverse()
-        main_text_id = line_items[-1][0]
-
-        return main_text_id, line_items
-
-    def _refresh_subtitles(self, *, reflow: bool = False):
-        """Refresh existing subtitles after a visual change.
-
-        A font-size change must rebuild every block from its logical source so
-        wrapping is recalculated. Merely applying a larger font to the old
-        canvas rows makes a formerly fitting line extend beyond both screen
-        edges. Theme/colour-only refreshes retain the cheaper in-place repaint.
-        """
-        # A few lifecycle paths are deliberately exercised with a minimal
-        # object harness before the canvas stack has been initialised. Treat
-        # that state like an empty surface while still refreshing its layout.
-        blocks = getattr(self, "subtitle_stack", ())
-        if reflow and blocks:
-            self._reflow_subtitle_blocks()
-            return
-
-        for block in blocks:
-            if block.line_items:
-                for line_text_id, box_id in block.line_items:
-                    if line_text_id:
-                        self.canvas.itemconfig(
-                            line_text_id, fill=self._translation_fill()
-                        )
-                    if box_id:
-                        bbox = self.canvas.bbox(line_text_id)
-                        if bbox:
-                            self._update_line_background(box_id, bbox)
-            else:
-                self.canvas.itemconfig(block.text_id, fill=self._translation_fill())
-            if block.source_items:
-                for source_id, box_id in block.source_items:
-                    self.canvas.itemconfig(source_id, fill=self._source_fill())
-                    if box_id:
-                        bbox = self.canvas.bbox(source_id)
-                        if bbox:
-                            self._update_line_background(box_id, bbox)
-
-        for block in blocks:
-            if block.line_items and self._subtitle_mode == SUBTITLE_MODE_REALTIME:
-                # Multi-row Realtime blocks: re-chain the rows with the new
-                # font BEFORE measuring — their height is position-dependent.
-                self._stack_rows_tight(block.line_items)
-            block.height = self._measure_block_height(
-                block.text_id, block.line_items, block.source_items
-            )
-        self._reposition_subtitles()
-        # Redraw the live line with the new font/theme colors
-        self._render_live_line()
-
-    def _reflow_subtitle_blocks(self):
-        """Rebuild visible blocks for the current font and settle their layout.
-
-        Realtime scrolling is intentionally snapped after this explicit user
-        action. Easing from the old geometry would leave the newly enlarged
-        live/newest text below the footer limit for several frames.
-        """
-        continuous_anchor_top = None
-        if self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS and self.subtitle_stack:
-            anchor_bbox = self._block_bbox(self.subtitle_stack[0])
-            if anchor_bbox is not None:
-                continuous_anchor_top = float(anchor_bbox[1])
-        entries = [
-            (block.logical_text, block.logical_source)
-            for block in self.subtitle_stack
-            if block.logical_text
-        ]
-        if not entries or len(entries) != len(self.subtitle_stack):
-            # Compatibility guard for synthetic/legacy blocks that predate the
-            # logical fields: keep the old in-place behavior instead of erasing
-            # content we cannot safely reconstruct (especially shaped RTL).
-            self._refresh_subtitles(reflow=False)
-            return
-
-        self._cancel_after_job("_feed_anim_job")
-        for block in self.subtitle_stack:
-            self._delete_item(block)
-        self.subtitle_stack.clear()
-        self._live_feed_scroll = 0.0
-        self._live_feed_scroll_target = 0.0
-
-        for text, source in entries:
-            self._add_subtitle_block(
-                text,
-                source,
-                defer_layout=True,
-                refresh_geometry=False,
-            )
-
-        if self._subtitle_mode == SUBTITLE_MODE_REALTIME:
-            # Recreate/re-wrap the interim line first so it participates in the
-            # final content height, then place everything at the visible limit.
-            self._render_live_line()
-            self._settle_live_feed_after_reflow()
-        elif self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
-            self._layout_continuous_after_reflow(continuous_anchor_top)
-            self._render_live_line()
-        else:
-            self._reposition_subtitles()
-            self._render_live_line()
-        self._raise_footer()
-
-    def _layout_continuous_after_reflow(self, anchor_top: float | None) -> None:
-        """Rebuild the ticker downward without consuming its queued backlog.
-
-        The first block keeps the same top edge/read progress. Recomputed block
-        heights then push every not-yet-seen block farther down in queue order,
-        instead of anchoring the newest block and throwing older rows above the
-        viewport.
-        """
-        if not self.subtitle_stack:
-            return
-        first_bbox = self._block_bbox(self.subtitle_stack[0])
-        if first_bbox is None:
-            return
-        if anchor_top is None:
-            visible_bottom = self.canvas_height - self.margin_bottom
-            anchor_top = max(16.0, visible_bottom - (first_bbox[3] - first_bbox[1]))
-
-        next_top = anchor_top
-        for block in self.subtitle_stack:
-            self._move_block_to_top(block, next_top)
-            bbox = self._block_bbox(block)
-            if bbox is None:
-                continue
-            block.height = bbox[3] - bbox[1]
-            next_top = bbox[3] + self.line_spacing
-
-    def _settle_live_feed_after_reflow(self):
-        """Bottom-clamp Realtime content immediately after a font reflow."""
-        self._cancel_after_job("_feed_anim_job")
-        _bottoms, content_bottom = self._feed_natural_layout()
-        if content_bottom is None:
-            self._live_feed_scroll = 0.0
-            self._live_feed_scroll_target = 0.0
-            return
-        limit = self.canvas_height - self.margin_bottom
-        settled_scroll = max(0.0, content_bottom - limit)
-        self._live_feed_scroll = settled_scroll
-        self._live_feed_scroll_target = settled_scroll
-        self._render_feed_positions()
-
-    def _macos_usable_size(self) -> tuple[int, int] | None:
-        """The usable screen size macOS reports, or None if it cannot be
-        attributed to a single screen.
-
-        Tk answers ``wm maxsize`` from the union of every screen's visibleFrame
-        (tkMacOSXXStubs.c) — the desktop minus the menu bar and the Dock. With
-        one monitor that union *is* that monitor's usable rectangle; with
-        several it says nothing about any one of them, so those setups keep the
-        full-monitor geometry they have today."""
-        try:
-            if len(get_monitors()) != 1:
-                return None
-            width, height = self.wm_maxsize()
-        except (tk.TclError, IndexError, OSError, ValueError):
-            return None
-        if width <= 0 or height <= 0:
-            return None
-        return int(width), int(height)
-
-    def _monitor_work_area(self, mon) -> tuple[int, int, int, int]:
-        """Physical (x, y, w, h) work area — the monitor minus the taskbar —
-        of the monitor ``mon`` lives on. Falls back to the full monitor bounds
-        off Windows/macOS or on any failure."""
-        full = (mon.x, mon.y, mon.width, mon.height)
-        if sys.platform == "darwin":
-            return _macos_work_area(full, self._macos_usable_size())
-        if sys.platform != "win32":
-            return full
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            class _RECT(ctypes.Structure):
-                _fields_ = [
-                    ("left", wintypes.LONG),
-                    ("top", wintypes.LONG),
-                    ("right", wintypes.LONG),
-                    ("bottom", wintypes.LONG),
-                ]
-
-            class _MONITORINFO(ctypes.Structure):
-                _fields_ = [
-                    ("cbSize", wintypes.DWORD),
-                    ("rcMonitor", _RECT),
-                    ("rcWork", _RECT),
-                    ("dwFlags", wintypes.DWORD),
-                ]
-
-            user32 = ctypes.windll.user32
-            # restype must be a pointer-sized type or the 64-bit HMONITOR is
-            # truncated and GetMonitorInfo then fails.
-            user32.MonitorFromPoint.restype = ctypes.c_void_p
-            user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
-            MONITOR_DEFAULTTONEAREST = 2
-            pt = wintypes.POINT(mon.x + mon.width // 2, mon.y + mon.height // 2)
-            hmon = user32.MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST)
-            info = _MONITORINFO()
-            info.cbSize = ctypes.sizeof(_MONITORINFO)
-            if user32.GetMonitorInfoW(hmon, ctypes.byref(info)):
-                w = info.rcWork
-                return (w.left, w.top, w.right - w.left, w.bottom - w.top)
-        except Exception:
-            pass
-        return full
-
-    def _active_monitor(self):
-        """The monitor the overlay is configured for (falls back like the
-        rest of the app when the stored index no longer exists)."""
-        monitors = get_monitors()
-        if self._monitor_index < len(monitors):
-            return monitors[self._monitor_index]
-        if len(monitors) > 1:
-            return monitors[1]
-        return monitors[0]
-
-    def _set_screen_position(self, force_redraw: bool = False):
-        mon = self._active_monitor()
-
-        # A full-height overlay always fills the whole monitor so OBS captures
-        # the entire frame (no uncovered taskbar strip at the bottom). Only a
-        # *partial* overlay with always-on-top off is clamped to the work area
-        # (monitor minus taskbar): as an ordinary window the topmost taskbar
-        # would otherwise cover its bottom strip on screen. Topmost overlays
-        # paint above the taskbar, so they never need the clamp.
-        # macOS is the exception to both: nothing Tk can do puts a window above
-        # the Dock or the menu bar there (see _MACOS_MENU_BAR_HEIGHT), so the
-        # overlay is always laid out inside the work area.
-        if sys.platform != "darwin" and (
-            self._window_height_percent >= 100 or self._always_on_top
-        ):
-            base_x, base_y, base_w, base_h = mon.x, mon.y, mon.width, mon.height
-        else:
-            base_x, base_y, base_w, base_h = self._monitor_work_area(mon)
-
-        if self._window_height_percent >= 100:
-            # Full height - use the whole monitor
-            x, y, width, height = base_x, base_y, base_w, base_h
-        else:
-            # Partial height - anchor at the bottom of the base rect
-            height = int(base_h * self._window_height_percent / 100)
-            if getattr(self, "_show_footer", False):
-                # A visible disclaimer pill needs a legible minimum surface;
-                # footer-free overlays still honour a true 5% window.
-                height = max(height, min(base_h, MIN_FOOTER_SURFACE_HEIGHT))
-            y = base_y + (base_h - height)
-            x, width = base_x, base_w
-        # Size just applied to the window. winfo_width/height lag the native
-        # resize until the resulting <Configure> event is processed, so
-        # callers that need the fresh size right away read this instead.
-        self._applied_size = (width, height)
-
-        # On Windows with hwnd, use SetWindowPos for precise borderless positioning
-        if sys.platform == "win32" and self._hwnd:
-            try:
-                import ctypes
-
-                SWP_NOZORDER = 0x0004
-                SWP_FRAMECHANGED = 0x0020
-
-                # Withdraw and redraw to force clean positioning
-                if force_redraw:
-                    self.withdraw()
-                    self.update()
-
-                # Use SetWindowPos for exact positioning (bypasses frame adjustments)
-                ctypes.windll.user32.SetWindowPos(
-                    self._hwnd,
-                    None,
-                    x,
-                    y,
-                    width,
-                    height,
-                    SWP_NOZORDER | SWP_FRAMECHANGED,
-                )
-
-                if force_redraw:
-                    self.deiconify()
-
-            except Exception:
-                # Fallback to tk geometry
-                geom = f"{width}x{height}+{x}+{y}"
-                self.geometry(geom)
-        else:
-            # Non-Windows or fallback: use tk geometry
-            geom = f"{width}x{height}+{x}+{y}"
-            if force_redraw:
-                self.withdraw()
-                self.geometry(geom)
-                self.update()
-                self.deiconify()
-            else:
-                self.geometry(geom)
-
-        # Keep the overlay above other windows when it's a partial or
-        # transparent overlay; a full-screen opaque overlay stays in normal
-        # stacking. Gated by the user's always_on_top setting.
-        self._apply_topmost()
-        self._schedule_geometry_fit_check()
-
-    def _schedule_geometry_fit_check(self):
-        """Queue a check of what the window manager actually granted.
-
-        Windows places the overlay exactly (SetWindowPos), so this only runs
-        elsewhere: an X11 WM may honour the requested SIZE but not the
-        requested POSITION — GNOME keeps a splash-type window clear of the
-        top-bar/dock struts, so a full-monitor overlay is pushed down and its
-        bottom strip (the disclaimer pill) ends up below the screen edge.
-        """
-        # __init__ positions the window before the teardown flags exist.
-        if sys.platform == "win32" or getattr(self, "_destroying", False):
-            return
-        self._cancel_after_job("_geometry_fit_job")
-        self._geometry_fit_job = self.after(250, self._fit_geometry_to_monitor)
-
-    def _fit_geometry_to_monitor(self):
-        """Re-fit the overlay to the rectangle the WM actually granted, so
-        nothing it draws lands off-screen. Two ways the request can be
-        refused: the WM keeps the size but moves the window (its bottom then
-        hangs off the screen — resize it), or it grants a smaller window than
-        asked (the canvas is then smaller than _applied_size claims — just
-        re-sync). Only ever shrinks; an implausible measurement is ignored."""
-        self._geometry_fit_job = None
-        if getattr(self, "_destroying", False) or getattr(self, "_is_hidden", False):
-            return
-        try:
-            mon = self._active_monitor()
-            self.update_idletasks()
-            x, y = self.winfo_rootx(), self.winfo_rooty()
-            width, height = self.winfo_width(), self.winfo_height()
-        except (tk.TclError, IndexError, OSError):
-            return
-        if width <= 1 or height <= 1:
-            return
-        fit_w = min(width, mon.x + mon.width - x)
-        fit_h = min(height, mon.y + mon.height - y)
-        if fit_w < MIN_FITTED_OVERLAY_WIDTH or fit_h < MIN_FITTED_OVERLAY_HEIGHT:
-            return  # implausible reading; a sliver of an overlay helps nobody
-        hangs_off_screen = fit_w < width or fit_h < height
-        if not hangs_off_screen and (fit_w, fit_h) == self._applied_size:
-            return  # the WM granted the request — nothing to correct
-        old_width, old_height = self.canvas_width, self.canvas_height
-        if hangs_off_screen:
-            try:
-                self.geometry(f"{fit_w}x{fit_h}+{x}+{y}")
-            except tk.TclError:
-                return
-        self._applied_size = (fit_w, fit_h)
-        self.canvas_width, self.canvas_height = self._applied_size
-        # Same bottom-anchored bookkeeping as set_window_height_percent: the
-        # top edge moved, so shift the modes that lay out from the canvas top.
-        delta = self.canvas_height - old_height
-        if delta and old_height > 1:
-            if self._subtitle_mode == SUBTITLE_MODE_REALTIME:
-                self._live_feed_scroll -= delta
-                self._live_feed_scroll_target -= delta
-            elif self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
-                for block in self.subtitle_stack:
-                    self._move_block(block, delta)
-        self._update_font()
-        self._update_footer_visibility()
-        if self.canvas_width != old_width or self._subtitle_mode == SUBTITLE_MODE_STATIC:
-            self._refresh_subtitles(reflow=True)
-        elif self._subtitle_mode == SUBTITLE_MODE_REALTIME:
-            self._reposition_subtitles()
-            self._render_live_line()
-        self._render_announcement()
-
-    def _desired_topmost(self) -> bool:
-        """Whether the overlay should sit above other windows, ignoring the
-        user's always_on_top switch. A partial or transparent overlay needs it
-        (otherwise it disappears behind other windows); a full-screen opaque
-        overlay deliberately does not (it would hide the desktop)."""
-        if self._window_height_percent < 100:
-            return True
-        return self._subtitle_mode == SUBTITLE_MODE_STATIC and self._transparent_static
-
-    def _apply_topmost(self) -> None:
-        """Apply the -topmost attribute from the current mode and the user's
-        always_on_top setting."""
-        try:
-            self.wm_attributes(
-                "-topmost", self._always_on_top and self._desired_topmost()
-            )
-        except tk.TclError:
-            pass
-
-    def set_always_on_top(self, enabled: bool):
-        """Toggle always-on-top live. Off = the overlay no longer floats above
-        other windows AND is laid out inside the work area (so the taskbar,
-        which stays topmost, never covers it); on = full monitor, above the
-        taskbar. _set_screen_position re-applies -topmost at the end, so it
-        covers both. (The control panel's own topmost is handled in AppGUI.)"""
-        self._cancel_animation_jobs()
-        self._always_on_top = enabled
-        self._set_screen_position(force_redraw=True)
-        self.canvas_width, self.canvas_height = self._applied_size
-        self._update_font()
-        self._update_footer_visibility()
-        # The new work area changes the wrap width, so rebuild every block
-        # from its logical text instead of stretching stale canvas rows.
-        self._refresh_subtitles(reflow=True)
-        self._render_announcement()
-        if not self._stopped_hint:
-            if self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
-                self._start_continuous_scroll()
-            elif self._subtitle_mode == SUBTITLE_MODE_REALTIME:
-                self._ensure_feed_anim()
-
-    def set_monitor(self, monitor_index: int):
-        """Change the monitor where the subtitle window is displayed."""
-        # A monitor switch can cross DPI domains and rebuild the native window
-        # surface. Never let callbacks created for the old surface fire into
-        # the new one; the active mode is resumed after the redraw below.
-        self._cancel_animation_jobs()
+    def set_monitor(self, monitor_index: int) -> None:
         self._monitor_index = monitor_index
+        self._apply_geometry()
+        self.update()
 
-        # Reposition window to the new monitor (winfo lags the native
-        # resize — trust the size that was just applied, see
-        # set_window_height_percent)
-        self._set_screen_position()
-        self.canvas_width, self.canvas_height = self._applied_size
-        self._update_font()
-        self._update_footer_visibility()  # pill is drawn in canvas coords
-        self._refresh_subtitles(reflow=True)
-        self._render_announcement()
-        if not self._stopped_hint:
-            if self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
-                self._start_continuous_scroll()
-            elif self._subtitle_mode == SUBTITLE_MODE_REALTIME:
-                self._ensure_feed_anim()
+    def set_window_height_percent(self, percent: int) -> None:
+        self._height_percent = percent
+        self._apply_geometry()
+        self.update()
 
-    def set_window_height_percent(self, percent: int):
-        """Set window height as percentage of screen height (5-100)."""
-        self._window_height_percent = max(5, min(100, percent))
-        # Use force_redraw to prevent visual glitches during resize
-        old_width = self.canvas_width
-        old_height = self.canvas_height
-        self._set_screen_position(force_redraw=True)
-        # The canvas fills the window (relwidth/relheight=1), so take the
-        # size _set_screen_position just applied — winfo still reports the
-        # pre-resize size until the <Configure> event is processed.
-        self.canvas_width, self.canvas_height = self._applied_size
-        # The window is bottom-anchored on screen, so a height change moves
-        # only the top edge. The Realtime feed is laid out from the canvas
-        # top — shift its scroll by the height delta so the text keeps its
-        # on-screen position instead of jumping with the top edge. (Shrinking
-        # raises the scroll; blocks pushed above the new top edge are evicted
-        # by _render_feed_positions as usual.)
-        if (
-            self._subtitle_mode == SUBTITLE_MODE_REALTIME
-            and old_height > 1
-            and self.canvas_height > 1
-        ):
-            delta = self.canvas_height - old_height
-            if delta:
-                self._live_feed_scroll -= delta
-                self._live_feed_scroll_target -= delta
-        elif self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
-            # The window is bottom-anchored: growing it moves the canvas top
-            # upward. Shift ticker items by the same delta so their physical
-            # screen position/read progress does not jump.
-            delta = self.canvas_height - old_height
-            if delta:
-                for block in self.subtitle_stack:
-                    self._move_block(block, delta)
-        self._update_font()
-        # The pill is drawn at fixed canvas coordinates near the bottom; the
-        # canvas origin (window top-left) just moved, so redraw it at the new
-        # canvas_height — otherwise it rides up on grow and sinks below the
-        # screen on shrink.
-        self._update_footer_visibility()
-        # A width change (rare here) or static mode's height-sensitive fitting
-        # needs a full reflow; the other modes just re-place existing rows.
-        if self.canvas_width != old_width or self._subtitle_mode == SUBTITLE_MODE_STATIC:
-            self._refresh_subtitles(reflow=True)
-        elif self._subtitle_mode == SUBTITLE_MODE_REALTIME:
-            self._reposition_subtitles()
-            self._render_live_line()
-        self._render_announcement()
-        # Bring window to front after resize
-        self.lift()
+    def set_always_on_top(self, enabled: bool) -> None:
+        """Toggle the stays-on-top flag, and re-place the overlay for it.
 
-    def add_subtitle(self, text: str, source_text: str | None = None):
-        """Render a subtitle; in bilingual mode the original transcription is
-        shown above the translation in a smaller, muted font.
-
-        In Realtime mode an oversized settled translation (continuous speech
-        flushes up to 12s of speech as one utterance) is split at sentence
-        boundaries into separate, readable feed blocks. Bilingual pairs stay
-        whole — the original can't be aligned to the translation
-        per-sentence."""
-        if not (text or "").strip():
+        The flag goes through set_window_on_top, which does not recreate the
+        native window — so the overlay neither vanishes nor flashes. The
+        geometry still has to be recomputed: only a topmost window paints over
+        the taskbar, so a non-topmost overlay is laid out above it instead.
+        """
+        if is_window_on_top(self) == enabled:
             return
-        if (
-            self._subtitle_mode == SUBTITLE_MODE_REALTIME
-            and not (self._bilingual_mode and source_text)
-            and len(text) > REALTIME_MAX_BLOCK_CHARS
-        ):
-            for chunk in split_display_chunks(text, REALTIME_MAX_BLOCK_CHARS):
-                self._add_subtitle_block(chunk, None)
-            return
-        self._add_subtitle_block(text, source_text)
+        set_window_on_top(self, enabled)
+        self._apply_geometry()
 
-    def _add_subtitle_block(
-        self,
-        text: str,
-        source_text: str | None = None,
-        *,
-        defer_layout: bool = False,
-        refresh_geometry: bool = True,
-    ):
-        if not (text or "").strip():
-            return
+    def set_backdrop_opacity(self, percent: int) -> None:
+        """Set backdrop opacity 0-100. 0 leaves the video fully visible.
 
-        if refresh_geometry:
-            self.update_idletasks()
-            self.canvas_width = self.canvas.winfo_width()
-            self.canvas_height = self.canvas.winfo_height()
-
-        if self._subtitle_mode == SUBTITLE_MODE_STATIC:
-            self._clear_all_subtitles()
-
-        # Collapse any newlines / repeated spaces the STT or buffer join left
-        # in the source so the original line renders as one clean run of text.
-        source = (
-            _WHITESPACE_RE.sub(" ", source_text).strip()
-            if (self._bilingual_mode and source_text)
-            else ""
+        Only possible because Qt composites real per-pixel alpha; the Tk
+        window could not do this outside static mode's chroma key.
+        """
+        self._backdrop_opacity = max(
+            BACKDROP_OPACITY_MIN, min(BACKDROP_OPACITY_MAX, int(percent))
         )
+        self.update()
 
-        use_outline = self._subtitle_mode == SUBTITLE_MODE_STATIC
+    def get_backdrop_opacity(self) -> int:
+        return self._backdrop_opacity
 
-        if use_outline:
-            translation_font, fitted_source_font = self._static_fonts_for_content(
-                text, source
-            )
-            text_id, line_items = self._create_outlined_text(
-                self.canvas_width / 2,
-                self.canvas_height - 4,
-                text=text,
-                font=translation_font,
-            )
-            source_items = None
-            if source:
-                top_bbox = self.canvas.bbox(line_items[0][0])
-                source_y = (
-                    top_bbox[1] if top_bbox else self.canvas_height - 80
-                ) - self._static_pair_spacing()
-                _, source_items = self._create_outlined_text(
-                    self.canvas_width / 2,
-                    source_y,
-                    text=source,
-                    font=fitted_source_font,
-                    fill=self._source_fill(),
-                )
-            text_height = self._measure_block_height(text_id, line_items, source_items)
-            self.subtitle_stack.append(
-                _SubtitleBlock(
-                    text_id,
-                    text_height,
-                    line_items,
-                    source_items,
-                    logical_text=text,
-                    logical_source=source or None,
-                )
-            )
-        else:
-            # Use the same manual wrapping so Arabic is reshaped correctly
-            # (Tkinter's built-in width= wrapping does not handle RTL/Arabic).
-            max_width = self.canvas_width - 140
-            lines = self._wrap_text_to_lines(text, max_width)
-            line_items = None
-            if self._subtitle_mode == SUBTITLE_MODE_REALTIME and len(lines) > 1:
-                # One canvas item per wrapped row: a single multiline item is
-                # locked to the font's linespace, but the rows should stack
-                # at the same tight ink-aware distance as the source line
-                # above the translation (_stack_overlap).
-                line_items = [
-                    (
-                        self.canvas.create_text(
-                            self.canvas_width / 2,
-                            self.canvas_height,
-                            text=line_text,
-                            fill=self._translation_fill(),
-                            font=self.font,
-                            anchor="s",
-                            justify="center",
-                        ),
-                        None,
-                    )
-                    for line_text in lines
-                ]
-                self._stack_rows_tight(line_items)
-                text_id = line_items[-1][0]
-            else:
-                text_id = self.canvas.create_text(
-                    self.canvas_width / 2,
-                    self.canvas_height,
-                    text="\n".join(lines),
-                    fill=self._translation_fill(),
-                    font=self.font,
-                    anchor="s",
-                    justify="center",
-                )
-            source_items = None
-            if source:
-                source_font = self._source_font_for(source)
-                source_lines = self._wrap_text_to_lines(
-                    source, max_width, source_font
-                )
-                source_id = self.canvas.create_text(
-                    self.canvas_width / 2,
-                    self.canvas_height,
-                    text="\n".join(source_lines),
-                    fill=self._source_fill(),
-                    font=source_font,
-                    anchor="s",
-                    justify="center",
-                )
-                source_items = [(source_id, None)]
-                self._position_source_above(
-                    line_items[0][0] if line_items else text_id, source_items
-                )
-            text_height = self._measure_block_height(text_id, line_items, source_items)
-            self.subtitle_stack.append(
-                _SubtitleBlock(
-                    text_id,
-                    text_height,
-                    line_items,
-                    source_items,
-                    logical_text=text,
-                    logical_source=source or None,
-                )
-            )
+    def set_transparent_static(self, enabled: bool) -> None:
+        self._transparent_static = enabled
+        self.update()
 
-        if defer_layout:
+    def set_translation_text_color(self, color: str | None) -> None:
+        self._translation_color = color or ""
+        self.update()
+
+    def set_source_text_color(self, color: str | None) -> None:
+        self._source_color = color or ""
+        self.update()
+
+    def get_translation_text_color(self) -> str:
+        return self._translation_color or self._colors["text"]
+
+    def get_source_text_color(self) -> str:
+        return self._source_color or self._colors["muted"]
+
+    # The base is a divisor, so "increase font" LOWERS it. Bounds match the Tk
+    # version (20-80 for the translation, 20-120 for the original text).
+    def increase_font(self) -> None:
+        self._font_size_base = max(20, self._font_size_base - 5)
+        self.update()
+
+    def decrease_font(self) -> None:
+        self._font_size_base = min(80, self._font_size_base + 5)
+        self.update()
+
+    def get_font_size_base(self) -> int:
+        return self._font_size_base
+
+    def get_current_font_size(self) -> int:
+        return self._translation_px()
+
+    def set_source_font_size_base(self, value: float) -> None:
+        try:
+            self._source_font_size_base = max(20.0, min(120.0, float(value)))
+        except (TypeError, ValueError):
             return
+        self.update()
 
-        if self._subtitle_mode == SUBTITLE_MODE_CONTINUOUS:
-            lowest_y = self.canvas_height - self.margin_bottom
-            for existing in self.subtitle_stack[:-1]:
-                coords = self.canvas.coords(existing.text_id)
-                if coords:
-                    text_bottom = coords[1]
-                    potential_y = text_bottom + text_height + self.line_spacing
-                    if potential_y > lowest_y:
-                        lowest_y = potential_y
+    def increase_source_font(self) -> None:
+        self.set_source_font_size_base(self._source_font_size_base - 5.0)
 
-            self.canvas.coords(text_id, self.canvas_width / 2, lowest_y)
-            self._position_source_above(text_id, source_items)
-            if len(self.subtitle_stack) == 1:
-                # A block taller than the available viewport must start with
-                # its first line visible. Its lower rows can then enter in
-                # normal reading order as the ticker scrolls upward.
-                block = self.subtitle_stack[-1]
-                bbox = self._block_bbox(block)
-                if bbox is not None and bbox[1] < 16:
-                    self._move_block(block, 16 - bbox[1])
-        else:
-            self._reposition_subtitles()
+    def decrease_source_font(self) -> None:
+        self.set_source_font_size_base(self._source_font_size_base + 5.0)
 
-        # Newly created items sit above the live line in the canvas z-order;
-        # re-raise it (Realtime mode) so transient overlaps during layout
-        # shifts pass behind it. The disclaimer pill goes on top of
-        # everything — the warning must never disappear behind text.
-        for live_text_id, live_box_id in self._live_items:
-            if live_box_id:
-                self.canvas.tag_raise(live_box_id)
-            self.canvas.tag_raise(live_text_id)
-        self._raise_footer()
+    def get_source_font_size_base(self) -> float:
+        return self._source_font_size_base
 
-    def _start_continuous_scroll(self):
-        """Start the continuous upward scroll animation."""
-        self._continuous_start_job = None
-        if (
-            self._destroying
-            or self._is_hidden
-            or self._stopped_hint
-            or self._subtitle_mode != SUBTITLE_MODE_CONTINUOUS
-            or self._scroll_animation_id is not None
-        ):
-            return
-        self._animate_continuous_scroll()
+    def get_current_source_font_size(self) -> int:
+        return self._source_px()
 
-    def _animate_continuous_scroll(self):
-        """Animation frame for continuous scroll mode."""
-        # The callback currently executing is no longer cancellable.
-        self._scroll_animation_id = None
-        if (
-            self._destroying
-            or self._is_hidden
-            or self._stopped_hint
-            or self._subtitle_mode != SUBTITLE_MODE_CONTINUOUS
-        ):
-            return
+    def set_scroll_speed(self, speed: float) -> None:
+        """Set the scroll speed directly (the settings stepper drives this)."""
+        self._scroll_speed = max(0.25, min(5.0, float(speed)))
 
-        current_speed = self._current_scroll_speed()
-        items_to_remove = []
+    def increase_scroll_speed(self) -> float:
+        self._scroll_speed = min(5.0, self._scroll_speed + 0.25)
+        return self._scroll_speed
 
-        for i, block in enumerate(self.subtitle_stack):
-            # Move text upward using current scroll speed
-            self.canvas.move(block.text_id, 0, -current_speed)
-            if block.source_items:
-                for source_id, _box_id in block.source_items:
-                    self.canvas.move(source_id, 0, -current_speed)
+    def decrease_scroll_speed(self) -> float:
+        self._scroll_speed = max(0.25, self._scroll_speed - 0.25)
+        return self._scroll_speed
 
-            # Check if text is completely off screen (above top)
-            coords = self.canvas.coords(block.text_id)
-            if coords:
-                y = coords[1]
-                # If the bottom of the text is above the screen, remove it
-                if y + block.height < 0:
-                    items_to_remove.append(i)
+    def set_adaptive_catchup(self, enabled: bool) -> None:
+        self._adaptive_catchup = enabled
 
-        # Remove items that scrolled off screen (in reverse order to preserve indices)
-        for i in reversed(items_to_remove):
-            self._delete_item(self.subtitle_stack.pop(i))
+    def clear(self) -> None:
+        self._blocks.clear()
+        self._live_text = None
+        self._scroll_offset = self._feed_target = 0.0
+        self._feed_timer.stop()
+        self._effective_scroll_speed = self._scroll_speed
+        self.update()
 
-        # Schedule next frame
-        self._scroll_animation_id = self.after(
-            SCROLL_INTERVAL_MS, self._animate_continuous_scroll
-        )
+    def hide(self) -> None:
+        """Hide the overlay and stop animating.
 
-    def _reposition_subtitles(self):
-        if self._subtitle_mode == SUBTITLE_MODE_REALTIME:
-            # Feed layout owns all positioning in Realtime mode (and must run
-            # even with an empty stack — the live line may need placing)
-            self._layout_live_feed()
-            return
-        if not self.subtitle_stack:
-            return
+        The live line is dropped: no further interims will arrive to correct
+        it, so leaving it on screen would strand a half-finished sentence.
+        """
+        self._scroll_timer.stop()
+        self._live_text = None
+        super().hide()
 
-        import tkinter.font as tkfont
+    def show(self) -> None:
+        super().show()
+        self._apply_geometry()
+        self._sync_scroll_timer()
 
-        current_y = self.canvas_height - self.margin_bottom
-        line_gap = self._static_line_spacing()
-        pair_gap = self._static_pair_spacing()
+    def destroy(self) -> None:
+        """Tear the overlay down. Named to match the Tk window's API."""
+        self._scroll_timer.stop()
+        self.close()
+        self.deleteLater()
 
-        for i in range(len(self.subtitle_stack) - 1, -1, -1):
-            block = self.subtitle_stack[i]
-            newest = i == len(self.subtitle_stack) - 1
-
-            if block.line_items:
-                # Read the rendered font from the item: static-mode fitting may
-                # have shrunk it, so self.font would over-measure the spacing.
-                translation_font = self.canvas.itemcget(block.line_items[-1][0], "font")
-                font_obj = tkfont.Font(font=translation_font)
-                line_height = font_obj.metrics("linespace")
-                line_y = current_y
-
-                for line_text_id, box_id in reversed(block.line_items):
-                    self.canvas.coords(line_text_id, self.canvas_width / 2, line_y)
-
-                    if box_id:
-                        bbox = self.canvas.bbox(line_text_id)
-                        if bbox:
-                            self._update_line_background(box_id, bbox)
-
-                    # Newest block carries the translation colour; older ones
-                    # keep the theme's muted tone (history emphasis, not the
-                    # source role). Static mode only ever holds one block, so
-                    # this line branch always renders as the newest there.
-                    self.canvas.itemconfig(
-                        line_text_id,
-                        fill=self._translation_fill() if newest else self._secondary_text,
-                    )
-
-                    line_y -= line_height + line_gap
-
-                if block.source_items:
-                    # Anchor the bottom source row to the actual top ink bound
-                    # of the translation. This keeps the intended bilingual
-                    # pair gap even when compact static spacing is active.
-                    top_translation_bbox = self.canvas.bbox(block.line_items[0][0])
-                    source_y = (
-                        top_translation_bbox[1]
-                        if top_translation_bbox is not None
-                        else line_y
-                    ) - pair_gap
-                    source_font = self.canvas.itemcget(block.source_items[-1][0], "font")
-                    source_font_obj = tkfont.Font(font=source_font)
-                    source_line_height = source_font_obj.metrics("linespace")
-                    for source_id, box_id in reversed(block.source_items):
-                        self.canvas.coords(source_id, self.canvas_width / 2, source_y)
-                        if box_id:
-                            bbox = self.canvas.bbox(source_id)
-                            if bbox:
-                                self._update_line_background(box_id, bbox)
-                        self.canvas.itemconfig(source_id, fill=self._source_fill())
-                        source_y -= source_line_height + line_gap
-            else:
-                self.canvas.coords(block.text_id, self.canvas_width / 2, current_y)
-                self._position_source_above(block.text_id, block.source_items)
-
-                self.canvas.itemconfig(
-                    block.text_id,
-                    fill=self._translation_fill() if newest else self._secondary_text,
-                )
-
-            current_y -= block.height + self.line_spacing
+    def closeEvent(self, event) -> None:
+        # Closing the overlay stops the session; it never quits the app. The Tk
+        # version wired this to full shutdown, so an Alt+F4 on the OBS-visible
+        # overlay took the whole app down (fixed in PR #24).
+        if self._on_stop:
+            self._on_stop()
+        if self._on_close:
+            self._on_close()
+        super().closeEvent(event)

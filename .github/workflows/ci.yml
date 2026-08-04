@@ -53,12 +53,15 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      # tk: setup-python's interpreter links against libtk8.6/libtcl8.6, and
-      # `import tkinter` fails outright without them.
       # libportaudio2: the Linux sounddevice wheel does not bundle PortAudio.
-      # xvfb: roughly a tenth of the suite builds real Tk windows.
+      # xvfb: part of the suite builds real windows.
+      # The xcb set: since Qt 6.5 the xcb platform plugin has a hard dependency
+      # on libxcb-cursor0 and will not load without the rest either — and a Qt
+      # app whose only platform plugin fails to load cannot start at all.
       - name: System libraries
-        run: sudo apt-get update && sudo apt-get install -y tk libportaudio2 xvfb
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libportaudio2 xvfb libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0
 
       - run: pip install -r requirements.txt
 

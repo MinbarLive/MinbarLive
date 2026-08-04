@@ -45,7 +45,7 @@
 │   ├── srt_writer.py        # SRT output (UTF-8 BOM)
 │   └── text_writer.py       # Plain transcript + translation export (output format txt/both)
 │
-├── gui/                     # User interface (CustomTkinter)
+├── gui/                     # User interface (PySide6/Qt)
 │   ├── app_gui.py           # Control panel core (reflowing card grid, start/stop,
 │   │                        #   queue polling, theming, input-level meter)
 │   ├── control_state.py     # Settings-derived rules (key/mode/strategy), Tk-free, unit-tested

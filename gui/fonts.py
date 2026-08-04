@@ -90,7 +90,7 @@ def _resolve(families: tuple[str, ...]) -> list[str]:
     """Installed subset of ``families``, or all of them before there is an app.
 
     The font database needs a QGuiApplication. Every real caller has one, but
-    ``gui_qt.theme.stylesheet`` is also read by tests as a plain string — the
+    ``gui.theme.stylesheet`` is also read by tests as a plain string — the
     unfiltered list is the right answer there, and deliberately not cached so
     the filtered one is still computed once the app exists.
     """

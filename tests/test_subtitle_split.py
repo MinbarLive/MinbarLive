@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from gui.subtitle_window import split_display_chunks
+from gui.subtitle_text import split_display_chunks
 
 
 class TestSplitDisplayChunks:

@@ -37,9 +37,9 @@ from config import (
     ANNOUNCEMENT_FAVORITES_MAX,
     ANNOUNCEMENT_HISTORY_MAX,
 )
-from gui_qt.dialogs import show_message
-from gui_qt.widgets import Dropdown, field
-from gui_qt.window_size import SECONDARY_WINDOW_W, apply_content_size
+from gui.dialogs import show_message
+from gui.widgets import Dropdown, field
+from gui.window_size import SECONDARY_WINDOW_W, apply_content_size
 from utils.logging import log
 from utils.settings import save_settings
 
@@ -59,7 +59,7 @@ _PREVIEW_CHARS = 42
 
 # Width the window is laid out for; the height follows the content — see
 # _resize_to_content. Shared with the settings and batch windows, which are the
-# same shape (see gui_qt/window_size.py), so the three open at one size.
+# same shape (see gui/window_size.py), so the three open at one size.
 ANNOUNCE_WINDOW_W = SECONDARY_WINDOW_W
 
 _PAD = 16

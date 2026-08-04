@@ -22,9 +22,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from gui_qt.i18n import load_gui_translations
-from gui_qt.icons import app_icon
-from gui_qt.theme import apply_theme
+from gui.i18n import load_gui_translations
+from gui.icons import app_icon
+from gui.theme import apply_theme
 from utils.settings import load_settings
 
 DIALOG_W = 500
@@ -88,7 +88,7 @@ def show_already_running_dialog() -> bool:
     """True if the user chose "Launch anyway", False to abort.
 
     Creates the QApplication that the rest of the launch then reuses —
-    ``gui_qt.app.run`` picks up the existing instance, since Qt allows only one
+    ``gui.app.run`` picks up the existing instance, since Qt allows only one
     per process.
     """
     app = QApplication.instance() or QApplication(sys.argv)

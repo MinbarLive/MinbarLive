@@ -27,11 +27,11 @@ from collections.abc import Mapping
 #
 # The xcb plugin needs libxcb-cursor0 since Qt 6.5. Without it the plugin is
 # found but refuses to load, and this list quietly lands on Wayland — with the
-# two limitations above. gui_qt/app.py says so at startup rather than leaving
+# two limitations above. gui/app.py says so at startup rather than leaving
 # a centred, never-on-top overlay to be puzzled over.
 _LINUX_PLATFORM = "xcb;wayland"
 
-# Every family we ask for is one this machine has (gui_qt/fonts.py filters
+# Every family we ask for is one this machine has (gui/fonts.py filters
 # them), so what is left of this warning is Qt reporting that none of them
 # covers Devanagari, Bengali, Gurmukhi or Tamil — the scripts of the language
 # names in our own dropdowns (हिन्दी, বাংলা, ਪੰਜਾਬੀ, தமிழ்). Falling through to

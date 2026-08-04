@@ -5,31 +5,20 @@ import os
 import sys
 from pathlib import Path
 
-# DPI awareness must be configured before the first Tk/CustomTkinter window is
-# created. CustomTkinter itself only calls SetProcessDpiAwareness when the first
-# CTk object is built, so anything that queries Win32 coordinates or opens a
-# plain Tk window before that point runs in a virtualized coordinate space.
-# Doing it here makes the awareness deterministic from process start; CTk's
-# later call is then a no-op (E_ACCESSDENIED, which ctypes ignores).
+# The platform plugin is chosen when the QApplication is built, and the first
+# QApplication can be the already-running dialog below — so this runs before
+# any import that could reach Qt.
 #
-# Skipped for the Qt tree (#44): Qt sets its own per-monitor-aware-v2 context
-# and warns "SetProcessDpiAwarenessContext() failed: Access is denied." if the
-# process is already marked aware. Qt handles DPI natively, so this call is not
-# merely redundant there — it actively takes the setting away from Qt.
-_QT_MODE = "--qt" in sys.argv
-if _QT_MODE:
-    # Same rule from the other side: the platform plugin is chosen when the
-    # QApplication is built, and under --qt that can be the already-running
-    # dialog below.
-    from gui_qt.platform_setup import prepare_qt_platform
+# Note what is NOT here any more: enable_windows_dpi_awareness(). Qt sets its
+# own per-monitor-aware-v2 context and warns "SetProcessDpiAwarenessContext()
+# failed: Access is denied." when the process is already marked aware, so
+# calling it first does not duplicate Qt's work — it takes the setting away
+# from it. Qt is DPI-aware natively and needs nothing here.
+from gui.platform_setup import prepare_qt_platform
 
-    prepare_qt_platform()
-else:
-    from utils.windows_dpi import enable_windows_dpi_awareness
+prepare_qt_platform()
 
-    enable_windows_dpi_awareness()
-
-# Set Windows taskbar icon (must be done before tkinter imports)
+# Set Windows taskbar icon (must be done before the first window)
 # Note: sys.platform is always "win32" on Windows, even on 64-bit systems
 if sys.platform == "win32":
     try:
@@ -48,191 +37,9 @@ def _show_already_running_dialog() -> bool:
 
     Returns True if the user chose 'Launch Anyway', False to abort.
     """
-    if _QT_MODE:
-        # Never the CustomTkinter dialog below under --qt: the two toolkits are
-        # not meant to share a process, and building a Tk window sets the
-        # process DPI awareness (per-monitor v1) before Qt can ask for the v2
-        # context it wants.
-        from gui_qt.already_running import show_already_running_dialog
+    from gui.already_running import show_already_running_dialog
 
-        return show_already_running_dialog()
-
-    import customtkinter as ctk
-
-    # ── Load translations + theme from saved settings ─────────────────────
-    def _load_settings_data() -> tuple[dict, str]:
-        """Returns (translations_dict, theme_mode)."""
-        try:
-            from config import GUI_TRANSLATIONS_DIR
-            from utils.json_helpers import load_json
-            from utils.settings import (
-                DEFAULT_GUI_LANGUAGE,
-                DEFAULT_THEME_MODE,
-                load_settings,
-            )
-
-            s = load_settings()
-            lang = s.gui_language or DEFAULT_GUI_LANGUAGE
-            theme = s.theme_mode or DEFAULT_THEME_MODE
-
-            en_path = os.path.join(GUI_TRANSLATIONS_DIR, "en.json")
-            base = load_json(en_path)
-            if lang != "en":
-                try:
-                    return (
-                        {
-                            **base,
-                            **load_json(
-                                os.path.join(GUI_TRANSLATIONS_DIR, f"{lang}.json")
-                            ),
-                        },
-                        theme,
-                    )
-                except Exception:
-                    pass
-            return base, theme
-        except Exception:
-            return {}, "dark"
-
-    t, theme_mode = _load_settings_data()
-
-    # ── Color palette (mirrors AppGUI._palette) ───────────────────────────
-    if theme_mode == "light":
-        c_bg = "#f8fafc"
-        c_text = "#111827"
-        c_btn_bg = "#e2e8f0"
-        c_btn_hover = "#cbd5e1"
-        c_btn_text = "#111827"
-    else:
-        c_bg = "#0f172a"
-        c_text = "#f8fafc"
-        c_btn_bg = "#1f2a44"
-        c_btn_hover = "#263654"
-        c_btn_text = "#f8fafc"
-
-    # ── Icon paths (same logic as config.py) ──────────────────────────────
-    _res_dir = (
-        getattr(sys, "_MEIPASS", None)
-        if getattr(sys, "frozen", False)
-        else os.path.dirname(os.path.abspath(__file__))
-    )
-    _icon_ico = os.path.join(_res_dir or "", "public", "MinbarLive.ico")
-    _icon_png = os.path.join(_res_dir or "", "public", "MinbarLive1.png")
-
-    ctk.set_appearance_mode(theme_mode)
-    ctk.set_default_color_theme("green")
-
-    dlg = ctk.CTk()
-    dlg.title(t.get("already_running_title", "MinbarLive is already running"))
-    dlg.resizable(False, False)
-    dlg.configure(fg_color=c_bg)
-
-    W, H = 500, 195
-    dlg.update_idletasks()
-    sw = dlg.winfo_screenwidth()
-    sh = dlg.winfo_screenheight()
-    dlg.geometry(f"{W}x{H}+{(sw - W) // 2}+{(sh - H) // 2}")
-
-    from utils.icons import ICO_SUPPORTED, scaled_icon_photo
-
-    if ICO_SUPPORTED and os.path.exists(_icon_ico):
-        def set_win_icon():
-            try:
-                dlg.iconbitmap(_icon_ico)
-            except Exception:
-                pass
-        dlg.after(200, set_win_icon)
-    elif os.path.exists(_icon_png):
-        try:
-            dlg.iconphoto(True, scaled_icon_photo(_icon_png))
-        except Exception:
-            pass
-
-    launched = [False]
-
-    # ── Body ──────────────────────────────────────────────────────────────
-    body = ctk.CTkFrame(dlg, fg_color="transparent")
-    body.pack(fill="both", expand=True, padx=24, pady=(22, 10))
-
-    ctk.CTkLabel(
-        body,
-        text="?",
-        font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
-        text_color="#ffffff",
-        fg_color="#1d4ed8",
-        corner_radius=999,
-        width=52,
-        height=52,
-    ).pack(side="left", anchor="n", padx=(0, 16))
-
-    ctk.CTkLabel(
-        body,
-        text=t.get(
-            "already_running_body",
-            "MinbarLive is already running or is currently starting up!\n\n"
-            "Unless you meant to do this, please shut down the\n"
-            "existing instance before starting a new one.",
-        ),
-        font=ctk.CTkFont(family="Segoe UI", size=13),
-        text_color=c_text,
-        justify="left",
-        anchor="w",
-        wraplength=370,
-    ).pack(side="left", fill="both", expand=True)
-
-    # ── Buttons ───────────────────────────────────────────────────────────
-    btns = ctk.CTkFrame(dlg, fg_color="transparent")
-    btns.pack(fill="x", padx=24, pady=(0, 18))
-
-    def _launch() -> None:
-        launched[0] = True
-        dlg.quit()
-
-    def _cancel() -> None:
-        dlg.quit()
-
-    ctk.CTkButton(
-        btns,
-        text=t.get("already_running_launch_anyway", "Launch Anyway"),
-        command=_launch,
-        height=44,
-        corner_radius=14,
-        font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-        fg_color="#1d4ed8",
-        hover_color="#1e40af",
-        text_color="#ffffff",
-    ).pack(side="right", padx=(6, 0))
-
-    ctk.CTkButton(
-        btns,
-        text=t.get("dlg_cancel", "Cancel"),
-        command=_cancel,
-        height=44,
-        corner_radius=14,
-        font=ctk.CTkFont(family="Segoe UI", size=13),
-        fg_color=c_btn_bg,
-        hover_color=c_btn_hover,
-        text_color=c_btn_text,
-    ).pack(side="right")
-
-    dlg.protocol("WM_DELETE_WINDOW", _cancel)
-    # Raise above the already-running instance's window. lift()/focus_force()
-    # alone lose to the other instance's foreground window — the warning then
-    # opens behind it (reported on Windows).
-    try:
-        dlg.attributes("-topmost", True)
-    except Exception:
-        pass
-    dlg.lift()
-    dlg.focus_force()
-    dlg.mainloop()
-
-    try:
-        dlg.destroy()
-    except Exception:
-        pass
-
-    return launched[0]
+    return show_already_running_dialog()
 
 
 def _acquire_posix_instance_lock(lock_dir: Path | None = None) -> int | None:
@@ -293,11 +100,10 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="MinbarLive - Real-time translation")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    parser.add_argument(
-        "--qt",
-        action="store_true",
-        help="Run the PySide6 GUI instead of CustomTkinter (issue #44, in progress)",
-    )
+    # Accepted and ignored: --qt chose the PySide6 tree while the CustomTkinter
+    # one still shipped (issue #44). Qt is the only GUI now, and a shortcut or
+    # script still passing the flag must not die on an unrecognised argument.
+    parser.add_argument("--qt", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     # Set log level BEFORE importing modules that use logging
@@ -327,18 +133,6 @@ def main() -> None:
     # input-level meter (constructing it starts no threads).
     controller = AppController()
 
-    # The GUI trees are imported lazily and never together: Tk and Qt each want
-    # their own mainloop, and merely importing both into one process leaves a
-    # live Tcl interpreter beside the Qt one. Each tree runs its own onboarding
-    # wizard — the Qt one from inside gui_qt.app.run, on its QApplication.
-    if not args.qt:
-        from gui.onboarding import run_onboarding
-
-        # First-run setup wizard (own Tk root, before the main window so the
-        # chosen GUI language/theme applies from the start)
-        if not run_onboarding(controller):
-            sys.exit(0)
-
     # Purge stale files (logs and user content gated separately)
     _s = load_settings()
     if _s.auto_cleanup_logs or _s.auto_cleanup_content:
@@ -346,15 +140,12 @@ def main() -> None:
             clean_logs=_s.auto_cleanup_logs, clean_content=_s.auto_cleanup_content
         )
 
-    if args.qt:
-        from gui_qt.app import run as run_qt
+    # The first-run wizard runs from inside gui.app.run, on the same
+    # QApplication as the control panel, so the chosen language and theme apply
+    # from the start.
+    from gui.app import run
 
-        sys.exit(run_qt(controller))
-
-    from gui.app_gui import AppGUI
-
-    gui = AppGUI(controller)
-    gui.mainloop()
+    sys.exit(run(controller))
 
 
 if __name__ == "__main__":

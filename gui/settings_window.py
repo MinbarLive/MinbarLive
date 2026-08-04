@@ -28,9 +28,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui_qt.dialogs import ask_yes_no, show_message
-from gui_qt.widgets import Dropdown, SegmentedControl
-from gui_qt.window_size import SECONDARY_WINDOW_W, apply_content_size
+from gui.dialogs import ask_yes_no, show_message
+from gui.widgets import Dropdown, SegmentedControl
+from gui.window_size import SECONDARY_WINDOW_W, apply_content_size
 from providers import (
     PROVIDER_CHOICES,
     clear_api_key,
@@ -385,7 +385,7 @@ class SettingsWindow(QDialog):
                 translate=self._t,
             )
             return
-        from gui_qt.api_keys import ApiKeyDialog
+        from gui.api_keys import ApiKeyDialog
 
         dialog = ApiKeyDialog(provider, self._panel.texts, self)
         if dialog.exec() != QDialog.Accepted or not dialog.key():

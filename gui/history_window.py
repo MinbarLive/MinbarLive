@@ -45,8 +45,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui_qt.dialogs import ask_yes_no, show_message
-from gui_qt.widgets import Dropdown
+from gui.dialogs import ask_yes_no, show_message
+from gui.widgets import Dropdown
 from utils.cost_display import (
     cost_bars,
     cost_breakdown_lines,
@@ -163,7 +163,7 @@ class RowDelegate(QStyledItemDelegate):
         return QSize(0, base.height() + QFontMetrics(sub).height() + self._GAP)
 
     def paint(self, painter, option, index) -> None:
-        from gui_qt.theme import current_colors
+        from gui.theme import current_colors
 
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
@@ -283,7 +283,7 @@ class CostChart(QWidget):
             self.selected.emit(self._bars[index].session_id)
 
     def paintEvent(self, _event) -> None:  # noqa: N802 - Qt API
-        from gui_qt.theme import current_colors
+        from gui.theme import current_colors
 
         if not self._bars:
             return
@@ -528,7 +528,7 @@ class SummaryDialog(QDialog):
     def _on_generate(self) -> None:
         if self._running:
             return
-        from gui_qt.api_keys import ensure_keys
+        from gui.api_keys import ensure_keys
         from providers import has_usable_key
 
         provider_id = self.provider_combo.currentData()
@@ -804,7 +804,7 @@ class HistoryWindow(QDialog):
         On first show rather than in ``__init__`` because a pre-show layout
         does not report settled minimums: measured there, BOTH arrangements
         come back as the narrow number and the viewer never leaves the wide one
-        (the same trap the pre-show note in ``gui_qt/AGENTS.md`` records).
+        (the same trap the pre-show note in ``gui/AGENTS.md`` records).
         """
         layout = self.layout()
         self._apply_width_mode(False)

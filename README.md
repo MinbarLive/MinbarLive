@@ -101,10 +101,16 @@ python main.py
 > install them. On Debian/Ubuntu:
 >
 > ```bash
-> sudo apt install python3-tk libportaudio2
+> sudo apt install libportaudio2 \
+>   libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+>   libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0
 > ```
 >
-> - `python3-tk` — the Tkinter GUI toolkit (`tkinter` is **not** a PyPI package).
+> - The `libxcb-*` set — Qt's X11 platform plugin links against them and will not
+>   load without them. The app then falls back to Wayland, where a client cannot
+>   place its own windows or keep them on top, so the subtitle overlay sits in
+>   the middle of the screen and ignores always-on-top. (The AppImage bundles
+>   them; this is only for running from source.)
 > - `libportaudio2` — PortAudio, for microphone capture. Without it the app
 >   exits at startup with `OSError: PortAudio library not found`. (The
 >   prebuilt AppImage bundles PortAudio, so this only affects source runs.)

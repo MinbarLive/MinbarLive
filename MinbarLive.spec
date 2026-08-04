@@ -3,7 +3,7 @@
 import glob
 import sys
 
-from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
 
 IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
@@ -41,8 +41,8 @@ _pyi_hooks.copy_metadata = _copy_metadata_by_import_name
 # environment takes it from a .desktop entry, not from the binary.
 ICON_PATH = "public/MinbarLive.ico"
 # Embeds per-monitor DPI awareness (plus longPathAware and Common-Controls v6)
-# into the frozen EXE, so the packaged app is aware from process start rather
-# than from the first CustomTkinter window. Windows-only.
+# into the frozen EXE, so the packaged app is aware from process start.
+# Windows-only.
 MANIFEST_PATH = "MinbarLive.manifest"
 
 hiddenimports = (
@@ -67,17 +67,16 @@ hiddenimports = (
     + collect_submodules("dotenv")
     + collect_submodules("screeninfo")
     + collect_submodules("keyring")
-    + collect_submodules("customtkinter")
-    + collect_submodules("arabic_reshaper")
-    + collect_submodules("bidi")
+    # PySide6 has a comprehensive PyInstaller hook of its own — it collects the
+    # Qt libraries, the platform PLUGINS and the translations. Listing
+    # submodules on top of it only re-pulls what the hook already has. What the
+    # hook cannot do is conjure system libraries the build machine lacks: on
+    # Linux the xcb platform plugin links against libxcb-cursor and friends, so
+    # the builder must install them BEFORE this runs (release.yml does) or the
+    # plugin ships unloadable and the app falls through to Wayland, where the
+    # subtitle overlay can be neither placed nor kept on top.
     + collect_submodules("webrtcvad")  # imported lazily by audio/vad.py
     + collect_submodules("soundcard")  # imported lazily for WASAPI loopback capture
-    # PIL.ImageTk (utils/icons.py header logo) pulls in the C helper module
-    # PIL._tkinter_finder indirectly. PyInstaller's PIL hook picks it up on
-    # Windows but misses it on Linux, so the frozen Linux app crashes the
-    # logo render with "No module named 'PIL._tkinter_finder'" and shows a
-    # wordmark-only header. Harmless to list on every platform.
-    + ["PIL._tkinter_finder"]
 )
 
 # keyring's Linux Secret Service backend (GNOME Keyring / KWallet) is provided by
@@ -107,13 +106,14 @@ excludes = [
     "matplotlib",
     # PIL is NOT excluded: utils/icons.py crops and scales the header logo
     # with Pillow. Excluding it left the frozen app with a wordmark-only
-    # header (CustomTkinter's own PIL import is in a try/except, so nothing
-    # else failed loudly).
+    # header, and nothing failed loudly.
+    # Tkinter is gone with the CustomTkinter tree, and excluding it keeps a
+    # stray tkinter import from ever pulling Tcl/Tk into the bundle again.
+    "tkinter",
     "pandas",
     "IPython",
     "notebook",
     "jupyter",
-    "tkinter.test",
     # Build/packaging tooling never used at runtime. keyring's deps
     # (jaraco.*, more_itertools) are installed standalone, not via
     # setuptools._vendor, so dropping setuptools/pkg_resources is safe; the
@@ -149,7 +149,7 @@ if IS_LINUX:
         print("WARNING: libportaudio not found - the Linux build will have no audio.")
 
 # Bundle project data/ and public/ into the executable (available under sys._MEIPASS/)
-datas = [("data", "data"), ("public", "public")] + collect_data_files("customtkinter")
+datas = [("data", "data"), ("public", "public")]
 
 a = Analysis(
     ["main.py"],

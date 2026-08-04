@@ -41,10 +41,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui_qt.api_keys import ensure_keys
-from gui_qt.dialogs import ask_yes_no
-from gui_qt.widgets import Dropdown, Expander, SegmentedControl, field
-from gui_qt.window_size import SECONDARY_WINDOW_W, apply_content_size
+from gui.api_keys import ensure_keys
+from gui.dialogs import ask_yes_no
+from gui.widgets import Dropdown, Expander, SegmentedControl, field
+from gui.window_size import SECONDARY_WINDOW_W, apply_content_size
 from providers import (
     PROVIDER_CHOICES,
     TRANSCRIPTION_PROVIDER_CHOICES,
@@ -95,7 +95,7 @@ _DEFAULT_BILINGUAL_INDEX = 1  # the original above the translation, as in Tk
 
 # Width the window is laid out for, fixed: the content is a single column of
 # dropdowns and buttons that stretch badly. Shared with the settings and
-# announcement windows, which are the same shape — see gui_qt/window_size.py.
+# announcement windows, which are the same shape — see gui/window_size.py.
 # The height follows the content, which changes with the GUI language and the
 # More-settings expander — see _resize_to_content.
 BATCH_WINDOW_W = SECONDARY_WINDOW_W
@@ -615,7 +615,7 @@ class BatchWindow(QDialog):
         which is not resizable either. Called again whenever the More-settings
         expander changes how tall the cards are.
 
-        The cap comes from the shared rule in gui_qt/window_size.py: past it
+        The cap comes from the shared rule in gui/window_size.py: past it
         the cards scroll instead of the action bar being pushed off the bottom.
         """
         # Deliver the invalidation the expander posted when it hid or showed
