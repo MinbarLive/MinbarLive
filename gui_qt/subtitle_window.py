@@ -49,7 +49,7 @@ from config import (
     REALTIME_LIVE_MAX_ROWS,
     REALTIME_MAX_BLOCK_CHARS,
 )
-from gui_qt.fonts import source_font, subtitle_font
+from gui_qt.fonts import is_arabic_text, source_font, subtitle_font
 from gui_qt.palette import palette
 from gui_qt.widgets import is_window_on_top, set_window_on_top
 from utils.settings import (
@@ -601,18 +601,35 @@ class SubtitleWindow(QWidget):
         h = self._measure_block(block)
         self._draw_block(p, block, x, max(0, (self._content_height() - h) // 2))
 
+    def _live_font(self) -> QFont:
+        """Font of the in-progress transcript line.
+
+        The FULL translation size, as the Tk overlay draws it (_live_font_for):
+        the live line is the sentence being spoken, not a footnote to it — and
+        Arabic renders bold and upright there, like a translation line, Latin
+        italic and regular. This used to be handed ``_font_size_base``, which
+        is a divisor and not a pixel size at all, so the line came out at a
+        size unrelated to everything around it — and to the height reserved for
+        it, which was already measured at the translation size.
+        """
+        text = self._live_text or ""
+        px = self._translation_px()
+        if is_arabic_text(text):
+            return subtitle_font(px, text=text)
+        return source_font(px, text)
+
     def _live_line_height(self) -> int:
-        font = source_font(self._translation_px(), self._live_text or "")
-        return QFontMetrics(font).lineSpacing() * REALTIME_LIVE_MAX_ROWS
+        fm = QFontMetrics(self._live_font())
+        return fm.height() * REALTIME_LIVE_MAX_ROWS
 
     def _draw_live_line(self, p: QPainter, x: int, y: int) -> None:
         """In-progress transcript: muted while speaking, primary once settled."""
         text = self._live_text or ""
-        font = source_font(self._font_size_base, text)
+        font = self._live_font()
         fm = QFontMetrics(font)
         # Show only the newest row: a long interim that wrapped would otherwise
         # shove the settled history up by several rows at once.
-        max_h = fm.lineSpacing() * REALTIME_LIVE_MAX_ROWS
+        max_h = self._live_line_height()
         p.setFont(font)
         p.setPen(self._translation_qcolor() if self._live_settled else self._source_qcolor())
         p.drawText(

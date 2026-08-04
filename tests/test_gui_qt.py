@@ -4670,3 +4670,34 @@ class TestParagraphDirection:
         assert self._direction(w, "Und die Geschichte widerlegt das.") == "ltr"
         # Including with an honorific in the middle of it.
         assert self._direction(w, "dass Allah ﷻ es erzählt hat.") == "ltr"
+
+
+class TestLiveLine:
+    """The in-progress transcript. It was handed ``_font_size_base``, which is
+    a DIVISOR and not a pixel size — so it drew at a size unrelated both to the
+    subtitles around it and to the height the feed had reserved for it, which
+    was already being measured at the translation size."""
+
+    def test_it_draws_at_the_translation_size(self, overlay):
+        w = overlay(SUBTITLE_MODE_REALTIME, font_size_base=60)
+        w.set_live_text("Das ist der laufende Text", False)
+        assert w._live_font().pixelSize() == w._translation_px()
+
+    def test_the_reserved_height_matches_the_font_it_draws_with(self, overlay):
+        from PySide6.QtGui import QFontMetrics
+
+        from config import REALTIME_LIVE_MAX_ROWS
+
+        w = overlay(SUBTITLE_MODE_REALTIME, font_size_base=60)
+        w.set_live_text("هؤلاء لا يشعرون أنه فتنة.", False)
+        expected = QFontMetrics(w._live_font()).height() * REALTIME_LIVE_MAX_ROWS
+        assert w._live_line_height() == expected
+
+    def test_arabic_renders_bold_and_upright_like_the_tk_overlay(self, overlay):
+        w = overlay(SUBTITLE_MODE_REALTIME)
+        w.set_live_text("هؤلاء لا يشعرون", False)
+        arabic = w._live_font()
+        assert arabic.bold() and not arabic.italic()
+        w.set_live_text("Das ist der laufende Text", False)
+        latin = w._live_font()
+        assert latin.italic() and not latin.bold()
