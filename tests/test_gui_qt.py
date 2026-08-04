@@ -4762,3 +4762,35 @@ class TestFeedEndsAtTheFooter:
         assert w.reserved_bottom() == (
             w._pill_height() + FOOTER_MARGIN + PILL_CLEARANCE
         )
+
+
+class TestDropdownPopup:
+    """macOS answers SH_ComboBox_UseNativePopup with 1, and Qt then opens an
+    NSMenu: unthemed, positioned over the box rather than under it, and — since
+    a menu-style popup ignores maxVisibleItems — as long as the list happens to
+    be. A KDE or Adwaita desktop style can answer the same way."""
+
+    def test_the_style_refuses_the_platform_popup(self, qt_app):
+        from PySide6.QtWidgets import QStyle
+
+        from gui_qt.theme import apply_theme
+
+        apply_theme(qt_app, "light")
+        style = qt_app.style()
+        assert style.styleHint(QStyle.SH_ComboBox_Popup) == 0
+        assert style.styleHint(QStyle.SH_ComboBox_UseNativePopup) == 0
+
+    def test_the_popup_is_a_plain_item_view(self, qt_app):
+        from PySide6.QtWidgets import QListView
+
+        from gui_qt.theme import apply_theme
+        from gui_qt.widgets import Dropdown
+
+        apply_theme(qt_app, "light")
+        combo = Dropdown(["Deutsch", "English"])
+        try:
+            # The stylesheet dresses `QComboBox QAbstractItemView`; a view the
+            # platform style substitutes is not necessarily one of those.
+            assert isinstance(combo.view(), QListView)
+        finally:
+            combo.close()

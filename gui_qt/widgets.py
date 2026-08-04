@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QListView,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -199,6 +200,11 @@ class Dropdown(QComboBox):
         super().__init__(parent)
         if items:
             self.addItems(items)
+        # An explicit item view, so the popup is a plain list on every
+        # platform and the stylesheet's `QComboBox QAbstractItemView` rules
+        # are what draws it. Left to itself, a platform style may hand back a
+        # menu-like or native view instead (see _ControlStyle.styleHint).
+        self.setView(QListView())
         self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.setMinimumContentsLength(8)
         self.setMaxVisibleItems(self._MAX_VISIBLE_ITEMS)

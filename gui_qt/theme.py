@@ -86,6 +86,22 @@ class _ControlStyle(QProxyStyle):
     def set_colors(self, colors: dict[str, str]) -> None:
         self._c = colors
 
+    def styleHint(self, hint, option=None, widget=None, data=None):  # noqa: N802
+        """Force the plain, styled drop-down popup on every platform.
+
+        The macOS style answers both of these with 1, and Qt then opens a
+        combo as a NATIVE NSMenu: unthemed (a white list over the dark panel),
+        positioned so the current item sits under the pointer rather than
+        below the box, carrying a check mark we never asked for — and, because
+        a menu-style popup ignores ``maxVisibleItems``, as long as the list
+        happens to be. None of that is styleable from here; it stops being
+        native instead. A KDE/Adwaita desktop style can answer the same way,
+        so the override is not guarded by platform.
+        """
+        if hint in (QStyle.SH_ComboBox_Popup, QStyle.SH_ComboBox_UseNativePopup):
+            return 0
+        return super().styleHint(hint, option, widget, data)
+
     def pixelMetric(self, metric, option=None, widget=None):  # noqa: N802 - Qt API
         if metric in (
             QStyle.PM_IndicatorWidth,

@@ -49,6 +49,10 @@ for anything Qt, pytest included.
   table on every launch. Arabic gets its own stack because Qt reports the metrics of the
   family it was ASKED for and paints missing glyphs from a fallback family it was not —
   Arabic measured against a Latin descent overlapped the line below it.
+- **Combo popups must not be the platform's.** `_ControlStyle.styleHint` answers
+  `SH_ComboBox_Popup` and `SH_ComboBox_UseNativePopup` with 0, and `Dropdown` sets an
+  explicit `QListView`. macOS otherwise opens a native NSMenu: unstyled, placed over the
+  box, and ignoring `maxVisibleItems` so the list runs the height of the screen.
 
 ## Layout parity — do not "simplify" these back out
 
