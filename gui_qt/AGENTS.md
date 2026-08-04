@@ -67,10 +67,27 @@ packaging section below for the shipped build.
   table on every launch. Arabic gets its own stack because Qt reports the metrics of the
   family it was ASKED for and paints missing glyphs from a fallback family it was not —
   Arabic measured against a Latin descent overlapped the line below it.
-- **Combo popups must not be the platform's.** `_ControlStyle.styleHint` answers
-  `SH_ComboBox_Popup` and `SH_ComboBox_UseNativePopup` with 0, and `Dropdown` sets an
-  explicit `QListView`. macOS otherwise opens a native NSMenu: unstyled, placed over the
-  box, and ignoring `maxVisibleItems` so the list runs the height of the screen.
+- **Combo popups must not be the platform's** — and that takes two overrides, not one.
+  `_ControlStyle.styleHint` answers `SH_ComboBox_Popup` and `SH_ComboBox_UseNativePopup`
+  with 0, and `Dropdown` sets an explicit `QListView`; macOS otherwise opens a native
+  NSMenu: unstyled, placed over the box, and ignoring `maxVisibleItems` so the list runs
+  the height of the screen. The list's RECTANGLE is a separate question:
+  `_ControlStyle.subControlRect` answers `option.rect` for `SC_ComboBoxListBoxPopup`
+  because `QMacStyle` returns one placed OVER the box (so the current item sits under the
+  pointer), which drew the open list's first row on top of the closed box's own text.
+- **Font families in the stylesheet come from `gui_qt/fonts.py` too.** Qt's stylesheet
+  parser does not implement the CSS generic families: `sans-serif` and `monospace` are
+  family NAMES to it. Asking for one that does not exist makes Qt populate its whole alias
+  table and print "Populating font family aliases took N ms. Replace uses of missing font
+  family …" — which is what a hardcoded `sans-serif` tail and `"Consolas", "Menlo"` did on
+  macOS. A test walks every `font-family` in the sheet; keep it passing rather than
+  chasing the warning, which only ever names the first miss.
+- **The macOS overlay is laid out inside the work area, always.** Nothing a Qt client can
+  ask for puts a window above the Dock or the menu bar — a stays-on-top window floats
+  above other applications and still below both — so a full-height overlay loses its
+  bottom strip and the disclaimer pill with it. `_MACOS` in `gui_qt/subtitle_window.py`.
+  Windows and X11 keep the whole monitor when topmost; OBS captures the full frame
+  because of it.
 
 ## Layout parity — do not "simplify" these back out
 
