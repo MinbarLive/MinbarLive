@@ -81,6 +81,11 @@ _STACK_INK_GAP_EM = 0.04
 _HONORIFIC_LIGATURE_RE = re.compile(r"[ﷺﷻ]")
 # Distance from the window's bottom edge to the footer pill, and between pills.
 FOOTER_MARGIN = 18
+# Clearance kept between the lowest subtitle line and the topmost pill. The Tk
+# overlay reserves the same 8 px (_draw_canvas_footer). Without it the feed,
+# which is anchored to the bottom of the content area, lands its last line
+# directly on the disclaimer.
+PILL_CLEARANCE = 8
 # Pill text size. Fixed, never derived from the subtitle size: the Tk overlay
 # draws its footer at a constant 14pt bold, which is ~19 logical px at 96 DPI.
 PILL_FONT_PX = 19
@@ -440,6 +445,16 @@ class SubtitleWindow(QWidget):
         # ascent and reclaims nothing, so this mostly IS the constant.
         return REALTIME_BLOCK_SPACING - self._reclaim(first_text, first_font)
 
+    def _live_gap(self) -> int:
+        """Space between the last settled block and the live line.
+
+        The same distance one block keeps from the next, so the feed has a
+        single rhythm — the Tk overlay puts REALTIME_BLOCK_SPACING here too.
+        """
+        return REALTIME_BLOCK_SPACING - self._reclaim(
+            self._live_text or "", self._live_font()
+        )
+
     def _draw_card(self, p: QPainter, text: str, font: QFont, rect: QRect) -> None:
         """Rounded backing card behind one line, sized to the text it holds.
 
@@ -513,15 +528,22 @@ class SubtitleWindow(QWidget):
         x = int(self.width() * SIDE_MARGIN_RATIO)
         top = int(self.height() * 0.06)
         heights = [self._measure_block(b) for b in self._blocks]
-        # The advance past each block: its own height plus the gap the NEXT one
-        # wants above it. One list, used by all three passes below, so the
-        # total, the draw loop and the eviction compensation cannot disagree —
-        # if they did, the feed would jump every time a block scrolled off.
-        # ``followers`` is empty when there are no blocks — [*[], None] would be
-        # a one-element list against zero heights.
+        # The advance past each block: its own height plus the gap whatever
+        # comes NEXT wants above it. One list, used by all three passes below,
+        # so the total, the draw loop and the eviction compensation cannot
+        # disagree — if they did, the feed would jump every time a block
+        # scrolled off. ``followers`` is empty when there are no blocks —
+        # [*[], None] would be a one-element list against zero heights.
+        #
+        # Nothing follows the last block unless the live line does, and then
+        # its advance is its height alone. Charging a trailing gap regardless
+        # reserved a block's worth of empty space under the newest subtitle
+        # and held the whole feed that far off the footer; the Tk overlay ends
+        # at the last block's foot (_feed_natural_layout).
         followers = [*self._blocks[1:], None] if self._blocks else []
+        live_gap = self._live_gap() if self._live_text else 0
         advances = [
-            h + (self._block_gap(nxt) if nxt is not None else REALTIME_BLOCK_SPACING)
+            h + (self._block_gap(nxt) if nxt is not None else live_gap)
             for h, nxt in zip(heights, followers, strict=True)
         ]
 
@@ -673,7 +695,9 @@ class SubtitleWindow(QWidget):
             r += self._pill_height() + FOOTER_MARGIN
         if self._stopped_hint:
             r += self._pill_height() + PILL_GAP
-        return r
+        # Once, above whichever pill ends up topmost — and only when there is
+        # one, so nothing is held back from an overlay that shows neither.
+        return r + PILL_CLEARANCE if r else 0
 
     def _content_height(self) -> int:
         return max(1, self.height() - self.reserved_bottom())

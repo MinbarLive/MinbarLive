@@ -4701,3 +4701,64 @@ class TestLiveLine:
         w.set_live_text("Das ist der laufende Text", False)
         latin = w._live_font()
         assert latin.italic() and not latin.bold()
+
+
+class TestFeedEndsAtTheFooter:
+    """The feed is anchored to the bottom of the content area, so anything
+    reserved below the last block holds the whole feed that far off the
+    footer. It used to charge a full REALTIME_BLOCK_SPACING after the newest
+    block for a follower that does not exist."""
+
+    @staticmethod
+    def _settle(w) -> None:
+        w.render(w.grab())
+        for _ in range(2000):
+            if not w._feed_timer.isActive():
+                break
+            w._step_feed_anim()
+        w.render(w.grab())
+
+    def _newest_bottom(self, w) -> float:
+        heights = [w._measure_block(b) for b in w._blocks]
+        stacked = sum(
+            h + w._block_gap(nxt)
+            for h, nxt in zip(heights[:-1], w._blocks[1:], strict=True)
+        )
+        return int(w.height() * 0.06) - w._scroll_offset + stacked + heights[-1]
+
+    def test_the_newest_block_reaches_the_bottom_of_the_content_area(self, overlay):
+        from config import REALTIME_BLOCK_SPACING
+
+        w = overlay(SUBTITLE_MODE_REALTIME, bilingual_mode=True, show_footer=True)
+        for i in range(16):
+            w.add_subtitle(f"Zeile {i}: {PAIRS[1][0]}", source_text=PAIRS[1][1])
+            self._settle(w)
+        bottom = self._newest_bottom(w)
+        # Both sides: it must not run under the pills, and it must not stop a
+        # block's worth of empty space short of them either.
+        assert bottom <= w._content_height() + 5
+        assert bottom > w._content_height() - REALTIME_BLOCK_SPACING
+
+    def test_the_live_line_takes_the_place_the_gap_reserved(self, overlay):
+        w = overlay(SUBTITLE_MODE_REALTIME, bilingual_mode=True, show_footer=True)
+        for i in range(16):
+            w.add_subtitle(f"Zeile {i}: {PAIRS[1][0]}", source_text=PAIRS[1][1])
+            self._settle(w)
+        without = self._newest_bottom(w)
+        w.set_live_text("هؤلاء لا يشعرون أنه فتنة.", False)
+        self._settle(w)
+        # The blocks slide up by exactly the room the live line needs, so it
+        # ends where the newest block was — the feed does not grow a second gap.
+        assert self._newest_bottom(w) + w._live_gap() + w._live_line_height() == (
+            pytest.approx(without, abs=2)
+        )
+
+    def test_the_pills_keep_their_clearance(self, overlay):
+        from gui_qt.subtitle_window import FOOTER_MARGIN, PILL_CLEARANCE
+
+        w = overlay(SUBTITLE_MODE_STATIC, show_footer=True)
+        # The Tk overlay reserves the pill, 10 px under it and 8 px above it;
+        # without that last part the feed's bottom line sits on the disclaimer.
+        assert w.reserved_bottom() == (
+            w._pill_height() + FOOTER_MARGIN + PILL_CLEARANCE
+        )
