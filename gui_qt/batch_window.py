@@ -112,6 +112,18 @@ _CARD_PAD = 16
 # so the start AND the extension stay readable.
 _FILE_NAME_LIMIT = 48
 
+# What the picker's "Audio/Video" filter offers. batch/processor.py has no
+# allowlist of its own — anything ffmpeg can read is converted to 16 kHz WAV —
+# so this list exists only to spare the operator the "All files" dropdown, and
+# a format missing from it looks unsupported when it is not. Covers what a
+# mosque recording actually arrives as: phones (.m4a .3gp .amr), cameras
+# (.mov .mts .m2ts), OBS (.mkv .flv), Windows (.wma .wmv .avi) and broadcast
+# captures (.ts .mpg .mpeg), on top of the plain audio formats.
+_MEDIA_EXTENSIONS = (
+    "3gp aac aiff amr avi caf flac flv m2ts m4a m4v mkv mov mp3 mp4 mpeg mpg "
+    "mts ogg ogv opus ts wav webm wma wmv"
+).split()
+
 # Progress bar height. Pinned rather than left to the stylesheet, which states
 # it as a hint the layout is free to exceed when it has height to spare.
 _PROGRESS_H = 10
@@ -251,8 +263,7 @@ class BatchWindow(QDialog):
         self.action_bar = self._action_bar()
         outer.addWidget(self.action_bar)
 
-        self._sync_file_row()
-        self._sync_bilingual_state()
+        self._sync_file_row()  # also applies the bilingual segment's own rule
         self._resize_to_content()
 
     # ── build ────────────────────────────────────────────────────────────
@@ -436,9 +447,9 @@ class BatchWindow(QDialog):
         grid.addWidget(self.translation_provider_combo, 3, 0)
         grid.addWidget(self.translation_model_combo, 3, 1)
 
-        defaults_btn = QPushButton(self._t("batch_defaults", "Use default"))
-        defaults_btn.clicked.connect(self._on_defaults)
-        grid.addWidget(defaults_btn, 4, 1)
+        self.defaults_btn = QPushButton(self._t("batch_defaults", "Use default"))
+        self.defaults_btn.clicked.connect(self._on_defaults)
+        grid.addWidget(self.defaults_btn, 4, 1)
 
         self._fill_models(
             self.stt_model_combo, self._selected_stt_provider(), "transcription"
@@ -546,8 +557,30 @@ class BatchWindow(QDialog):
         head = max(10, _FILE_NAME_LIMIT - len(extension) - 1)
         return stem[:head].rstrip() + "…" + extension
 
+    def _config_controls(self) -> list[QWidget]:
+        """Every control that decides what a run produces.
+
+        Locked together while one is in progress, as in the Tk window
+        (``gui/batch_view.py`` ``_batch_option_combos``): the worker was handed
+        its arguments at Start, so a change made now cannot reach the running
+        job — it would only leave the window describing a job it is not running.
+        """
+        return [
+            self.source_combo,
+            self.target_combo,
+            self.stt_provider_combo,
+            self.stt_model_combo,
+            self.translation_provider_combo,
+            self.translation_model_combo,
+            self.output_segment,
+            self.bilingual_segment,
+            # Included although Tk leaves it out: it rewrites the six controls
+            # above, so leaving it live would move locked ones.
+            self.defaults_btn,
+        ]
+
     def _sync_file_row(self) -> None:
-        """Picker label, ✕ and Start, all driven by the current selection."""
+        """Picker label, ✕, Start and the run lock, from the current state."""
         running = self.worker.is_running()
         chosen = bool(self._input_path)
         self.pick_btn.setText(self._file_button_text())
@@ -556,6 +589,10 @@ class BatchWindow(QDialog):
         self.clear_btn.setEnabled(not running)
         self.start_btn.setEnabled(chosen and not running)
         self.cancel_btn.setEnabled(running)
+        for control in self._config_controls():
+            control.setEnabled(not running)
+        # Re-apply the transcript-only rule the blanket enable above clobbers.
+        self._sync_bilingual_state()
 
     def _natural_height(self) -> int:
         """Height the content wants at ``BATCH_WINDOW_W``.
@@ -609,11 +646,17 @@ class BatchWindow(QDialog):
         # Transcript-only writes no SRT, so a bilingual SRT is meaningless.
         # Disabled on the widget rather than through set_enabled(), so
         # isEnabled() reports it and Qt greys the segments by propagation.
-        self.bilingual_segment.setEnabled(self._output_format() != "txt")
+        self.bilingual_segment.setEnabled(
+            self._output_format() != "txt" and not self.worker.is_running()
+        )
 
     def _bilingual_srt(self) -> bool:
+        # From the chosen format, not from the segment's enabled state: a run
+        # in progress disables it along with every other config control, and
+        # reading isEnabled() here would then report "translation only" for a
+        # job that is producing exactly the opposite.
         return (
-            self.bilingual_segment.isEnabled()
+            self._output_format() != "txt"
             and self.bilingual_segment.current_index() == _DEFAULT_BILINGUAL_INDEX
         )
 
@@ -670,12 +713,12 @@ class BatchWindow(QDialog):
     def _on_pick(self) -> None:
         media = self._t("batch_media_files", "Audio/Video")
         all_files = self._t("batch_all_files", "All files")
+        patterns = " ".join(f"*.{extension}" for extension in _MEDIA_EXTENSIONS)
         path, _ = QFileDialog.getOpenFileName(
             self,
             self._t("batch_pick_file", "Choose file…"),
             "",
-            f"{media} (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.opus *.mp4 *.mkv "
-            f"*.mov *.avi *.webm);;{all_files} (*)",
+            f"{media} ({patterns});;{all_files} (*)",
         )
         if not path:
             return

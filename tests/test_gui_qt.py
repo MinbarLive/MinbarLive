@@ -4465,3 +4465,93 @@ class TestHistoryNarrowLayout:
         finally:
             panel.close_secondary_windows()
             panel.close()
+
+
+class TestBatchRunLock:
+    """Everything that decides what a run produces is frozen while one runs.
+
+    The worker was handed its arguments at Start, so a change made mid-run
+    cannot reach it — it would only leave the window describing a job it is not
+    running. The Tk window locks the same set (gui/batch_view.py
+    _batch_option_combos).
+    """
+
+    @pytest.fixture
+    def batch(self, qt_app):
+        import gui_qt.batch_window as bw
+        from utils.settings import load_settings
+
+        # No save_settings stub: the batch window is configured independently
+        # of the live app and writes nothing back (see its module docstring).
+        window = bw.BatchWindow(lambda key, fallback="": fallback, load_settings())
+        window.show()
+        _settle(qt_app)
+        yield window
+        window.worker.is_running = lambda: False
+        window.close()
+
+    @staticmethod
+    def _run(window, running: bool) -> None:
+        window.worker.is_running = lambda: running
+        window._sync_file_row()
+
+    def test_the_config_controls_are_live_before_a_run(self, batch):
+        assert all(control.isEnabled() for control in batch._config_controls())
+
+    def test_a_run_freezes_them(self, batch):
+        batch._input_path = "lecture.mp3"
+        self._run(batch, True)
+        assert not any(control.isEnabled() for control in batch._config_controls())
+
+    def test_finishing_gives_them_back(self, batch):
+        batch._input_path = "lecture.mp3"
+        self._run(batch, True)
+        self._run(batch, False)
+        assert all(control.isEnabled() for control in batch._config_controls())
+
+    def test_the_transcript_only_rule_survives_the_thaw(self, batch):
+        # A blanket re-enable would hand back the bilingual segment for an
+        # output format that writes no SRT to be bilingual about.
+        batch.output_segment.set_current_index(1)  # transcript only
+        batch._sync_bilingual_state()
+        assert not batch.bilingual_segment.isEnabled()
+        batch._input_path = "lecture.mp3"
+        self._run(batch, True)
+        self._run(batch, False)
+        assert not batch.bilingual_segment.isEnabled()
+
+    def test_a_frozen_bilingual_segment_still_reports_the_running_job(self, batch):
+        # _bilingual_srt used to read isEnabled(), which the run lock clears —
+        # it would then report "translation only" for a bilingual run.
+        batch.output_segment.set_current_index(0)  # subtitles
+        batch.bilingual_segment.set_current_index(1)  # original + translation
+        assert batch._bilingual_srt()
+        batch._input_path = "lecture.mp3"
+        self._run(batch, True)
+        assert batch._bilingual_srt()
+
+
+class TestBatchFilePicker:
+    """The picker's filter is the only thing deciding what a user can SEE:
+    batch/processor.py has no allowlist, it hands everything to ffmpeg. A
+    format missing from the filter looks unsupported when it is not, and
+    "switch to All files" is not something an AV volunteer knows to do."""
+
+    def test_it_offers_every_format_the_tk_picker_did(self):
+        from gui_qt.batch_window import _MEDIA_EXTENSIONS
+
+        tk_offered = {
+            "wav", "mp3", "m4a", "aac", "flac", "ogg", "opus", "mp4", "mkv",
+            "mov", "webm", "avi", "m4v", "wmv", "flv", "ts", "mpg", "mpeg",
+        }
+        assert tk_offered <= set(_MEDIA_EXTENSIONS)
+
+    def test_the_patterns_are_wildcards_qt_understands(self):
+        from gui_qt.batch_window import _MEDIA_EXTENSIONS
+
+        # Built into "*.ext *.ext" — a stray dot or space silently filters out
+        # everything, which reads as "no media files in this folder".
+        assert all(
+            extension.isalnum() and extension.islower()
+            for extension in _MEDIA_EXTENSIONS
+        )
