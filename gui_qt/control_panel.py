@@ -1188,7 +1188,10 @@ class ControlPanel(QMainWindow):
         panel = QWidget()
         panel.setMinimumWidth(260)
         box = QVBoxLayout(panel)
-        box.setContentsMargins(0, 16, 18, 18)
+        # Left margin matches the right: the row layout has no spacing, so at 0
+        # the log box sat directly against the card area's scroll bar with
+        # nothing between them.
+        box.setContentsMargins(18, 16, 18, 18)
         box.setSpacing(12)
 
         head = QHBoxLayout()
