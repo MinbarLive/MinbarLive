@@ -67,8 +67,8 @@ def _css_families() -> str:
     """``app_families`` as a CSS ``font-family`` value.
 
     No generic ``sans-serif`` tail. Qt's stylesheet parser does not implement
-    the CSS generic families — it hands the name to the font matcher like any
-    other — so on macOS it was a request for a family called "Sans-serif",
+    the CSS generic families â€” it hands the name to the font matcher like any
+    other â€” so on macOS it was a request for a family called "Sans-serif",
     which made Qt build its whole alias table hunting for it and then say so:
     "Populating font family aliases took 134 ms. Replace uses of missing font
     family "Sans-serif" with one that exists to avoid this cost." The stack in
@@ -119,6 +119,24 @@ class _ControlStyle(QProxyStyle):
         if hint in (QStyle.SH_ComboBox_Popup, QStyle.SH_ComboBox_UseNativePopup):
             return 0
         return super().styleHint(hint, option, widget, data)
+
+    def subControlRect(self, control, option, sub_control, widget=None):  # noqa: N802
+        """Open a drop-down list BELOW its box, not over it.
+
+        Refusing the native popup (``styleHint`` above) is only half of it: the
+        list's rectangle still comes from the platform style, and the macOS one
+        returns a rect deliberately placed OVER the box, so the current item
+        sits under the pointer â€” a popup button's behaviour, which is what put
+        the first item on top of the closed box's own text. Every other style
+        answers ``option.rect`` here (QCommonStyle), and Qt then maps its
+        bottom-left to open the list underneath. So this is the Windows and
+        Linux answer unchanged, applied everywhere.
+        """
+        if control == QStyle.CC_ComboBox and sub_control == (
+            QStyle.SC_ComboBoxListBoxPopup
+        ):
+            return option.rect
+        return super().subControlRect(control, option, sub_control, widget)
 
     def pixelMetric(self, metric, option=None, widget=None):  # noqa: N802 - Qt API
         if metric in (

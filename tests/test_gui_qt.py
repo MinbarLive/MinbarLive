@@ -5262,6 +5262,66 @@ class TestOverlayFitsTheScreen:
         assert w._fit_timer.isActive()
 
 
+class TestDropdownPopupPlacement:
+    """The list has to open BELOW its box. Refusing the native popup was only
+    half of it: the list's rectangle still came from the platform style, and
+    the macOS one places it OVER the box so the current item sits under the
+    pointer — which drew the first item on top of the closed box's own text."""
+
+    def test_the_list_rect_is_the_box_rect(self, qt_app):
+        from PySide6.QtCore import QRect
+        from PySide6.QtWidgets import QStyle, QStyleOptionComboBox
+
+        from gui_qt.theme import apply_theme
+
+        apply_theme(qt_app, "dark")
+        option = QStyleOptionComboBox()
+        option.rect = QRect(10, 20, 300, 40)
+        rect = qt_app.style().subControlRect(
+            QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxListBoxPopup, None
+        )
+        # Qt maps this rect's bottom-left to place the popup: the box's own
+        # rectangle opens the list directly underneath it.
+        assert rect == option.rect
+
+    def test_the_platform_style_cannot_place_the_list_itself(self, qt_app):
+        # The one above passes on Windows either way — the common style already
+        # answers option.rect. This forces the macOS answer underneath, since
+        # no style here produces it.
+        from PySide6.QtCore import QRect
+        from PySide6.QtWidgets import QProxyStyle, QStyle, QStyleOptionComboBox
+
+        from gui_qt.theme import _ControlStyle
+
+        over_the_box = QRect(10, -60, 300, 160)
+
+        class _MacLike(QProxyStyle):
+            def subControlRect(self, control, option, sub_control, widget=None):  # noqa: N802
+                return over_the_box
+
+        style = _ControlStyle()
+        # Bound to a name: setBaseStyle hands ownership to C++, and a temporary
+        # is collected on the way — the Python override goes with it and the
+        # real platform style answers instead.
+        base = _MacLike()
+        style.setBaseStyle(base)
+        option = QStyleOptionComboBox()
+        option.rect = QRect(10, 20, 300, 40)
+        assert (
+            style.subControlRect(
+                QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxListBoxPopup, None
+            )
+            == option.rect
+        )
+        # Every other sub-control still belongs to the platform style.
+        assert (
+            style.subControlRect(
+                QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxArrow, None
+            )
+            == over_the_box
+        )
+
+
 class TestLinuxPlatformSetup:
     """What a Linux launch asks of Qt before the QApplication exists."""
 
