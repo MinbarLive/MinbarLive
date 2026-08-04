@@ -176,12 +176,29 @@ class TestContinuousMode:
 class TestRealtimeMode:
     """The default streaming mode: a top-down feed that must not run off."""
 
+    @staticmethod
+    def _feed(w, text, source):
+        """Add a block and let the feed finish sliding to its new position.
+
+        The offset no longer jumps the instant a block lands — it eases there
+        over about half a second, which TestRealtimeFeedAnimation covers. These
+        tests are about where the feed ENDS UP, so they run the slide out. The
+        second render is what evicts: eviction happens during paint, against
+        the offset the animation actually reached.
+        """
+        w.add_subtitle(text, source_text=source)
+        w.render(w.grab())
+        for _ in range(400):
+            if not w._feed_timer.isActive():
+                break
+            w._step_feed_anim()
+        w.render(w.grab())
+
     def test_feed_shifts_up_and_never_slides_back_down(self, overlay):
         w = overlay(SUBTITLE_MODE_REALTIME, bilingual_mode=True)
         offsets = []
         for i in range(16):
-            w.add_subtitle(f"Zeile {i}: {PAIRS[1][0]}", source_text=PAIRS[1][1])
-            w.render(w.grab())
+            self._feed(w, f"Zeile {i}: {PAIRS[1][0]}", PAIRS[1][1])
             offsets.append(w._scroll_offset)
         assert offsets[-1] > 0, "feed never shifted despite overflowing"
         # Pairwise: the second sequence is one shorter by construction.
@@ -190,19 +207,23 @@ class TestRealtimeMode:
     def test_newest_block_stays_within_the_content_area(self, overlay):
         w = overlay(SUBTITLE_MODE_REALTIME, bilingual_mode=True)
         for i in range(16):
-            w.add_subtitle(f"Zeile {i}: {PAIRS[1][0]}", source_text=PAIRS[1][1])
-            w.render(w.grab())
+            self._feed(w, f"Zeile {i}: {PAIRS[1][0]}", PAIRS[1][1])
         heights = [w._measure_block(b) for b in w._blocks]
         top = int(w.height() * 0.06)
-        spacing = sum(h + 34 for h in heights[:-1])
+        # From the window's own stacking rule rather than the raw constant: the
+        # gap above a block is REALTIME_BLOCK_SPACING less whatever blank band
+        # that block's first line carries (see _block_gap).
+        spacing = sum(
+            h + w._block_gap(nxt)
+            for h, nxt in zip(heights[:-1], w._blocks[1:], strict=True)
+        )
         newest_y = top - w._scroll_offset + spacing
         assert newest_y + heights[-1] <= w._content_height() + 5
 
     def test_blocks_scrolled_off_the_top_are_evicted(self, overlay):
         w = overlay(SUBTITLE_MODE_REALTIME, bilingual_mode=True)
         for i in range(30):
-            w.add_subtitle(f"Zeile {i}: {PAIRS[0][0]}", source_text=PAIRS[0][1])
-            w.render(w.grab())
+            self._feed(w, f"Zeile {i}: {PAIRS[0][0]}", PAIRS[0][1])
         assert len(w._blocks) < 30
 
 
@@ -647,6 +668,11 @@ class TestDeviceHotSwap:
                 self.swaps: list[int] = []
                 self.restarts: list[int] = []
                 self.refuse = False
+                # _finish_start hands these to the pipeline bridge, which
+                # drains them on worker threads. Real queues, never fed.
+                self.translation_queue = queue.Queue()
+                self.error_queue = queue.Queue()
+                self.interim_queue = queue.Queue()
 
             def change_input_device(self, idx):
                 self.swaps.append(idx)
@@ -701,6 +727,60 @@ class TestDeviceHotSwap:
         target = self._other_index(p)
         p.device_combo.setCurrentIndex(target)
         assert controller.restarts == [p.device_indices[target]]
+
+    def test_a_device_picked_while_connecting_is_not_lost(self, panel):
+        """The reported bug: pick another device during "Connecting…" and no
+        sound arrives until you switch away and back.
+
+        Start captures its device before spawning the worker, and this handler
+        used to return early because _running is still False — so the pipeline
+        connected on the old device while the panel showed the new one."""
+        p, controller = panel
+        if p.device_combo.count() < 2:
+            pytest.skip("needs at least two input devices")
+        p._starting = True
+        p._started_device = p.device_indices[p.device_combo.currentIndex()]
+        target = self._other_index(p)
+        p.device_combo.setCurrentIndex(target)
+        # Not applied yet: swapping under a connect races the start thread.
+        assert controller.swaps == []
+        assert p._pending_device == p.device_indices[target]
+
+        p._start_error = None
+        p._finish_start()
+        assert p._running
+        assert controller.swaps == [p.device_indices[target]]
+        assert p._pending_device is None
+
+    def test_the_same_device_picked_while_connecting_is_not_reswapped(self, panel):
+        p, controller = panel
+        p._starting = True
+        current = p.device_indices[p.device_combo.currentIndex()]
+        p._started_device = current
+        p._pending_device = current
+        p._start_error = None
+        p._finish_start()
+        assert controller.swaps == []  # it is already the running device
+
+    def test_a_failed_start_drops_the_parked_device(self, panel, monkeypatch):
+        import gui_qt.control_panel as cp
+
+        # _finish_start reports a failed start with a REAL modal dialog, which
+        # a test run must never put on the developer's desktop.
+        shown: list[str] = []
+        monkeypatch.setattr(
+            cp, "show_message", lambda *a, **k: shown.append(a[2] if len(a) > 2 else "")
+        )
+        p, controller = panel
+        p._starting = True
+        p._started_device = 0
+        p._pending_device = 1
+        p._start_error = RuntimeError("no key")
+        p._finish_start()
+        assert shown  # the operator is told, rather than left at "Connecting…"
+        # Left set, it would fire against whatever the NEXT session started on.
+        assert p._pending_device is None
+        assert controller.swaps == []
 
 
 class TestControlPanelLayout:
@@ -3777,6 +3857,59 @@ class TestIntegratedWindows:
         assert win.geometry().center().x() == pytest.approx(panel.width() // 2, abs=1)
         assert win.geometry().center().y() == pytest.approx(panel.height() // 2, abs=1)
 
+    def test_the_panel_rule_actually_reaches_the_widget(self, panel, qt_app):
+        from PySide6.QtGui import QPalette
+
+        from gui_qt.theme import apply_theme
+
+        # The panel is only styled if there IS a sheet: nothing applies one on
+        # the way to a ControlPanel, only gui_qt/app.py does.
+        apply_theme(qt_app, "dark")
+        panel.open_settings()
+        _settle(qt_app)
+        win = panel._settings_window
+        # Qt does not re-evaluate the stylesheet when an objectName changes, so
+        # without the explicit re-polish in present() the #modal_panel rule is
+        # never applied and the panel keeps an opaque, square background — which
+        # is what hid its border and radius for the whole of the migration.
+        assert win.objectName() == "modal_panel"
+        assert win.palette().color(QPalette.Window).alpha() == 0
+
+    def test_a_panel_gets_a_rounded_surface_behind_it(self, panel, qt_app):
+        panel.open_settings()
+        _settle(qt_app)
+        win = panel._settings_window
+        surface = panel.modal_host._panels[-1].surface
+        # The rounding lives on this frame, not on the dialog: a QDialog takes
+        # its background through the palette, which ignores border-radius.
+        assert surface is not None
+        assert surface.objectName() == "panel_surface"
+        assert surface.geometry() == win.geometry()
+        children = panel.children()
+        assert children.index(surface) < children.index(win)
+
+    def test_the_surface_follows_the_panel(self, panel, qt_app):
+        panel.open_settings()
+        _settle(qt_app)
+        win = panel._settings_window
+        surface = panel.modal_host._panels[-1].surface
+        panel.resize(900, 700)  # re-centres and may re-measure the panel
+        _settle(qt_app)
+        assert surface.geometry() == win.geometry()
+
+    def test_closing_a_panel_takes_its_surface_with_it(self, panel, qt_app):
+        from PySide6.QtWidgets import QFrame
+
+        panel.open_settings()
+        _settle(qt_app)
+        host = panel.modal_host
+        assert panel.findChildren(QFrame, "panel_surface")
+        panel._settings_window.close()
+        _settle(qt_app)
+        assert not host.active
+        # Left behind, it would sit on the app as a blank rounded rectangle.
+        assert not panel.findChildren(QFrame, "panel_surface")
+
     def test_escape_closes_the_panel(self, panel, qt_app):
         from PySide6.QtCore import QEvent, Qt
         from PySide6.QtGui import QKeyEvent
@@ -3861,21 +3994,29 @@ class TestIntegratedWindows:
         self, qt_app, monkeypatch
     ):
         import gui_qt.settings_window as sw
+        from gui_qt.settings_window import _STYLE_SEGMENTS
 
         monkeypatch.setattr(sw, "save_settings", lambda s: None)
         p = _panel(monkeypatch)
-        p.settings.window_style = "windowed"
+        p.settings.window_style = "integrated"
         p.open_settings()
         win = p._settings_window
-        assert win.window_style_segment.current_index() == 0
+        # Looked up rather than written as a literal: the segment ORDER is a
+        # presentation choice that has already been flipped once, and a
+        # hard-coded index turns that into a test failure instead of a fact.
+        assert win.window_style_segment.current_index() == _STYLE_SEGMENTS.index(
+            "integrated"
+        )
 
         reopened: list[bool] = []
         monkeypatch.setattr(
             p, "reopen_secondary_windows", lambda: reopened.append(True)
         )
-        win.window_style_segment._buttons[1].click()
-        assert p.settings.window_style == "integrated"
-        assert p.uses_integrated_windows()
+        win.window_style_segment._buttons[
+            _STYLE_SEGMENTS.index("windowed")
+        ].click()
+        assert p.settings.window_style == "windowed"
+        assert not p.uses_integrated_windows()
         assert reopened == [True]  # a window cannot change style in place
         p.close_secondary_windows()
         p.close()
@@ -4226,3 +4367,101 @@ class TestLiveStreamRestart:
         # really is down; leaving the panel "running" would strand the operator.
         assert not p._running
         assert not p._starting
+
+
+class TestHistoryNarrowLayout:
+    """The viewer has to survive being made narrow.
+
+    Side by side it needs ~765 px. As a separate window the WM held it there,
+    but as an in-app panel it is resized as a child widget, which bypasses that
+    minimum — inside a control panel under ~620 px wide, Copy and Save… were
+    laid out past its right edge and could not be clicked at all. The Tk viewer
+    reflows here instead (gui/history_view.py _layout_history_responsive).
+    """
+
+    @pytest.fixture
+    def history(self, qt_app, monkeypatch):
+        import gui_qt.history_window as hw
+
+        monkeypatch.setattr(hw, "list_history_sessions", list)
+        window = hw.HistoryWindow(lambda key, fallback="": fallback)
+        window.show()
+        _settle(qt_app)
+        yield window
+        window.close()
+
+    @staticmethod
+    def _buttons(window):
+        return (
+            window.summarise_btn,
+            window.delete_btn,
+            window.copy_btn,
+            window.export_btn,
+        )
+
+    def test_the_breakpoint_is_measured_not_assumed(self, history):
+        # It is the sum of the list, the margins and four TRANSLATED labels, so
+        # a hard-coded number would be wrong in some GUI language.
+        assert history._wide_min_w > 0
+        assert history.minimumWidth() < history._wide_min_w
+
+    def test_it_stays_side_by_side_while_there_is_room(self, history, qt_app):
+        from PySide6.QtCore import Qt
+
+        history.resize(history._wide_min_w + 120, 560)
+        _settle(qt_app)
+        assert history.splitter.orientation() == Qt.Horizontal
+        # One row: Summarise, a stretch, and the three secondary actions.
+        assert history._action_bottom.count() == 0
+
+    def test_narrow_stacks_the_panes_and_wraps_the_actions(self, history, qt_app):
+        from PySide6.QtCore import Qt
+
+        history.resize(history._wide_min_w - 60, 560)
+        _settle(qt_app)
+        assert history.splitter.orientation() == Qt.Vertical
+        # Summarise alone above; Delete / Copy / Save… sharing the row below.
+        assert history._action_top.count() == 1
+        assert history._action_bottom.count() == 3
+
+    def test_it_can_be_made_narrower_than_the_wide_layout_needs(self, history, qt_app):
+        # The regression this guards: with the window's floor left at the wide
+        # arrangement's minimum, it could never be dragged narrow enough to
+        # REACH the mode that lowers it.
+        history.resize(400, 420)
+        _settle(qt_app)
+        assert history.width() == 400
+
+    def test_every_action_stays_inside_the_window(self, history, qt_app):
+        for width in (900, 760, 620, 500, 420):
+            history.resize(width, 460)
+            _settle(qt_app)
+            for button in self._buttons(history):
+                corner = button.mapTo(history, button.rect().bottomRight())
+                assert corner.x() <= history.width(), (
+                    f"{button.text()!r} is {corner.x() - history.width()}px past "
+                    f"the right edge at {width}px wide"
+                )
+                assert corner.y() <= history.height()
+
+    def test_an_in_app_panel_keeps_its_actions_reachable(self, qt_app, monkeypatch):
+        import gui_qt.history_window as hw
+
+        monkeypatch.setattr(hw, "list_history_sessions", list)
+        panel = _panel(monkeypatch)
+        panel.settings.window_style = "integrated"
+        # The control panel's own minimum — the worst case the host can hand a
+        # panel, and where Save… used to sit 50px beyond the edge.
+        panel.resize(420, 420)
+        panel.show()
+        _settle(qt_app)
+        try:
+            panel.open_history()
+            _settle(qt_app)
+            window = panel._history_window
+            for button in self._buttons(window):
+                corner = button.mapTo(panel, button.rect().bottomRight())
+                assert corner.x() <= panel.width()
+        finally:
+            panel.close_secondary_windows()
+            panel.close()

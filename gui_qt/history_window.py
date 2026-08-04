@@ -92,6 +92,18 @@ LIST_W_MIN = 170
 # transcript border sat directly against each other.
 PANE_GAP = 14
 
+# Widths the action buttons hold in the wide layout. Dropped in the narrow one,
+# where the three secondary actions share the row equally instead.
+#
+# There is deliberately no breakpoint constant beside them: the width the wide
+# layout stops fitting at is these numbers plus the list, the margins and four
+# translated button labels, so it is measured from the built layout (see
+# _measure_width_modes) rather than written down and left to drift. The Tk
+# viewer hard-codes 560 (gui/history_view.py HISTORY_NARROW_W) and reflows
+# within it; here the switch happens exactly when side-by-side no longer fits.
+_ACTION_PRIMARY_W = 160
+_ACTION_SECONDARY_W = 120
+
 # Marks a record that already has a saved AI summary.
 SUMMARY_MARK = "📝 "
 
@@ -616,6 +628,12 @@ class HistoryWindow(QDialog):
 
     def __init__(self, translate, parent=None, settings=None, initial_tab="history"):
         super().__init__(parent)
+        # Both before the first resize() below: it can deliver a resizeEvent,
+        # and that reads them. ``_narrow = None`` so the first real pass always
+        # runs; ``_wide_min_w`` is replaced with the measured value once the
+        # layout exists, and until then no width counts as narrow.
+        self._narrow: bool | None = None
+        self._wide_min_w = 0
         self._t = translate
         self._panel = parent
         self._settings = (
@@ -638,7 +656,7 @@ class HistoryWindow(QDialog):
         outer.setSpacing(12)
         outer.addLayout(self._tab_bar())
 
-        splitter = QSplitter(Qt.Horizontal)
+        self.splitter = QSplitter(Qt.Horizontal)
         left = QWidget()
         left_box = QVBoxLayout(left)
         left_box.setContentsMargins(0, 0, 0, 0)
@@ -652,7 +670,7 @@ class HistoryWindow(QDialog):
         left.setMinimumWidth(LIST_W_MIN)
 
         right = QWidget()
-        right_box = QVBoxLayout(right)
+        self._right_box = right_box = QVBoxLayout(right)
         right_box.setContentsMargins(PANE_GAP, 0, 0, 0)
         right_box.setSpacing(8)
         self.header = QLabel("")
@@ -675,14 +693,15 @@ class HistoryWindow(QDialog):
         # would have filled. A hidden widget's stretch is ignored, so this does
         # nothing while there is something to show.
         right_box.addWidget(self.empty_label, 1)
-        right_box.addLayout(self._action_bar())
+        right_box.addWidget(self._action_bar())
 
-        splitter.addWidget(left)
-        splitter.addWidget(right)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([LIST_W, HISTORY_WINDOW_W - LIST_W])
-        outer.addWidget(splitter, 1)
+        self.splitter.addWidget(left)
+        self.splitter.addWidget(right)
+        outer.addWidget(self.splitter, 1)
+
+        # Something has to hold the buttons before the window is measurable;
+        # the real choice is made in _measure_width_modes, on first show.
+        self._apply_width_mode(False)
 
         self._reload()
 
@@ -724,16 +743,28 @@ class HistoryWindow(QDialog):
         bar.setVisible(False)
         return bar
 
-    def _action_bar(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(8)
+    def _action_bar(self) -> QWidget:
+        """Summarise, then Delete / Copy / Save…
+
+        A container holding two rows rather than one bare row: below
+        ``NARROW_W`` the three secondary actions drop to the second one, and
+        moving buttons between rows needs somewhere to move them. Which row
+        each sits in is decided by :meth:`_apply_width_mode`, never here.
+        """
+        bar = QWidget()
+        box = QVBoxLayout(bar)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(8)
+        self._action_top = QHBoxLayout()
+        self._action_top.setSpacing(8)
+        self._action_bottom = QHBoxLayout()
+        self._action_bottom.setSpacing(8)
+        box.addLayout(self._action_top)
+        box.addLayout(self._action_bottom)
+
         self.summarise_btn = QPushButton(self._t("history_summarise", "Summarise"))
         self.summarise_btn.setObjectName("accent")
-        self.summarise_btn.setMinimumWidth(160)
         self.summarise_btn.clicked.connect(self._on_summarise)
-        row.addWidget(self.summarise_btn)
-        row.addStretch(1)
-
         self.delete_btn = QPushButton(self._t("history_delete", "Delete"))
         self.delete_btn.setObjectName("danger")
         self.delete_btn.clicked.connect(self._on_delete)
@@ -741,10 +772,108 @@ class HistoryWindow(QDialog):
         self.copy_btn.clicked.connect(self._on_copy)
         self.export_btn = QPushButton(self._t("history_export", "Save…"))
         self.export_btn.clicked.connect(self._on_export)
-        for button in (self.delete_btn, self.copy_btn, self.export_btn):
-            button.setMinimumWidth(120)
-            row.addWidget(button)
-        return row
+        return bar
+
+    # ── responsive layout ────────────────────────────────────────────────
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        if not self._wide_min_w:
+            self._measure_width_modes()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self._apply_width_mode(self.width() < self._wide_min_w)
+
+    def _measure_width_modes(self) -> None:
+        """Take the breakpoint and the window's floor from the built layout.
+
+        Two numbers, neither written down:
+
+        ``_wide_min_w`` is the breakpoint. The width at which side-by-side
+        stops fitting is exactly the width to stop using it at, and it is the
+        sum of the list, the margins and four *translated* button labels — so
+        it belongs to the window, not to a constant.
+
+        The floor then has to be the NARROW layout's minimum, or the two
+        constrain each other into never switching: left at the wide
+        arrangement's ~765 the window could not be dragged narrow enough to
+        reach the mode that lowers it, and narrow mode would only ever apply to
+        in-app panels, which are resized as child widgets and bypass the
+        minimum entirely.
+
+        On first show rather than in ``__init__`` because a pre-show layout
+        does not report settled minimums: measured there, BOTH arrangements
+        come back as the narrow number and the viewer never leaves the wide one
+        (the same trap the pre-show note in ``gui_qt/AGENTS.md`` records).
+        """
+        layout = self.layout()
+        self._apply_width_mode(False)
+        layout.activate()
+        self._wide_min_w = layout.minimumSize().width()
+        self._apply_width_mode(True)
+        layout.activate()
+        self.setMinimumWidth(layout.minimumSize().width())
+        self._apply_width_mode(self.width() < self._wide_min_w)
+
+    def _apply_width_mode(self, narrow: bool) -> None:
+        """Lay the viewer out for the width it has.
+
+        Wide: list beside transcript, one row of actions. Narrow: the splitter
+        turns vertical, so list and transcript each keep the FULL width and the
+        operator still chooses the share between them, and the actions wrap to
+        two rows so none of them is pushed off the edge.
+
+        Tk shows one pane at a time here, with a ← button back to the list
+        (``gui/history_view.py`` ``_apply_history_pane_visibility``). Stacking
+        reaches the same place without a second view state to track, and
+        without a row selection that navigates away from the list it was made
+        in.
+        """
+        if narrow == self._narrow:
+            return
+        self._narrow = narrow
+
+        # Rebuild both rows from empty. Taking an item out leaves its button
+        # parented to the bar but unmanaged, which is fine because every one of
+        # them is re-added below.
+        for row in (self._action_top, self._action_bottom):
+            while row.count():
+                row.takeAt(0)
+
+        self.summarise_btn.setMinimumWidth(0 if narrow else _ACTION_PRIMARY_W)
+        secondary = (self.delete_btn, self.copy_btn, self.export_btn)
+        for button in secondary:
+            button.setMinimumWidth(0 if narrow else _ACTION_SECONDARY_W)
+
+        self._action_top.addWidget(self.summarise_btn)
+        if narrow:
+            # A third of the row each, rather than a fixed width that would put
+            # them back over the edge this mode exists to keep them inside.
+            for button in secondary:
+                self._action_bottom.addWidget(button, 1)
+        else:
+            self._action_top.addStretch(1)
+            for button in secondary:
+                self._action_top.addWidget(button)
+
+        # PANE_GAP lives in the right pane's own margin, so it has to move to
+        # whichever side the pane is now on — left of it when side by side,
+        # above it when stacked. Left where it was, the transcript's heading
+        # sits flush against the bottom row of the list.
+        self._right_box.setContentsMargins(
+            *((0, PANE_GAP, 0, 0) if narrow else (PANE_GAP, 0, 0, 0))
+        )
+        self.splitter.setOrientation(Qt.Vertical if narrow else Qt.Horizontal)
+        # Stretch and sizes are per orientation, so both are re-stated here.
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        if narrow:
+            # A third to the list: enough rows to pick from, most of the room
+            # to what was picked.
+            height = max(self.height(), HISTORY_WINDOW_H)
+            self.splitter.setSizes([height // 3, height - height // 3])
+        else:
+            self.splitter.setSizes([LIST_W, HISTORY_WINDOW_W - LIST_W])
 
     # ── data ─────────────────────────────────────────────────────────────
     def show_tab(self, tab_id: str) -> None:
