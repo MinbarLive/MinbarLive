@@ -105,7 +105,7 @@ The tree reached parity with Tk deliberately; each item below was the point of a
 ## Verifying changes
 
 Launching the real app is expected. For headless checks, screenshot probes against a real
-`ControlPanel` with a fake controller work well — with three traps that otherwise produce
+`ControlPanel` with a fake controller work well — with five traps that otherwise produce
 confident, wrong passes:
 
 1. **Stub `save_settings` in every module that imported it by name.** The import binds per
@@ -114,7 +114,11 @@ confident, wrong passes:
 2. **Pixel probes:** scale widget coordinates by `img.devicePixelRatio()`.
 3. **Pointer probes:** use `QCursor.setPos` (logical), not `SetCursorPos` (physical), and
    assert `QApplication.widgetAt` really is the widget you meant.
-4. **Stub `show_message` before driving any failure path.** `_finish_start`,
+4. **Keep a `QTextLayout` referenced while you read its lines.** `QTextLine` borrows
+   from the layout, so `layout_returning_call()[0].lineAt(0)` leaves the line pointing at
+   freed memory — the process dies with a heap-corruption exception, not an exception you
+   can catch. Bind the layout to a local first.
+5. **Stub `show_message` before driving any failure path.** `_finish_start`,
    `_finish_stop` and the batch worker report errors with a real modal dialog — a test
    that exercises those puts a box on the developer's desktop and blocks the run until
    it is dismissed (it looked like a 15-second test).

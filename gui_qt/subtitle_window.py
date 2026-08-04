@@ -29,6 +29,7 @@ colour is forbidden in subtitle text.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QPointF, QRect, Qt, QTimer
@@ -341,7 +342,36 @@ class SubtitleWindow(QWidget):
         """Blank band above ``text``'s ink that stacking may close up."""
         return cls._ink(text, font)[0]
 
-    def _layout_text(self, text: str, font: QFont) -> tuple[QTextLayout, int]:
+    @staticmethod
+    def _dominant_direction(text: str):
+        """Base direction from which script the line is MOSTLY in.
+
+        Unicode decides a paragraph's direction from its first strong
+        character, and Qt's LayoutDirectionAuto follows that — correct in
+        general, and wrong for a live transcript, because a streaming STT
+        prefixes artefact markers like ``<noise>``. Five Latin letters then
+        make an entire Arabic sentence an LTR paragraph and its full stop
+        lands at the right, which is where the sentence STARTS.
+
+        Deliberately not used for settled subtitles: a translation line
+        legitimately opens in one script and quotes the other, and counting
+        would flip a German sentence that happens to carry a long Arabic
+        quotation. A transcript row is one language plus noise.
+        """
+        rtl = ltr = 0
+        for ch in text:
+            bidi = unicodedata.bidirectional(ch)
+            if bidi == "L":
+                ltr += 1
+            elif bidi in ("R", "AL"):
+                rtl += 1
+        if rtl == ltr:
+            return Qt.LayoutDirectionAuto
+        return Qt.RightToLeft if rtl > ltr else Qt.LeftToRight
+
+    def _layout_text(
+        self, text: str, font: QFont, direction=Qt.LayoutDirectionAuto
+    ) -> tuple[QTextLayout, int]:
         """``text`` wrapped to the content width, at a tightened line rhythm.
 
         Qt does the line breaking — after shaping and bidi, so an RTL sentence
@@ -364,8 +394,9 @@ class SubtitleWindow(QWidget):
         # first-strong-character rule instead: Arabic text becomes an RTL
         # paragraph and its terminator sits at the left, where the sentence
         # ends; German stays LTR. Verified over both, including lines opening
-        # with a quote, a digit or the elision ellipsis.
-        option.setTextDirection(Qt.LayoutDirectionAuto)
+        # with a quote, a digit or the elision ellipsis. ``direction`` overrides
+        # it where first-strong is the wrong rule — see _dominant_direction.
+        option.setTextDirection(direction)
         layout.setTextOption(option)
 
         fm = QFontMetrics(font)
@@ -654,7 +685,9 @@ class SubtitleWindow(QWidget):
 
         This deliberately does not elide. ``QFontMetrics.elidedText`` was doing
         the truncation before, which slid the text along one character at a
-        time instead of turning the row over.
+        time instead of turning the row over — and it re-ordered RTL text on
+        the way, which is how the live line ended up with its full stop at the
+        wrong end while the settled lines below it were correct.
         """
         text = self._live_text or ""
         if not text:
@@ -668,8 +701,10 @@ class SubtitleWindow(QWidget):
         return text[layout.lineAt(extra).textStart() :].lstrip()
 
     def _layout_live(self, text: str) -> tuple[QTextLayout, int]:
-        """Lay ``text`` out as the live line — one font, one set of rules."""
-        return self._layout_text(text, self._live_font())
+        """Lay ``text`` out as the live line — one direction rule, one font."""
+        return self._layout_text(
+            text, self._live_font(), self._dominant_direction(text)
+        )
 
     def _draw_live_line(self, p: QPainter, x: int, y: int) -> None:
         """In-progress transcript: muted while speaking, primary once settled."""

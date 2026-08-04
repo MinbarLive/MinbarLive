@@ -4953,3 +4953,40 @@ class TestLiveLineRows:
         w = overlay(SUBTITLE_MODE_REALTIME)
         w.set_live_text(self.LONG, False)
         assert "…" not in w._live_rows()
+
+
+class TestLiveLineDirection:
+    """A streaming STT prefixes artefact markers like <noise>. Unicode decides
+    a paragraph's direction from its first STRONG character, so five Latin
+    letters made an entire Arabic transcript an LTR paragraph and put its full
+    stop at the right — where the sentence starts."""
+
+    @staticmethod
+    def _direction(w, text: str) -> str:
+        w.set_live_text(text, False)
+        shown = w._live_rows()
+        # The layout has to stay referenced: a QTextLine borrows from it, and
+        # reading one whose layout was a temporary corrupts the heap.
+        layout, _height = w._layout_live(shown)
+        line = layout.lineAt(0)
+        return "rtl" if line.cursorToX(len(shown))[0] < line.cursorToX(0)[0] else "ltr"
+
+    def test_a_latin_noise_marker_does_not_flip_an_arabic_line(self, overlay):
+        w = overlay(SUBTITLE_MODE_REALTIME)
+        assert self._direction(w, "<noise> هو المقصود الاعظم.") == "rtl"
+
+    def test_a_latin_transcript_stays_ltr(self, overlay):
+        w = overlay(SUBTITLE_MODE_REALTIME)
+        assert self._direction(w, "This is the running transcript.") == "ltr"
+
+    def test_settled_text_still_follows_the_unicode_rule(self, overlay):
+        # Deliberately NOT counted: a translation legitimately opens in one
+        # script and quotes the other, and counting would flip a German
+        # sentence carrying a long Arabic quotation.
+        from gui_qt.fonts import subtitle_font
+
+        w = overlay(SUBTITLE_MODE_STATIC)
+        german = 'Er sagte: "وكل بدعة ضلالة وكل ضلالة في النار".'
+        layout, _h = w._layout_text(german, subtitle_font(40, text=german))
+        line = layout.lineAt(0)
+        assert line.cursorToX(len(german))[0] > line.cursorToX(0)[0]
