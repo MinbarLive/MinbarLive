@@ -185,8 +185,15 @@ QWidget {{
 QMainWindow, QDialog, QMessageBox {{ background-color: {c["app_bg"]}; }}
 /* A secondary window presented as an in-app panel (gui_qt/modal_host.py). It
    has no titlebar there, so it needs an edge of its own to read as a panel
-   sitting ON the dimmed app rather than a hole cut into it. */
-QDialog#modal_panel {{
+   sitting ON the dimmed app rather than a hole cut into it.
+   The edge is drawn by the surface BEHIND the panel, not by the panel: a
+   QDialog takes its background through the palette, which fills the whole
+   rect and ignores border-radius, so these two rules on the dialog itself
+   never rendered. The panel goes transparent and ModalHost._add_surface puts
+   a QFrame under it, which rounds and antialiases the ordinary way. */
+QDialog#modal_panel {{ background: transparent; }}
+QFrame#panel_surface {{
+    background-color: {c["app_bg"]};
     border: 1px solid {c["border"]};
     border-radius: 14px;
 }}

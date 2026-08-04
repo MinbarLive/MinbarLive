@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QPushButton, QWidget
+from PySide6.QtWidgets import QFrame, QPushButton, QWidget
 
 # A panel may occupy at most this fraction of the control panel (per axis).
 # The remainder is the dim margin that makes it read as a panel *over* the app
@@ -94,6 +94,7 @@ class _Panel:
     win: QWidget
     design: QSize
     close_btn: QPushButton | None = None
+    surface: QFrame | None = None
 
 
 class ModalHost(QObject):
@@ -130,6 +131,12 @@ class ModalHost(QObject):
             # sibling order for nothing.
             win.setParent(self._main, Qt.Widget)
         win.setObjectName("modal_panel")
+        # Qt does not re-evaluate the stylesheet when an objectName changes,
+        # and this one is only set here — so without an explicit re-polish the
+        # #modal_panel rule never reaches the widget at all. That is why the
+        # panels used to sit on the dim as unstyled rectangles.
+        win.style().unpolish(win)
+        win.style().polish(win)
         panel = _Panel(win, design)
         self._panels.append(panel)
         win.installEventFilter(self)
@@ -145,6 +152,7 @@ class ModalHost(QObject):
         self._layout_panel(panel)
         win.show()
         win.raise_()
+        self._add_surface(panel)  # after raise_(): it stacks against the panel
         self._add_close_button(panel)
         win.setFocus(Qt.OtherFocusReason)
 
@@ -163,6 +171,9 @@ class ModalHost(QObject):
         if panel.close_btn is not None:
             panel.close_btn.deleteLater()
             panel.close_btn = None
+        if panel.surface is not None:
+            panel.surface.deleteLater()
+            panel.surface = None
         if not self._panels:
             self._backdrop.hide()
             return
@@ -170,7 +181,39 @@ class ModalHost(QObject):
         self._backdrop.raise_()
         top = self._panels[-1]
         top.win.raise_()
+        # …and that panel's own background has to follow it back up, or the dim
+        # is left painting over it.
+        if top.surface is not None:
+            top.surface.stackUnder(top.win)
         top.win.setFocus(Qt.OtherFocusReason)
+
+    def _add_surface(self, panel: _Panel) -> None:
+        """The panel's rounded, bordered background, painted behind it.
+
+        Why a widget of its own rather than styling the panel: a ``QDialog``
+        takes its stylesheet ``background-color`` through the PALETTE, and a
+        palette brush fills the whole rect knowing nothing about
+        ``border-radius`` — so ``#modal_panel``'s border and radius never
+        rendered and the panels sat on the dim as hard-edged rectangles.
+        Neither ``WA_StyledBackground`` nor setting it before the first show
+        changes that. A ``QFrame`` behind the (now transparent) panel is
+        styled the ordinary way and antialiases, which a ``setMask`` region —
+        being one bit deep — cannot.
+
+        It works because nothing reaches into a panel's corners: every one of
+        them insets its content, and the scroll areas are transparent.
+        """
+        surface = QFrame(self._main)
+        surface.setObjectName("panel_surface")
+        panel.surface = surface
+        self._sync_surface(panel)
+        surface.show()
+        surface.stackUnder(panel.win)
+
+    @staticmethod
+    def _sync_surface(panel: _Panel) -> None:
+        if panel.surface is not None:
+            panel.surface.setGeometry(panel.win.geometry())
 
     def _add_close_button(self, panel: _Panel) -> None:
         """A floating ✕ — the panel lost its titlebar and with it the only
@@ -210,6 +253,7 @@ class ModalHost(QObject):
             max(0, (self._main.width() - size.width()) // 2),
             max(0, (self._main.height() - size.height()) // 2),
         )
+        self._sync_surface(panel)
 
     def _relayout(self) -> None:
         if not self._panels:
@@ -242,5 +286,6 @@ class ModalHost(QObject):
                         max(0, (self._main.width() - size.width()) // 2),
                         max(0, (self._main.height() - size.height()) // 2),
                     )
+                    self._sync_surface(panel)
                     break
         return False
