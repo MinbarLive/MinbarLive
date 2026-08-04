@@ -202,6 +202,10 @@ class ControlPanel(QMainWindow):
         self._stopping = False
         self._start_error: Exception | None = None
         self._stop_error: Exception | None = None
+        # The device Start began connecting on, and one picked while it was
+        # still connecting — applied by _finish_start once the session is up.
+        self._started_device: int | None = None
+        self._pending_device: int | None = None
         self._announcement_active = False
         self._announcement_text = ""
         self._log_collapsed = self.settings.log_panel_collapsed
@@ -2219,7 +2223,8 @@ class ControlPanel(QMainWindow):
         # missing key is a dialog rather than a failure from inside start().
         if not ensure_keys(required_key_providers(self.settings), self.texts, self):
             return
-        device = self._selected_device()
+        device = self._started_device = self._selected_device()
+        self._pending_device = None
         self._ensure_subtitle_window()
         # Opened before the pipeline so provider threads have somewhere to
         # record usage from their first call; dropped again if the start fails.
@@ -2244,6 +2249,11 @@ class ControlPanel(QMainWindow):
     def _finish_start(self) -> None:
         """Apply the outcome of a Start once its worker thread is done."""
         self._starting = False
+        # A device chosen WHILE this start was connecting was parked rather
+        # than applied (see _on_device_changed); the pipeline is up now, so it
+        # can be honoured. Taken before the error branch so a failed start
+        # cannot leave it to fire against the next session.
+        pending, self._pending_device = self._pending_device, None
         error, self._start_error = self._start_error, None
         if error is not None:
             # No usage was billed for a start that never ran — drop the session
@@ -2276,6 +2286,11 @@ class ControlPanel(QMainWindow):
         self._inactivity_timer.start()
         self._cost_flush_timer.start()
         log(self._t("log_started", "Started."), level="INFO")
+        # Last, so the session is fully up before the capture thread is
+        # replaced — and only when it really differs from what started.
+        if pending is not None and pending != self._started_device:
+            log("Applying the device chosen while connecting.", level="INFO")
+            self._apply_device_change(pending)
 
     def _await(self, done: threading.Event, then, interval_ms: int = 100) -> None:
         """Call ``then`` on the GUI thread once ``done`` is set.
@@ -2488,8 +2503,23 @@ class ControlPanel(QMainWindow):
         """
         self._persist()
         device = self._selected_device()
-        if not self._running or device is None:
+        if device is None:
             return
+        if self._starting:
+            # Start captured the device it began with before spawning its
+            # worker, and it is connecting on that one right now. Swapping
+            # underneath it races the connect; dropping the change silently —
+            # which is what used to happen, because _running is still False
+            # here — leaves the pipeline on a device the panel no longer
+            # shows. The operator sees the device they picked and hears
+            # nothing from it, and only a switch away and back fixes it.
+            self._pending_device = device
+            return
+        if not self._running:
+            return
+        self._apply_device_change(device)
+
+    def _apply_device_change(self, device: int) -> None:
         try:
             if not self.controller.change_input_device(device):
                 # Refused (e.g. the stream would not release the old device):
