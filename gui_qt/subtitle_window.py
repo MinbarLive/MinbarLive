@@ -461,6 +461,34 @@ class SubtitleWindow(QWidget):
         return cls._ink(text, font)[0]
 
     @staticmethod
+    def _descent_slack(text: str, font: QFont) -> int:
+        """Descent box that ``text`` does not draw into.
+
+        The mirror of ``_reclaim`` at the other end of a line, and used at ONE
+        join: between a source line and the translation under it. Everywhere
+        else the upper line keeps its whole descent zone deliberately — the eye
+        measures baselines, so tucking a descender-less line closer makes it an
+        outlier (the rule gui/subtitle_window.py states at _stack_overlap).
+
+        That rule costs nothing on Windows, where Segoe UI's Arabic ink reaches
+        exactly its descent line. It costs 16 px per pair on Linux, where Noto
+        Sans Arabic reserves 35 px of descent at 48 px text and an Arabic line
+        draws 19 px into it: the original floated a fifth of an em above its
+        own translation there and sat on it here. Measured, so the join is
+        ink-to-ink on both — and provably unchanged wherever the slack is zero.
+        """
+        measured = _HONORIFIC_LIGATURE_RE.sub("", text).strip()
+        if not measured:
+            return 0
+        metrics = QFontMetrics(font)
+        ink = metrics.tightBoundingRect(measured)
+        if ink.isEmpty():
+            return 0
+        # Never both this and _ink's overhang: ink past the descent is one, ink
+        # short of it the other.
+        return max(0, metrics.descent() - ink.bottom())
+
+    @staticmethod
     def _dominant_direction(text: str):
         """Base direction from which script the line is MOSTLY in.
 
@@ -645,17 +673,23 @@ class SubtitleWindow(QWidget):
     def _pair_gap(self, block: Block) -> int:
         """Space between a block's source line and its translation.
 
-        Reclaimed like any other stacking boundary — otherwise the pair sits a
-        whole blank band further apart than PAIR_GAP claims, which is what made
-        a bilingual block read as two unrelated lines.
+        Closed at BOTH ends, which no other join is: the translation's blank
+        band above its ink (``_reclaim``) and the source's unused descent below
+        its own (``_descent_slack``). What is left is PAIR_GAP of real ink
+        distance on any font on any platform — the pair is one utterance and
+        has to read as one, and a family that reserves a deep descent it does
+        not use had it floating a fifth of an em above its own translation.
         """
-        trans_font, _src = self._block_fonts(block)
+        trans_font, src_font = self._block_fonts(block)
         # Deliberately allowed to go NEGATIVE: the reclaim is normally larger
         # than PAIR_GAP, and clamping at zero threw the remainder away and left
         # the pair as far apart as before. The boxes overlap; the INK cannot,
         # because _reclaim already holds _STACK_INK_GAP_EM back. Tk stacks the
         # same way (_stack_rows_tight positions at bbox top + overlap).
-        return PAIR_GAP - self._reclaim(block.translation, trans_font)
+        gap = PAIR_GAP - self._reclaim(block.translation, trans_font)
+        if src_font is not None and block.source:
+            gap -= self._descent_slack(block.source, src_font)
+        return gap
 
     def _measure_block(self, block: Block) -> int:
         trans_font, src_font = self._block_fonts(block)
