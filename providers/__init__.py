@@ -468,8 +468,8 @@ PROVIDER_CHOICES = [
 ]
 
 # What each provider's key looks like, shown as the entry field's placeholder.
-# Lives here rather than in utils/api_key_manager.py because that module
-# imports CustomTkinter, and the Qt tree must never pull Tk into its process.
+# Lives beside the key handling rather than in the GUI, so the wizard and the
+# settings window read one list instead of keeping their own copies.
 #
 # Google issues both the newer "AQ." keys and the legacy "AIza" ones, so the
 # hint names both. Deepgram has no prefix to quote — its keys are a bare hex

@@ -1,7 +1,6 @@
-"""API key entry for the Qt GUI.
+"""API key entry: the dialog the wizard and the settings window both open.
 
-Mirrors ``utils/api_key_manager.py`` but built on Qt widgets. Storage is
-unchanged and goes through ``providers.save_api_key``: the OS keychain, or
+Storage goes through ``providers.save_api_key``: the OS keychain, or
 session-only if no keychain exists. Keys are NEVER written to disk — the
 plaintext settings.json fallback was removed in PR #43.
 """

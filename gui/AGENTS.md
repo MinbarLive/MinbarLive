@@ -36,15 +36,13 @@ packaging section below for the shipped build.
 
 ## Hard rules
 
-- **Nothing here may import a Tk-importing module**, and there is no longer a Tk module
-  to import — but the rule stands for what is left outside this package:
-  `utils/api_key_manager.py` is the old Tk key dialog (`gui/api_keys.py` replaced it) and
-  `utils/icons.py` still carries `scaled_icon_photo`/`logo_photo` beside the toolkit-free
-  `logo_mark`/`square_marks` this tree calls. A test imports every window in a subprocess
-  and asserts no `tkinter`/`customtkinter` in `sys.modules`; `MinbarLive.spec` excludes
-  `tkinter` outright so a stray import cannot pull Tcl/Tk back into the bundle.
-  `gui/control_state.py`, `gui/device_list.py`, `gui/levels.py` and `gui/subtitle_text.py`
-  are the toolkit-free modules — the first two survived the Tk deletion for that reason.
+- **Nothing here may import a Tk-importing module** — and as of 2026-08-05 there is no
+  such module left anywhere in the repo, test probes aside. A test imports every window in
+  a subprocess and asserts no `tkinter`/`customtkinter` in `sys.modules`; `MinbarLive.spec`
+  excludes `tkinter` outright so a stray import cannot pull Tcl/Tk back into the bundle.
+  `gui/control_state.py`, `gui/device_list.py`, `gui/levels.py`, `gui/palette.py`,
+  `gui/i18n.py` and `gui/subtitle_text.py` are the toolkit-free modules — keep them that
+  way, they are what makes the rules testable headlessly.
 - **Message boxes go through `gui/dialogs.py`**, never `QMessageBox` — the system box
   is unthemed, hard-codes English buttons and plays the Windows alert sound (the icon
   triggers it). A test fails if one reappears.
@@ -62,7 +60,7 @@ packaging section below for the shipped build.
   mark, shared by the QApplication, the panel and the wizard. Don't point a window at
   `MinbarLive.ico`: it carries the full wordmark in every size and smudges at 24–32 px.
   The `.ico` stays the fallback and stays what the EXE and shortcut use.
-  `utils/icons.py` imports tkinter lazily — keep it that way.
+  `utils/icons.py` is toolkit-free (PIL only) — keep it that way.
 - **Wheel gestures belong to the page, not to controls.** `Dropdown` and `Slider` both
   `event.ignore()` a wheel so the scroll area behind takes it. Don't drop a plain
   `QComboBox`/`QSlider` into the panel.
@@ -208,7 +206,14 @@ spec excludes `tkinter` outright so a stray import can never pull Tcl/Tk back in
 bundle. `gui/control_state.py` and `gui/device_list.py` survived the deletion because they
 are toolkit-free and this tree imports them.
 
-What is left over from the old tree and still deliberately here: `utils/icons.py` keeps two
-Tk-only helpers (`scaled_icon_photo`, `logo_photo`) beside the toolkit-free `logo_mark` and
-`square_marks` this tree calls, and `utils/api_key_manager.py` is the Tk key dialog that
-`gui/api_keys.py` replaced. Neither is imported by anything here.
+The leftovers went on 2026-08-05: `utils/api_key_manager.py` (the Tk key dialog
+`gui/api_keys.py` replaced — 820 lines importing a `customtkinter` that is no longer in
+`requirements.txt`, so a fresh checkout could not import it at all; only a pre-migration
+venv still has the package) and with it `utils/icons.py`'s
+`scaled_icon_photo`/`logo_photo`, whose only caller it was. `utils/icons.py` is now
+toolkit-free and there is no `import tkinter` left in non-test code.
+
+`utils/windows_dpi.py` is still here and still unused at runtime — see `gui/app.py` for
+why calling it would be a bug. Its tests are the record of the contract, and
+`test_windows_dpi.py`'s coordinate probe is the one remaining place that builds a Tk
+window (a Windows-only subprocess).
