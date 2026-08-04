@@ -97,7 +97,7 @@
   "mode_always": "Always",
   "adaptive_subtitle_catchup": "Adaptive subtitle catch-up",
   "auto_cleanup_logs": "Auto-delete old log files (30d)",
-  "auto_cleanup_content": "Auto-delete old history & batch files (90d)",
+  "auto_cleanup_content": "Auto-delete old history && batch files (90d)",
   "noise_filter": "Noise filter (skip non-speech audio)",
   "auto_start_on_launch": "Start translation when app launches",
   "auto_stop_inactivity": "Stop automatically after 10 min without speech",

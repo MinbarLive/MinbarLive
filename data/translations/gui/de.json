@@ -97,7 +97,7 @@
   "mode_always": "Immer",
   "adaptive_subtitle_catchup": "Adaptives Untertitel-Aufholen",
   "auto_cleanup_logs": "Alte Protokolldateien automatisch löschen (30T)",
-  "auto_cleanup_content": "Alten Verlauf & Batch-Dateien automatisch löschen (90T)",
+  "auto_cleanup_content": "Alten Verlauf && Batch-Dateien automatisch löschen (90T)",
   "noise_filter": "Rauschfilter (Nicht-Sprache überspringen)",
   "auto_start_on_launch": "Übersetzung beim App-Start automatisch beginnen",
   "auto_stop_inactivity": "Automatisch stoppen nach 10 Min. ohne Sprache",
