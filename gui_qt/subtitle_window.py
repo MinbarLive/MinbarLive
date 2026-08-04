@@ -358,7 +358,7 @@ class SubtitleWindow(QWidget):
         return self._layout_text(text, font)[1]
 
     def _block_fonts(self, block: Block) -> tuple[QFont, QFont | None]:
-        trans = subtitle_font(self._translation_px())
+        trans = subtitle_font(self._translation_px(), text=block.translation)
         src = None
         if self._bilingual and block.source:
             src = source_font(self._source_px(), block.source)

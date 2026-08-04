@@ -39,6 +39,11 @@ for anything Qt, pytest included.
 - **Wheel gestures belong to the page, not to controls.** `Dropdown` and `Slider` both
   `event.ignore()` a wheel so the scroll area behind takes it. Don't drop a plain
   `QComboBox`/`QSlider` into the panel.
+- **Font families come from `gui_qt/fonts.py`, per platform and per script.** Never
+  hardcode one: `"Segoe UI"` for all three platforms is what made macOS build its alias
+  table on every launch. Arabic gets its own stack because Qt reports the metrics of the
+  family it was ASKED for and paints missing glyphs from a fallback family it was not —
+  Arabic measured against a Latin descent overlapped the line below it.
 
 ## Layout parity — do not "simplify" these back out
 

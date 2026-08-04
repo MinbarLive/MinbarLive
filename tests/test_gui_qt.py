@@ -4555,3 +4555,47 @@ class TestBatchFilePicker:
             extension.isalnum() and extension.islower()
             for extension in _MEDIA_EXTENSIONS
         )
+
+
+class TestFontStacks:
+    """Naming a family this machine does not have makes Qt build its alias
+    table on the first layout and say so — macOS printed "Replace uses of
+    missing font family "Segoe UI"" on every launch, because one Windows
+    family was hardcoded for all three platforms."""
+
+    def test_every_requested_family_exists(self, qt_app):
+        from PySide6.QtGui import QFontDatabase
+
+        from gui_qt.theme import app_families
+
+        missing = [f for f in app_families() if not QFontDatabase.hasFamily(f)]
+        assert not missing, f"requesting fonts this machine lacks: {missing}"
+
+    def test_the_application_font_is_the_platform_stack(self, qt_app):
+        from gui_qt.theme import app_families, apply_theme
+
+        apply_theme(qt_app, "light")
+        assert qt_app.font().families() == app_families()
+
+    def test_arabic_is_measured_with_a_family_that_has_arabic(self, qt_app):
+        from gui_qt.fonts import arabic_families, source_font, subtitle_font
+
+        arabic = "بل لا يشعرون"
+        assert subtitle_font(40, text=arabic).families() == arabic_families()
+        assert source_font(40, arabic).families() == arabic_families()
+
+    def test_latin_keeps_the_interface_stack(self, qt_app):
+        from gui_qt.fonts import source_font, subtitle_font, ui_families
+
+        german = "Vielmehr merken sie es nicht."
+        assert subtitle_font(40, text=german).families() == ui_families()
+        assert source_font(40, german).families() == ui_families()
+
+    def test_an_honorific_does_not_make_a_german_line_arabic(self, qt_app):
+        # ﷺ/ﷻ are Arabic-block code points the translator inserts into
+        # otherwise-Latin lines; classing those as Arabic would restyle them.
+        from gui_qt.fonts import subtitle_font, ui_families
+
+        assert subtitle_font(40, text="dass Allah ﷻ es sagt.").families() == (
+            ui_families()
+        )

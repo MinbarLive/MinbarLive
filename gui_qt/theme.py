@@ -27,6 +27,7 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QProxyStyle, QStyle
 
+from gui_qt.fonts import arabic_families, ui_families
 from gui_qt.palette import palette
 
 # Indicator edge length in logical px, for both check boxes and radio buttons.
@@ -46,6 +47,25 @@ def _soft(hex_color: str, alpha: float = 0.18) -> str:
     """
     c = QColor(hex_color)
     return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha:.2f})"
+
+
+def app_families() -> list[str]:
+    """Every family the interface needs: this platform's UI stack, then
+    whatever else it takes to cover Arabic.
+
+    The panel itself speaks Arabic (``data/translations/gui/ar.json``) and
+    every language selector lists native names, so an Arabic-capable family
+    belongs in the base stack rather than being left to Qt's per-character
+    substitution. On Windows the two stacks are the same list and this is a
+    no-op — Segoe UI covers both.
+    """
+    families = ui_families()
+    return families + [f for f in arabic_families() if f not in families]
+
+
+def _css_families() -> str:
+    """``app_families`` as a CSS ``font-family`` value."""
+    return ", ".join(f'"{f}"' for f in app_families()) + ", sans-serif"
 
 
 def qcolor(hex_color: str, alpha: int | None = None) -> QColor:
@@ -178,9 +198,12 @@ def stylesheet(theme_mode: str) -> str:
    apply_theme(). A stylesheet "font-size: Npx" leaves QFont.pointSize() at -1,
    and QComboBox::showPopup feeds the combo's point size straight back into
    QFont::setPointSize, which warns on every dropdown open. */
+/* The family list is this platform's, from gui_qt/fonts.py: naming families
+   that do not exist here makes Qt build its alias table on the first layout
+   and print "Replace uses of missing font family ..." for the privilege. */
 QWidget {{
     color: {c["text"]};
-    font-family: "Segoe UI", "Noto Sans", "Segoe UI Symbol", sans-serif;
+    font-family: {_css_families()};
 }}
 QMainWindow, QDialog, QMessageBox {{ background-color: {c["app_bg"]}; }}
 /* A secondary window presented as an in-app panel (gui_qt/modal_host.py). It
@@ -561,10 +584,11 @@ def _apply_app_font(app) -> None:
     combo boxes.
     """
     font = app.font()
-    # "Segoe UI Symbol" last, as a glyph fallback: the field captions and card
-    # badges carry symbols (▣ ◉ ⌁ ⇶ ≋) the text families do not cover, and Qt
-    # substitutes per character rather than per label.
-    font.setFamilies(["Segoe UI", "Noto Sans", "Segoe UI Symbol"])
+    # Per platform, and filtered to what is installed (gui_qt/fonts.py). The
+    # symbol family trails the text ones as a glyph fallback: the field
+    # captions and card badges carry symbols (▣ ◉ ⌁ ⇶ ≋) the text families do
+    # not cover, and Qt substitutes per character rather than per label.
+    font.setFamilies(app_families())
     font.setPointSizeF(_BASE_POINT_SIZE)
     app.setFont(font)
 
