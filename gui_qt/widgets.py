@@ -9,7 +9,7 @@ to the UI users already know, rather than substituting dropdowns.
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -42,6 +42,19 @@ def is_window_on_top(window: QWidget) -> bool:
     return bool(flags & Qt.WindowStaysOnTopHint)
 
 
+# Platforms where the stays-on-top flag does NOT reach an already-mapped
+# window. X11 carries it as the _NET_WM_STATE_ABOVE property, which Qt's xcb
+# plugin only writes while the window is unmapped (updateNetWmStateBeforeMap),
+# so setting the flag on a visible window changes nothing at all — the setting
+# simply had no effect on Linux. Wayland has no always-on-top protocol to
+# begin with; see gui_qt/app.py, which asks for xcb first for that reason.
+_REMAP_TO_RESTACK = ("xcb", "wayland")
+
+
+def _needs_remap() -> bool:
+    return QGuiApplication.platformName().split(":")[0] in _REMAP_TO_RESTACK
+
+
 def set_window_on_top(window: QWidget, on_top: bool) -> None:
     """Toggle always-on-top without the window flashing.
 
@@ -54,12 +67,22 @@ def set_window_on_top(window: QWidget, on_top: bool) -> None:
 
     A widget that has never been shown has no QWindow yet; there the widget
     call is both necessary and free of any flash.
+
+    On X11 the cheap path is not available — see ``_REMAP_TO_RESTACK`` — so
+    the window is re-created and shown again there. It is the flash Windows
+    was spared, in exchange for the setting working at all.
     """
     if is_window_on_top(window) == on_top:
         return
     handle = window.windowHandle()
-    if handle is None:
+    if handle is None or _needs_remap():
+        visible = window.isVisible()
         window.setWindowFlag(Qt.WindowStaysOnTopHint, on_top)
+        # setWindowFlag re-parents, which hides the widget; only a window that
+        # was on screen gets put back, and through the class's own show() so
+        # an overlay re-applies its geometry for the new stacking.
+        if visible:
+            window.show()
         return
     flags = handle.flags()
     handle.setFlags(

@@ -4794,3 +4794,50 @@ class TestDropdownPopup:
             assert isinstance(combo.view(), QListView)
         finally:
             combo.close()
+
+
+class TestAlwaysOnTopAcrossPlatforms:
+    """X11 carries always-on-top as _NET_WM_STATE_ABOVE, which Qt's xcb plugin
+    only writes while the window is unmapped. Setting the flag on a visible
+    window therefore did nothing at all there — the setting was simply dead on
+    Linux."""
+
+    def test_a_visible_window_is_remapped_where_the_flag_needs_it(
+        self, qt_app, monkeypatch
+    ):
+        from PySide6.QtWidgets import QWidget
+
+        import gui_qt.widgets as widgets
+
+        monkeypatch.setattr(widgets, "_needs_remap", lambda: True)
+        window = QWidget()
+        window.show()
+        _settle(qt_app)
+        try:
+            widgets.set_window_on_top(window, True)
+            _settle(qt_app)
+            assert widgets.is_window_on_top(window)
+            # setWindowFlag re-parents, which hides the widget: a window that
+            # was on screen has to be put back, or the overlay disappears the
+            # moment the operator changes the setting.
+            assert window.isVisible()
+            widgets.set_window_on_top(window, False)
+            _settle(qt_app)
+            assert not widgets.is_window_on_top(window)
+            assert window.isVisible()
+        finally:
+            window.close()
+
+    def test_a_hidden_window_is_not_shown_by_the_toggle(self, qt_app, monkeypatch):
+        from PySide6.QtWidgets import QWidget
+
+        import gui_qt.widgets as widgets
+
+        monkeypatch.setattr(widgets, "_needs_remap", lambda: True)
+        window = QWidget()
+        try:
+            widgets.set_window_on_top(window, True)
+            assert widgets.is_window_on_top(window)
+            assert not window.isVisible()
+        finally:
+            window.close()

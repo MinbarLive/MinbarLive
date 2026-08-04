@@ -27,6 +27,9 @@ for anything Qt, pytest included.
 - **Always-on-top goes through `widgets.set_window_on_top`**, never `setWindowFlag` —
   that recreates the native window (white flash; it used to make the overlay vanish).
   Read state with `is_window_on_top`; `QWidget.windowFlags()` is deliberately stale.
+  On X11 the cheap path does not exist: the flag is the `_NET_WM_STATE_ABOVE` property
+  and Qt's xcb plugin only writes it while the window is unmapped, so `set_window_on_top`
+  re-creates and re-shows there. That is why the setting did nothing at all on Linux.
 - **The overlay stays out of focus via `WA_ShowWithoutActivating`**, never
   `Qt.WindowDoesNotAcceptFocus` — the latter sets `WS_EX_NOACTIVATE`, which drops the
   window off the taskbar unless `WS_EX_APPWINDOW` is also forced, and the taskbar button
