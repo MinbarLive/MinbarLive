@@ -4909,3 +4909,47 @@ class TestInterimTranscriptToggle:
             assert applied, "the toggle stopped at settings.json"
         finally:
             panel.close()
+
+
+class TestLiveLineRows:
+    """The live line turns its row over the way Tk's does: wrapped greedily
+    from the start, only the last REALTIME_LIVE_MAX_ROWS rows kept. It used to
+    be truncated with QFontMetrics.elidedText, which slid the text along one
+    character at a time instead — and re-ordered RTL text on the way, so the
+    live line's full stop ended up at the wrong end while the settled lines
+    right below it were correct."""
+
+    LONG = (
+        "وهذا الذي قرره ابن جرير شيخ المفسرين رحمه الله تعالى في هذه السورة "
+        "وهو المقصود الاعظم من هذه الايات الكريمة والله اعلم بالصواب"
+    )
+
+    def test_a_filled_row_starts_a_fresh_one(self, overlay):
+        from config import REALTIME_LIVE_MAX_ROWS
+
+        w = overlay(SUBTITLE_MODE_REALTIME)
+        words = self.LONG.split()
+        shown = []
+        for n in range(1, len(words) + 1):
+            w.set_live_text(" ".join(words[:n]), False)
+            shown.append(w._live_rows())
+        # Somewhere the visible text gets SHORTER than it was a word ago: that
+        # is the row turning over rather than the text sliding along.
+        assert any(
+            len(b) < len(a) for a, b in zip(shown, shown[1:], strict=False)
+        ), "the row never turned over"
+        # And what is shown always fits the rows it is allowed.
+        for text in shown:
+            if text:
+                layout, _h = w._layout_live(text)
+                assert layout.lineCount() <= REALTIME_LIVE_MAX_ROWS
+
+    def test_nothing_is_dropped_while_it_still_fits(self, overlay):
+        w = overlay(SUBTITLE_MODE_REALTIME)
+        w.set_live_text("هو المقصود الاعظم.", False)
+        assert w._live_rows() == "هو المقصود الاعظم."
+
+    def test_no_ellipsis_is_ever_inserted(self, overlay):
+        w = overlay(SUBTITLE_MODE_REALTIME)
+        w.set_live_text(self.LONG, False)
+        assert "…" not in w._live_rows()

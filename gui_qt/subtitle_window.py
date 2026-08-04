@@ -644,21 +644,41 @@ class SubtitleWindow(QWidget):
         fm = QFontMetrics(self._live_font())
         return fm.height() * REALTIME_LIVE_MAX_ROWS
 
+    def _live_rows(self) -> str:
+        """The tail of the live text that fits in REALTIME_LIVE_MAX_ROWS rows.
+
+        Wrapped greedily from the START, then only the last rows are kept —
+        the Tk overlay's rule (_render_live_line). Row boundaries therefore
+        stay put as the interim grows: the visible row fills up to the edge,
+        and the next word starts a fresh one that grows from the middle again.
+
+        This deliberately does not elide. ``QFontMetrics.elidedText`` was doing
+        the truncation before, which slid the text along one character at a
+        time instead of turning the row over.
+        """
+        text = self._live_text or ""
+        if not text:
+            return ""
+        layout, _height = self._layout_live(text)
+        extra = layout.lineCount() - REALTIME_LIVE_MAX_ROWS
+        if extra <= 0:
+            return text
+        # Everything from the first VISIBLE row onward; the wrap point is a
+        # word boundary, so the leading space belongs to the row above.
+        return text[layout.lineAt(extra).textStart() :].lstrip()
+
+    def _layout_live(self, text: str) -> tuple[QTextLayout, int]:
+        """Lay ``text`` out as the live line — one font, one set of rules."""
+        return self._layout_text(text, self._live_font())
+
     def _draw_live_line(self, p: QPainter, x: int, y: int) -> None:
         """In-progress transcript: muted while speaking, primary once settled."""
-        text = self._live_text or ""
-        font = self._live_font()
-        fm = QFontMetrics(font)
-        # Show only the newest row: a long interim that wrapped would otherwise
-        # shove the settled history up by several rows at once.
-        max_h = self._live_line_height()
-        p.setFont(font)
+        text = self._live_rows()
+        if not text:
+            return
+        layout, _height = self._layout_live(text)
         p.setPen(self._translation_qcolor() if self._live_settled else self._source_qcolor())
-        p.drawText(
-            QRect(x, y, self._content_width(), max_h),
-            int(Qt.AlignHCenter | Qt.AlignTop),
-            fm.elidedText(text, Qt.ElideLeft, self._content_width()),
-        )
+        layout.draw(p, QPointF(x, y))
 
     def _pill_font(self) -> QFont:
         """Fixed size and bold, exactly as the Tk overlay draws it.
