@@ -9,12 +9,17 @@ stop being possible:
   to Qt, which shapes and bidi-orders it with HarfBuzz everywhere.
 * **No manual line wrapping.** The Tk version wrapped text itself, and wrapping
   *shaped* text is what put the end of an RTL sentence on the first line. Qt
-  wraps during layout, after shaping, so the bug has no place to live.
-* **No ink measurement.** ``_stack_overlap`` existed because a Tk canvas text
-  bbox reports font metrics rather than glyph ink, and the fix had to be
-  re-derived per font family (it broke on Linux, where leading differs). Qt's
-  ``QFontMetrics.lineSpacing()`` is a real baseline rhythm — which is exactly
-  the model that pass concluded was correct.
+  still breaks every line here — ``QTextLayout`` wraps after shaping — this
+  module only chooses where each finished line SITS.
+
+Ink measurement, on the other hand, had to come back. An earlier pass dropped
+``_stack_overlap`` on the grounds that ``QFontMetrics.lineSpacing()`` is a real
+baseline rhythm and therefore the correct model. It is a real rhythm, but a
+looser one than the overlay had: Segoe UI's line spacing is ~1.33 em, of which
+~0.29 em is blank band above the cap height, and against the Tk overlay
+side by side the Qt one read as double-spaced (wrapped lines, bilingual pairs
+and the gaps between blocks alike). ``_reclaim`` closes that band back up, on
+the same measured terms Tk used — see it for why the figure is per-script.
 
 Transparency is genuine per-pixel alpha, not the ``-transparentcolor`` green
 chroma key, so anti-aliased glyph edges no longer fringe over video and no
@@ -23,9 +28,10 @@ colour is forbidden in subtitle text.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QRect, Qt, QTimer
+from PySide6.QtCore import QPointF, QRect, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -33,6 +39,8 @@ from PySide6.QtGui import (
     QGuiApplication,
     QPainter,
     QPainterPath,
+    QTextLayout,
+    QTextOption,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -53,9 +61,24 @@ from utils.settings import (
     SUBTITLE_MODE_STATIC,
 )
 
-# Gap between the source line and its translation inside one block. They read as
-# one utterance, so this is much tighter than the gap between blocks.
-PAIR_GAP = 6
+# Gap between the source line and its translation inside one block, ON TOP of
+# whatever _reclaim closes up. They are one utterance and have to read as one:
+# in the Tk overlay the Arabic sits almost on its translation, and anything
+# more here separated them into two unrelated lines.
+PAIR_GAP = 2
+
+# Ink that must remain between two stacked lines, so they never actually touch.
+# Tuned against the Tk overlay side by side: it is the only thing standing
+# between "one utterance" and "two lines that happen to be near each other".
+_STACK_INK_GAP_EM = 0.04
+
+# Honorific ligatures (ﷺ, ﷻ). Excluded when measuring how tall a line's ink is:
+# they are far taller than the script around them, and one of them in a line of
+# German would otherwise widen the gap above the WHOLE line — the honorific
+# would visibly push its own paragraph away from the one above it. Letting the
+# ligature sit a little closer is the lesser evil, and it is the same trade the
+# Tk overlay makes (gui/subtitle_window.py _HONORIFIC_LIGATURE_RE).
+_HONORIFIC_LIGATURE_RE = re.compile(r"[ﷺﷻ]")
 # Distance from the window's bottom edge to the footer pill, and between pills.
 FOOTER_MARGIN = 18
 # Pill text size. Fixed, never derived from the subtitle size: the Tk overlay
@@ -67,6 +90,15 @@ SIDE_MARGIN_RATIO = 0.06
 # Continuous mode advances by this many pixels per frame at speed 1.0.
 SCROLL_PIXELS_PER_FRAME = 1.0
 FRAME_MS = 16
+
+# Realtime feed: a new block moves the feed's TARGET, and the visible offset
+# eases toward it instead of jumping a whole block's height the instant the
+# translation lands. The Tk overlay's figures (LIVE_FEED_ANIM_* in
+# gui/subtitle_window.py), which were tuned on real sessions.
+FEED_ANIM_FRAME_MS = 30
+FEED_ANIM_EASE = 0.3  # fraction of the remaining gap closed per frame
+FEED_ANIM_MIN_STEP = 2.0  # px/frame floor, or the tail of a slide crawls
+FEED_ANIM_SNAP_PX = 1.0  # within this, land on the target and stop
 
 
 @dataclass
@@ -129,6 +161,10 @@ class SubtitleWindow(QWidget):
         self._announcement: str | None = None
         self._stopped_hint = False
         self._scroll_offset = 0.0
+        # Where the feed is easing TO (see _step_feed_anim). Kept apart
+        # from _scroll_offset so a new block can move the destination
+        # without moving what is on screen this frame.
+        self._feed_target = 0.0
         self._adaptive_catchup = adaptive_catchup
         self._effective_scroll_speed = scroll_speed
 
@@ -160,6 +196,9 @@ class SubtitleWindow(QWidget):
         self._scroll_timer = QTimer(self)
         self._scroll_timer.setInterval(FRAME_MS)
         self._scroll_timer.timeout.connect(self._advance_scroll)
+        self._feed_timer = QTimer(self)
+        self._feed_timer.setInterval(FEED_ANIM_FRAME_MS)
+        self._feed_timer.timeout.connect(self._step_feed_anim)
 
         self._apply_geometry()
         self._sync_scroll_timer()
@@ -174,6 +213,17 @@ class SubtitleWindow(QWidget):
 
     def _source_qcolor(self) -> QColor:
         return QColor(self._source_color or self._colors["muted"])
+
+    def _history_qcolor(self) -> QColor:
+        """Translation colour for a block that is no longer the newest.
+
+        Deliberately the theme's muted tone and never the configured SOURCE
+        colour, even though they default to the same value: the dim means
+        "already said", not "this is the original", and a custom source colour
+        must not bleed into it (the rule gui/subtitle_window.py states at
+        _render_feed_positions).
+        """
+        return QColor(self._colors["muted"])
 
     def _transparent_static_active(self) -> bool:
         """Transparent backdrop is a static-mode option only."""
@@ -234,19 +284,78 @@ class SubtitleWindow(QWidget):
             return 17
         return max(12, min(120, int(self.width() / self._source_font_size_base)))
 
-    def _measure(self, text: str, font: QFont) -> int:
-        """Wrapped pixel height of ``text`` at ``font`` within the content width.
+    @staticmethod
+    def _reclaim(text: str, font: QFont) -> int:
+        """Blank band above ``text``'s ink that stacking may close up.
 
-        Qt measures after shaping and bidi, so this is correct for Arabic
-        without the caller knowing anything about the script.
+        A font box reserves the whole ascent whether the glyphs use it or not,
+        and that leftover is what makes metric-spaced lines read as
+        double-spaced. Reclaiming it pulls the lines visually together while
+        leaving ``_STACK_INK_GAP_EM`` of clearance, so the ink never touches.
+
+        MEASURED from the string, where the Tk overlay had to guess. It
+        approximated this with a per-script table (``_INK_TOP_EM_ARABIC`` and
+        friends) because a Tk canvas bbox reports metrics, not ink, and the
+        figures had to be re-derived per font family — they broke on Linux.
+        ``tightBoundingRect`` is the real ink of the real glyphs, so Arabic,
+        Latin, diacritics and any script added later are simply correct, on
+        every platform, with nothing to keep in step.
         """
+        # Honorifics excluded: see _HONORIFIC_LIGATURE_RE. Their own line still
+        # gets a sensible gap from whatever else is in it.
+        measured = _HONORIFIC_LIGATURE_RE.sub("", text).strip()
+        if not measured:
+            return 0
+        metrics = QFontMetrics(font)
+        ink = metrics.tightBoundingRect(measured)
+        if ink.isEmpty():
+            return 0
+        # ink.top() is negative above the baseline, so this is the distance
+        # from the box's ascent line down to the tallest ink in the line.
+        leading = metrics.ascent() + ink.top()
+        em = font.pixelSize() or font.pointSize()
+        return max(0, round(leading - _STACK_INK_GAP_EM * em))
+
+    def _layout_text(self, text: str, font: QFont) -> tuple[QTextLayout, int]:
+        """``text`` wrapped to the content width, at a tightened line rhythm.
+
+        Qt does the line breaking — after shaping and bidi, so an RTL sentence
+        cannot be broken in the wrong place — and this only sets where each
+        finished line sits: one ``_reclaim`` closer than the font's own line
+        spacing would put it.
+
+        Returns the laid-out object (draw it with ``QTextLayout.draw``) and the
+        height it occupies, so measuring and drawing can never disagree.
+        """
+        layout = QTextLayout(text, font)
+        option = QTextOption(Qt.AlignHCenter)
+        option.setWrapMode(QTextOption.WordWrap)
+        layout.setTextOption(option)
+
         fm = QFontMetrics(font)
-        rect = fm.boundingRect(
-            QRect(0, 0, self._content_width(), 10_000),
-            int(Qt.TextWordWrap | Qt.AlignHCenter),
-            text,
-        )
-        return rect.height()
+        pitch = max(1, fm.lineSpacing() - self._reclaim(text, font))
+        width = self._content_width()
+        count, y = 0, 0.0
+        layout.beginLayout()
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(width)
+            line.setPosition(QPointF(0, y))
+            y += pitch
+            count += 1
+        layout.endLayout()
+        if not count:
+            return layout, 0
+        # The last line keeps its full box: baseline distances have to stay
+        # constant for the rhythm to READ as even, so only the space ABOVE a
+        # line is ever reclaimed, never its descent.
+        return layout, (count - 1) * pitch + fm.ascent() + fm.descent()
+
+    def _measure(self, text: str, font: QFont) -> int:
+        """Height ``text`` occupies at ``font`` within the content width."""
+        return self._layout_text(text, font)[1]
 
     def _block_fonts(self, block: Block) -> tuple[QFont, QFont | None]:
         trans = subtitle_font(self._translation_px())
@@ -255,12 +364,45 @@ class SubtitleWindow(QWidget):
             src = source_font(self._source_px(), block.source)
         return trans, src
 
+    def _pair_gap(self, block: Block) -> int:
+        """Space between a block's source line and its translation.
+
+        Reclaimed like any other stacking boundary — otherwise the pair sits a
+        whole blank band further apart than PAIR_GAP claims, which is what made
+        a bilingual block read as two unrelated lines.
+        """
+        trans_font, _src = self._block_fonts(block)
+        # Deliberately allowed to go NEGATIVE: the reclaim is normally larger
+        # than PAIR_GAP, and clamping at zero threw the remainder away and left
+        # the pair as far apart as before. The boxes overlap; the INK cannot,
+        # because _reclaim already holds _STACK_INK_GAP_EM back. Tk stacks the
+        # same way (_stack_rows_tight positions at bbox top + overlap).
+        return PAIR_GAP - self._reclaim(block.translation, trans_font)
+
     def _measure_block(self, block: Block) -> int:
         trans_font, src_font = self._block_fonts(block)
         h = self._measure(block.translation, trans_font)
         if src_font is not None and block.source:
-            h += self._measure(block.source, src_font) + PAIR_GAP
+            h += self._measure(block.source, src_font) + self._pair_gap(block)
         return h
+
+    def _block_gap(self, block: Block) -> int:
+        """Space above ``block`` when it follows another.
+
+        REALTIME_BLOCK_SPACING is shared with the Tk overlay, which positions
+        ink-aware and so gets the gap the number describes. Qt stacks metric
+        boxes, so the same constant has to give back the incoming block's blank
+        band to land in the same place.
+        """
+        trans_font, src_font = self._block_fonts(block)
+        if src_font is not None and block.source:
+            first_text, first_font = block.source, src_font
+        else:
+            first_text, first_font = block.translation, trans_font
+        # Not clamped at zero, for the reason given in _pair_gap — though a
+        # block usually opens on an Arabic source line, whose ink reaches the
+        # ascent and reclaims nothing, so this mostly IS the constant.
+        return REALTIME_BLOCK_SPACING - self._reclaim(first_text, first_font)
 
     def _draw_card(self, p: QPainter, text: str, font: QFont, rect: QRect) -> None:
         """Rounded backing card behind one line, sized to the text it holds.
@@ -277,34 +419,31 @@ class SubtitleWindow(QWidget):
         path.addRoundedRect(cx, rect.y() - pad_y, cw, rect.height() + pad_y * 2, 14, 14)
         p.fillPath(path, QColor(0, 0, 0, 150))
 
-    def _draw_block(self, p: QPainter, block: Block, x: int, y: int) -> int:
-        """Draw ``block`` with its top edge at ``y``; return the height used."""
+    def _draw_block(
+        self, p: QPainter, block: Block, x: int, y: int, newest: bool = True
+    ) -> int:
+        """Draw ``block`` with its top edge at ``y``; return the height used.
+
+        ``newest`` carries the full translation colour; everything above it is
+        history and drops to the muted tone, so the eye lands on the line
+        being spoken now without having to search for it.
+        """
         trans_font, src_font = self._block_fonts(block)
         w = self._content_width()
         cards = self._transparent_static_active()
         used = 0
         if src_font is not None and block.source:
-            sh = self._measure(block.source, src_font)
-            rect = QRect(x, y, w, sh)
+            layout, sh = self._layout_text(block.source, src_font)
             if cards:
-                self._draw_card(p, block.source, src_font, rect)
-            p.setFont(src_font)
+                self._draw_card(p, block.source, src_font, QRect(x, y, w, sh))
             p.setPen(self._source_qcolor())
-            p.drawText(
-                rect, int(Qt.TextWordWrap | Qt.AlignHCenter | Qt.AlignTop), block.source
-            )
-            used += sh + PAIR_GAP
-        th = self._measure(block.translation, trans_font)
-        rect = QRect(x, y + used, w, th)
+            layout.draw(p, QPointF(x, y))
+            used += sh + self._pair_gap(block)
+        layout, th = self._layout_text(block.translation, trans_font)
         if cards:
-            self._draw_card(p, block.translation, trans_font, rect)
-        p.setFont(trans_font)
-        p.setPen(self._translation_qcolor())
-        p.drawText(
-            rect,
-            int(Qt.TextWordWrap | Qt.AlignHCenter | Qt.AlignTop),
-            block.translation,
-        )
+            self._draw_card(p, block.translation, trans_font, QRect(x, y + used, w, th))
+        p.setPen(self._translation_qcolor() if newest else self._history_qcolor())
+        layout.draw(p, QPointF(x, y + used))
         return used + th
 
     # ── painting ─────────────────────────────────────────────────────────
@@ -338,31 +477,50 @@ class SubtitleWindow(QWidget):
         x = int(self.width() * SIDE_MARGIN_RATIO)
         top = int(self.height() * 0.06)
         heights = [self._measure_block(b) for b in self._blocks]
+        # The advance past each block: its own height plus the gap the NEXT one
+        # wants above it. One list, used by all three passes below, so the
+        # total, the draw loop and the eviction compensation cannot disagree —
+        # if they did, the feed would jump every time a block scrolled off.
+        # ``followers`` is empty when there are no blocks — [*[], None] would be
+        # a one-element list against zero heights.
+        followers = [*self._blocks[1:], None] if self._blocks else []
+        advances = [
+            h + (self._block_gap(nxt) if nxt is not None else REALTIME_BLOCK_SPACING)
+            for h, nxt in zip(heights, followers, strict=True)
+        ]
 
-        total = sum(h + REALTIME_BLOCK_SPACING for h in heights)
+        total = sum(advances)
         if self._live_text:
             total += self._live_line_height()
         overflow = top + total - self._content_height()
-        if overflow > self._scroll_offset:
-            self._scroll_offset = overflow
+        if overflow > self._feed_target:
+            # The TARGET moves at once; the rendered offset eases toward it in
+            # _step_feed_anim, so the feed slides up the way the Tk overlay
+            # does instead of teleporting a whole block's height on arrival.
+            self._feed_target = overflow
+            self._start_feed_anim()
 
         y = top - self._scroll_offset
         evicted = 0
-        for block, h in zip(self._blocks, heights, strict=True):
+        newest = len(self._blocks) - 1
+        for i, (block, h, advance) in enumerate(
+            zip(self._blocks, heights, advances, strict=True)
+        ):
             if y + h < 0:  # scrolled off the top edge
                 evicted += 1
             else:
-                self._draw_block(p, block, x, int(y))
-            y += h + REALTIME_BLOCK_SPACING
+                self._draw_block(p, block, x, int(y), newest=i == newest)
+            y += advance
         if self._live_text:
             self._draw_live_line(p, x, int(y))
 
         if evicted:
             # Drop what is off-screen and shorten the shift by the same extent,
             # so the remaining blocks do not jump (eviction-compensated).
-            drop = sum(h + REALTIME_BLOCK_SPACING for h in heights[:evicted])
+            drop = sum(advances[:evicted])
             del self._blocks[:evicted]
             self._scroll_offset -= drop
+            self._feed_target -= drop
 
     def _place_continuous(self, block: Block) -> None:
         """Assign a new block's absolute y so it is visible straight away.
@@ -376,7 +534,7 @@ class SubtitleWindow(QWidget):
         anchor = self._content_height() - self._measure_block(block)
         if self._blocks:
             last = self._blocks[-1]
-            stacked = last.y + self._measure_block(last) + REALTIME_BLOCK_SPACING
+            stacked = last.y + self._measure_block(last) + self._block_gap(block)
             block.y = max(anchor, stacked)
         else:
             block.y = anchor
@@ -386,13 +544,14 @@ class SubtitleWindow(QWidget):
         x = int(self.width() * SIDE_MARGIN_RATIO)
         limit = self._content_height()
         survivors: list[Block] = []
-        for block in self._blocks:
+        newest = len(self._blocks) - 1
+        for i, block in enumerate(self._blocks):
             h = self._measure_block(block)
             if block.y + h < 0:  # scrolled fully past the top edge
                 continue
             survivors.append(block)
             if block.y <= limit:  # otherwise still queued below the viewport
-                self._draw_block(p, block, x, int(block.y))
+                self._draw_block(p, block, x, int(block.y), newest=i == newest)
         # Each block carries its own absolute y, so dropping off-screen blocks
         # cannot shift the survivors — no offset compensation needed.
         self._blocks = survivors
@@ -557,6 +716,38 @@ class SubtitleWindow(QWidget):
         else:
             self._scroll_timer.stop()
 
+    # ── realtime feed animation ──────────────────────────────────────────
+    def _start_feed_anim(self) -> None:
+        """Ease the feed up to its target rather than jumping there.
+
+        Only the top-down feed animates. Continuous mode has its own steady
+        scroll and static mode replaces its block outright, so neither has a
+        gap to close.
+        """
+        if self._mode != SUBTITLE_MODE_REALTIME or self._stopped_hint:
+            return
+        if self._feed_target - self._scroll_offset < FEED_ANIM_SNAP_PX:
+            return
+        if not self._feed_timer.isActive():
+            self._feed_timer.start()
+
+    def _step_feed_anim(self) -> None:
+        """One eased frame toward the target, then repaint."""
+        gap = self._feed_target - self._scroll_offset
+        if gap < FEED_ANIM_SNAP_PX:
+            # Close the last sub-pixel outright: easing toward it forever
+            # would repaint every frame for movement nobody can see.
+            self._scroll_offset = self._feed_target
+            self._feed_timer.stop()
+            self.update()
+            return
+        # A floor under the eased step, or the tail of a long slide crawls.
+        self._scroll_offset = min(
+            self._scroll_offset + max(gap * FEED_ANIM_EASE, FEED_ANIM_MIN_STEP),
+            self._feed_target,
+        )
+        self.update()
+
     def get_subtitle_backlog_count(self) -> int:
         """How many blocks are queued below the visible anchor line.
 
@@ -619,7 +810,8 @@ class SubtitleWindow(QWidget):
 
     def set_subtitle_mode(self, mode: str) -> None:
         self._mode = mode
-        self._scroll_offset = 0.0
+        self._scroll_offset = self._feed_target = 0.0
+        self._feed_timer.stop()
         if mode == SUBTITLE_MODE_CONTINUOUS:
             # Blocks carried over from another mode have no meaningful y yet:
             # re-stack them from the bottom so the newest stays visible.
@@ -634,7 +826,9 @@ class SubtitleWindow(QWidget):
             h = self._measure_block(block)
             y -= h
             block.y = y
-            y -= REALTIME_BLOCK_SPACING
+            # The gap belongs to the block that follows it, so it is this
+            # block's own — the same rule _paint_realtime stacks by.
+            y -= self._block_gap(block)
 
     def get_subtitle_mode(self) -> str:
         return self._mode
@@ -775,7 +969,8 @@ class SubtitleWindow(QWidget):
     def clear(self) -> None:
         self._blocks.clear()
         self._live_text = None
-        self._scroll_offset = 0.0
+        self._scroll_offset = self._feed_target = 0.0
+        self._feed_timer.stop()
         self._effective_scroll_speed = self._scroll_speed
         self.update()
 
