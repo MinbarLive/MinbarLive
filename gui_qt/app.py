@@ -37,14 +37,21 @@ def run(controller) -> int:
     log(f"Qt platform plugin: {platform}", level="INFO")
     if platform.startswith("wayland"):
         # Said out loud, because the symptoms look like application bugs: the
-        # overlay appears in the middle of the screen and the always-on-top
-        # setting does nothing. Both are the compositor's call under Wayland.
-        log(
+        # overlay appears in the middle of the screen, lowering its height
+        # walks the footer UP instead of bringing the top edge down, and the
+        # always-on-top setting does nothing. All three are the compositor's
+        # call under Wayland, and none of them is reachable from here.
+        warning = (
             "Wayland session: the subtitle overlay cannot be placed on a chosen "
             "screen or kept on top. Install libxcb-cursor0 so the X11 (xcb) "
-            "plugin can load.",
-            level="WARNING",
+            "plugin can load."
         )
+        log(warning, level="WARNING")
+        # Also on stderr, right under Qt's own "Could not load the Qt platform
+        # plugin xcb" line. utils.logging writes to a file and to the panel's
+        # log view; whoever is running from source is reading the terminal, and
+        # this warning is worth nothing if it is not where the symptom is.
+        print(f"MinbarLive: {warning}", file=sys.stderr)
     # Application-wide and before the first window, so every window — including
     # the overlay, which nobody else sets an icon on — inherits it the moment
     # its native window is created. Without this Qt shows its own default.

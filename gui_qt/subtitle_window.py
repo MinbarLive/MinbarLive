@@ -37,6 +37,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
+    QFontMetricsF,
     QGuiApplication,
     QPainter,
     QPainterPath,
@@ -97,6 +98,23 @@ SIDE_MARGIN_RATIO = 0.06
 # Continuous mode advances by this many pixels per frame at speed 1.0.
 SCROLL_PIXELS_PER_FRAME = 1.0
 FRAME_MS = 16
+
+# A window manager can grant a different rectangle than the one asked for. An
+# X11 WM may honour the requested SIZE but not the requested POSITION — GNOME
+# keeps a frameless window clear of its top bar and dock — and a full-monitor
+# overlay pushed down by that much loses its bottom strip, which is where the
+# disclaimer pill lives, off the bottom of the screen. What was granted is
+# only knowable once the WM has replied, so it is read back shortly after each
+# placement rather than in _apply_geometry, exactly as the Tk overlay does it
+# (gui/subtitle_window.py _fit_geometry_to_monitor).
+#
+# This cannot rescue a Wayland session: there a client is not told where it
+# was put, and the position Qt reports back is the one we asked for.
+GEOMETRY_FIT_MS = 250
+# Floors for that repair: below these the measurement is likelier to be wrong
+# than the window, and a sliver of an overlay helps nobody.
+MIN_FITTED_WIDTH = 240
+MIN_FITTED_HEIGHT = 120
 
 # Realtime feed: a new block moves the feed's TARGET, and the visible offset
 # eases toward it instead of jumping a whole block's height the instant the
@@ -198,6 +216,13 @@ class SubtitleWindow(QWidget):
         self.setWindowTitle("MinbarLive Subtitles")
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        # Before set_always_on_top, which re-places the window: _apply_geometry
+        # arms this timer. Parented, so it dies with the window — a fit check
+        # that outlived the overlay would call into a deleted C++ object.
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.setInterval(GEOMETRY_FIT_MS)
+        self._fit_timer.timeout.connect(self._fit_to_screen)
         self.set_always_on_top(always_on_top)
 
         self._scroll_timer = QTimer(self)
@@ -273,6 +298,34 @@ class SubtitleWindow(QWidget):
         g = screen.geometry() if is_window_on_top(self) else screen.availableGeometry()
         h = max(1, int(g.height() * self._height_percent / 100))
         self.setGeometry(QRect(g.x(), g.y() + g.height() - h, g.width(), h))
+        self._fit_timer.start()
+
+    def _fit_to_screen(self) -> None:
+        """Shrink the overlay into the rectangle the WM actually granted.
+
+        Only ever shrinks, and only when the window really does hang off the
+        screen — see GEOMETRY_FIT_MS for when that happens and where it cannot
+        be detected. On a platform that places windows exactly (Windows, and
+        X11 when nothing is in the way) the measurement matches the request and
+        this returns without touching anything.
+
+        The window keeps its top edge, so nothing that lays out from the top of
+        the content area has to be shifted; the modes recompute from the
+        window's size on the next paint, as they do after any height change.
+        """
+        screen = self._screen()
+        if screen is None or not self.isVisible():
+            return
+        g = screen.geometry()
+        have = self.geometry()
+        fit_w = min(have.width(), g.x() + g.width() - have.x())
+        fit_h = min(have.height(), g.y() + g.height() - have.y())
+        if fit_w < MIN_FITTED_WIDTH or fit_h < MIN_FITTED_HEIGHT:
+            return
+        if (fit_w, fit_h) == (have.width(), have.height()):
+            return  # the request was granted
+        self.resize(fit_w, fit_h)
+        self.update()
 
     # ── layout helpers ───────────────────────────────────────────────────
     def _content_width(self) -> int:
@@ -473,6 +526,7 @@ class SubtitleWindow(QWidget):
             layout.setFormats(formats)
 
         fm = QFontMetrics(font)
+        base_ascent = QFontMetricsF(font).ascent()
         reclaim, overhang = self._ink(text, font)
         # ``overhang`` also has to widen the pitch, not just the block's foot:
         # two wrapped lines of the same Arabic sentence stack at this distance
@@ -486,7 +540,26 @@ class SubtitleWindow(QWidget):
             if not line.isValid():
                 break
             line.setLineWidth(width)
-            line.setPosition(QPointF(0, y))
+            # Placed by its BASELINE, not by the top of its box. A line's
+            # ascent is the tallest of the font engines that actually drew it,
+            # including the fallback family a honorific comes from — and that
+            # family's ascent can be far larger than the one every figure here
+            # is measured from, even after _honorific_formats has scaled the
+            # glyph's INK to fit. Setting the box top on our own rhythm then
+            # drops the line by the difference, and the blank band that opens
+            # above it is the honorific visibly pushing its paragraph away from
+            # the one before it. Correcting for the excess puts the baseline
+            # back on the rhythm the block was measured at.
+            #
+            # Only ever pulls a line UP: an ascent BELOW the asked-for font's
+            # is that font's own business (the metrics here are its own), and
+            # dropping the line to meet it would move text that is already
+            # where it belongs. Measured against the UNROUNDED ascent, so a
+            # line drawn entirely in the font we asked for comes out at exactly
+            # its old position — QFontMetrics rounds to whole pixels and
+            # QTextLine does not, and that difference alone would have shifted
+            # every line on every platform.
+            line.setPosition(QPointF(0, y - max(0.0, line.ascent() - base_ascent)))
             y += pitch
             count += 1
         layout.endLayout()

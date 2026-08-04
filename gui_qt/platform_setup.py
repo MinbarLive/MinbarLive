@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Mapping
 
 # Qt reads this as an ordered list and takes the first plugin that loads.
 #
@@ -36,16 +37,34 @@ _LINUX_PLATFORM = "xcb;wayland"
 # names in our own dropdowns (हिन्दी, বাংলা, ਪੰਜਾਬੀ, தமிழ்). Falling through to
 # a system font that does have them is exactly right, and there is nothing to
 # act on: it is four lines per family per script on every launch, on stderr.
-# Only the warnings from that one category, and only when the operator has not
-# set rules of their own.
-_LINUX_LOG_RULES = "qt.text.font.db.warning=false"
+# Only that one category, and only when the operator has not set rules of
+# their own.
+#
+# The rule names the CATEGORY and no severity. ``qt.text.font.db.warning=false``
+# was tried first and the lines still came out on Ubuntu: Qt does not document
+# which severity carries "OpenType support missing", and a rule for the wrong
+# one silences nothing. The whole-category form covers every severity it could
+# be, which is what this needs — nothing in that category is actionable here.
+_LINUX_LOG_RULES = "qt.text.font.db=false"
+
+
+def linux_environment(env: Mapping[str, str]) -> dict[str, str]:
+    """What a Linux launch adds to ``env``, leaving the operator's own alone.
+
+    Split out from ``prepare_qt_platform`` so the decision can be checked
+    anywhere: the alternative is faking ``sys.platform`` inside a test process,
+    which this project has already been bitten by.
+    """
+    chosen: dict[str, str] = {}
+    if not env.get("QT_QPA_PLATFORM"):
+        chosen["QT_QPA_PLATFORM"] = _LINUX_PLATFORM
+    if not env.get("QT_LOGGING_RULES"):
+        chosen["QT_LOGGING_RULES"] = _LINUX_LOG_RULES
+    return chosen
 
 
 def prepare_qt_platform() -> None:
     """Pick the platform plugin order. Call before creating a QApplication."""
     if not sys.platform.startswith("linux"):
         return
-    if not os.environ.get("QT_QPA_PLATFORM"):
-        os.environ["QT_QPA_PLATFORM"] = _LINUX_PLATFORM
-    if not os.environ.get("QT_LOGGING_RULES"):
-        os.environ["QT_LOGGING_RULES"] = _LINUX_LOG_RULES
+    os.environ.update(linux_environment(os.environ))

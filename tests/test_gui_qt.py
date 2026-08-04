@@ -5106,6 +5106,176 @@ class TestHonorificClearance:
         )
         assert SubtitleWindow._ink(text, font)[0] == expected
 
+    @staticmethod
+    def _oversized_run(text: str, font):
+        """Format spans that make one glyph's run TALLER than the line.
+
+        What a fallback family does to a line that borrows a single glyph from
+        it: its ascent becomes the line's, however small the ink is scaled to.
+        Fitting the ink cannot prevent that, and no Windows font reproduces it
+        — so the run is forced here.
+        """
+        from PySide6.QtGui import QFont, QTextCharFormat, QTextLayout
+
+        span = QTextLayout.FormatRange()
+        span.start = text.index("ﷻ")
+        span.length = 1
+        taller = QFont(font)
+        taller.setPixelSize(font.pixelSize() * 3)
+        char_format = QTextCharFormat()
+        char_format.setFont(taller)
+        span.format = char_format
+        return [span]
+
+    def test_a_tall_run_does_not_drop_the_line_it_sits_in(self, overlay, monkeypatch):
+        """The symptom that survived the scaling: a blank band above the line.
+
+        Lines are placed by the top of their box, and a line whose ascent is
+        the fallback family's is taller than the box every figure around it was
+        measured from — so its ink lands that much lower, and the paragraph
+        before it appears pushed away.
+        """
+        from PySide6.QtGui import QFontMetrics
+
+        from gui_qt.fonts import subtitle_font
+        from gui_qt.subtitle_window import SubtitleWindow
+
+        w = overlay(SUBTITLE_MODE_STATIC)
+        font = subtitle_font(51, text=self.OVERSIZED)
+        monkeypatch.setattr(
+            SubtitleWindow, "_honorific_formats", staticmethod(self._oversized_run)
+        )
+        # Bound first: a QTextLine borrows from its layout (gui_qt/AGENTS.md).
+        layout, _height = w._layout_text(self.OVERSIZED, font)
+        line = layout.lineAt(0)
+        assert line.ascent() > QFontMetrics(font).ascent(), "the run is not tall"
+        baseline = line.position().y() + line.ascent()
+        assert round(baseline) == round(QFontMetrics(font).ascent()), (
+            "the honorific's line sits below the rhythm its block was measured at"
+        )
+
+    def test_a_line_of_one_font_keeps_its_box_top(self, overlay):
+        # The correction is for borrowed metrics only: an ordinary line — every
+        # line on Windows — is placed exactly where it always was.
+        from gui_qt.fonts import subtitle_font
+
+        w = overlay(SUBTITLE_MODE_STATIC)
+        text = "Vielmehr merken sie es nicht."
+        layout, _height = w._layout_text(text, subtitle_font(51, text=text))
+        assert layout.lineAt(0).position().y() == 0
+
+
+class TestOverlayFitsTheScreen:
+    """The overlay asks for a rectangle; a window manager may grant another.
+
+    An X11 WM can honour the requested SIZE and refuse the requested POSITION —
+    GNOME keeps a frameless window clear of its top bar — and the strip that
+    then hangs off the bottom of the screen is the one carrying the disclaimer
+    pill. The Tk overlay reads back what it was given and shrinks into it
+    (_fit_geometry_to_monitor); the Qt one trusted setGeometry.
+    """
+
+    HEIGHT_PERCENT = 30  # enough of the screen to be real, little enough to see past
+
+    def _placed(self, qt_app, overlay):
+        """A shown overlay whose geometry the WM actually granted."""
+        w = overlay(SUBTITLE_MODE_STATIC, window_height_percent=self.HEIGHT_PERCENT)
+        w.show()
+        _settle(qt_app)
+        g = w._screen().geometry()
+        if w.geometry().bottom() != g.bottom() or w.geometry().x() != g.x():
+            pytest.skip("this window manager places the overlay itself")
+        return w, g
+
+    def test_a_granted_rectangle_is_left_alone(self, qt_app, overlay):
+        w, _g = self._placed(qt_app, overlay)
+        before = w.geometry()
+        w._fit_to_screen()
+        assert w.geometry() == before
+
+    def test_a_window_pushed_down_is_shrunk_to_the_screen(self, qt_app, overlay):
+        from PySide6.QtCore import QPoint
+
+        w, g = self._placed(qt_app, overlay)
+        height = w.height()
+        # What the WM does: the size it granted, at a position 150 px lower.
+        top = QPoint(g.x(), g.y() + g.height() - height + 150)
+        w.move(top)
+        _settle(qt_app)
+        w._fit_to_screen()
+        assert w.height() == height - 150, "the overlay still hangs off the screen"
+        assert w.geometry().bottom() <= g.bottom()
+        # The top edge stays put — it is the bottom that was in the wrong place.
+        assert w.pos() == top
+
+    def test_an_implausible_measurement_is_ignored(self, qt_app, overlay):
+        from PySide6.QtCore import QPoint
+
+        from gui_qt.subtitle_window import MIN_FITTED_HEIGHT
+
+        w, g = self._placed(qt_app, overlay)
+        height = w.height()
+        w.move(QPoint(g.x(), g.bottom() - MIN_FITTED_HEIGHT // 2))
+        _settle(qt_app)
+        w._fit_to_screen()
+        # A sliver of an overlay helps nobody: leave it as it is.
+        assert w.height() == height
+
+    def test_a_hidden_overlay_is_not_resized(self, overlay):
+        from PySide6.QtCore import QRect
+
+        w = overlay(SUBTITLE_MODE_STATIC)
+        g = w._screen().geometry()
+        w.setGeometry(QRect(g.x(), g.bottom() - 200, 600, 400))  # half off-screen
+        w._fit_to_screen()
+        assert w.height() == 400
+
+    def test_every_placement_arms_the_check(self, overlay):
+        # The answer only arrives once the WM has replied, so the read-back is
+        # queued rather than done inside _apply_geometry.
+        w = overlay(SUBTITLE_MODE_STATIC)
+        w._fit_timer.stop()
+        w.set_window_height_percent(60)
+        assert w._fit_timer.isActive()
+
+
+class TestLinuxPlatformSetup:
+    """What a Linux launch asks of Qt before the QApplication exists."""
+
+    def test_x11_is_asked_for_before_wayland(self):
+        # A Wayland client can neither place its own windows nor stay on top,
+        # and the overlay is nothing but those two things.
+        from gui_qt.platform_setup import linux_environment
+
+        assert linux_environment({})["QT_QPA_PLATFORM"] == "xcb;wayland"
+
+    def test_the_font_database_is_silenced_by_category_not_by_severity(self):
+        # "qt.text.font.db.warning=false" was the first attempt, and the lines
+        # kept coming out on Ubuntu: a rule naming one severity silences
+        # nothing if the messages carry another.
+        from gui_qt.platform_setup import linux_environment
+
+        rules = linux_environment({})["QT_LOGGING_RULES"]
+        assert rules == "qt.text.font.db=false"
+
+    def test_an_operators_own_settings_are_left_alone(self):
+        from gui_qt.platform_setup import linux_environment
+
+        env = {"QT_QPA_PLATFORM": "wayland", "QT_LOGGING_RULES": "*.debug=true"}
+        assert linux_environment(env) == {}
+
+    @pytest.mark.skipif(
+        sys.platform.startswith("linux"), reason="the Linux branch is the one that sets"
+    )
+    def test_no_other_platform_is_touched(self):
+        import os
+
+        from gui_qt.platform_setup import prepare_qt_platform
+
+        before = dict(os.environ)
+        prepare_qt_platform()
+        assert os.environ == before
+
 
 class TestAmpersandInACheckboxLabel:
     """A translated "&" was painted as nothing at all.

@@ -19,6 +19,16 @@ because a Wayland client can neither place its own windows nor stay on top — t
 things the overlay is made of. Every launch logs which plugin actually loaded; a bug
 report about overlay position or stacking starts with that line.
 
+**A Linux machine running this from source needs `libxcb-cursor0`**
+(`sudo apt install libxcb-cursor0`). Since Qt 6.5 the xcb plugin will not load without
+it — Qt says so on stderr ("Could not load the Qt platform plugin xcb … even though it
+was found") and the list above falls through to Wayland. Then the overlay is centred by
+the compositor, always-on-top does nothing, and lowering the height walks the footer UP
+instead of bringing the top edge down, because a window that cannot be moved shrinks from
+its fixed top-left. All three read as application bugs and none of them is reachable from
+application code, so the app also says it at startup, in the log and on stderr. See the
+packaging section below for the shipped build.
+
 ## Hard rules
 
 - **Nothing here may import a Tk-importing module.** The toolkit-free shared modules are
@@ -96,6 +106,20 @@ The tree reached parity with Tk deliberately; each item below was the point of a
 - **Measure a content-sized window with `layout().totalHeightForWidth()`, not
   `adjustSize()`** — a word-wrapped label's sizeHint reserves a line it doesn't use, and
   the surplus inflates whatever in the column can stretch.
+- **Subtitle lines are placed by their BASELINE, not by the top of their box.** A line's
+  ascent is the tallest of the font engines that actually drew it, and a single glyph
+  borrowed from a fallback family (the ﷺ/ﷻ honorifics on Linux) makes it far taller than
+  the metrics every other figure in `_layout_text` comes from. Placing the box top on our
+  own rhythm then drops the line by the difference — the blank band that opens above it is
+  the honorific appearing to push its paragraph away. The correction only ever pulls a
+  line up, and is measured against `QFontMetricsF` because `QFontMetrics` rounds and
+  `QTextLine` does not.
+- **`setGeometry` is a request.** An X11 WM may grant the size and refuse the position
+  (GNOME keeps a frameless window clear of its struts), and the overlay's bottom strip —
+  the disclaimer pill — then hangs below the screen. `_fit_to_screen` reads back what was
+  granted 250 ms later and shrinks into it, as the Tk overlay does
+  (`_fit_geometry_to_monitor`). It cannot help under Wayland: there the position Qt
+  reports is the one that was asked for.
 - **A row added to a *visible* window's layout is hidden, and a hidden item contributes
   zero to the size hint.** Call `setVisible(True)` right after `addWidget` or the window
   measures itself without the rows it just gained. Delivering the posted `LayoutRequest`
@@ -122,6 +146,20 @@ confident, wrong passes:
    `_finish_stop` and the batch worker report errors with a real modal dialog — a test
    that exercises those puts a box on the developer's desktop and blocks the run until
    it is dismissed (it looked like a 15-second test).
+
+## Packaging requirement for Phase 7
+
+**The Linux builder must install the xcb libraries before `pyinstaller` runs**, or the
+AppImage ships without them. Since Qt 6.5 the xcb platform plugin has a hard dependency
+on **`libxcb-cursor0`**, which is *not* installed by default on a stock Ubuntu/Debian
+GNOME desktop — a plain user's AppImage would find the plugin, fail to load it, and fall
+through to Wayland, where the overlay cannot be positioned or kept on top. Never solve
+this by telling users to install a package.
+
+PyInstaller bundles what its dependency scan finds on the build machine — the same reason
+`release.yml` already installs `libportaudio2`. Add the xcb set alongside it when Qt goes
+into `MinbarLive.spec`. The existing xvfb smoke launch is the guard: a Qt app whose xcb
+plugin will not load dies at once, and CI requires it to stay up for 30 s.
 
 ## The cut-over is gated
 
