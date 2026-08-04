@@ -4600,6 +4600,29 @@ class TestFontStacks:
             ui_families()
         )
 
+    def test_the_stylesheet_asks_for_no_family_this_machine_lacks(self, qt_app):
+        """The same rule, for the families the STYLESHEET names.
+
+        Two were left hardcoded there: a ``sans-serif`` tail on the base rule
+        and ``"Consolas", "Menlo", monospace`` on the log panel. Qt's
+        stylesheet parser does not implement the CSS generics — those are
+        family names to it — so macOS looked for a family called "Sans-serif",
+        populated its whole alias table hunting for it, and printed the cost.
+        The warning only ever names the FIRST miss, which is why this walks
+        every family in the sheet rather than the one that was reported.
+        """
+        import re
+
+        from PySide6.QtGui import QFontDatabase
+
+        from gui_qt.theme import stylesheet
+
+        for family in re.findall(r"font-family:\s*(.+?);", stylesheet("dark")):
+            for name in [n.strip().strip('"') for n in family.split(",")]:
+                assert QFontDatabase.hasFamily(name), (
+                    f"the stylesheet asks for {name!r}, which this machine lacks"
+                )
+
 
 class TestInkOverhang:
     """Qt reports the metrics of the family it was ASKED for and paints missing

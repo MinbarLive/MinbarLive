@@ -62,6 +62,16 @@ _ARABIC_FAMILIES_DEFAULT = (
     "DejaVu Sans",
 )
 
+# Monospace stack for the log panel. Per platform for the same reason as the
+# others: the stylesheet used to carry "Consolas", "Menlo", monospace on all
+# three, so macOS looked up a Windows family, missed, and populated its entire
+# alias table to be sure — which is the cost it then prints a warning about.
+_MONO_FAMILIES = {
+    "win32": ("Consolas", "Courier New"),
+    "darwin": ("Menlo", "Monaco", "Courier New"),
+}
+_MONO_FAMILIES_DEFAULT = ("DejaVu Sans Mono", "Noto Sans Mono", "Liberation Mono")
+
 
 @lru_cache(maxsize=8)
 def _installed(families: tuple[str, ...]) -> list[str]:
@@ -97,6 +107,11 @@ def ui_families() -> list[str]:
 def arabic_families() -> list[str]:
     """Arabic-first font stack for this platform."""
     return _resolve(_ARABIC_FAMILIES.get(sys.platform, _ARABIC_FAMILIES_DEFAULT))
+
+
+def mono_families() -> list[str]:
+    """Monospace stack for this platform, missing families removed."""
+    return _resolve(_MONO_FAMILIES.get(sys.platform, _MONO_FAMILIES_DEFAULT))
 
 
 def families_for(text: str) -> list[str]:

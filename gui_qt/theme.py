@@ -27,7 +27,7 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QProxyStyle, QStyle
 
-from gui_qt.fonts import arabic_families, ui_families
+from gui_qt.fonts import arabic_families, mono_families, ui_families
 from gui_qt.palette import palette
 
 # Indicator edge length in logical px, for both check boxes and radio buttons.
@@ -64,8 +64,26 @@ def app_families() -> list[str]:
 
 
 def _css_families() -> str:
-    """``app_families`` as a CSS ``font-family`` value."""
-    return ", ".join(f'"{f}"' for f in app_families()) + ", sans-serif"
+    """``app_families`` as a CSS ``font-family`` value.
+
+    No generic ``sans-serif`` tail. Qt's stylesheet parser does not implement
+    the CSS generic families — it hands the name to the font matcher like any
+    other — so on macOS it was a request for a family called "Sans-serif",
+    which made Qt build its whole alias table hunting for it and then say so:
+    "Populating font family aliases took 134 ms. Replace uses of missing font
+    family "Sans-serif" with one that exists to avoid this cost." The stack in
+    front of it is already filtered to families this machine has (gui_qt/fonts.py).
+    """
+    return ", ".join(f'"{f}"' for f in app_families())
+
+
+def _css_mono_families() -> str:
+    """The log panel's monospace stack as a CSS ``font-family`` value.
+
+    Same rule, same reason: no ``monospace`` tail, and the families come from
+    gui_qt/fonts.py so a Windows name is not asked for on a Mac.
+    """
+    return ", ".join(f'"{f}"' for f in mono_families())
 
 
 def qcolor(hex_color: str, alpha: int | None = None) -> QColor:
@@ -465,7 +483,7 @@ QPlainTextEdit, QTextEdit {{
     border-radius: 12px;
     padding: 6px;
 }}
-QPlainTextEdit#log {{ font-family: "Consolas", "Menlo", monospace; font-size: 12px; }}
+QPlainTextEdit#log {{ font-family: {_css_mono_families()}; font-size: 12px; }}
 
 QListWidget {{
     background-color: {c["panel"]};
