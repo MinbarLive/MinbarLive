@@ -129,7 +129,7 @@ Two windows will appear:
 
 Only one copy runs at a time: starting a second one brings up a notice instead, with a **"Launch Anyway"** option if you really do want two instances (they will compete for the same microphone and settings file).
 
-Press `Escape` on the subtitle window to stop the translation (same as the Stop button). It leaves the window and the app open. Closing the subtitle window itself (Alt+F4, or Close on its taskbar entry) also stops a running session and closes only that window — Start recreates it. Quitting MinbarLive is the control panel's job alone.
+Closing the subtitle window (Alt+F4, or Close on its taskbar entry) stops a running session and closes only that window — Start recreates it. The subtitle window never takes keyboard focus and is transparent to the mouse, so clicks and shortcuts go to whatever is behind it; Stop and Quit are the control panel's job.
 
 <br>
 

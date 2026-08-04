@@ -30,8 +30,9 @@ source text is already Arabic). That is correct, not a gap.
 
 No other code changes.
 
-**If the language is RTL**, check that it renders in dropdowns — the Tk tree needs
-`reshape_rtl` on those strings. `ar` is the existing precedent; follow what it does.
+**If the language is RTL**, no reshaping call is needed — Qt shapes and bidi-orders
+logical text with HarfBuzz. Do check it renders in the dropdowns and that any
+`QTextOption` involved sets `Qt.LayoutDirectionAuto`; `ar` is the existing precedent.
 
 ## B. Target language (Quran + Athan)
 

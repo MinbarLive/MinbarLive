@@ -5,7 +5,7 @@ Shared project context for AI coding agents and new contributors. Committed and 
 - Personal working agreement for the maintainer's sessions: `CLAUDE.md` (local, gitignored).
 - Current branch state and next steps: `.claude/HANDOFF.md` (local, not auto-loaded).
 - Session-by-session history: `.claude/DEVLOG.md` (local, not auto-loaded).
-- Directory-scoped rules: [gui/AGENTS.md](gui/AGENTS.md), [gui/AGENTS.md](gui/AGENTS.md).
+- Directory-scoped rules: [gui/AGENTS.md](gui/AGENTS.md).
 - Step-by-step procedures live as skills in [.claude/skills/](.claude/skills/).
 
 ---
@@ -78,7 +78,7 @@ with inline comments. Read them there — they are not duplicated in this file.
 
 | Path | Purpose |
 | --- | --- |
-| `main.py` | Entry point (`--qt` selects the Qt tree) |
+| `main.py` | Entry point (single-instance guard, `.env`, first-run wizard). `--qt` is accepted and ignored — an old shortcut must not die on it |
 | `app_controller.py` | Thread lifecycle — starts/stops the full pipeline |
 | `config.py` | Static constants: durations, thresholds, model names |
 | `audio/capture.py` | Ring buffer, silence detection |
@@ -97,7 +97,7 @@ with inline comments. Read them there — they are not duplicated in this file.
 | `gui/` | PySide6 tree, the only GUI — see [gui/AGENTS.md](gui/AGENTS.md) |
 | `utils/settings.py` | User-preferences dataclass, model lists, fallback chains, `GUI_LANGUAGES` |
 | `utils/keyring_storage.py` | OS keychain integration |
-| `utils/api_key_manager.py` | API key prompting and storage |
+| `gui/api_keys.py` | API key prompting (storage goes through `providers.save_api_key`) |
 | `utils/context_manager.py` | Adaptive rolling + hourly async summarization |
 | `utils/user_messages.py` | Audience-facing status messages in the target language |
 | `utils/logging.py` | Thread-safe logging — use this, not `print` |
@@ -155,13 +155,15 @@ Qt work needs the venv — `./venv/Scripts/python.exe`, see [gui/AGENTS.md](gui/
 
 Test conventions:
 
-- **There is no `conftest.py`.** Each of the 42 test files is self-contained. Keep it that
-  way — a shared fixture file would couple the Tk, Qt and headless layers.
+- **There is no `conftest.py`.** Each of the 35 test files is self-contained. Keep it that
+  way — a shared fixture file would couple the window-building layer to the headless one.
 - **Platform-specific tests use `pytest.mark.skipif(sys.platform != "...")`.** Never patch
   `sys.platform` globally: it applies to code that has already imported it, and it has
   crashed the whole run (exit 255) while spawning real GUI windows.
-- The full suite can stall in the Tk GUI tests when a real app window is open on the same
+- The full suite can stall in the Qt GUI tests when a real app window is open on the same
   desktop. Run it on an idle machine before pushing.
+- **`QT_QPA_PLATFORM=offscreen` is not a shortcut for a display** — four tests fail there
+  and pass on the real platform, and on Windows it loads no fonts at all.
 
 ---
 
@@ -205,11 +207,10 @@ Do not revisit without a new explicit decision.
 | **OpenAI is the default provider everywhere** (2026-07-22, `f0427e5`) | Measured, not preferred: Gemini Live realtime transcribes at 0.75x realtime and falls behind without recovering; OpenAI Realtime holds 1.00x on the identical sample. One OpenAI key covers translation, realtime STT and RAG. `PROVIDER_RANKING` openai > gemini > anthropic applies to fallback only, never overrides an explicit choice |
 | Streaming (`openai_realtime`) is the shipped transcription default | Same measurement. Chunk and semantic both stay as the *segmented* strategies (chunk is the segmented default; semantic's sentence heuristics are Arabic-tuned) — don't remove either |
 | **API keys are NEVER written to disk** (2026-07-29, PR #43) | Supersedes the earlier "OpenAI-only plaintext fallback" exception. No keychain ⇒ session-only for every provider; a legacy plaintext key is migrated into the keychain or deleted. `has_insecure_key_fallback()` was deleted — don't reintroduce a caller |
-| Integrated window style is Windows-only **in `gui/`**; `windowed` is what that tree falls back to (2026-07-25, PR #25) | X11 without a compositor ignores per-window alpha, so the dim backdrop renders solid black and borderless panels don't stack. Gated in `_use_integrated_windows()` |
-| **`integrated` is the default window style** (2026-08-04) | Maintainer's call after using the Qt panels. Applies to new installs only — `save_settings` writes `window_style` out, so an existing `settings.json` keeps its value. `gui/` still gates it to Windows at use time; `gui/` offers it everywhere, because its panels are child widgets and the dim is painted into the control panel's own back buffer, so nothing is asked of the window manager |
+| **`integrated` is the default window style, on every platform** (2026-08-04) | Maintainer's call after using the Qt panels. Applies to new installs only — `save_settings` writes `window_style` out, so an existing `settings.json` keeps its value. There is **no platform gate any more**: the Qt host reparents the panels into the control panel as child widgets and paints the dim into its own back buffer, so nothing is asked of the window manager (`gui/modal_host.py`). The Windows-only gate from PR #25 belonged to the Tk tree, which built them as borderless top-levels and needed per-window alpha — which X11 without a compositor ignores |
 | Window behaviour is two 3-way selectors, not four checkboxes (2026-07-24, PR #22) | `subtitle_hide_mode` (never/stopped/always) and `always_on_top_mode` (never/running/always) replace the old booleans; old values migrate on load |
 | Qt migration uses QtWidgets only — no QML (2026-07-30, #44) | The Phase 0 spike hit 60 fps, per-pixel alpha and correct Arabic with plain `QWidget`/`QPainter`. QtQuick needs `PySide6-Addons` (634 MB) and is a second language for contributors |
 | Qt keeps the Tk control arrangement (2026-07-30, #44) | Segmented buttons for themes and both 3-way selectors, −/+ steppers for font size and scroll speed, slider only for height. Don't swap in dropdowns |
 | Qt subtitle backdrop defaults to opacity 75 (alpha 190/255) (2026-07-30, #44) | Reviewed against live video and chosen. Adjustable 0–100; a test pins the default. The control exists to adjust it, not to replace the decision |
 | **The Qt tree asks for X11 (xcb) before Wayland on Linux** (2026-08-04, #44) | A Wayland client cannot position its own windows and has no always-on-top protocol — the subtitle overlay is exactly those two things, and under Wayland the compositor centred it and the always-on-top setting did nothing. `gui/platform_setup.py` sets `QT_QPA_PLATFORM=xcb;wayland` (fallback kept, so a session without XWayland still starts); an explicit `QT_QPA_PLATFORM` always wins. The plugin that loaded is logged at startup |
-| **Don't cut over to Qt before Linux/macOS verification** (2026-07-30, #44) | The migration exists to fix issues #35/#39, which are Linux/macOS bugs — and no Qt code has ever run there. Deleting the working Tk tree first would be reckless |
+| **Don't cut over to Qt before Linux/macOS verification** (2026-07-30, #44) — satisfied | The migration exists to fix issues #35/#39, which are Linux/macOS bugs, so deleting the working Tk tree before Qt had run there would have been reckless. Both platforms ran the Qt tree first; the cut-over followed on 2026-08-04 |

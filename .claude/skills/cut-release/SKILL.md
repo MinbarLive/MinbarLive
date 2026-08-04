@@ -35,7 +35,7 @@ again.
    python -m pytest -q
    ruff check .
    ```
-   The Tk GUI tests stall if a real app window is open on the same desktop. CI runs tests
+   The Qt GUI tests stall if a real app window is open on the same desktop. CI runs tests
    too, but finding it here is cheaper than a failed release.
 
 4. **Commit the bump** — `chore: release vX.Y.Z` — and get it onto `main` via PR.
