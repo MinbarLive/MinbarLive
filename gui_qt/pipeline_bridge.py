@@ -51,10 +51,15 @@ class PipelineBridge(QObject):
         self._live_timer.setInterval(LIVE_TEXT_INTERVAL_MS)
         self._live_timer.timeout.connect(self._sample_live_text)
         self._streaming = False
+        self._show_interim = False
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def start(self, *, streaming: bool, show_interim: bool) -> None:
-        self._streaming = streaming and show_interim
+        # Kept apart: only one of the two can change mid-session, and folding
+        # them into a single flag at start time is what made the live-transcript
+        # switch inert until the next run.
+        self._streaming = streaming
+        self._show_interim = show_interim
         self._stop.clear()
         self._threads = [
             threading.Thread(
@@ -72,8 +77,7 @@ class PipelineBridge(QObject):
         ]
         for t in self._threads:
             t.start()
-        if self._streaming:
-            self._live_timer.start()
+        self._sync_live_timer()
 
     def stop(self) -> None:
         self._live_timer.stop()
@@ -82,6 +86,29 @@ class PipelineBridge(QObject):
             t.join(timeout=1.0)
         self._threads = []
         self.live_text.emit("", False)
+
+    def set_show_interim(self, enabled: bool) -> None:
+        """Turn the live transcript on or off during a running session.
+
+        The Tk panel re-reads the setting on every poll tick, so its switch has
+        always taken effect immediately; here the sampling timer is what starts
+        and stops. Switching it off also clears the line already on the overlay
+        — no further interims will arrive to replace it, so it would otherwise
+        stay frozen on screen for the rest of the session.
+        """
+        if enabled == self._show_interim:
+            return
+        self._show_interim = enabled
+        self._sync_live_timer()
+        if not enabled:
+            self.live_text.emit("", False)
+
+    def _sync_live_timer(self) -> None:
+        """Sample the live transcript only while it is wanted and streaming."""
+        if self._threads and self._streaming and self._show_interim:
+            self._live_timer.start()
+        else:
+            self._live_timer.stop()
 
     # ── workers ──────────────────────────────────────────────────────────
     def _drain(self, q: queue.Queue, emit) -> None:

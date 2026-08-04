@@ -1832,6 +1832,10 @@ class ControlPanel(QMainWindow):
     def _on_interim_changed(self, checked: bool) -> None:
         self.settings.show_interim_transcript = checked
         save_settings(self.settings)
+        # Mid-session too: the bridge starts or stops sampling and clears the
+        # line it leaves behind. Without this the switch only took effect on
+        # the next Start.
+        self.bridge.set_show_interim(checked)
 
     def _on_bilingual_toggled(self, checked: bool) -> None:
         self.settings.bilingual_mode = checked

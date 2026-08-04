@@ -4841,3 +4841,71 @@ class TestAlwaysOnTopAcrossPlatforms:
             assert not window.isVisible()
         finally:
             window.close()
+
+
+class TestInterimTranscriptToggle:
+    """The switch used to be read once, at Start: the bridge folded it into
+    ``_streaming`` and nothing looked at it again, so turning the live
+    transcript off mid-session left the last interim frozen on the overlay for
+    the rest of the run. The Tk panel re-reads it on every poll tick."""
+
+    class _Controller:
+        def __init__(self):
+            self.translation_queue = queue.Queue()
+            self.error_queue = queue.Queue()
+
+        def get_live_transcript(self):
+            return ("interim", False)
+
+    def _bridge(self, *, show_interim: bool):
+        from gui_qt.pipeline_bridge import PipelineBridge
+
+        bridge = PipelineBridge(self._Controller())
+        bridge.start(streaming=True, show_interim=show_interim)
+        return bridge
+
+    def test_turning_it_on_mid_session_starts_sampling(self, qt_app):
+        bridge = self._bridge(show_interim=False)
+        try:
+            assert not bridge._live_timer.isActive()
+            bridge.set_show_interim(True)
+            assert bridge._live_timer.isActive()
+        finally:
+            bridge.stop()
+
+    def test_turning_it_off_stops_sampling_and_clears_the_line(self, qt_app):
+        bridge = self._bridge(show_interim=True)
+        cleared: list[tuple] = []
+        bridge.live_text.connect(lambda t, s: cleared.append((t, s)))
+        try:
+            assert bridge._live_timer.isActive()
+            bridge.set_show_interim(False)
+            assert not bridge._live_timer.isActive()
+            assert cleared == [("", False)], "the stale interim was left on screen"
+        finally:
+            bridge.stop()
+
+    def test_it_never_samples_a_segmented_session(self, qt_app):
+        # Only a streaming pipeline has an in-progress transcript to sample.
+        from gui_qt.pipeline_bridge import PipelineBridge
+
+        bridge = PipelineBridge(self._Controller())
+        bridge.start(streaming=False, show_interim=True)
+        try:
+            assert not bridge._live_timer.isActive()
+            bridge.set_show_interim(True)
+            assert not bridge._live_timer.isActive()
+        finally:
+            bridge.stop()
+
+    def test_the_panel_hands_the_switch_to_the_bridge(self, monkeypatch, qt_app):
+        panel = _panel(monkeypatch)
+        applied: list[bool] = []
+        monkeypatch.setattr(
+            panel.bridge, "set_show_interim", lambda v: applied.append(v)
+        )
+        try:
+            panel.interim_check.setChecked(not panel.interim_check.isChecked())
+            assert applied, "the toggle stopped at settings.json"
+        finally:
+            panel.close()
