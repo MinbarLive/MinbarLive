@@ -192,9 +192,13 @@ Both workflows now install the xcb set alongside it. The xvfb smoke launch is th
 a Qt app whose only platform plugin will not load dies at once, and CI requires it to stay
 up for 30 s.
 
-**The guard is not complete.** The smoke launch runs on the machine that has the packages
-installed, so it cannot catch the case it exists for — an AppImage that only works because
-the host happened to have the libraries. Running it once in a clean container would.
+**Two smoke launches, and only the second one proves anything about this.** The first
+runs on the build machine, which installed the xcb set so PyInstaller could find it — it
+passes whether or not those libraries reached the AppImage. The second runs the same file
+in a bare `ubuntu:24.04` container that has none of them. A Qt app whose xcb plugin will
+not load falls through to the Wayland plugin, which under xvfb is no plugin at all, so it
+dies at once instead of reaching the 30 s timeout. Keep the container's package list
+minimal and keep the Qt xcb set out of it; that list IS the test.
 
 ## The cut-over happened
 

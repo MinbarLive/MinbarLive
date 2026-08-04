@@ -279,6 +279,48 @@ jobs:
           fi
           echo "AppImage stayed up for 30s without FUSE."
 
+      # The step above cannot fail for a missing bundled library: it runs on the
+      # machine that installed the xcb set so PyInstaller could find it, so it
+      # passes whether or not those libraries actually reached the AppImage.
+      # This one runs the same file where it matters — a container that has none
+      # of them — and is the only check that speaks for a user who installed
+      # nothing. Qt's xcb plugin failing to load is not fatal in an obvious way:
+      # the app falls through to the Wayland plugin, which under xvfb means no
+      # platform plugin at all, so the process dies immediately instead of
+      # reaching the 30 s timeout.
+      #
+      # What the container gets is what every desktop already has (GL, ALSA,
+      # fontconfig, D-Bus, an X server) and NOT one library from the Qt xcb set.
+      # --appimage-extract-and-run because a container has no FUSE; the
+      # FUSE-less runtime is what the step above exists to prove.
+      - name: Smoke-launch the AppImage where nothing is installed
+        run: |
+          set +e
+          docker run --rm -v "$PWD/dist:/dist:ro" ubuntu:24.04 bash -c '
+            set -e
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -yqq --no-install-recommends \
+              xvfb libglib2.0-0t64 libgl1 libegl1 libasound2t64 libfontconfig1 \
+              libfreetype6 libdbus-1-3 >/dev/null
+            echo "--- Qt xcb libraries present in this container (expect none) ---"
+            for lib in libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+                       libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+                       libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0; do
+              dpkg -s "$lib" >/dev/null 2>&1 && echo "  $lib (pulled in as a dependency)"
+            done
+            echo "---"
+            cd /tmp && cp /dist/MinbarLive-x86_64.AppImage . \
+              && chmod +x MinbarLive-x86_64.AppImage
+            xvfb-run -a timeout 30 ./MinbarLive-x86_64.AppImage --appimage-extract-and-run
+          '
+          code=$?
+          set -e
+          if [ "$code" -ne 124 ]; then
+            echo "::error::The AppImage did not survive 30 s on a machine with nothing installed (exit $code) - it is not self-contained. Check that the xcb libraries were installed BEFORE pyinstaller ran."
+            exit 1
+          fi
+          echo "AppImage stayed up for 30s with none of the xcb libraries installed."
+
       # The AppImage is the only shipped Linux artifact: it wraps this same
       # binary and adds double-click-run + menu integration, so uploading the
       # bare binary too would just double the artifact size for no benefit. The
