@@ -14,9 +14,6 @@ pytest included.
 ./venv/Scripts/python.exe -m pytest tests/test_gui.py -q
 ```
 
-`--qt` is still accepted and does nothing — a shortcut that still passes it must not die
-on an unrecognised argument.
-
 On Linux the tree asks for `QT_QPA_PLATFORM=xcb;wayland` (`gui/platform_setup.py`),
 because a Wayland client can neither place its own windows nor stay on top — the two
 things the overlay is made of. Every launch logs which plugin actually loaded; a bug

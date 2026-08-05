@@ -2601,7 +2601,7 @@ class TestHistoryCostTab:
 
 
 class TestAlreadyRunningDialog:
-    """main.py's single-instance guard, under --qt.
+    """main.py's single-instance guard.
 
     It used to show the CustomTkinter dialog whatever tree was asked for,
     which put Tk in a Qt-only process and set the process DPI awareness to

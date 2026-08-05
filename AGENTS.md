@@ -78,7 +78,7 @@ with inline comments. Read them there — they are not duplicated in this file.
 
 | Path | Purpose |
 | --- | --- |
-| `main.py` | Entry point (single-instance guard, `.env`, first-run wizard). `--qt` is accepted and ignored — an old shortcut must not die on it |
+| `main.py` | Entry point (single-instance guard, `.env`, first-run wizard) |
 | `app_controller.py` | Thread lifecycle — starts/stops the full pipeline |
 | `config.py` | Static constants: durations, thresholds, model names |
 | `audio/capture.py` | Ring buffer, silence detection |
