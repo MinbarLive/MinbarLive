@@ -27,7 +27,7 @@ audience-facing phone app. That distinction drives most product decisions below.
 
 ## Tech Stack
 
-- **Language:** Python 3.10+
+- **Language:** Python 3.11+ (`numpy`/`scipy` require it; CI and the release builds use 3.12)
 - **GUI:** PySide6/Qt (`gui/`) — the CustomTkinter tree it replaced is gone (issue #44)
 - **Audio:** `sounddevice` + ring buffer, webrtcvad noise gate, WAV segment writing
 - **RAG:** in-memory cosine similarity over precomputed Quran verse embeddings — no vector DB

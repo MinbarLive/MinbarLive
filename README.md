@@ -67,7 +67,7 @@ Rough guide for an OpenAI setup (the default; segmented mode, Arabic → German)
 
 - An API key for your AI provider. An **OpenAI key is the simplest option** and what the app defaults to: one key covers translation, real-time transcription, and Quran verse matching. (Gemini/Claude/Deepgram keys are only needed if you choose those providers; Claude has no speech-to-text, so it additionally needs a transcription key.)
 - An audio source: a microphone, or (on Windows) any output device captured via loopback (see [Audio Sources](#audio-sources))
-- Python 3.10–3.12 (Option B only)
+- Python 3.11 or newer (Option B only). 3.12 is what CI and the prebuilt apps use; 3.10 will not install, because `numpy` and `scipy` require 3.11+
 
 ### Option A: Download a prebuilt app (recommended)
 

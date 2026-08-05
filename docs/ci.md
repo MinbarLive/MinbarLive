@@ -232,6 +232,9 @@ codebase, not a verdict on the branch it happens to run against.
 
 ## Python version
 
-CI pins Python 3.12. Despite the comment in `requirements.txt`, 3.10 is not
-supported: `numpy==2.4.0` and `scipy==1.16.3` both declare
-`Requires-Python >=3.11`.
+CI pins Python 3.12, and so do the release builds.
+
+**The floor is 3.11**, not 3.10: `numpy==2.4.0` and `scipy==1.16.3` both declare
+`Requires-Python >=3.11`, so `pip install -r requirements.txt` cannot even run
+on 3.10. The README, `AGENTS.md`, `requirements.txt` and `ruff.toml`'s
+`target-version` all said 3.10 until 2026-08-05; they were wrong, not generous.

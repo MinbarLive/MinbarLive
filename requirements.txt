@@ -1,5 +1,7 @@
 # MinbarLive - Dependencies
-# Versions pinned for reproducibility (tested with Python 3.10-3.12)
+# Versions pinned for reproducibility. Python 3.11+ — numpy and scipy below
+# both declare Requires-Python >=3.11, so 3.10 cannot install this file at all.
+# CI and the release builds run 3.12.
 
 # OpenAI API client
 openai==2.14.0

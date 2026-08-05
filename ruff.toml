@@ -3,7 +3,10 @@
 # Note: ruff.toml uses top-level sections, NOT the [tool.ruff] prefix
 # (that prefix is only for pyproject.toml).
 
-target-version = "py310"
+# 3.11, not 3.10: numpy==2.4.0 and scipy==1.16.3 both declare
+# Requires-Python >=3.11, so 3.10 cannot install this project at all. Leaving
+# the target at py310 held the code back from idioms it is free to use.
+target-version = "py311"
 line-length = 88
 
 [lint]

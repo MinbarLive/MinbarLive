@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -166,7 +166,7 @@ def cost_window_total(
     be in the store); the ``~`` prefix appears when any counted session was not
     fully priced.
     """
-    reference = now or datetime.now(timezone.utc)
+    reference = now or datetime.now(UTC)
     window = timedelta(days=days)
     total = Decimal("0")
     count = 0
@@ -209,7 +209,7 @@ def cost_window_by_provider(
     Only providers that billed a request contribute; the ``~`` prefix appears
     when any of that provider's contributions in the window were unpriced.
     """
-    reference = now or datetime.now(timezone.utc)
+    reference = now or datetime.now(UTC)
     window = timedelta(days=days)
     totals: dict[str, Decimal] = {}
     estimated: dict[str, bool] = {}
