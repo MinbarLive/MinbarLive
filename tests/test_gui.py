@@ -117,6 +117,27 @@ def _settle(app, rounds: int = 5) -> None:
         app.processEvents()
 
 
+def _sized_height(w) -> int:
+    """The height ``w`` is supposed to have — the rule, not a number.
+
+    gui/window_size.content_size takes the smallest of the content's natural
+    height, SECONDARY_MAX_H, and a share of the screen. Asserting the first two
+    only holds on a screen tall enough for them: CI's Windows runner is
+    1024x768, where the screen share caps every one of these windows at 662 and
+    seven tests that were green for months went red at once.
+    """
+    from gui.window_size import content_size
+
+    return content_size(w, w._natural_height()).height()
+
+
+def _screen_capped(w) -> bool:
+    """Whether the SCREEN, rather than the content or the cap, is deciding."""
+    from gui.window_size import SECONDARY_MAX_H
+
+    return _sized_height(w) < min(w._natural_height(), SECONDARY_MAX_H)
+
+
 def _visible(w: SubtitleWindow, block) -> bool:
     h = w._measure_block(block)
     return block.y + h > 0 and block.y < w._content_height()
@@ -1535,6 +1556,12 @@ class TestEqualColumnHeights:
         # above it — a gap that grows every time column A does.
         panel.resize(900, 900)
         qt_app.processEvents()
+        if panel.height() < 900:
+            # The levelling this measures depends on how much height the
+            # columns actually got. A screen shorter than the window asked for
+            # (CI's runner is 1024x768) makes the gap a measurement of the
+            # screen instead.
+            pytest.skip("screen too short for the 900x900 layout under test")
         assert panel._columns == 2
         language = panel._column_tails[1][1]
         host = panel.cards_host
@@ -2727,7 +2754,7 @@ class TestBatchWindow:
 
         w, _ = batch
         assert w.width() == bw.BATCH_WINDOW_W
-        assert w.height() == w._natural_height()
+        assert w.height() == _sized_height(w)
 
     def test_the_controls_are_grouped_into_cards(self, batch):
         # Not one frame around the whole window: every other window in this
@@ -2762,6 +2789,10 @@ class TestBatchWindow:
         before = w.height()
         w.more.set_expanded(True)
         _settle(qt_app)
+        if _screen_capped(w):
+            # Already as tall as this screen allows, so there is no growth to
+            # measure. Nothing about the expander is broken.
+            pytest.skip("screen too short: the window is capped either way")
         assert w.height() > before
         w.more.set_expanded(False)
         _settle(qt_app)
@@ -3097,20 +3128,22 @@ class TestAnnounceWindow:
         # a row was added, so the window lagged one entry behind — it opened
         # too short for its own content and never shrank again when entries
         # were deleted.
-        from gui.window_size import SECONDARY_MAX_H
-
         w, settings, _ = announce
         w.show()
         _settle(qt_app)
         heights = []
+        capped = False
         for count in range(6):
             settings.announcement_history = [f"Nachricht {i}" for i in range(count)]
             w._refresh_lists()
             _settle(qt_app)
             heights.append(w.height())
-            expected = min(w._natural_height(), SECONDARY_MAX_H)
-            assert w.height() == expected, f"lagging at {count} entries"
-        # Growing, then all the way back to where it started.
+            capped = capped or _screen_capped(w)
+            assert w.height() == _sized_height(w), f"lagging at {count} entries"
+        # Growing, then all the way back to where it started. A screen too
+        # short to show the growth still proves the tracking above.
+        if capped:
+            pytest.skip("screen too short: the window is capped before it grows")
         assert heights[-1] > heights[1]
         settings.announcement_history = []
         w._refresh_lists()
@@ -3148,7 +3181,10 @@ class TestAnnounceWindow:
         w._refresh_lists()
         _settle(qt_app)
         assert w._natural_height() > SECONDARY_MAX_H  # it would have grown past it
-        assert w.height() == SECONDARY_MAX_H
+        # The cap that actually applies: SECONDARY_MAX_H, or a share of the
+        # screen where the screen is shorter than that.
+        assert w.height() == _sized_height(w)
+        assert w.height() <= SECONDARY_MAX_H
         assert w.scroll.verticalScrollBar().maximum() > 0  # the rest is reachable
         screen = w.screen()
         if screen is not None:
@@ -3816,10 +3852,12 @@ class TestSecondaryWindowSizing:
         _settle(qt_app)
         w = panel._batch_window
         assert w._natural_height() <= SECONDARY_MAX_H
-        assert w.height() == w._natural_height()
+        assert w.height() == _sized_height(w)
         before = w.height()
         w.more.set_expanded(True)
         _settle(qt_app)
+        if _screen_capped(w):
+            pytest.skip("screen too short: the window is capped either way")
         assert w.height() > before
 
     def test_a_host_with_less_room_shrinks_the_window(self, qt_app):
@@ -5478,15 +5516,23 @@ class TestOverlayFitsTheScreen:
     def test_a_window_pushed_down_is_shrunk_to_the_screen(self, qt_app, overlay):
         from PySide6.QtCore import QPoint
 
+        from gui.subtitle_window import MIN_FITTED_HEIGHT
+
         w, g = self._placed(qt_app, overlay)
         self._past_the_remap(w)
         height = w.height()
-        # What the WM does: the size it granted, at a position 150 px lower.
-        top = QPoint(g.x(), g.y() + g.height() - height + 150)
+        # How far down to push it. Not a flat 150: the repair refuses to leave
+        # less than MIN_FITTED_HEIGHT, so on a short screen (CI's runner is
+        # 1024x768, where 30% is 230 px) a 150 px push asks for an 80 px
+        # overlay and is correctly ignored — which read as the repair failing.
+        push = min(150, height - MIN_FITTED_HEIGHT - 10)
+        if push < 10:
+            pytest.skip("screen too short to push the overlay off it meaningfully")
+        top = QPoint(g.x(), g.y() + g.height() - height + push)
         w.move(top)
         _settle(qt_app)
         w._fit_to_screen()
-        assert w.height() == height - 150, "the overlay still hangs off the screen"
+        assert w.height() == height - push, "the overlay still hangs off the screen"
         assert w.geometry().bottom() <= g.bottom()
         # The top edge stays put — it is the bottom that was in the wrong place.
         assert w.pos() == top
