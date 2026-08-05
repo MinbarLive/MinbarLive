@@ -1407,11 +1407,18 @@ class ControlPanel(QMainWindow):
         layout's numbers — the padding would then be one toggle behind.
         Coalesced, and the handler schedules nothing, so this cannot become
         the idle-requeueing correction loop that froze the Tk panel (PR #43).
+
+        ``self`` as the timer's context, so Qt drops the pending call if the
+        panel is destroyed first. Without it the levelling still ran against a
+        dead panel — and because it calls ``sendPostedEvents``, it did so from
+        inside Qt's event delivery, which came back as a PySide type error on
+        the panel's own ``eventFilter`` and, once, an access violation. A GUI
+        language switch rebuilds the panel, so this is reachable outside tests.
         """
         if self._level_queued:
             return
         self._level_queued = True
-        QTimer.singleShot(0, self._apply_two_column_levelling)
+        QTimer.singleShot(0, self, self._apply_two_column_levelling)
 
     def _apply_two_column_levelling(self) -> None:
         """Make the two columns end on one line.
