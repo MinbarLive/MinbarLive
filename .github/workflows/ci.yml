@@ -102,6 +102,23 @@ jobs:
               > "$tmp/live.minbar.MinbarLive.metainfo.xml"
           appstreamcli validate --no-net "$tmp/live.minbar.MinbarLive.metainfo.xml"
 
+          # Again on 22.04, because THAT is the version that gates the build.
+          # This runner is ubuntu-latest (AppStream 1.0) but release.yml's
+          # build-linux is ubuntu-22.04 (0.15), and appimagetool aborts on a
+          # validation failure — so a file that only 1.0 accepts would pass
+          # here and kill the AppImage step of a real release. The two
+          # versions disagree about enough (<developer> does not exist in
+          # 0.15; <developer_name> is deprecated in 1.0) that assuming they
+          # agree is how this file gets broken later. ~40 s, no LFS, versus a
+          # 45-minute dispatch to learn the same thing.
+          docker run --rm -v "$tmp:/m:ro" ubuntu:22.04 bash -c '
+            set -e
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -yqq appstream >/dev/null
+            appstreamcli --version
+            appstreamcli validate --no-net /m/live.minbar.MinbarLive.metainfo.xml
+          '
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
