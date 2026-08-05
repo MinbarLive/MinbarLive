@@ -82,6 +82,7 @@ with inline comments. Read them there — they are not duplicated in this file.
 | --- | --- |
 | `main.py` | Entry point (single-instance guard, `.env`, first-run wizard) |
 | `app_controller.py` | Thread lifecycle — starts/stops the full pipeline |
+| `streaming_session.py` | One live realtime-STT connection: feed/utterance queues, reconnect, stall watchdog, utterance accumulation. Built per `start()` by the controller |
 | `config.py` | Static constants: durations, thresholds, model names |
 | `audio/capture.py` | Ring buffer, silence detection |
 | `audio/vad.py` | webrtcvad noise gate: `has_speech` (segmented/batch) + `StreamNoiseGate` (streaming) |
