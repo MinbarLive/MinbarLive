@@ -78,6 +78,30 @@ jobs:
 
       - run: xvfb-run -a python -m pytest -q
 
+      # The AppStream metadata is a static file, so validating it needs no
+      # build at all — and doing it HERE is the point. release.yml only runs on
+      # tags and workflow_dispatch, so anything checked only there costs a
+      # 45-minute dispatch per attempt; this answers in the pull request.
+      # appimagetool validates the assembled tree again at package time, but by
+      # then a bad file has already cost a build.
+      #
+      # Worth knowing what "invalid" costs: metadata that fails validation is
+      # silently ignored by software centres, so the AppImage would show a bare
+      # filename and nothing would look broken.
+      - name: Validate the AppStream metadata
+        run: |
+          sudo apt-get install -y appstream
+          appstreamcli --version
+          # The shipped copy has @VERSION@/@DATE@ placeholders that
+          # build-appimage.sh substitutes; validate what actually gets
+          # installed, not the template.
+          tmp=$(mktemp -d)
+          sed -e "s|@VERSION@|$(python -c 'from version import __version__; print(__version__)')|" \
+              -e "s|@DATE@|$(date -u +%Y-%m-%d)|" \
+              packaging/live.minbar.MinbarLive.metainfo.xml \
+              > "$tmp/live.minbar.MinbarLive.metainfo.xml"
+          appstreamcli validate --no-net "$tmp/live.minbar.MinbarLive.metainfo.xml"
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
