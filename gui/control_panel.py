@@ -212,6 +212,10 @@ class ControlPanel(QMainWindow):
         self._pending_device: int | None = None
         self._announcement_active = False
         self._announcement_text = ""
+        # The manual engine+model a "recommended" tick overrode, so unticking
+        # can put it back. Session-only: ticking is the state that persists.
+        self._manual_translation: tuple[str, str] | None = None
+        self._manual_transcription: tuple[str, str] | None = None
         self._log_collapsed = self.settings.log_panel_collapsed
         self._columns: int | None = None
         self._level_queued = False
@@ -1085,7 +1089,11 @@ class ControlPanel(QMainWindow):
         self.transcription_model_combo.currentIndexChanged.connect(
             self._on_transcription_model_changed
         )
-        self.use_default_transcription = QCheckBox(self._t("use_default", "Default"))
+        # "Automatic", not "Default": ticking it overrides a manual pick, and a
+        # box labelled "Default" reads as describing the dropdown instead.
+        self.use_default_transcription = QCheckBox(
+            self._t("use_recommended", "Automatic")
+        )
         self.use_default_transcription.setChecked(
             self.settings.use_default_transcription_model
         )
@@ -1106,7 +1114,9 @@ class ControlPanel(QMainWindow):
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         self.model_combo = self._combo()
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
-        self.use_default_translation = QCheckBox(self._t("use_default", "Default"))
+        self.use_default_translation = QCheckBox(
+            self._t("use_recommended", "Automatic")
+        )
         self.use_default_translation.setChecked(
             self.settings.use_default_translation_model
         )
@@ -1171,7 +1181,7 @@ class ControlPanel(QMainWindow):
     def _engine_block(
         provider: QComboBox, model: QComboBox, check: QCheckBox
     ) -> QGridLayout:
-        """Provider above model, with "Default" beside the model.
+        """Provider above model, with "Automatic" beside the model.
 
         A grid rather than two rows so both combos end at the same edge: laid
         out as rows the provider ran the card's full width and passed behind the
@@ -1625,7 +1635,7 @@ class ControlPanel(QMainWindow):
         combo.blockSignals(blocked)
 
     def _sync_default_model_states(self) -> None:
-        """A model dropdown is disabled while its "Default" box is ticked —
+        """A model dropdown is disabled while its "Automatic" box is ticked —
         that is what the tick means."""
         # Provider choice is locked with the model: "Default" means the shipped
         # engine AND its shipped model, so leaving the engine changeable let a
@@ -2023,10 +2033,23 @@ class ControlPanel(QMainWindow):
         if checked:
             from utils.settings import DEFAULT_AI_PROVIDER
 
+            self._manual_translation = (
+                self.settings.ai_provider,
+                self.settings.translation_model,
+            )
             self.settings.ai_provider = DEFAULT_AI_PROVIDER
             self.settings.translation_model = get_default_model(
                 DEFAULT_AI_PROVIDER, "translation"
             )
+            self._refresh_provider_combos()
+        elif self._manual_translation is not None:
+            # Unticking restores the pick the tick overrode — otherwise trying
+            # the box out once costs the choice permanently.
+            (
+                self.settings.ai_provider,
+                self.settings.translation_model,
+            ) = self._manual_translation
+            self._manual_translation = None
             self._refresh_provider_combos()
         save_settings(self.settings)
         self._sync_default_model_states()
@@ -2044,10 +2067,21 @@ class ControlPanel(QMainWindow):
                 if self.settings.pipeline_mode == PIPELINE_MODE_STREAMING
                 else DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER
             )
+            self._manual_transcription = (
+                self.settings.transcription_provider,
+                self.settings.transcription_model,
+            )
             self.settings.transcription_provider = provider
             self.settings.transcription_model = get_default_model(
                 provider, "transcription"
             )
+            self._refresh_provider_combos()
+        elif self._manual_transcription is not None:
+            (
+                self.settings.transcription_provider,
+                self.settings.transcription_model,
+            ) = self._manual_transcription
+            self._manual_transcription = None
             self._refresh_provider_combos()
         save_settings(self.settings)
         self._sync_default_model_states()

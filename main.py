@@ -100,10 +100,6 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="MinbarLive - Real-time translation")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    # Accepted and ignored: --qt chose the PySide6 tree while the CustomTkinter
-    # one still shipped (issue #44). Qt is the only GUI now, and a shortcut or
-    # script still passing the flag must not die on an unrecognised argument.
-    parser.add_argument("--qt", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     # Set log level BEFORE importing modules that use logging

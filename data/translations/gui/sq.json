@@ -44,7 +44,7 @@
   "processing_strategy": "Strategjia e përpunimit:",
   "section_transcription": "Transkriptimi",
   "section_translation": "Përkthimi",
-  "use_default": "Përdor të paracaktuar",
+  "use_recommended": "Automatik",
   "hint_stop_to_change": "⚠ Ndalo për të ndryshuar",
   "dlg_ok": "Mirë",
   "dlg_cancel": "Anulo",

@@ -44,7 +44,7 @@
   "processing_strategy": "Verarbeitungsstrategie:",
   "section_transcription": "Transkription",
   "section_translation": "Übersetzung",
-  "use_default": "Standard",
+  "use_recommended": "Automatisch",
   "hint_stop_to_change": "⚠ Stoppen um zu ändern",
   "dlg_ok": "OK",
   "dlg_cancel": "Abbrechen",
