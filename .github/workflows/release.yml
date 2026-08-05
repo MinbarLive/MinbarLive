@@ -312,7 +312,13 @@ jobs:
       - name: Smoke-launch the AppImage where nothing is installed
         run: |
           set +e
-          docker run --rm -v "$PWD/dist:/dist:ro" ubuntu:24.04 bash -c '
+          # The outer timeout is not belt-and-braces. `timeout` inside the
+          # container signals only its own child, and --appimage-extract-and-run
+          # forks: the extracted app survived as an orphan holding stdout open,
+          # so `docker run` never returned and the step ran 24 minutes against a
+          # 30-second limit before the job cap stopped it. Bound it out here,
+          # where nothing the container does can interfere.
+          timeout 360 docker run --rm -v "$PWD/dist:/dist:ro" ubuntu:24.04 bash -c '
             set -e
             apt-get update -qq
             DEBIAN_FRONTEND=noninteractive apt-get install -yqq --no-install-recommends \
@@ -327,11 +333,35 @@ jobs:
             echo "---"
             cd /tmp && cp /dist/MinbarLive-x86_64.AppImage . \
               && chmod +x MinbarLive-x86_64.AppImage
-            xvfb-run -a timeout 30 ./MinbarLive-x86_64.AppImage --appimage-extract-and-run
+            # Extract FIRST, outside the run window. Unpacking 270 MB of
+            # squashfs onto a container filesystem can take longer than the
+            # window itself, and doing both under one `timeout 30` made a slow
+            # extraction indistinguishable from an app that stayed up: the
+            # timeout fired during extraction, exited 124, and this step read
+            # 124 as success. It would have passed without ever launching the
+            # app — in the one check that speaks for a user who installed
+            # nothing.
+            ./MinbarLive-x86_64.AppImage --appimage-extract >/dev/null
+            set +e
+            xvfb-run -a timeout 30 squashfs-root/AppRun
+            rc=$?
+            set -e
+            if [ "$rc" -ne 124 ]; then
+              echo "AppImage exited with $rc instead of staying up for 30 s."
+              exit 1
+            fi
+            echo "Stayed up for 30 s after extraction."
           '
           code=$?
           set -e
-          if [ "$code" -ne 124 ]; then
+          if [ "$code" -eq 124 ]; then
+            echo "::error::The clean-container check did not finish within 6 minutes. Something inside it is wedged - it is not a slow runner."
+            exit 1
+          fi
+          # 0, not 124: the container script now decides for itself whether the
+          # app stayed up and reports a plain pass/fail, so a timeout code can
+          # never be mistaken for a successful launch again.
+          if [ "$code" -ne 0 ]; then
             echo "::error::The AppImage did not survive 30 s on a machine with nothing installed (exit $code) - it is not self-contained. Check that the xcb libraries were installed BEFORE pyinstaller ran."
             exit 1
           fi
