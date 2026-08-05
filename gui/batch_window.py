@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.api_keys import ensure_keys
-from gui.dialogs import ask_yes_no
+from gui.dialogs import ask_yes_no, ask_yes_no_or_dismiss
 from gui.widgets import Dropdown, Expander, SegmentedControl, field
 from gui.window_size import SECONDARY_WINDOW_W, apply_content_size
 from providers import (
@@ -892,7 +892,7 @@ class BatchWindow(QDialog):
         # up in the history viewer's Batch tab whether or not this window is
         # still open. Only the progress display is lost.
         if self.worker.is_running():
-            cancel = ask_yes_no(
+            cancel = ask_yes_no_or_dismiss(
                 self,
                 self._t("batch_close_title", "A run is still going"),
                 self._t(
@@ -906,6 +906,13 @@ class BatchWindow(QDialog):
                 no_text=self._t("batch_close_keep_running", "Keep running"),
                 translate=self._t,
             )
+            # Dismissing the prompt with its own ✕ or Escape is "never mind",
+            # not an answer: the window stays open on the running job it was
+            # showing. Closing it anyway would make the ✕ a third, unlabelled
+            # answer to a question about someone's twenty-minute run.
+            if cancel is None:
+                event.ignore()
+                return
             if cancel:
                 self.worker.cancel()
         super().closeEvent(event)

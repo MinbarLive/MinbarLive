@@ -55,6 +55,12 @@ class MessageDialog(QDialog):
         translate: Callable[[str, str], str] | None = None,
     ):
         super().__init__(parent)
+        # Which button was pressed, or None if the dialog was dismissed with
+        # the title-bar close button or Escape. Qt gives both No and dismissal
+        # the same Rejected result, and they are not the same thing: "No" is an
+        # answer, dismissal is "never mind" and the caller may need to do
+        # nothing at all.
+        self.answer: bool | None = None
         t = translate or _t_default
         self.setWindowTitle(title)
         if parent is not None and not parent.windowIcon().isNull():
@@ -102,11 +108,11 @@ class MessageDialog(QDialog):
             # on a destructive one it makes them guess which button loses work.
             self.no_btn = QPushButton(no_text or t("dlg_no", "No"))
             self.no_btn.setMinimumHeight(38)
-            self.no_btn.clicked.connect(self.reject)
+            self.no_btn.clicked.connect(self._answer_no)
             self.yes_btn = QPushButton(yes_text or t("dlg_yes", "Yes"))
             self.yes_btn.setObjectName("accent")
             self.yes_btn.setMinimumHeight(38)
-            self.yes_btn.clicked.connect(self.accept)
+            self.yes_btn.clicked.connect(self._answer_yes)
             buttons.addWidget(self.no_btn)
             buttons.addWidget(self.yes_btn)
             default = self.yes_btn if default_yes else self.no_btn
@@ -137,6 +143,14 @@ class MessageDialog(QDialog):
         layout.activate()
         self.setFixedHeight(layout.totalHeightForWidth(_WIDTH))
 
+    def _answer_yes(self) -> None:
+        self.answer = True
+        self.accept()
+
+    def _answer_no(self) -> None:
+        self.answer = False
+        self.reject()
+
 
 def show_message(
     parent,
@@ -161,7 +175,45 @@ def ask_yes_no(
     translate: Callable[[str, str], str] | None = None,
 ) -> bool:
     """True for the accepting button. Pass ``yes_text``/``no_text`` to name the
-    two actions when "Yes"/"No" would not tell the user what each one does."""
+    two actions when "Yes"/"No" would not tell the user what each one does.
+
+    Dismissing the dialog counts as No. Use :func:`ask_yes_no_or_dismiss` where
+    that is wrong — where "never mind" has to leave everything as it was.
+    """
+    return (
+        ask_yes_no_or_dismiss(
+            parent,
+            title,
+            message,
+            kind=kind,
+            default_yes=default_yes,
+            yes_text=yes_text,
+            no_text=no_text,
+            translate=translate,
+        )
+        is True
+    )
+
+
+def ask_yes_no_or_dismiss(
+    parent,
+    title: str,
+    message: str,
+    *,
+    kind: str = "warn",
+    default_yes: bool = True,
+    yes_text: str | None = None,
+    no_text: str | None = None,
+    translate: Callable[[str, str], str] | None = None,
+) -> bool | None:
+    """True or False for the two buttons, **None if the dialog was dismissed**
+    with the title-bar close button or Escape.
+
+    Qt reports "No" and "dismissed" identically, which is wrong whenever the
+    dialog is asking about something already under way: dismissing a "what
+    should happen to this?" prompt means "nothing — put it back", not the
+    second option.
+    """
     dialog = MessageDialog(
         parent,
         title,
@@ -173,4 +225,5 @@ def ask_yes_no(
         no_text=no_text,
         translate=translate,
     )
-    return dialog.exec() == QDialog.Accepted
+    dialog.exec()
+    return dialog.answer
