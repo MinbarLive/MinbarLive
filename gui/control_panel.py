@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 
 from config import AUTO_STOP_INACTIVITY_SECONDS, ICON_PATH_PNG, ICON_PATH_PNG_ON_DARK
 from gui.api_keys import activate_stored_keys, ensure_keys
+from gui.card_grid import CardGrid
 from gui.control_state import (
     STRATEGY_IDS,
     apply_strategy,
@@ -111,13 +112,6 @@ from utils.settings import (
     save_settings,
 )
 
-# Logical widths at which the card grid gains a column, measured from what the
-# columns actually need (352 / 365 / 204 plus the grid's margins and spacing)
-# with a little headroom for a wordier GUI language. The horizontal scrollbar
-# is off, so a threshold that lets a column below its minimum does not scroll —
-# it clips.
-_COL2_MIN_W = 800
-_COL3_MIN_W = 1030
 # The attributes holding the four secondary windows, in the order they are
 # torn down. One list, because "for every secondary window" is asked three
 # times (always-on-top, a language change, a window-style change).
@@ -146,12 +140,6 @@ _HELP_BTN_PX = CONTROL_H
 # Breathing room above each section heading inside the Advanced card, so its
 # three groups read as groups rather than one long list.
 _SECTION_GAP = 8
-# Largest height difference the 2-column grid will absorb to make both columns
-# end on one line (see _level_two_column_bottoms). Comfortably above the tens
-# of pixels their content happens to differ by, and well below the ~240 an
-# opened subtitle-appearance section adds.
-_LEVEL_FILL_MAX_PX = 140
-
 # Step applied to the original-text divisor per −/+ click, as in gui/typography.
 _SOURCE_FONT_STEP = 5.0
 # The shipped font_size_base, i.e. the 100% the size stepper counts from.
@@ -217,8 +205,6 @@ class ControlPanel(QMainWindow):
         self._manual_translation: tuple[str, str] | None = None
         self._manual_transcription: tuple[str, str] | None = None
         self._log_collapsed = self.settings.log_panel_collapsed
-        self._columns: int | None = None
-        self._level_queued = False
         activate_stored_keys()
 
         self.bridge = PipelineBridge(controller, self)
@@ -397,40 +383,29 @@ class ControlPanel(QMainWindow):
         self.card_area = QScrollArea()
         self.card_area.setWidgetResizable(True)
         self.card_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # A rebuild (a GUI language change) replaces the cards, so the grid
+        # that was arranging the old ones goes with them: a levelling pass it
+        # had queued would otherwise land on destroyed cards. While the state
+        # lived on the panel a rebuild replaced it and a pending pass simply
+        # found the new cards; this keeps that. (Not a reproduced crash — an
+        # unguarded rebuild with a pass in flight survives; it is the stale
+        # work and the orphaned grid per switch that this removes.)
+        previous = getattr(self, "card_grid", None)
+        if previous is not None:
+            previous.deleteLater()
         self.cards_host = QWidget()
-        self.grid = QGridLayout(self.cards_host)
-        self.grid.setContentsMargins(18, 14, 18, 18)
-        self.grid.setHorizontalSpacing(18)
-        self.grid.setVerticalSpacing(18)
-
         # Three column groups, exactly as the Tk panel: A = Controls +
-        # Display, B = Translation flow, C = Advanced. A group is the reflow's
-        # atom, so a tall card never pads a short one out with dead space.
-        self.col_a, box_a = self._column()
-        self.col_b, box_b = self._column()
-        self.col_c, box_c = self._column()
+        # Display, B = Translation flow, C = Advanced. The arranging is
+        # gui/card_grid.py; this only says what goes in each column.
+        self.card_grid = CardGrid(self.cards_host, parent=self)
+        # Built in this order because the builders set the panel attributes
+        # each other's rows read; the columns they land in are below.
         display_card = self._display_card()
         language_card = self._language_card()
         advanced_card = self._advanced_card()
-        # A spacer above and below each column's cards: side by side the
-        # columns should end level, and which of the two spacers (or the card
-        # itself) absorbs the slack is what decides how. See
-        # _set_equal_column_heights.
-        for box in (box_a, box_b, box_c):
-            box.addStretch(0)
-        box_a.addWidget(self._control_card())
-        box_a.addWidget(display_card)
-        box_b.addWidget(language_card)
-        box_c.addWidget(advanced_card)
-        for box in (box_a, box_b, box_c):
-            box.addStretch(1)
-        self._column_tails = [
-            (box_a, display_card),
-            (box_b, language_card),
-            (box_c, advanced_card),
-        ]
-        for _box, card in self._column_tails:
-            card.add_stretch()
+        self.card_grid.add_column(0, self._control_card(), display_card)
+        self.card_grid.add_column(1, language_card)
+        self.card_grid.add_column(2, advanced_card)
 
         self.card_area.setWidget(self.cards_host)
         self.card_area.viewport().installEventFilter(self)
@@ -450,14 +425,6 @@ class ControlPanel(QMainWindow):
         self._relayout_columns()
         self._sync_mode_controls()
         self._sync_running_state()
-
-    @staticmethod
-    def _column() -> tuple[QWidget, QVBoxLayout]:
-        widget = QWidget()
-        box = QVBoxLayout(widget)
-        box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(18)
-        return widget, box
 
     def _header(self) -> QWidget:
         header = QWidget()
@@ -1289,20 +1256,6 @@ class ControlPanel(QMainWindow):
             0, self.width() - (0 if self._log_collapsed else _SIDEBAR_W_WITH_LOG)
         )
 
-    def _column_count(self) -> int:
-        # With the log open the sidebar is pinned narrow, so the cards get one
-        # column — the same trade the Tk panel makes.
-        if not self._log_collapsed:
-            return 1
-        width = self._available_width()
-        if width <= 1:
-            return 2  # nothing to measure yet; the default window shows two
-        if width >= _COL3_MIN_W:
-            return 3
-        if width >= _COL2_MIN_W:
-            return 2
-        return 1
-
     def eventFilter(self, watched, event):  # noqa: N802 - Qt API
         """Reflow when the SCROLL VIEWPORT resizes, not just the window.
 
@@ -1315,200 +1268,17 @@ class ControlPanel(QMainWindow):
         return super().eventFilter(watched, event)
 
     def _relayout_columns(self, force: bool = False) -> None:
-        cols = self._column_count()
-        if cols == self._columns and not force:
-            # Cheap, and the only thing a plain resize can change: a card's
-            # content may have grown since the columns were last arranged.
-            self._level_two_column_bottoms()
-            return
-        changed = cols != self._columns
-        self._columns = cols
-        for widget in (self.col_a, self.col_b, self.col_c):
-            self.grid.removeWidget(widget)
-        for i in range(3):
-            self.grid.setColumnStretch(i, 0)
-
-        if cols == 1:
-            for i, widget in enumerate((self.col_a, self.col_b, self.col_c)):
-                self.grid.addWidget(widget, i, 0)
-            self.grid.setColumnStretch(0, 1)
-        elif cols == 2:
-            # A spans both rows so its height does not push C away from B.
-            self.grid.addWidget(self.col_a, 0, 0, 2, 1)
-            self.grid.addWidget(self.col_b, 0, 1)
-            self.grid.addWidget(self.col_c, 1, 1)
-            self.grid.setColumnStretch(0, 1)
-            self.grid.setColumnStretch(1, 1)
-        else:
-            for i, widget in enumerate((self.col_a, self.col_b, self.col_c)):
-                self.grid.addWidget(widget, 0, i)
-                self.grid.setColumnStretch(i, 1)
-        for widget in (self.col_a, self.col_b, self.col_c):
-            widget.setVisible(True)
-        # The scroll area makes cards_host at least viewport-tall, and without
-        # somewhere for that surplus to go the card row swallowed it — the
-        # cards grew to the bottom of the window instead of stopping at the
-        # tallest one. One stretched row absorbs it.
-        #
-        # In the 2-column layout that row is row 1 — the one holding Advanced —
-        # and it does a second job there: column A spans both rows, so its
-        # height (which changes whenever the subtitle-appearance expander
-        # opens) has to go somewhere. Stretched, row 1 takes all of it and
-        # row 0 stays exactly as tall as the card in it, which is what keeps
-        # Advanced sitting still under Translation flow instead of sliding
-        # down the window.
-        used_rows = 3 if cols == 1 else 1
-        for row in range(4):
-            self.grid.setRowStretch(row, 1 if row == used_rows else 0)
-        # Only side by side in three columns: in the L-shaped 2-column layout
-        # levelling this way means padding Advanced away from the card above
-        # it, and that gap grows every time column A does. Two columns end
-        # level a different way — see _level_two_column_bottoms.
-        self._set_equal_column_heights(cols >= 3)
-        self._level_two_column_bottoms()
-        # Last, so the re-entrant _relayout_columns its toggle triggers finds a
-        # grid that is already consistent.
-        if changed:
+        """Re-arrange the cards for the width now available."""
+        cols = self.card_grid.relayout(
+            self._available_width(), not self._log_collapsed, force
+        )
+        # Only when the count actually changed, and last, so the re-entrant
+        # _relayout_columns its toggle triggers finds a consistent grid.
+        if cols is not None:
             self._sync_advanced_for_columns(cols)
 
-    def _set_equal_column_heights(self, equal: bool) -> None:
-        """Side by side in three columns, the cards should end level.
-
-        Three ragged bottom edges read as unfinished. In the 1- and 2-column
-        layouts each card keeps its natural height instead: stacked, levelling
-        has nothing to level, and in the L-shaped 2-column layout it only pads
-        Advanced away from the card above it.
-
-        An OPEN card takes the slack itself (its own trailing stretch keeps its
-        content top-aligned). A COLLAPSED one must not — stretching a header
-        strip into a tall empty box is worse than a ragged edge — so the spacer
-        ABOVE it takes the slack instead and the strip sits on the baseline.
-
-        Every stretch factor has to be set explicitly: a spacer from
-        ``addStretch`` is expansive whatever its factor, so zeroing one alone
-        still let it swallow the height and the card grew by nothing.
-        """
-        for box, card in self._column_tails:
-            fill = equal and card.is_expanded()
-            lead = 1 if (equal and not fill) else 0
-            box.setStretch(0, lead)  # leading spacer: bottom-aligns the card
-            box.setStretch(box.indexOf(card), 1 if fill else 0)
-            box.setStretch(box.count() - 1, 0 if equal else 1)
-            card.setSizePolicy(
-                QSizePolicy.Preferred,
-                QSizePolicy.Expanding if fill else QSizePolicy.Preferred,
-            )
-
     def _level_two_column_bottoms(self) -> None:
-        """Queue the two-column levelling for once the layout has settled.
-
-        Hiding or showing a widget invalidates size hints through a posted
-        event, so anything reading them in the same call gets the PREVIOUS
-        layout's numbers — the padding would then be one toggle behind.
-        Coalesced, and the handler schedules nothing, so this cannot become
-        the idle-requeueing correction loop that froze the Tk panel (PR #43).
-
-        ``self`` as the timer's context, so Qt drops the pending call if the
-        panel is destroyed first. Without it the levelling still ran against a
-        dead panel — and because it calls ``sendPostedEvents``, it did so from
-        inside Qt's event delivery, which came back as a PySide type error on
-        the panel's own ``eventFilter`` and, once, an access violation. A GUI
-        language switch rebuilds the panel, so this is reachable outside tests.
-        """
-        if self._level_queued:
-            return
-        self._level_queued = True
-        QTimer.singleShot(0, self, self._apply_two_column_levelling)
-
-    def _apply_two_column_levelling(self) -> None:
-        """Make the two columns end on one line.
-
-        Their natural heights are whatever their cards happen to add up to, so
-        the bottom borders land a handful of pixels apart — which reads as a
-        mistake rather than as a layout. The SHORTER column's last card takes
-        the difference; a Card keeps its content top-aligned, so the padding
-        lands below it, invisible.
-
-        Unless that card is COLLAPSED, and then it must not grow at all: a
-        header strip inflated into a tall empty box is exactly what a collapsed
-        card exists to avoid. The spacer ABOVE it takes the slack instead, so
-        the strip keeps its own height and the two columns still end on one
-        line — the rule _set_equal_column_heights already applies at three
-        columns.
-
-        Only a small difference, though: when one column is a whole opened
-        subtitle-appearance section taller, inflating a card by that much is
-        worse than a ragged edge — and pushing Advanced down to meet it is
-        exactly the dead gap this layout exists to avoid.
-
-        Each card's own ``sizeHint`` ignores the minimum set here, so the
-        measurement never sees the previous correction: running this twice
-        gives the same answer.
-        """
-        self._level_queued = False
-        tails = getattr(self, "_column_tails", None)
-        if not tails:
-            return
-        # Deliver the invalidations a hidden/shown widget posted, so the hints
-        # below describe the layout as it is now and not as it was one toggle
-        # ago. A 0-timer alone does not guarantee they have been processed.
-        QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
-        (display_box, display), (advanced_box, advanced) = tails[0], tails[2]
-        if self._columns != 2:
-            for box, card in ((display_box, display), (advanced_box, advanced)):
-                card.setMinimumHeight(0)
-                self._pad_above(box, 0)
-            return
-        gap = self.grid.verticalSpacing()
-        left = self._natural_height(display_box)
-        right = self._natural_height(tails[1][0]) + gap + self._natural_height(
-            advanced_box
-        )
-        if left > right:
-            (shorter, shorter_box), (taller, taller_box) = (
-                (advanced, advanced_box),
-                (display, display_box),
-            )
-        else:
-            (shorter, shorter_box), (taller, taller_box) = (
-                (display, display_box),
-                (advanced, advanced_box),
-            )
-        extra = abs(left - right)
-        if extra > _LEVEL_FILL_MAX_PX:
-            extra = 0
-        taller.setMinimumHeight(0)
-        self._pad_above(taller_box, 0)
-        collapsed = extra and not shorter.is_expanded()
-        self._pad_above(shorter_box, extra if collapsed else 0)
-        shorter.setMinimumHeight(
-            0 if collapsed or not extra else shorter.sizeHint().height() + extra
-        )
-
-    @staticmethod
-    def _pad_above(box, pixels: int) -> None:
-        """Set the height of a column's leading spacer.
-
-        Excluded from _natural_height (which counts widgets only), so a second
-        pass measures the same columns and lands on the same number — no
-        feedback loop.
-        """
-        spacer = box.itemAt(0).spacerItem() if box.count() else None
-        if spacer is None:
-            return
-        spacer.changeSize(0, pixels, QSizePolicy.Minimum, QSizePolicy.Fixed)
-        box.invalidate()
-
-    @staticmethod
-    def _natural_height(box) -> int:
-        """A column's height from its cards' own hints — spacers excluded, so
-        the stretch that fills a tall window does not count as content."""
-        heights = [
-            box.itemAt(i).widget().sizeHint().height()
-            for i in range(box.count())
-            if box.itemAt(i).widget() is not None
-        ]
-        return sum(heights) + max(0, len(heights) - 1) * box.spacing()
+        self.card_grid.level_two_column_bottoms()
 
     def _sync_advanced_for_columns(self, cols: int) -> None:
         """Move the collapse one level in or out with the column count.
@@ -2249,7 +2019,6 @@ class ControlPanel(QMainWindow):
         self.texts = load_gui_translations(code)
         self.close_secondary_windows()
         geometry = self.saveGeometry()
-        self._columns = None
         self._build()
         self.restoreGeometry(geometry)
         log(
