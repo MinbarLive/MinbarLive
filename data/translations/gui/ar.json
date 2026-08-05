@@ -44,7 +44,7 @@
   "processing_strategy": "استراتيجية المعالجة:",
   "section_transcription": "النسخ",
   "section_translation": "الترجمة",
-  "use_default": "استخدم الافتراضي",
+  "use_recommended": "تلقائي",
   "hint_stop_to_change": "⚠ أوقف للتغيير",
   "dlg_ok": "موافق",
   "dlg_cancel": "إلغاء",

@@ -44,7 +44,7 @@
   "processing_strategy": "Strategija obrade:",
   "section_transcription": "Transkripcija",
   "section_translation": "Prijevod",
-  "use_default": "Koristi zadano",
+  "use_recommended": "Automatski",
   "hint_stop_to_change": "⚠ Zaustavi za promjenu",
   "dlg_ok": "U redu",
   "dlg_cancel": "Otkaži",

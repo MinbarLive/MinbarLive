@@ -1235,6 +1235,63 @@ class TestAdvancedCard:
         panel.use_default_translation.setChecked(False)
         assert panel.provider_combo.isEnabled()
 
+    @staticmethod
+    def _other_than(combo, current):
+        """Some engine in the dropdown that is not the one already selected."""
+        for i in range(combo.count()):
+            if (value := combo.itemData(i)) != current:
+                return value
+        raise AssertionError("the dropdown offers only the current engine")
+
+    def test_unticking_restores_the_translation_engine_it_overrode(self, panel):
+        # Ticking replaces a manual pick, which is the point. Unticking has to
+        # give it back, or trying the box out once costs the choice for good.
+        from utils.settings import DEFAULT_AI_PROVIDER
+
+        panel.use_default_translation.setChecked(False)
+        manual = self._other_than(panel.provider_combo, DEFAULT_AI_PROVIDER)
+        panel.provider_combo.setCurrentIndex(panel.provider_combo.findData(manual))
+        manual_model = panel.settings.translation_model
+
+        panel.use_default_translation.setChecked(True)
+        assert panel.settings.ai_provider == DEFAULT_AI_PROVIDER
+
+        panel.use_default_translation.setChecked(False)
+        assert panel.settings.ai_provider == manual
+        assert panel.settings.translation_model == manual_model
+        assert panel.provider_combo.currentData() == manual
+
+    def test_unticking_restores_the_transcription_engine_it_overrode(self, panel):
+        from utils.settings import (
+            DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER,
+            DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER,
+            PIPELINE_MODE_STREAMING,
+        )
+
+        # The engine the tick will impose — which is what the manual pick has
+        # to differ from. Excluding merely the *current* one is not enough:
+        # the panel reads the real settings file, so whichever engine is
+        # selected there decides whether the two collide.
+        imposed = (
+            DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER
+            if panel.settings.pipeline_mode == PIPELINE_MODE_STREAMING
+            else DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER
+        )
+        panel.use_default_transcription.setChecked(False)
+        manual = self._other_than(panel.transcription_provider_combo, imposed)
+        panel.transcription_provider_combo.setCurrentIndex(
+            panel.transcription_provider_combo.findData(manual)
+        )
+        manual_model = panel.settings.transcription_model
+
+        panel.use_default_transcription.setChecked(True)
+        assert panel.settings.transcription_provider == imposed
+
+        panel.use_default_transcription.setChecked(False)
+        assert panel.settings.transcription_provider == manual
+        assert panel.settings.transcription_model == manual_model
+        assert panel.transcription_provider_combo.currentData() == manual
+
     def test_the_card_collapses_while_it_shares_a_column(self, panel):
         panel.resize(900, 800)
         panel._relayout_columns()

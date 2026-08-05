@@ -44,7 +44,7 @@
   "processing_strategy": "Processing Strategy:",
   "section_transcription": "Transcription",
   "section_translation": "Translation",
-  "use_default": "Use Default",
+  "use_recommended": "Automatic",
   "hint_stop_to_change": "⚠ Stop program to change",
   "dlg_ok": "OK",
   "dlg_cancel": "Cancel",
