@@ -4570,7 +4570,7 @@ class TestLiveStreamRestart:
 class TestHistoryNarrowLayout:
     """The viewer has to survive being made narrow.
 
-    Side by side it needs ~765 px. As a separate window the WM held it there,
+    Side by side it needs ~895 px. As a separate window the WM held it there,
     but as an in-app panel it is resized as a child widget, which bypasses that
     minimum — inside a control panel under ~620 px wide, Copy and Save… were
     laid out past its right edge and could not be clicked at all. The Tk viewer
@@ -4597,30 +4597,61 @@ class TestHistoryNarrowLayout:
             window.export_btn,
         )
 
-    def test_the_breakpoint_is_measured_not_assumed(self, history):
-        # It is the sum of the list, the margins and four TRANSLATED labels, so
-        # a hard-coded number would be wrong in some GUI language.
-        assert history._wide_min_w > 0
-        assert history.minimumWidth() < history._wide_min_w
+    def test_the_breakpoints_are_measured_not_assumed(self, history):
+        # Both are the sum of the list, the margins and four TRANSLATED labels,
+        # so hard-coded numbers would be wrong in some GUI language. They also
+        # have to stay in order, or an arrangement becomes unreachable.
+        assert history._one_row_min_w > 0
+        assert history.minimumWidth() < history._side_by_side_min_w
+        assert history._side_by_side_min_w < history._one_row_min_w
 
     def test_it_stays_side_by_side_while_there_is_room(self, history, qt_app):
         from PySide6.QtCore import Qt
 
-        history.resize(history._wide_min_w + 120, 560)
+        history.resize(history._one_row_min_w + 120, 560)
         _settle(qt_app)
         assert history.splitter.orientation() == Qt.Horizontal
         # One row: Summarise, a stretch, and the three secondary actions.
         assert history._action_bottom.count() == 0
 
+    def test_the_actions_wrap_before_the_panes_stack(self, history, qt_app):
+        from PySide6.QtCore import Qt
+
+        # The middle arrangement, and the reason there are two breakpoints:
+        # wrapping the buttons is the cheap concession, so it is spent first
+        # and the panes keep sitting side by side well past the width one row
+        # of actions needs.
+        history.resize(history._one_row_min_w - 60, 560)
+        _settle(qt_app)
+        assert history.splitter.orientation() == Qt.Horizontal
+        assert history._action_top.count() == 1
+        assert history._action_bottom.count() == 3
+
     def test_narrow_stacks_the_panes_and_wraps_the_actions(self, history, qt_app):
         from PySide6.QtCore import Qt
 
-        history.resize(history._wide_min_w - 60, 560)
+        history.resize(history._side_by_side_min_w - 60, 560)
         _settle(qt_app)
         assert history.splitter.orientation() == Qt.Vertical
         # Summarise alone above; Delete / Copy / Save… sharing the row below.
         assert history._action_top.count() == 1
         assert history._action_bottom.count() == 3
+
+    def test_it_is_still_side_by_side_where_the_host_is_two_column(
+        self, history, qt_app
+    ):
+        from PySide6.QtCore import Qt
+
+        from gui.control_panel import _COL2_MIN_W
+        from gui.modal_host import PANEL_FRACTION
+
+        # The viewer must not stack before the control panel behind it drops to
+        # one column. The narrowest an in-app panel can be while the control
+        # panel still lays its cards out in two is _COL2_MIN_W * PANEL_FRACTION;
+        # anything above that has to stay side by side.
+        history.resize(int(_COL2_MIN_W * PANEL_FRACTION), 560)
+        _settle(qt_app)
+        assert history.splitter.orientation() == Qt.Horizontal
 
     def test_it_can_be_made_narrower_than_the_wide_layout_needs(self, history, qt_app):
         # The regression this guards: with the window's floor left at the wide
@@ -4631,7 +4662,11 @@ class TestHistoryNarrowLayout:
         assert history.width() == 400
 
     def test_every_action_stays_inside_the_window(self, history, qt_app):
-        for width in (900, 760, 620, 500, 420):
+        # Also the guard on _side_by_side_min_w being derived rather than
+        # measured: if that arithmetic ever put the stacking breakpoint too
+        # low, the middle arrangement would be held past the width it fits in
+        # and the buttons would go over the edge here.
+        for width in (900, 880, 760, 620, 611, 609, 500, 420):
             history.resize(width, 460)
             _settle(qt_app)
             for button in self._buttons(history):
@@ -4663,6 +4698,144 @@ class TestHistoryNarrowLayout:
         finally:
             panel.close_secondary_windows()
             panel.close()
+
+
+class TestHistoryLayoutIsTabIndependent:
+    """Switching tab must not move the layout.
+
+    Summarise is hidden on the cost and log tabs, and a hidden widget counts as
+    empty to a layout — so the right pane asked for 168px less there. That
+    difference reached the operator twice: the session list took whatever the
+    right pane's minimum left it (225px on Verlauf, 280px on Kosten at an 820px
+    window), and the breakpoint between side-by-side and stacked moved with it.
+    """
+
+    @pytest.fixture
+    def viewer(self, qt_app, monkeypatch):
+        import gui.history_window as hw
+        from utils.history import BatchRun, HistorySession
+
+        monkeypatch.setattr(hw, "list_history_sessions", lambda: [
+            HistorySession(
+                date="2026-08-05", path="a.txt", start_time="12:35",
+                end_time="12:36", duration_minutes=1, active_seconds=53,
+                language_pair="AR → GE", entry_count=18, has_summary=False,
+            )
+        ])
+        monkeypatch.setattr(hw, "list_batch_runs", lambda: [
+            BatchRun(
+                date="2026-07-19", time="01:45", source_name="talk.mp3",
+                path="b.txt", duration_minutes=10, active_seconds=600,
+                language_pair="AU → GE", entry_count=83, has_summary=False,
+                formats=["srt", "txt"],
+            )
+        ])
+        monkeypatch.setattr(hw, "list_cost_sessions", lambda: [{
+            "id": "s1",
+            "started_at": "2026-08-05T10:35:00+00:00",
+            "ended_at": "2026-08-05T10:36:00+00:00",
+            "total_cost_usd": "0.0337",
+            "fully_priced": True,
+            "providers": {"openai": {
+                "requests": 18, "cost_usd": "0.0337",
+                "fully_priced": True, "models": {},
+            }},
+        }])
+        monkeypatch.setattr(hw, "list_log_files", lambda: [
+            type("LogFile", (), {"date": "2026-08-05", "path": "l.log",
+                                 "size_kb": 243})()
+        ])
+        monkeypatch.setattr(hw, "parse_history_file", lambda _p: [])
+        monkeypatch.setattr(hw, "read_summary", lambda _p: None)
+        monkeypatch.setattr(hw, "read_batch_languages", lambda _p: ("Arabic", "German"))
+
+        made = []
+
+        def _open(initial_tab="history", width=820):
+            window = hw.HistoryWindow(
+                lambda key, fallback="": fallback, initial_tab=initial_tab
+            )
+            window.resize(width, 600)
+            window.show()
+            _settle(qt_app)
+            made.append(window)
+            return window
+
+        yield _open
+        for window in made:
+            window.close()
+
+    def test_the_list_keeps_its_width_across_the_tabs(self, viewer, qt_app):
+        import gui.history_window as hw
+
+        # 820px: wide enough to stay side by side, narrow enough that the right
+        # pane's minimum used to eat into the list on the two Summarise tabs.
+        window = viewer()
+        widths = []
+        for index in range(4):
+            window._tab_group.button(index).click()
+            _settle(qt_app)
+            widths.append(window.entry_list.width())
+        assert widths == [hw.LIST_W] * 4
+
+    def test_a_viewer_opened_on_any_tab_agrees_on_the_width(self, viewer):
+        import gui.history_window as hw
+
+        # Clicking through one window and opening four are different paths: the
+        # splitter is re-pinned on resize, so only a fresh window shows the
+        # width a tab would have chosen for itself.
+        assert [
+            viewer(initial_tab=tab).entry_list.width()
+            for tab in ("history", "batch", "cost", "logs")
+        ] == [hw.LIST_W] * 4
+
+    def test_neither_breakpoint_depends_on_the_tab(self, viewer):
+        breakpoints = {
+            tab: (window._one_row_min_w, window._side_by_side_min_w)
+            for tab in ("history", "batch", "cost", "logs")
+            if (window := viewer(initial_tab=tab)) is not None
+        }
+        assert len(set(breakpoints.values())) == 1, breakpoints
+
+    def test_reserving_summarise_leaves_the_other_actions_where_they_were(
+        self, viewer, qt_app
+    ):
+        # The space Summarise keeps while hidden sits where the stretch after it
+        # would have been, so nothing else may move. If it did, the fix would be
+        # trading one visible jump for another.
+        window = viewer()
+        positions = []
+        for index in range(4):
+            window._tab_group.button(index).click()
+            _settle(qt_app)
+            positions.append(
+                window.delete_btn.mapTo(window, window.delete_btn.rect().topLeft()).x()
+            )
+        assert len(set(positions)) == 1, positions
+
+    def test_stacked_it_gives_the_reserved_space_back(self, viewer, qt_app):
+        # Narrow, Summarise is alone on its own row — reserving it on a tab that
+        # hides it would leave an empty row above the other three.
+        window = viewer(initial_tab="cost")
+        window.resize(window._side_by_side_min_w - 60, 560)
+        _settle(qt_app)
+        assert window._narrow
+        assert not window.summarise_btn.sizePolicy().retainSizeWhenHidden()
+
+    def test_the_list_floor_is_raised_only_side_by_side(self, viewer, qt_app):
+        import gui.history_window as hw
+
+        # Side by side the floor is what stops a tab's action bar taking from
+        # the list. Stacked it has to come back down: the window's own minimum
+        # is measured from THAT arrangement, so LIST_W there would raise the
+        # floor by 130px and undo the mode that exists to lower it.
+        window = viewer()
+        assert not window._narrow
+        assert window.splitter.widget(0).minimumWidth() == hw.LIST_W
+        window.resize(window._side_by_side_min_w - 60, 560)
+        _settle(qt_app)
+        assert window._narrow
+        assert window.splitter.widget(0).minimumWidth() == hw.LIST_W_MIN
 
 
 class TestBatchRunLock:
