@@ -29,7 +29,17 @@ from utils.settings import (
 )
 
 
-def _wait_for(predicate, timeout=2.0, interval=0.01):
+# 10 s, not the 2 s this started at, and it is not a latency assertion: the
+# predicate is polled every 10 ms and returns the moment it is true, so a
+# passing test costs exactly the same either way. The budget only has to cover
+# the worst stall a loaded runner can impose on a cross-thread hand-off — and
+# every path measured here runs through `log()`, which opens, appends to and
+# closes the day's log file under one process-wide lock, synchronously, per
+# line. test_translate_error_shows_message_and_keeps_thread_alive is the one
+# with TWO such writes before its queue put (the INFO "Translation started"
+# and then the ERROR branch), and it is the one that failed on 2 of 3
+# consecutive hosted-Windows runs while passing 15/15 locally.
+def _wait_for(predicate, timeout=10.0, interval=0.01):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():
@@ -368,7 +378,7 @@ class TestStreamingPipeline:
         monkeypatch.setattr(app_controller, "STREAMING_MAX_UTTERANCE_SECONDS", 0.3)
         controller, provider = self._start(streaming_env)
         provider.on_transcript("continuous speech", True)
-        assert _wait_for(lambda: not controller.translation_queue.empty(), timeout=3.0)
+        assert _wait_for(lambda: not controller.translation_queue.empty())
         translation, _source = controller.translation_queue.get_nowait()
         assert translation == "XX:continuous speech"
 
@@ -712,7 +722,7 @@ class TestStreamingCoalescing:
         controller, provider = self._start(streaming_env)
         provider.on_transcript("lonely clause", True)
         provider.on_utterance_end()  # 2 words, no follow-up
-        assert _wait_for(lambda: not controller.translation_queue.empty(), timeout=2.0)
+        assert _wait_for(lambda: not controller.translation_queue.empty())
         assert controller.translation_queue.get_nowait()[0] == "XX:lonely clause"
 
     def test_long_utterance_flushes_immediately(self, streaming_env, monkeypatch):
@@ -722,7 +732,10 @@ class TestStreamingCoalescing:
         controller, provider = self._start(streaming_env)
         provider.on_transcript("one two three four", True)
         provider.on_utterance_end()
-        assert _wait_for(lambda: not controller.translation_queue.empty(), timeout=1.0)
+        # Kept explicit and well under the 30 s hold — here the budget IS the
+        # assertion ("immediately, not after the hold"), so it cannot inherit
+        # the default. 5 s only widens the room for a stalled runner.
+        assert _wait_for(lambda: not controller.translation_queue.empty(), timeout=5.0)
         assert controller.translation_queue.get_nowait()[0] == "XX:one two three four"
 
     def test_fragment_utterance_dropped_not_translated(
@@ -1058,7 +1071,7 @@ class TestStallWatchdog:
         controller._noise_gate = SimpleNamespace(is_zeroing=False)
         controller._speech_fed_since_activity = 5.0
         controller._last_pipeline_activity = time.time() - 60
-        assert _wait_for(lambda: provider.open_count == 2, timeout=3.0)
+        assert _wait_for(lambda: provider.open_count == 2)
 
     def test_feeder_accumulates_speech_seconds(self, streaming_env, monkeypatch):
         """The feeder converts fed bytes to seconds at the capture rate, and a
