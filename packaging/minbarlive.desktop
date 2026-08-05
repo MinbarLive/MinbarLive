@@ -6,5 +6,5 @@ Comment=Real-time Islamic live translation and subtitles
 Exec=MinbarLive
 Icon=MinbarLive
 Terminal=false
-Categories=AudioVideo;Audio;Utility;
+Categories=AudioVideo;Audio;
 Keywords=translation;subtitles;transcription;khutbah;quran;
