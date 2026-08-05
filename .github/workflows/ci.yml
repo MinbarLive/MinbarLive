@@ -17,7 +17,11 @@ concurrency:
 jobs:
   test:
     runs-on: windows-latest
-    timeout-minutes: 20
+    # 30, not 20: the suite builds 345 real Qt windows and takes ~12 min on a
+    # hosted runner, and 20 left no room for a slow one. A tight limit also
+    # hides what actually went wrong — the first Qt run looked like a timeout
+    # and was really a modal dialog blocking the whole job.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,13 +59,20 @@ jobs:
 
       # libportaudio2: the Linux sounddevice wheel does not bundle PortAudio.
       # xvfb: part of the suite builds real windows.
+      # libegl1/libgl1: QtGui links against libEGL.so.1 and libGL.so.1, so
+      # `import PySide6.QtWidgets` fails outright without them — before any
+      # platform plugin is even considered. They are driver-adjacent and come
+      # from the system on every desktop, which is why the AppImage does not
+      # bundle them either (release.yml's clean-container check installs them
+      # for the same reason).
       # The xcb set: since Qt 6.5 the xcb platform plugin has a hard dependency
       # on libxcb-cursor0 and will not load without the rest either — and a Qt
       # app whose only platform plugin fails to load cannot start at all.
       - name: System libraries
         run: >
           sudo apt-get update && sudo apt-get install -y
-          libportaudio2 xvfb libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0
+          libportaudio2 xvfb libegl1 libgl1
+          libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0
 
       - run: pip install -r requirements.txt
 
