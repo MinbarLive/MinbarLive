@@ -381,7 +381,7 @@ class TestLifecycle:
         # (the overlay vanished for good) and it repaints from an empty surface
         # (a white flash). The flag goes to the QWindow instead, so the native
         # window has to survive every toggle.
-        from gui.widgets import is_window_on_top
+        from gui.widgets import is_window_on_top, needs_remap
 
         w = overlay(SUBTITLE_MODE_CONTINUOUS)
         w.show()
@@ -392,7 +392,15 @@ class TestLifecycle:
             qt_app.processEvents()
             assert w.isVisible(), f"hidden after set_always_on_top({enabled})"
             assert is_window_on_top(w) is enabled
-            assert int(w.winId()) == native, "the native window was recreated"
+            if needs_remap():
+                # X11 has no cheap path: the flag IS the _NET_WM_STATE_ABOVE
+                # property and Qt's xcb plugin only writes it while the window
+                # is unmapped, so set_window_on_top re-creates and re-shows
+                # there by design. What must hold on every platform is that the
+                # window survives and stays visible — asserted above.
+                native = int(w.winId())
+            else:
+                assert int(w.winId()) == native, "the native window was recreated"
         w.hide()
 
     def test_the_overlay_is_a_real_window_for_the_taskbar_and_obs(self, overlay):
@@ -755,6 +763,8 @@ class TestDeviceHotSwap:
 
     def test_the_same_device_picked_while_connecting_is_not_reswapped(self, panel):
         p, controller = panel
+        if not p.device_indices:
+            pytest.skip("no input devices on this machine")
         p._starting = True
         current = p.device_indices[p.device_combo.currentIndex()]
         p._started_device = current
@@ -1297,6 +1307,11 @@ class TestStartStopFocus:
 
         panel.start_btn.setFocus(Qt.MouseFocusReason)
         qt_app.processEvents()
+        if QApplication.focusWidget() is None:
+            # Nothing can hold the application focus without a window manager
+            # to activate a window — xvfb runs without one. The behaviour under
+            # test only exists where focus does.
+            pytest.skip("no window manager: no widget can take focus here")
         assert QApplication.focusWidget() is panel.start_btn
 
         panel._starting = True
@@ -1319,6 +1334,9 @@ class TestStartStopFocus:
         panel.start_btn.setEnabled(True)
         panel.start_btn.setFocus(Qt.MouseFocusReason)
         qt_app.processEvents()
+        if QApplication.focusWidget() is None:
+            # See the test above: no window manager, no focus to move.
+            pytest.skip("no window manager: no widget can take focus here")
         panel._sync_running_state()
         qt_app.processEvents()
         assert QApplication.focusWidget() is panel.stop_btn
@@ -1599,7 +1617,7 @@ class TestEqualColumnHeights:
         assert self._top(panel.advanced_card) == before
 
     def test_always_on_top_covers_the_control_panel(self, panel, qt_app):
-        from gui.widgets import is_window_on_top
+        from gui.widgets import is_window_on_top, needs_remap
         from utils.settings import ALWAYS_ON_TOP_MODES
 
         panel.show()
@@ -1611,8 +1629,15 @@ class TestEqualColumnHeights:
             expected = mode == "always"
             assert is_window_on_top(panel) is expected
             assert panel.isVisible(), f"panel hidden after mode {mode}"
-            # Recreating the native window is what made the panel flash white.
-            assert int(panel.winId()) == native, f"recreated for mode {mode}"
+            if needs_remap():
+                # X11 must re-map to write _NET_WM_STATE_ABOVE; see
+                # gui/widgets.set_window_on_top. Staying visible is the
+                # invariant there, and it is asserted above.
+                native = int(panel.winId())
+            else:
+                # Recreating the native window is what made the panel flash
+                # white.
+                assert int(panel.winId()) == native, f"recreated for mode {mode}"
 
 
 class TestControlRowHeights:
@@ -2671,8 +2696,9 @@ class TestBatchWindow:
         monkeypatch.setattr(bw, "ensure_keys", lambda providers, texts, parent: True)
         # closeEvent asks what to do with a run in progress, which is another
         # real modal dialog. Recorded rather than shown, defaulting to the
-        # non-destructive answer; a test that wants the run cancelled sets
-        # calls["close_prompt"]["answer"] = True.
+        # non-destructive answer. A test sets calls["close_prompt"]["answer"]
+        # to True (cancel the run), False (keep it) or None (dismissed — the
+        # prompt's own close button, which must abandon the close entirely).
         close_prompt: dict = {"asked": 0, "answer": False, "kwargs": {}}
 
         def fake_ask(parent, title, message, **kwargs):
@@ -2680,7 +2706,10 @@ class TestBatchWindow:
             close_prompt["kwargs"] = kwargs
             return close_prompt["answer"]
 
-        monkeypatch.setattr(bw, "ask_yes_no", fake_ask)
+        monkeypatch.setattr(bw, "ask_yes_no_or_dismiss", fake_ask)
+        # The ffmpeg offer is a modal too; nothing in this fixture may reach a
+        # real one. Declined, since no test here wants the download path.
+        monkeypatch.setattr(bw, "ask_yes_no", lambda *a, **k: False)
         w = bw.BatchWindow(lambda k, f="": f, load_settings())
         calls["close_prompt"] = close_prompt
         yield w, calls
@@ -2916,6 +2945,22 @@ class TestBatchWindow:
         kwargs = calls["close_prompt"]["kwargs"]
         assert kwargs["yes_text"] and kwargs["no_text"]
         assert kwargs["default_yes"] is False
+        w.worker.cancel()
+
+    def test_dismissing_the_prompt_leaves_the_window_open_and_running(
+        self, batch, monkeypatch
+    ):
+        # The prompt's own close button is "never mind", not a third answer.
+        # Closing the batch window on it would make an unlabelled ✕ decide the
+        # fate of a run that may be twenty minutes in.
+        w, calls = batch
+        self._start_a_blocking_run(w, monkeypatch)
+        calls["close_prompt"]["answer"] = None  # dismissed
+        # close() reports whether the close was accepted; closeEvent.ignore()
+        # makes it False, which is the window staying put.
+        assert w.close() is False, "the batch window closed on a dismissed prompt"
+        assert calls["close_prompt"]["asked"] == 1
+        assert not w.worker.cancel_event.is_set(), "the run was cancelled anyway"
         w.worker.cancel()
 
     def test_closing_without_a_run_asks_nothing(self, batch):
@@ -5411,6 +5456,19 @@ class TestOverlayFitsTheScreen:
             pytest.skip("this window manager places the overlay itself")
         return w, g
 
+    @staticmethod
+    def _past_the_remap(w):
+        """Put ``w`` where SHRINKING is the repair _fit_to_screen will reach for.
+
+        It has two, tried in order: re-ask for the rectangle unmapped, and only
+        then shrink into what is on screen. On a remapping platform (X11) the
+        first applies once and returns, so a test about shrinking would measure
+        the re-ask instead — which is why these passed on Windows and failed
+        under xvfb. Marks the re-ask as already spent; on Windows the flag is
+        never read.
+        """
+        w._remapped = True
+
     def test_a_granted_rectangle_is_left_alone(self, qt_app, overlay):
         w, _g = self._placed(qt_app, overlay)
         before = w.geometry()
@@ -5421,6 +5479,7 @@ class TestOverlayFitsTheScreen:
         from PySide6.QtCore import QPoint
 
         w, g = self._placed(qt_app, overlay)
+        self._past_the_remap(w)
         height = w.height()
         # What the WM does: the size it granted, at a position 150 px lower.
         top = QPoint(g.x(), g.y() + g.height() - height + 150)
@@ -5438,6 +5497,9 @@ class TestOverlayFitsTheScreen:
         from gui.subtitle_window import MIN_FITTED_HEIGHT
 
         w, g = self._placed(qt_app, overlay)
+        # Otherwise X11 takes the re-ask branch and this passes without ever
+        # reaching the floor it is about.
+        self._past_the_remap(w)
         height = w.height()
         w.move(QPoint(g.x(), g.bottom() - MIN_FITTED_HEIGHT // 2))
         _settle(qt_app)
