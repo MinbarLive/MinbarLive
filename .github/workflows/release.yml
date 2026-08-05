@@ -22,14 +22,14 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Fetched selectively below; `lfs: true` would pull all three
           # tracked files including the 418 MB raw JSON, which the EXE does
           # not bundle. See "Git LFS" in docs/ci.md.
           lfs: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -82,7 +82,7 @@ jobs:
       # release instead of twice is the difference between five builds a
       # month and two. compression-level 0 because .npz is already zipped.
       - name: Share the matrices with the Linux job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: embeddings
           path: data/embeddings/*.npz
@@ -105,7 +105,7 @@ jobs:
         shell: bash
         run: cd dist && sha256sum MinbarLive.exe | tee SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: MinbarLive-exe
           path: |
@@ -179,11 +179,11 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           lfs: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -224,7 +224,14 @@ jobs:
 
       # The matrices the `build` job already pulled from LFS. They overwrite
       # the pointer stubs checkout left behind.
-      - uses: actions/download-artifact@v4
+      #
+      # Pinned at v7, not v8: v8 checks the Content-Type header before unzipping
+      # and skips whatever it does not consider zipped. These .npz files have to
+      # arrive EXTRACTED into data/embeddings — that hand-off is the only reason
+      # this job does not run its own `git lfs pull`, which would cost another
+      # ~182 MB against the 1 GB monthly allowance. Past v7 only with a build
+      # that proves they still land unpacked.
+      - uses: actions/download-artifact@v7
         with:
           name: embeddings
           path: data/embeddings
@@ -374,7 +381,7 @@ jobs:
       - name: Checksum
         run: cd dist && sha256sum MinbarLive-x86_64.AppImage | tee SHA256SUMS-linux.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: MinbarLive-linux
           path: |
@@ -410,11 +417,11 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           lfs: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -424,7 +431,7 @@ jobs:
       # The matrices the `build` job already pulled from LFS. They overwrite the
       # pointer stubs checkout left behind (saves a second LFS pull — see the
       # note in the `build` job).
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: embeddings
           path: data/embeddings
@@ -475,7 +482,7 @@ jobs:
 
       # Uploaded BEFORE the smoke launch so the artifact survives even if the
       # (best-effort, non-fatal) GUI launch below cannot start on the runner.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: MinbarLive-macos
           path: |
