@@ -46,6 +46,13 @@ def cp_module():
     return cp
 
 
+def card_grid_module():
+    """The card-grid module, for the width thresholds it owns."""
+    import gui.card_grid as card_grid
+
+    return card_grid
+
+
 PAIRS = [
     ("Im Namen Allahs, des Allerbarmers, des Barmherzigen.", "بسم الله الرحمن الرحيم"),
     ("Alles Lob gebuehrt Allah ﷻ, dem Herrn der Welten.", "الحمد لله رب العالمين"),
@@ -893,23 +900,23 @@ class TestControlPanelLayout:
         for width, expected in ((1200, 3), (900, 2), (520, 1)):
             panel.resize(width, 800)
             panel._relayout_columns()
-            assert panel._columns == expected, f"{width}px should give {expected}"
+            assert panel.card_grid.count == expected, f"{width}px should give {expected}"
 
     def test_a_column_is_never_narrower_than_its_cards_need(self, panel):
         # The horizontal scrollbar is off, so a threshold that lets a column
         # below its minimum clips the card instead of scrolling it.
-        needs = [c.minimumSizeHint().width() for c in (panel.col_a, panel.col_b)]
-        margins = panel.grid.contentsMargins()
-        chrome = margins.left() + margins.right() + panel.grid.horizontalSpacing()
-        assert cp_module()._COL2_MIN_W >= sum(needs) + chrome
+        needs = [c.minimumSizeHint().width() for c in (panel.card_grid.col_a, panel.card_grid.col_b)]
+        margins = panel.card_grid.grid.contentsMargins()
+        chrome = margins.left() + margins.right() + panel.card_grid.grid.horizontalSpacing()
+        assert card_grid_module()._COL2_MIN_W >= sum(needs) + chrome
 
     def test_opening_the_log_gives_the_cards_one_column(self, panel):
         assert panel._log_collapsed
         panel.resize(1200, 800)
         panel._relayout_columns()
-        assert panel._columns == 3
+        assert panel.card_grid.count == 3
         panel._toggle_log_panel()
-        assert panel._columns == 1
+        assert panel.card_grid.count == 1
 
     def test_the_log_opens_inside_a_window_that_can_hold_it(self, panel, qt_app):
         # It shares the window rather than bolting 420px onto the side; only a
@@ -940,9 +947,9 @@ class TestControlPanelLayout:
         panel.resize(1200, 800)
         panel._relayout_columns()
         placed = {
-            panel.grid.itemAt(i).widget() for i in range(panel.grid.count())
+            panel.card_grid.grid.itemAt(i).widget() for i in range(panel.card_grid.grid.count())
         }
-        assert placed == {panel.col_a, panel.col_b, panel.col_c}
+        assert placed == {panel.card_grid.col_a, panel.card_grid.col_b, panel.card_grid.col_c}
 
     def test_window_can_shrink_below_the_cards_natural_width(self, panel, qt_app):
         # Combos otherwise demand their longest entry and pin the window open.
@@ -1335,7 +1342,7 @@ class TestAdvancedCard:
     def test_the_card_collapses_while_it_shares_a_column(self, panel):
         panel.resize(900, 800)
         panel._relayout_columns()
-        assert panel._columns == 2
+        assert panel.card_grid.count == 2
         panel.advanced_card.set_expanded(False)
         # isHidden(), not isVisible(): the panel is never shown in these tests,
         # so every descendant is invisible and isVisible() proves nothing.
@@ -1349,7 +1356,7 @@ class TestAdvancedCard:
         # Its column holds nothing else, so collapsing it empties the column.
         panel.resize(1200, 800)
         panel._relayout_columns()
-        assert panel._columns == 3
+        assert panel.card_grid.count == 3
         assert not panel.advanced_card.is_collapsible()
         assert panel.advanced_card.arrow_label.isHidden()
         panel.advanced_card.set_expanded(False)  # a header click
@@ -1613,10 +1620,10 @@ class TestEqualColumnHeights:
     def test_three_columns_end_level(self, panel, qt_app):
         panel.resize(1400, 980)
         qt_app.processEvents()
-        assert panel._columns == 3
+        assert panel.card_grid.count == 3
         bottoms = {
             card.geometry().y() + card.geometry().height()
-            for _box, card in panel._column_tails
+            for _box, card in panel.card_grid.tails
         }
         assert len(bottoms) == 1, f"columns end at {sorted(bottoms)}"
 
@@ -1631,7 +1638,7 @@ class TestEqualColumnHeights:
         host = panel.cards_host
         bottom = max(
             card.mapTo(host, card.rect().bottomLeft()).y()
-            for _box, card in panel._column_tails
+            for _box, card in panel.card_grid.tails
         )
         assert bottom < host.height() - 100, (
             f"cards reach {bottom} of {host.height()} — they filled the window"
@@ -1640,8 +1647,8 @@ class TestEqualColumnHeights:
     def test_one_column_keeps_natural_heights(self, panel, qt_app):
         panel.resize(600, 980)
         qt_app.processEvents()
-        assert panel._columns == 1
-        for _box, card in panel._column_tails:
+        assert panel.card_grid.count == 1
+        for _box, card in panel.card_grid.tails:
             assert card.height() == card.sizeHint().height()
 
     def _top(self, card):
@@ -1659,13 +1666,13 @@ class TestEqualColumnHeights:
             # (CI's runner is 1024x768) makes the gap a measurement of the
             # screen instead.
             pytest.skip("screen too short for the 900x900 layout under test")
-        assert panel._columns == 2
-        language = panel._column_tails[1][1]
+        assert panel.card_grid.count == 2
+        language = panel.card_grid.tails[1][1]
         host = panel.cards_host
         gap = self._top(panel.advanced_card) - (
             language.mapTo(host, language.rect().bottomLeft()).y()
         )
-        spacing = panel.grid.verticalSpacing()
+        spacing = panel.card_grid.grid.verticalSpacing()
         # The row spacing, give or take the pixel the grid's rounding leaves in
         # the row above. Bottom-aligning instead put a hundred here.
         assert spacing <= gap <= spacing + 2, f"{gap}px between the cards"
@@ -1680,8 +1687,8 @@ class TestEqualColumnHeights:
         for size in ((900, 900), (900, 700), (900, 1400)):
             panel.resize(*size)
             _settle(qt_app)
-            assert panel._columns == 2, size
-            display = panel._column_tails[0][1]
+            assert panel.card_grid.count == 2, size
+            display = panel.card_grid.tails[0][1]
             assert self._bottom(display) == self._bottom(panel.advanced_card), size
 
     def test_an_opened_appearance_section_is_not_absorbed(self, panel, qt_app):
@@ -1696,7 +1703,7 @@ class TestEqualColumnHeights:
         panel.typography.set_expanded(False)
         _settle(qt_app)
         # ...and levelling comes back once the section is closed again.
-        assert self._bottom(panel._column_tails[0][1]) == self._bottom(advanced)
+        assert self._bottom(panel.card_grid.tails[0][1]) == self._bottom(advanced)
 
     def test_a_collapsed_advanced_is_padded_above_not_inflated(
         self, panel, qt_app
@@ -1708,14 +1715,14 @@ class TestEqualColumnHeights:
         # line up (the rule three columns already used).
         panel.resize(900, 900)
         _settle(qt_app)
-        assert panel._columns == 2
+        assert panel.card_grid.count == 2
         advanced = panel.advanced_card
         advanced.set_expanded(False)
         panel._level_two_column_bottoms()
         _settle(qt_app)
         assert not advanced.is_expanded()
         assert advanced.height() == advanced.sizeHint().height(), "inflated"
-        assert self._bottom(panel._column_tails[0][1]) == self._bottom(advanced)
+        assert self._bottom(panel.card_grid.tails[0][1]) == self._bottom(advanced)
 
     def test_opening_the_appearance_expander_does_not_slide_advanced_away(
         self, panel, qt_app
@@ -1730,12 +1737,12 @@ class TestEqualColumnHeights:
         # never happen is it travelling by the section's own height.
         panel.resize(900, 900)
         _settle(qt_app)
-        assert panel._columns == 2
+        assert panel.card_grid.count == 2
         before = self._top(panel.advanced_card)
         panel.typography.set_expanded(True)
         _settle(qt_app)
         drift = abs(self._top(panel.advanced_card) - before)
-        assert drift <= cp_module()._LEVEL_FILL_MAX_PX, f"slid {drift}px"
+        assert drift <= card_grid_module()._LEVEL_FILL_MAX_PX, f"slid {drift}px"
         panel.typography.set_expanded(False)
         _settle(qt_app)
         assert self._top(panel.advanced_card) == before
@@ -4713,7 +4720,7 @@ class TestHistoryNarrowLayout:
     ):
         from PySide6.QtCore import Qt
 
-        from gui.control_panel import _COL2_MIN_W
+        from gui.card_grid import _COL2_MIN_W
         from gui.modal_host import PANEL_FRACTION
 
         # The viewer must not stack before the control panel behind it drops to

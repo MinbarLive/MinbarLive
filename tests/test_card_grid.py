@@ -1,0 +1,252 @@
+"""The responsive card grid, tested without a control panel (issue #48).
+
+The point of the split: this is cards plus a width in, a column count and a
+set of heights out, so it can be driven with three throwaway cards instead of
+a whole panel. ``tests/test_gui.py`` still covers the grid as the panel wires
+it — these cover the algorithm.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+pytest.importorskip("PySide6", reason="PySide6 not installed")
+
+from PySide6.QtCore import QSize  # noqa: E402
+from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
+
+from gui.card_grid import (  # noqa: E402
+    _COL2_MIN_W,
+    _COL3_MIN_W,
+    _LEVEL_FILL_MAX_PX,
+    CardGrid,
+)
+
+
+@pytest.fixture(scope="session")
+def qt_app():
+    return QApplication.instance() or QApplication([])
+
+
+class FakeCard(QWidget):
+    """A Card as the grid uses one: a height hint, an expanded state, a stretch.
+
+    The height is a ``sizeHint``, not ``setFixedHeight``: the grid measures
+    hints (``natural_height``) and answers by setting a minimum, so a fixed
+    height would both hide the measurement and pre-load the answer.
+    """
+
+    def __init__(self, height: int, expanded: bool = True) -> None:
+        super().__init__()
+        self._expanded = expanded
+        self._hint = QSize(200, height)
+        self.stretched = False
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt API
+        return self._hint
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def add_stretch(self) -> None:
+        self.stretched = True
+
+
+@pytest.fixture
+def grid(qt_app):
+    made: list[CardGrid] = []
+
+    def _make(*heights: int, expanded: tuple[bool, ...] = (True, True, True)):
+        host = QWidget()
+        g = CardGrid(host, parent=host)
+        for i, (h, e) in enumerate(zip(heights, expanded, strict=True)):
+            g.add_column(i, FakeCard(h, e))
+        g._host = host  # keep the host alive for the test's lifetime
+        made.append(g)
+        return g
+
+    yield _make
+    for g in made:
+        g._host.deleteLater()
+
+
+class TestColumnCount:
+    """The thresholds, which are the whole reflow decision."""
+
+    @pytest.mark.parametrize(
+        ("width", "expected"),
+        [
+            (400, 1),
+            (_COL2_MIN_W - 1, 1),
+            (_COL2_MIN_W, 2),
+            (_COL3_MIN_W - 1, 2),
+            (_COL3_MIN_W, 3),
+            (2000, 3),
+        ],
+    )
+    def test_width_decides_the_columns(self, grid, width, expected):
+        assert grid(100, 100, 100).column_count(width, log_open=False) == expected
+
+    def test_an_open_log_pins_it_to_one_column(self, grid):
+        # The sidebar is narrow while the log shares the window, whatever the
+        # window's own width says.
+        assert grid(100, 100, 100).column_count(2000, log_open=True) == 1
+
+    def test_an_unmeasured_width_defaults_to_two(self, grid):
+        # Before the window is on screen there is nothing to measure, and the
+        # default window shows two — starting at one would reflow on first show.
+        assert grid(100, 100, 100).column_count(0, log_open=False) == 2
+
+
+class TestRelayout:
+    def test_it_reports_the_count_only_when_it_changes(self, grid):
+        g = grid(100, 100, 100)
+        assert g.relayout(2000, log_open=False) == 3, "first arrangement"
+        assert g.relayout(2000, log_open=False) is None, "same width, no change"
+        assert g.relayout(900, log_open=False) == 2
+
+    def test_force_rearranges_at_an_unchanged_width(self, grid):
+        # What a card's expander toggle needs: the width did not move, the
+        # content did.
+        g = grid(100, 100, 100)
+        g.relayout(2000, log_open=False)
+        assert g.relayout(2000, log_open=False, force=True) is None
+        assert g.count == 3
+
+    def test_every_column_is_placed_exactly_once(self, grid):
+        g = grid(100, 100, 100)
+        for width in (400, 900, 2000):
+            g.relayout(width, log_open=False)
+            placed = [
+                g.grid.itemAt(i).widget() for i in range(g.grid.count())
+            ]
+            assert sorted(map(id, placed)) == sorted(map(id, g.columns)), width
+
+    def test_one_stretched_row_absorbs_a_tall_window(self, grid):
+        # Without it the cards grew to the bottom of the window instead of
+        # stopping at the tallest one.
+        g = grid(100, 100, 100)
+        for width, row in ((400, 3), (900, 1), (2000, 1)):
+            g.relayout(width, log_open=False)
+            stretched = [r for r in range(4) if g.grid.rowStretch(r)]
+            assert stretched == [row], f"{width}px stretched rows {stretched}"
+
+
+class TestEqualColumnHeights:
+    def test_an_open_tail_card_takes_the_slack_itself(self, grid):
+        g = grid(100, 100, 100)
+        g.set_equal_column_heights(True)
+        for box, card in g.tails:
+            assert box.stretch(box.indexOf(card)) == 1, "card does not fill"
+            assert box.stretch(0) == 0, "the spacer above took it instead"
+
+    def test_a_collapsed_tail_card_is_bottom_aligned_instead(self, grid):
+        # Stretching a header strip into a tall empty box is worse than a
+        # ragged edge, so the spacer above it takes the slack.
+        g = grid(100, 100, 100, expanded=(False, False, False))
+        g.set_equal_column_heights(True)
+        for box, card in g.tails:
+            assert box.stretch(box.indexOf(card)) == 0, "collapsed card inflated"
+            assert box.stretch(0) == 1, "not bottom-aligned"
+
+    def test_unequal_returns_every_column_to_its_natural_height(self, grid):
+        g = grid(100, 100, 100)
+        g.set_equal_column_heights(True)
+        g.set_equal_column_heights(False)
+        for box, card in g.tails:
+            assert box.stretch(0) == 0
+            assert box.stretch(box.indexOf(card)) == 0
+            assert box.stretch(box.count() - 1) == 1, "trailing spacer inert"
+
+
+class TestTwoColumnLevelling:
+    """Two columns end on one line, and how depends on the shorter card."""
+
+    @staticmethod
+    def _level(g, qt_app):
+        g.level_two_column_bottoms()
+        qt_app.processEvents()
+
+    @staticmethod
+    def _lead_height(box) -> int:
+        return box.itemAt(0).spacerItem().sizeHint().height()
+
+    def test_a_short_open_card_grows_to_meet_the_other_column(self, grid, qt_app):
+        # Column A is 300 tall; B + C is 100 + 18 + 100 = 218. The shorter
+        # side is the right, and its open tail card takes the 82px difference
+        # — comfortably inside the _LEVEL_FILL_MAX_PX the grid will absorb.
+        g = grid(300, 100, 100)
+        g.relayout(900, log_open=False)
+        self._level(g, qt_app)
+        assert g.tails[2][1].minimumHeight() > 100, "advanced did not grow"
+        assert self._lead_height(g.tails[2][0]) == 0, "padded instead of grown"
+
+    def test_a_short_collapsed_card_is_padded_above_not_inflated(
+        self, grid, qt_app
+    ):
+        g = grid(300, 100, 100, expanded=(True, True, False))
+        g.relayout(900, log_open=False)
+        self._level(g, qt_app)
+        assert g.tails[2][1].minimumHeight() == 0, "collapsed card inflated"
+        assert self._lead_height(g.tails[2][0]) > 0, "not padded above"
+
+    def test_a_difference_too_large_to_absorb_is_declined(self, grid, qt_app):
+        # An opened subtitle-appearance section is ~240px. Inflating a card by
+        # that much is worse than a ragged edge.
+        g = grid(100 + _LEVEL_FILL_MAX_PX + 200, 100, 100)
+        g.relayout(900, log_open=False)
+        self._level(g, qt_app)
+        assert g.tails[2][1].minimumHeight() == 0
+        assert self._lead_height(g.tails[2][0]) == 0
+
+    def test_running_it_twice_lands_on_the_same_answer(self, grid, qt_app):
+        # The leading spacer is excluded from natural_height, so the second
+        # pass measures what the first one did — no feedback loop.
+        g = grid(300, 100, 100)
+        g.relayout(900, log_open=False)
+        self._level(g, qt_app)
+        first = g.tails[2][1].minimumHeight()
+        self._level(g, qt_app)
+        assert g.tails[2][1].minimumHeight() == first
+
+    def test_outside_two_columns_it_undoes_itself(self, grid, qt_app):
+        g = grid(300, 100, 100)
+        g.relayout(900, log_open=False)
+        self._level(g, qt_app)
+        assert g.tails[2][1].minimumHeight() > 100
+        g.relayout(2000, log_open=False)
+        self._level(g, qt_app)
+        assert g.tails[2][1].minimumHeight() == 0, "levelling outlived 2 columns"
+        assert self._lead_height(g.tails[2][0]) == 0
+
+    def test_the_queued_pass_is_coalesced(self, grid, qt_app):
+        g = grid(300, 100, 100)
+        g.relayout(900, log_open=False)
+        g.level_two_column_bottoms()
+        assert g._level_queued
+        g.level_two_column_bottoms()  # a second ask must not queue a second pass
+        qt_app.processEvents()
+        assert not g._level_queued
+
+    def test_a_destroyed_grid_drops_its_queued_pass(self, grid, qt_app):
+        # The timer names the grid as its context, so Qt cancels the call
+        # rather than running it against destroyed cards.
+        g = grid(300, 100, 100)
+        g.relayout(900, log_open=False)
+        g.level_two_column_bottoms()
+        g._host.deleteLater()
+        qt_app.processEvents()  # would raise on a dead card if it still ran
+
+
+class TestNaturalHeight:
+    def test_it_counts_cards_and_their_spacing_only(self, grid):
+        g = grid(100, 100, 100)
+        box = g.tails[0][0]
+        # One card, plus the two spacers, which must not count.
+        assert CardGrid.natural_height(box) == 100
+
+    def test_padding_above_does_not_feed_back_into_the_measurement(self, grid):
+        g = grid(100, 100, 100)
+        box = g.tails[0][0]
+        CardGrid._pad_above(box, 60)
+        assert CardGrid.natural_height(box) == 100, "the pad counted as content"
