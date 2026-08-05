@@ -24,6 +24,8 @@ import pytest
 
 pytest.importorskip("PySide6", reason="PySide6 not installed")
 
+import shiboken6  # noqa: E402
+from PySide6.QtCore import QEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from gui.subtitle_window import SubtitleWindow  # noqa: E402
@@ -88,6 +90,44 @@ def qt_app():
     """One QApplication for the session — Qt allows only a single instance."""
     app = QApplication.instance() or QApplication([])
     yield app
+
+
+@pytest.fixture(autouse=True)
+def destroy_leftover_widgets(qt_app):
+    """Destroy every widget a test leaves behind (issue #52).
+
+    ``close()`` only hides a widget, and dropping the last Python reference
+    does not free it either — a panel's own signal connections hold it
+    through a cycle ``gc.collect()`` does not break — so the suite kept every
+    widget it ever built: 223 per control-panel test, ~4900 alive by the time
+    the chrome tests ran. That made it quadratic, because
+    ``QApplication.setStyleSheet`` re-polishes every live widget: each
+    ``apply_theme`` paid for everything the earlier tests had left behind,
+    and the twelve ``TestControlChrome`` tests went from 0.98 s as a class on
+    their own to 7 s *each*. (``apply_theme``'s own ``allWidgets()`` loop is
+    not the cost — 3 ms against setStyleSheet's 1851 ms at 1118 widgets.)
+
+    Autouse rather than 64 fixture teardowns, because most of the slow tests
+    build their widgets inline with no fixture to hook.
+
+    Two things this has to get right, both of which cost a crash to learn:
+
+    * ``deleteLater`` plus an explicit drain. ``processEvents()`` does not
+      deliver ``DeferredDelete``, and a probe using it concluded the widgets
+      could not be freed at all, which was wrong.
+    * Only the parentless windows PYTHON built. ``topLevelWidgets()`` is
+      everything carrying the window flag, Qt's own included: an opened
+      drop-down leaves a popup container parented to its ``Dropdown`` and, on
+      Windows, a parentless helper window still marked visible after
+      ``hidePopup()``. Destroying either took Qt's combo machinery with it —
+      a reproducible access violation on the *next* ``showPopup()``.
+      ``createdByPython`` is the line: what Python built, the test owns.
+    """
+    yield
+    for widget in qt_app.topLevelWidgets():
+        if widget.parent() is None and shiboken6.createdByPython(widget):
+            widget.deleteLater()
+    qt_app.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 @pytest.fixture
