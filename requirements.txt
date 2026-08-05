@@ -1,5 +1,7 @@
 # MinbarLive - Dependencies
-# Versions pinned for reproducibility (tested with Python 3.10-3.12)
+# Versions pinned for reproducibility. Python 3.11+ — numpy and scipy below
+# both declare Requires-Python >=3.11, so 3.10 cannot install this file at all.
+# CI and the release builds run 3.12.
 
 # OpenAI API client
 openai==2.14.0
@@ -25,7 +27,9 @@ python-dotenv==1.2.1
 # Audio processing
 sounddevice==0.5.3
 scipy==1.16.3
-numpy==2.4.0
+# Not 2.4.0: PyPI yanked it for a backward-compatibility bug, so every install
+# pulled a withdrawn release and pip warned about it on every build.
+numpy==2.4.2
 
 # Loopback audio capture from output devices (speakers/headphones) on Windows
 SoundCard>=0.4.6
@@ -36,15 +40,23 @@ webrtcvad-wheels==2.0.14
 
 # GUI
 screeninfo==0.8.1
-customtkinter==5.2.2
 
-# Header logo rendering (crop + high-quality resize). No package declares it
-# as a dependency — customtkinter imports PIL optionally — so pin it here.
+# PySide6-Essentials, NOT PySide6: the full package pulls PySide6-Addons, and a
+# full install measures 634 MB on disk with Qt6WebEngineCore.dll alone at 195 MB
+# (an entire Chromium we never use). Essentials carries QtCore, QtGui and
+# QtWidgets, which is all gui/ imports — QML/QtQuick was deliberately rejected,
+# see the module docstring in gui/subtitle_window.py.
+#
+# MinbarLive is AGPL-3.0, so Qt's LGPL imposes no practical constraint beyond
+# shipping the Qt LGPL notice.
+PySide6-Essentials==6.11.1
+
+# Header logo rendering (crop + high-quality resize).
 Pillow==12.3.0
 
-# Arabic text shaping and bidi rendering
-arabic-reshaper==3.0.0
-python-bidi==0.6.7
+# No arabic-reshaper or python-bidi: Qt shapes and bidi-orders text with
+# HarfBuzz on every platform, which is one of the three bug classes the
+# migration off CustomTkinter removed. Do not add them back.
 
 # Secure API key storage (OS keychain)
 keyring==25.6.0
@@ -58,8 +70,6 @@ ruff==0.11.12
 # Creating Exe
 pyinstaller==6.18.0
 pyinstaller-hooks-contrib==2025.11
-
-# Note: tkinter is part of Python standard library
 
 # For looser version constraints (if pinned versions cause issues):
 # pip install openai>=1.0.0 python-dotenv>=1.0.0 sounddevice>=0.4.0 scipy>=1.10.0 numpy>=1.24.0 screeninfo>=0.8.0 pytest>=8.0.0

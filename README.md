@@ -67,7 +67,7 @@ Rough guide for an OpenAI setup (the default; segmented mode, Arabic → German)
 
 - An API key for your AI provider. An **OpenAI key is the simplest option** and what the app defaults to: one key covers translation, real-time transcription, and Quran verse matching. (Gemini/Claude/Deepgram keys are only needed if you choose those providers; Claude has no speech-to-text, so it additionally needs a transcription key.)
 - An audio source: a microphone, or (on Windows) any output device captured via loopback (see [Audio Sources](#audio-sources))
-- Python 3.10–3.12 (Option B only)
+- Python 3.11 or newer (Option B only). 3.12 is what CI and the prebuilt apps use; 3.10 will not install, because `numpy` and `scipy` require 3.11+
 
 ### Option A: Download a prebuilt app (recommended)
 
@@ -101,10 +101,16 @@ python main.py
 > install them. On Debian/Ubuntu:
 >
 > ```bash
-> sudo apt install python3-tk libportaudio2
+> sudo apt install libportaudio2 \
+>   libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+>   libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0
 > ```
 >
-> - `python3-tk` — the Tkinter GUI toolkit (`tkinter` is **not** a PyPI package).
+> - The `libxcb-*` set — Qt's X11 platform plugin links against them and will not
+>   load without them. The app then falls back to Wayland, where a client cannot
+>   place its own windows or keep them on top, so the subtitle overlay sits in
+>   the middle of the screen and ignores always-on-top. (The AppImage bundles
+>   them; this is only for running from source.)
 > - `libportaudio2` — PortAudio, for microphone capture. Without it the app
 >   exits at startup with `OSError: PortAudio library not found`. (The
 >   prebuilt AppImage bundles PortAudio, so this only affects source runs.)
@@ -123,7 +129,7 @@ Two windows will appear:
 
 Only one copy runs at a time: starting a second one brings up a notice instead, with a **"Launch Anyway"** option if you really do want two instances (they will compete for the same microphone and settings file).
 
-Press `Escape` on the subtitle window to stop the translation (same as the Stop button). It leaves the window and the app open. Closing the subtitle window itself (Alt+F4, or Close on its taskbar entry) also stops a running session and closes only that window — Start recreates it. Quitting MinbarLive is the control panel's job alone.
+Closing the subtitle window (Alt+F4, or Close on its taskbar entry) stops a running session and closes only that window — Start recreates it. The subtitle window never takes keyboard focus and is transparent to the mouse, so clicks and shortcuts go to whatever is behind it; Stop and Quit are the control panel's job.
 
 <br>
 

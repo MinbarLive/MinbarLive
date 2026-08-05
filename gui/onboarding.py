@@ -1,49 +1,59 @@
-"""First-run setup wizard.
+"""First-run setup wizard. Five steps: appearance, languages, input device,
+provider + API key, disclaimer.
 
-Shown once before the main control panel when ``onboarding_completed`` is
-False. Runs as its own CTk root (same pattern as the already-running dialog
-in main.py) so the main window is built afterwards with the chosen GUI
-language and theme from the start.
+Layout: a centred title and step counter as persistent chrome, and every step's
+own heading, sub-line and controls *inside* one card that fills the remaining
+height. Appearance is a segmented Dark|Light control rather than a dropdown,
+and the provider step's general note sits at the top of the card rather than
+below the caveats.
 
-Steps:
-    1. App (GUI) language + appearance (light/dark, one answer for the
-       control panel and the subtitle window)
-    2. Spoken + subtitle language
-    3. Microphone / audio input
-    4. AI provider, API key (+ per-provider "where do I get a key" video)
-    5. AI-translation disclaimer (checkbox required)
+The finish logic is a close port rather than a fresh design — it encodes
+decisions that were expensive to reach:
+
+* **Keys decide the provider, not the dropdown's last position.** Browsing to
+  a provider without entering its key must not select it, so the choice runs
+  through ``resolve_provider_by_keys``.
+* **The realtime engine follows the CHOSEN provider**, so the key just entered
+  is the one the pipeline authenticates with. A pinned engine previously
+  prompted OpenAI-only users for a Gemini key on first Start.
+* **"Use default" is only ticked when the value IS the default** — a greyed
+  non-default provider beside a ticked "Standard" reads as broken.
 """
 
 from __future__ import annotations
 
-import os
-import tkinter as tk
-import webbrowser
-from tkinter import messagebox
-
-import customtkinter as ctk
-
-from config import ICON_PATH, ICON_PATH_PNG
-from gui.audio_level_bar import (
-    LEVEL_DANGER,
-    LEVEL_GREEN,
-    LEVEL_WARNING,
-    AudioLevelBar,
-    level_fill,
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
 )
+
 from gui.device_list import BLACKHOLE_URL, get_input_devices, loopback_supported
-from gui.dropdown import CustomDropdown
-from gui.mousewheel import install_x11_mousewheel
-from gui.scaling import apply_display_scaling
+from gui.dialogs import show_message
+from gui.i18n import load_gui_translations
+from gui.icons import app_icon
+from gui.levels import level_fill
+from gui.theme import apply_theme, current_colors
+from gui.widgets import AudioLevelBar, Dropdown, SegmentedControl, warning_box
 from providers import (
     PROVIDER_CHOICES,
     get_default_model,
+    get_key_placeholder,
     get_stored_api_key,
     get_streaming_key_provider,
     resolve_provider_by_keys,
     save_api_key,
 )
-from utils.icons import ICO_SUPPORTED, scaled_icon_photo
 from utils.logging import log
 from utils.settings import (
     DEFAULT_AI_PROVIDER,
@@ -53,74 +63,30 @@ from utils.settings import (
     SOURCE_LANGUAGES,
     STREAMING_TRANSCRIPTION_PROVIDERS,
     TARGET_LANGUAGE_NAMES,
+    THEME_MODES,
     language_canonical_name,
     language_display_name,
     load_settings,
     save_settings,
 )
 
-# Translation providers that have a real-time streaming engine of their own
-# (same API key). Anthropic has none — see _finish for its fallback.
+# Stack index of the input-device step, which owns the level meter.
+_DEVICE_STEP = 2
+# Meter cadence. Unlike the control panel's meter (and the Tk wizard's, which
+# releases the device again after 10s), the preview here runs until it is
+# stopped: setup is exactly when someone talks into the microphone to see the
+# bar move, and having it die mid-test reads as a broken meter.
+_LEVEL_POLL_MS = 50
+
+# Providers that have a realtime engine of their own. Anthropic has none.
 _REALTIME_ENGINE_FOR_PROVIDER = {
     "gemini": "gemini_realtime",
     "openai": "openai_realtime",
 }
 
-_DARK = {
-    "app_bg": "#0b1020",
-    "card": "#111827",
-    "border": "#263449",
-    "text": "#f8fafc",
-    "muted": "#9ca3af",
-    "accent": "#16a34a",
-    "accent_hover": "#15803d",
-    "button": "#1f2a44",
-    "button_hover": "#263654",
-    "entry": "#0f172a",
-    "entry_border": "#334155",
-    "warning": "#d97706",
-    "danger": "#dc2626",
-}
-_LIGHT = {
-    "app_bg": "#f8fafc",
-    "card": "#ffffff",
-    "border": "#cbd5e1",
-    "text": "#111827",
-    "muted": "#6b7280",
-    "accent": "#16a34a",
-    "accent_hover": "#15803d",
-    "button": "#e2e8f0",
-    "button_hover": "#cbd5e1",
-    "entry": "#ffffff",
-    "entry_border": "#94a3b8",
-    "warning": "#b45309",
-    "danger": "#dc2626",
-}
-
-_W, _H = 680, 640
-
-# Input-level meter on the microphone step. The preview owns the OS input
-# device (and lights the system microphone indicator), so it opens by itself
-# only briefly — long enough to see the level move after arriving on the step
-# or picking another device. "Test mic" keeps it open until it is stopped.
-_LEVEL_AUTO_SECONDS = 10
-_LEVEL_POLL_MS = 50
-# How long the window may stay hidden waiting for its final size (_reveal).
-_REVEAL_POLL_MS = 10
-_REVEAL_MAX_TRIES = 30
-
-# Opening an input is synchronous (up to a few seconds on a bad device), so
-# auto-previews start just after the step is painted. Re-scheduling cancels
-# the pending one, which also debounces flipping through the device list.
-_LEVEL_START_DELAY_MS = 150
-
-# The wizard runs before the control panel and keeps CTk's default widget
-# scaling (the panel picks its own); this is the base the display clamp in
-# gui/scaling.py scales down from on a small high-DPI screen.
-_WIZARD_WIDGET_SCALE = 1.0
-
-# "Where do I get an API key?" video tutorials, per provider and GUI
-# language. Languages without their own link fall back to English.
+# Video walkthroughs for obtaining a key, and the provider's console page.
+# Duplicated from gui/onboarding.py rather than imported: that module is
+# CustomTkinter, and the two toolkits never share a process.
 _KEY_HELP_LINKS: dict[str, dict[str, str]] = {
     "openai": {
         "en": "https://youtu.be/OB99E7Y1cMA",
@@ -134,13 +100,8 @@ _KEY_HELP_LINKS: dict[str, dict[str, str]] = {
         "en": "https://www.youtube.com/watch?v=e4yLquSc6Lw",
         "de": "https://www.youtube.com/watch?v=qAUAE2jkzpQ",
     },
-    "deepgram": {
-        "en": "https://www.youtube.com/watch?v=FVJEkE69ei0",
-    },
+    "deepgram": {"en": "https://www.youtube.com/watch?v=FVJEkE69ei0"},
 }
-
-# Direct links to each provider's API-key console page (shown as a second
-# button next to the video tutorial).
 _KEY_SITE_LINKS: dict[str, str] = {
     "gemini": "https://aistudio.google.com/api-keys",
     "openai": "https://platform.openai.com/api-keys",
@@ -149,881 +110,553 @@ _KEY_SITE_LINKS: dict[str, str] = {
 }
 
 
-class OnboardingWizard(ctk.CTk):
-    """Five-step first-run configuration wizard."""
-
-    TOTAL_STEPS = 5
-
-    def __init__(self, controller) -> None:
-        super().__init__()
-
-        # Wheel + touchpad scrolling for this root's dropdown popups on X11/Linux
-        # (delivered as <Button-4/5>, which canvas-based widgets ignore).
-        install_x11_mousewheel(self)
-
-        # Build the window invisible and reveal it once the first step is laid
-        # out. CTk creates its root at its own default size, so the scaling
-        # clamp, the centring geometry below and _fit_height() would otherwise
-        # be visible as the window popping up small and then resizing.
-        # (-alpha rather than withdraw(): the window stays mapped, so nothing
-        # about its geometry handling changes — see gui/settings_view.)
-        try:
-            self.attributes("-alpha", 0.0)
-        except Exception:
-            pass
-
-        # Clamp the global CTk scaling before any geometry is set: this
-        # wizard is the tallest window in the app, so on a small high-DPI
-        # laptop it is the one that would run off the screen (gui/scaling).
-        apply_display_scaling(self, _WIZARD_WIDGET_SCALE)
-
-        # Borrowed only for the microphone step's level preview — the wizard
-        # never starts a pipeline.
+class OnboardingWizard(QDialog):
+    def __init__(self, app, controller=None, parent=None):
+        super().__init__(parent)
+        self._app = app
+        # Only the input-level meter needs it; the wizard still builds without
+        # one so it stays constructible in tests.
         self._controller = controller
         settings = load_settings()
-        self._state = {
-            "gui_language": settings.gui_language,
-            "theme_mode": settings.theme_mode,
-            "source_language": settings.source_language,
-            "target_language": settings.target_language,
-            "device_name": settings.input_device_name,
-            "selected_provider": settings.ai_provider,  # which key field is shown
-            "provider_keys": {},  # provider_id -> key typed this session
-        }
+        self._gui_language = settings.gui_language
+        self._theme = settings.theme_mode
+        self.texts = load_gui_translations(self._gui_language)
         self.completed = False
-        self._step = 0
-        self._texts = self._load_texts()
-        self._c = _DARK if self._state["theme_mode"] != "light" else _LIGHT
-        self._devices = get_input_devices()
-        self._disclaimer_var = tk.BooleanVar(value=False)
-        # Level-meter widgets and timers; only alive while the audio step is
-        # shown (see _stop_level_meter).
-        self._level_bar: AudioLevelBar | None = None
-        self._level_label: ctk.CTkLabel | None = None
-        self._level_btn: ctk.CTkButton | None = None
-        self._level_poll_job: str | None = None
-        self._level_auto_job: str | None = None
-        self._level_start_job: str | None = None
+        # Every label whose text comes from the translation files, so switching
+        # the GUI language on step 1 re-labels the steps behind it too.
+        self._i18n: list[tuple[QWidget, str, str, str]] = []
 
-        ctk.set_appearance_mode(self._state["theme_mode"])
-        self.configure(fg_color=self._c["app_bg"])
-        self.resizable(False, False)
-        self.update_idletasks()
-        # winfo_screen*() and the +x+y of geometry() are PHYSICAL px, while
-        # _W/_H are logical — centering has to compare like with like, or the
-        # window drifts further off-centre the higher the display scaling.
-        scaling = ctk.ScalingTracker.get_window_scaling(self)
-        x = (self.winfo_screenwidth() - int(_W * scaling)) // 2
-        y = (self.winfo_screenheight() - int(_H * scaling)) // 2
-        # Authoritative window position: winfo_x/y only become truthful once
-        # the window is mapped, and _fit_height runs before that (see there).
-        self._pos = (x, y)
-        self._shown = False
-        self.geometry(f"{_W}x{_H}+{x}+{y}")
-        self._set_icon()
-        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+        self.setWindowTitle("MinbarLive")
+        icon = app_icon()
+        if icon is not None:
+            self.setWindowIcon(icon)
+        self.resize(680, 660)
 
-        # ── Persistent chrome: header, step container, nav bar ────────────
-        self._header = ctk.CTkLabel(
-            self,
-            text="",
-            font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"),
-            text_color=self._c["text"],
-        )
-        self._header.pack(pady=(26, 2))
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(10)
 
-        self._step_label = ctk.CTkLabel(
-            self,
-            text="",
-            font=ctk.CTkFont(family="Segoe UI", size=13),
-            text_color=self._c["muted"],
-        )
-        self._step_label.pack(pady=(0, 10))
+        self.title_label = QLabel("")
+        self.title_label.setObjectName("wizard_title")
+        self.title_label.setAlignment(Qt.AlignCenter)
+        self._tr(self.title_label, "wizard_title", "Welcome to MinbarLive")
+        outer.addWidget(self.title_label)
 
-        self._container = ctk.CTkFrame(
-            self,
-            fg_color=self._c["card"],
-            border_color=self._c["border"],
-            border_width=1,
-            corner_radius=20,
-        )
-        self._container.pack(fill="both", expand=True, padx=28, pady=(0, 14))
+        self.step_label = QLabel("")
+        self.step_label.setObjectName("muted")
+        self.step_label.setAlignment(Qt.AlignCenter)
+        outer.addWidget(self.step_label)
+        outer.addSpacing(8)
 
-        nav = ctk.CTkFrame(self, fg_color="transparent")
-        nav.pack(fill="x", padx=28, pady=(0, 22))
-        nav.grid_columnconfigure(0, weight=1)
-        nav.grid_columnconfigure(1, weight=1)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._step_appearance())
+        self.stack.addWidget(self._step_languages())
+        self.stack.addWidget(self._step_device())
+        self.stack.addWidget(self._step_provider())
+        self.stack.addWidget(self._step_disclaimer())
+        outer.addWidget(self.stack, 1)
 
-        self._back_btn = ctk.CTkButton(
-            nav,
-            text="",
-            command=self._on_back,
-            height=46,
-            corner_radius=14,
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
-            fg_color=self._c["button"],
-            hover_color=self._c["button_hover"],
-            text_color=self._c["text"],
-        )
-        self._back_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        # A meter preview holds the OS input device open, so it runs only while
+        # the device step is on screen.
+        self.stack.currentChanged.connect(self._on_step_changed)
 
-        self._next_btn = ctk.CTkButton(
-            nav,
-            text="",
-            command=self._on_next,
-            height=46,
-            corner_radius=14,
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
-            fg_color=self._c["accent"],
-            hover_color=self._c["accent_hover"],
-            text_color="#ffffff",
-        )
-        self._next_btn.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        nav = QHBoxLayout()
+        nav.setSpacing(16)
+        self.back_btn = QPushButton("")
+        self.back_btn.setMinimumHeight(44)
+        self.back_btn.clicked.connect(self._on_back)
+        self._tr(self.back_btn, "wizard_back", "Back")
+        self.next_btn = QPushButton("")
+        self.next_btn.setObjectName("accent")
+        self.next_btn.setMinimumHeight(44)
+        self.next_btn.clicked.connect(self._on_next)
+        # Equal halves, as the Tk nav bar is — not a small Back beside a stretch.
+        nav.addWidget(self.back_btn, 1)
+        nav.addWidget(self.next_btn, 1)
+        outer.addLayout(nav)
 
-        self._render()
-        self.after(0, self._reveal)
+        self._sync_nav()
 
-    def _reveal(self, attempts: int = 0) -> None:
-        """Show the window once the window manager applied its final size.
+    def _t(self, key: str, fallback: str) -> str:
+        return self.texts.get(key, fallback)
 
-        A resize is applied asynchronously — winfo_width/height keep reporting
-        the old size for a few milliseconds after the request — so revealing
-        right away still shows a frame at CTk's default size. That lag *is*
-        the "opens small, then grows" flash. Capped, so an odd window manager
-        can never leave the wizard invisible.
+    def _tr(self, widget, key: str, fallback: str, prefix: str = ""):
+        """Set a widget's text from the translations and remember it."""
+        self._i18n.append((widget, key, fallback, prefix))
+        widget.setText(prefix + self._t(key, fallback))
+        return widget
+
+    def _label(self, key: str, fallback: str, object_name: str = "wizard_sub") -> QLabel:
+        label = QLabel("")
+        label.setObjectName(object_name)
+        label.setWordWrap(True)
+        return self._tr(label, key, fallback)
+
+    def _card(
+        self,
+        title_key: str,
+        title_fallback: str,
+        sub_key: str = "",
+        sub_fallback: str = "",
+    ) -> tuple[QWidget, QVBoxLayout]:
+        """A step page: one card filling the height, headed by its own title.
+
+        The Tk wizard puts the step heading and its sub-line inside the card
+        rather than above it, and lets the card fill the window — matched here
+        so the two trees read the same.
         """
-        target_w, target_h = self._target_size
-        if (
-            attempts < _REVEAL_MAX_TRIES
-            and (self.winfo_width() < target_w or self.winfo_height() < target_h)
-        ):
-            self.after(_REVEAL_POLL_MS, lambda: self._reveal(attempts + 1))
-            return
-        try:
-            self.attributes("-alpha", 1.0)
-        except Exception:
-            pass
-        self._shown = True
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        card = QFrame()
+        card.setObjectName("card")
+        inner = QVBoxLayout(card)
+        inner.setContentsMargins(22, 18, 22, 18)
+        inner.setSpacing(8)
+        layout.addWidget(card, 1)
 
-    # ── Helpers ────────────────────────────────────────────────────────────
+        inner.addWidget(self._label(title_key, title_fallback, object_name="heading"))
+        if sub_key:
+            inner.addWidget(self._label(sub_key, sub_fallback))
+        return page, inner
 
-    def _load_texts(self) -> dict:
-        # Imported lazily to avoid a circular import at module load
-        from gui.app_gui import load_gui_translations
-
-        return load_gui_translations(self._state["gui_language"])
-
-    def _t(self, key: str, default: str) -> str:
-        return self._texts.get(key, default)
-
-    def _set_icon(self) -> None:
-        self.title("MinbarLive")
-        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
-            def _set_win_icon() -> None:
-                # Guard inside the callback: the outer try can't catch an
-                # exception raised 200 ms later inside Tk's event loop.
-                try:
-                    self.iconbitmap(ICON_PATH)
-                except Exception:
-                    pass
-
-            self.after(200, _set_win_icon)
-        elif os.path.exists(ICON_PATH_PNG):
-            try:
-                self.iconphoto(True, scaled_icon_photo(ICON_PATH_PNG))
-            except Exception:
-                pass
-
-    def _section_label(
-        self, parent, text: str, muted: bool = False, pady=(14, 2)
-    ) -> ctk.CTkLabel:
-        label = ctk.CTkLabel(
-            parent,
-            text=text,
-            font=ctk.CTkFont(family="Segoe UI", size=14 if muted else 15,
-                             weight="normal" if muted else "bold"),
-            text_color=self._c["muted"] if muted else self._c["text"],
-            wraplength=_W - 130,
-            justify="left",
-            anchor="w",
+    # ── steps ────────────────────────────────────────────────────────────
+    def _step_appearance(self) -> QWidget:
+        page, inner = self._card(
+            "wizard_ui_language_title",
+            "App language",
+            "wizard_ui_language_sub",
+            "Language of the control panel (subtitles use their own setting).",
         )
-        label.pack(anchor="w", padx=26, pady=pady)
-        return label
 
-    def _warning_box(self, parent, text: str, pady=(14, 4)) -> ctk.CTkFrame:
-        """A bordered, warning-colored callout. Used for the provider caveats
-        and the AI-accuracy disclaimer so they stand out from the muted info
-        text instead of blending in as grey notes."""
-        box = ctk.CTkFrame(
-            parent,
-            fg_color="transparent",
-            border_color=self._c["warning"],
-            border_width=2,
-            corner_radius=12,
-        )
-        box.pack(fill="x", padx=26, pady=pady)
-        ctk.CTkLabel(
-            box,
-            text="⚠  " + text,
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
-            text_color=self._c["warning"],
-            wraplength=_W - 170,
-            justify="left",
-            anchor="w",
-        ).pack(anchor="w", padx=14, pady=10)
-        return box
+        # GUI language first: changing it re-labels every later step.
+        self.gui_lang_combo = Dropdown()
+        for code, name in GUI_LANGUAGES:
+            self.gui_lang_combo.addItem(name, code)
+        idx = self.gui_lang_combo.findData(self._gui_language)
+        if idx >= 0:
+            self.gui_lang_combo.setCurrentIndex(idx)
+        self.gui_lang_combo.currentIndexChanged.connect(self._on_gui_language)
+        inner.addWidget(self.gui_lang_combo)
 
-    def _combo(self, parent, values: list[str]) -> CustomDropdown:
-        combo = CustomDropdown(
-            parent,
-            values=values,
-            height=44,
-            corner_radius=12,
-            border_width=1,
-            font=ctk.CTkFont(family="Segoe UI", size=14),
-            dropdown_font=ctk.CTkFont(family="Segoe UI", size=14),
-            fg_color=self._c["entry"],
-            border_color=self._c["entry_border"],
-            button_color=self._c["button"],
-            button_hover_color=self._c["button_hover"],
-            text_color=self._c["text"],
-            dropdown_fg_color=self._c["card"],
-            dropdown_hover_color=self._c["button_hover"],
-            dropdown_text_color=self._c["text"],
+        # A segmented Dark|Light pair rather than a dropdown: it is a two-way
+        # choice whose effect is visible the moment it is clicked.
+        inner.addSpacing(6)
+        inner.addWidget(self._label("wizard_theme_label", "Appearance"))
+        self.theme_segment = SegmentedControl(
+            self._theme_labels(),
+            THEME_MODES.index(self._theme) if self._theme in THEME_MODES else 0,
         )
-        combo.pack(fill="x", padx=26, pady=(2, 4))
-        return combo
+        self.theme_segment.changed.connect(self._on_theme)
+        inner.addWidget(self.theme_segment)
+        inner.addStretch(1)
+        return page
 
-    def _key_entry_row(self, prefill: str) -> ctk.CTkEntry:
-        """One API-key entry with a show/hide toggle."""
-        row = ctk.CTkFrame(self._container, fg_color="transparent")
-        row.pack(fill="x", padx=26, pady=(2, 0))
-        row.grid_columnconfigure(0, weight=1)
+    def _theme_labels(self) -> list[str]:
+        return [self._t(f"theme_{mode}", mode.title()) for mode in THEME_MODES]
 
-        entry = ctk.CTkEntry(
-            row,
-            show="●",
-            height=44,
-            corner_radius=12,
-            border_width=1,
-            font=ctk.CTkFont(family="Segoe UI", size=14),
-            fg_color=self._c["entry"],
-            border_color=self._c["entry_border"],
-            text_color=self._c["text"],
+    def _step_languages(self) -> QWidget:
+        page, inner = self._card(
+            "wizard_languages_title", "Translation languages"
         )
-        entry.grid(row=0, column=0, sticky="ew")
-        if prefill:
-            entry.insert(0, prefill)
+        settings = load_settings()
 
-        show_var = tk.BooleanVar(value=False)
-        show_cb = ctk.CTkCheckBox(
-            row,
-            text=self._t("wizard_show_key", "Show"),
-            variable=show_var,
-            command=lambda e=entry, v=show_var: e.configure(
-                show="" if v.get() else "●"
-            ),
-            font=ctk.CTkFont(family="Segoe UI", size=13),
-            text_color=self._c["muted"],
+        # Real-time — where onboarding always lands — cannot auto-detect the
+        # source language, so "Automatic" (the entry with no language code) is
+        # not offered here at all.
+        self._source_names = [name for name, code in SOURCE_LANGUAGES if code is not None]
+        self.source_combo = Dropdown()
+        self.source_combo.addItems(
+            [language_display_name(n) for n in self._source_names]
         )
-        show_cb.grid(row=0, column=1, padx=(10, 0))
-        return entry
+        source = (
+            settings.source_language
+            if settings.source_language in self._source_names
+            else self._source_names[0]
+        )
+        self.source_combo.setCurrentText(language_display_name(source))
 
-    def _apply_theme(self, theme_mode: str) -> None:
-        """Switch the wizard's palette live (light/dark) and re-render the
-        current step; the persistent chrome is reconfigured in place."""
-        self._state["theme_mode"] = theme_mode
-        self._c = _LIGHT if theme_mode == "light" else _DARK
-        ctk.set_appearance_mode(theme_mode)
-        self.configure(fg_color=self._c["app_bg"])
-        self._header.configure(text_color=self._c["text"])
-        self._step_label.configure(text_color=self._c["muted"])
-        self._container.configure(
-            fg_color=self._c["card"], border_color=self._c["border"]
+        self.target_combo = Dropdown()
+        self.target_combo.addItems(
+            [language_display_name(n) for n in TARGET_LANGUAGE_NAMES]
         )
-        self._back_btn.configure(
-            fg_color=self._c["button"],
-            hover_color=self._c["button_hover"],
-            text_color=self._c["text"],
+        self.target_combo.setCurrentText(
+            language_display_name(settings.target_language)
         )
-        self._next_btn.configure(
-            fg_color=self._c["accent"], hover_color=self._c["accent_hover"]
-        )
-        self._render()
 
-    def _capture_current_key(self) -> None:
-        """Remember the key typed for the currently-selected provider so it
-        survives switching the provider dropdown and finishing."""
-        entry = getattr(self, "_key_entry", None)
-        if entry is not None:
-            try:
-                self._state["provider_keys"][
-                    self._state["selected_provider"]
-                ] = entry.get().strip()
-            except Exception:
-                pass
-
-    # ── Rendering ──────────────────────────────────────────────────────────
-
-    def _render(self) -> None:
-        # Leaving (or re-rendering) a step destroys its widgets below, so the
-        # meter's timers and its input device are released first.
-        self._stop_level_meter()
-        self._header.configure(text=self._t("wizard_title", "Welcome to MinbarLive"))
-        step_fmt = self._t("wizard_step_of", "Step {current} of {total}")
-        self._step_label.configure(
-            text=step_fmt.format(current=self._step + 1, total=self.TOTAL_STEPS)
+        inner.addSpacing(6)
+        inner.addWidget(self._label("wizard_source_language", "Spoken language (source)"))
+        inner.addWidget(self.source_combo)
+        inner.addSpacing(6)
+        inner.addWidget(
+            self._label("wizard_target_language", "Subtitle language (target)")
         )
-        self._back_btn.configure(
-            text=self._t("wizard_back", "Back"),
-            state="normal" if self._step > 0 else "disabled",
+        inner.addWidget(self.target_combo)
+        inner.addStretch(1)
+        return page
+
+    def _step_device(self) -> QWidget:
+        page, inner = self._card(
+            "wizard_audio_title",
+            "Input device",
+            "wizard_audio_sub",
+            "Choose the audio input used for the live translation.",
         )
-        if self._step == self.TOTAL_STEPS - 1:
-            self._next_btn.configure(text=self._t("wizard_finish", "Finish"))
-            self._update_finish_state()
-        else:
-            self._next_btn.configure(
-                text=self._t("wizard_next", "Next"), state="normal"
+        (
+            self.device_names,
+            self.device_base_names,
+            self.device_indices,
+            _loopback,
+        ) = get_input_devices()
+        self.device_combo = Dropdown()
+        self.device_combo.addItems(self.device_names or [""])
+        self.device_combo.currentIndexChanged.connect(self._on_device_changed)
+        inner.addSpacing(6)
+        inner.addWidget(self.device_combo)
+        # Where the platform has no loopback capture (macOS) the list simply
+        # has no system-audio entry; say why, as the Tk wizard does.
+        self._loopback_hint = None
+        if not loopback_supported():
+            # Through _tr, so it follows a language switch on the first step
+            # like every other label here.
+            self._loopback_hint = self._tr(
+                QPushButton(),
+                "macos_loopback_hint",
+                "macOS: system audio needs BlackHole ↗",
             )
-
-        for child in self._container.winfo_children():
-            child.destroy()
-
-        builder = [
-            self._build_step_ui_language,
-            self._build_step_languages,
-            self._build_step_audio,
-            self._build_step_provider,
-            self._build_step_disclaimer,
-        ][self._step]
-        builder()
-        self._fit_height()
-
-    def _fit_height(self) -> None:
-        """Grow the window when a step needs more room than the base height
-        (the stacked provider notes on the key step overflow it under
-        Anthropic in the more verbose GUI languages) and shrink back when
-        the content fits again.
-
-        winfo_reqheight() is physical px but CTk.geometry() scales WxH by
-        the DPI factor, so convert to the logical units it expects (same
-        pattern as BatchViewMixin._resize_batch_window); +X+Y pass through
-        unscaled.
-
-        The position comes from ``_pos``, not from winfo_x/y: the first call
-        runs while the window is still unmapped, where winfo_x/y report a
-        placeholder (32,32 on one run, 96,96 on the next) — passing that back
-        into geometry() moved the freshly centred wizard into the corner of
-        the screen. Once it is on screen the user may have dragged it, so the
-        real position is read back and kept.
-        """
-        self.update_idletasks()
-        scaling = ctk.ScalingTracker.get_window_scaling(self)
-        h = max(_H, int(self.winfo_reqheight() / scaling) + 1)
-        if self._shown:
-            self._pos = (self.winfo_x(), self.winfo_y())
-        x, y = self._pos
-        # CustomTkinter pins the window's min AND max size to whatever size it
-        # currently has whenever the global scaling is applied (see
-        # CTk._set_scaling), and only lifts that pin 1000 ms later. Any
-        # geometry request in between is clamped away by the window manager —
-        # which is why the wizard used to open at CTk's default 600x500 and
-        # visibly snap to its real size a second later. Setting min/max here
-        # replaces that pin with the size this step actually wants.
-        self.minsize(_W, h)
-        self.maxsize(_W, h)
-        self.geometry(f"{_W}x{h}+{x}+{y}")
-        # Physical size the window is expected to reach (see _reveal).
-        self._target_size = (int(_W * scaling), int(h * scaling))
-
-    # ── Step 1: GUI language ───────────────────────────────────────────────
-
-    def _build_step_ui_language(self) -> None:
-        self._section_label(
-            self._container, self._t("wizard_ui_language_title", "App language")
-        )
-        self._section_label(
-            self._container,
-            self._t(
-                "wizard_ui_language_sub",
-                "Language of the control panel (subtitles use their own setting).",
-            ),
-            muted=True,
-        )
-        names = [name for _code, name in GUI_LANGUAGES]
-        codes = [code for code, _name in GUI_LANGUAGES]
-        combo = self._combo(self._container, names)
-        current = self._state["gui_language"]
-        combo.set(names[codes.index(current)] if current in codes else names[0])
-
-        def _on_change(value: str) -> None:
-            self._state["gui_language"] = codes[names.index(value)]
-            self._texts = self._load_texts()
-            self._render()  # re-render chrome + step in the new language
-
-        combo.configure(command=_on_change)
-
-        # One appearance question for the whole app (control panel AND
-        # subtitle window) — applies to the wizard immediately.
-        self._section_label(
-            self._container,
-            self._t("wizard_theme_label", "Appearance"),
-            muted=True,
-        )
-        theme_names = [
-            self._t("theme_light", "Light"),
-            self._t("theme_dark", "Dark"),
-        ]
-        theme_ids = ["light", "dark"]
-        theme_combo = self._combo(self._container, theme_names)
-        theme_combo.set(theme_names[theme_ids.index(self._state["theme_mode"])])
-        theme_combo.configure(
-            command=lambda v: self._apply_theme(theme_ids[theme_names.index(v)])
-        )
-
-    # ── Step 2: source/target languages ────────────────────────────────────
-
-    def _build_step_languages(self) -> None:
-        self._section_label(
-            self._container,
-            self._t("wizard_languages_title", "Translation languages"),
-        )
-
-        self._section_label(
-            self._container,
-            self._t("wizard_source_language", "Spoken language (source)"),
-            muted=True,
-        )
-        # Real-time (the default transcription mode) can't auto-detect the
-        # source language, so "Automatic" is not offered here. Sync the state
-        # to a concrete language up front — .set() does not fire the command.
-        # Canonical (English) names are stored; the dropdown shows the endonym.
-        source_names = [name for name, code in SOURCE_LANGUAGES if code is not None]
-        if self._state["source_language"] not in source_names:
-            self._state["source_language"] = source_names[0]
-        source_combo = self._combo(
-            self._container, [language_display_name(n) for n in source_names]
-        )
-        source_combo.set(language_display_name(self._state["source_language"]))
-        source_combo.configure(
-            command=lambda v: self._state.__setitem__(
-                "source_language", language_canonical_name(v)
+            self._loopback_hint.setObjectName("link")
+            self._loopback_hint.setFlat(True)
+            self._loopback_hint.setCursor(Qt.PointingHandCursor)
+            self._loopback_hint.clicked.connect(
+                lambda: QDesktopServices.openUrl(QUrl(BLACKHOLE_URL))
             )
+            inner.addWidget(self._loopback_hint)
+        self._level_holder = self._level_row()
+        inner.addWidget(self._level_holder)
+
+        # Nothing to pick from: say so instead of showing a dead combo and a
+        # meter that can never move (the panel can still be used later).
+        self._no_devices_label = self._label(
+            "wizard_no_devices",
+            "No input devices found — you can choose one later in the control "
+            "panel.",
         )
+        inner.addWidget(self._no_devices_label)
+        has_devices = bool(self.device_names)
+        self.device_combo.setVisible(has_devices)
+        self._level_holder.setVisible(has_devices)
+        self._no_devices_label.setVisible(not has_devices)
 
-        self._section_label(
-            self._container,
-            self._t("wizard_target_language", "Subtitle language (target)"),
-            muted=True,
-        )
-        target_combo = self._combo(
-            self._container, [language_display_name(n) for n in TARGET_LANGUAGE_NAMES]
-        )
-        target_combo.set(
-            language_display_name(
-                self._state["target_language"]
-                if self._state["target_language"] in TARGET_LANGUAGE_NAMES
-                else TARGET_LANGUAGE_NAMES[0]
-            )
-        )
-        target_combo.configure(
-            command=lambda v: self._state.__setitem__(
-                "target_language", language_canonical_name(v)
-            )
-        )
+        inner.addStretch(1)
+        return page
 
-    # ── Step 3: audio input ────────────────────────────────────────────────
-
-    def _build_step_audio(self) -> None:
-        self._section_label(
-            self._container, self._t("wizard_audio_title", "Input Device")
-        )
-        self._section_label(
-            self._container,
-            self._t(
-                "wizard_audio_sub",
-                "Choose the audio input used for the live translation.",
-            ),
-            muted=True,
-        )
-
-        display_names, base_names, _indices, _loopback = self._devices
-        if not display_names:
-            self._section_label(
-                self._container,
-                self._t(
-                    "wizard_no_devices",
-                    "No input devices found — you can choose one later in the "
-                    "control panel.",
-                ),
-                muted=True,
-            )
-            return
-
-        combo = self._combo(self._container, display_names)
-        saved = self._state["device_name"]
-        if saved in base_names:
-            combo.set(display_names[base_names.index(saved)])
-        else:
-            combo.set(display_names[0])
-            self._state["device_name"] = base_names[0]
-
-        def _on_device(value: str) -> None:
-            self._state["device_name"] = base_names[display_names.index(value)]
-            self._schedule_level_preview()
-
-        combo.configure(command=_on_device)
-        self._build_loopback_hint()
-
-        self._build_level_row()
-        self._schedule_level_preview()
-
-    def _build_loopback_hint(self) -> None:
-        """Same note the control panel shows where the platform has no
-        loopback capture (macOS): the speakers are missing from the list on
-        purpose. Clicking opens the BlackHole page."""
-        if loopback_supported():
-            return
-        label = self._section_label(
-            self._container,
-            self._t("macos_loopback_hint", "macOS: system audio needs BlackHole ↗"),
-            muted=True,
-            pady=(8, 2),
-        )
-        label.configure(cursor="hand2")
-        label.bind("<Button-1>", lambda _e: webbrowser.open(BLACKHOLE_URL))
-
-    # ── Input-level meter (audio step only) ────────────────────────────────
-
-    def _build_level_row(self) -> None:
+    # ── input-level meter (device step only) ─────────────────────────────
+    def _level_row(self) -> QWidget:
         """Live level for the selected input: dBFS · bar · Test button.
 
-        The same meter as the control panel — a dead or far too quiet
-        microphone should be caught here, not during the first sermon.
+        The same meter as the control panel, and it belongs here for the same
+        reason the Tk wizard has one: a dead or far too quiet microphone should
+        be caught during setup, not during the first sermon.
         """
-        row = ctk.CTkFrame(self._container, fg_color="transparent")
-        row.pack(fill="x", padx=26, pady=(18, 4))
-        row.grid_columnconfigure(1, weight=1)  # bar stretches
+        holder = QWidget()
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 10, 0, 0)
+        row.setSpacing(10)
 
-        self._level_label = ctk.CTkLabel(
-            row,
-            text=self._t("input_level_no_signal", "No signal"),
-            font=ctk.CTkFont(family="Segoe UI", size=13),
-            text_color=self._c["muted"],
-            width=88,
-            anchor="w",
-        )
-        self._level_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        self.level_value = QLabel(self._t("input_level_no_signal", "No signal"))
+        # See the control panel's meter: an id rule ("muted") in the app sheet
+        # would outrank the per-reading colour set below.
+        self.level_value.setStyleSheet(f"color: {current_colors()['muted']};")
+        self.level_value.setMinimumWidth(84)
+        self.level_bar = AudioLevelBar(height=14)
+        self.level_btn = QPushButton(self._t("input_level_test", "Test mic"))
+        self.level_btn.setMinimumHeight(34)
+        self.level_btn.setMinimumWidth(110)
+        self.level_btn.clicked.connect(self._toggle_level_test)
 
-        self._level_bar = AudioLevelBar(
-            row,
-            track_color=self._c["entry"],
-            border_color=self._c["entry_border"],
-            green_color=LEVEL_GREEN,
-            warning_color=LEVEL_WARNING,
-            danger_color=LEVEL_DANGER,
-            height=14,
-        )
-        self._level_bar.grid(row=0, column=1, sticky="ew", padx=(0, 12))
+        row.addWidget(self.level_value)
+        row.addWidget(self.level_bar, 1)
+        row.addWidget(self.level_btn)
 
-        self._level_btn = ctk.CTkButton(
-            row,
-            text=self._t("input_level_test", "Test mic"),
-            command=self._toggle_level_test,
-            width=120,
-            height=34,
-            corner_radius=12,
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            fg_color=self._c["button"],
-            hover_color=self._c["button_hover"],
-            text_color=self._c["text"],
-        )
-        self._level_btn.grid(row=0, column=2, sticky="e")
-
-        self._level_poll_job = self.after(_LEVEL_POLL_MS, self._poll_level)
+        self._level_timer = QTimer(self)
+        self._level_timer.timeout.connect(self._poll_level)
+        return holder
 
     def _selected_device_index(self) -> int | None:
-        """Index of the chosen device, or None to use the system default."""
-        _display, base_names, indices, _loopback = self._devices
-        name = self._state["device_name"]
-        if name in base_names:
-            return indices[base_names.index(name)]
-        return None
+        pos = self.device_combo.currentIndex()
+        if not self.device_indices or not (0 <= pos < len(self.device_indices)):
+            return None
+        return self.device_indices[pos]
 
-    def _poll_level(self) -> None:
-        self._level_poll_job = None
-        bar, label = self._level_bar, self._level_label
-        if bar is None or label is None:
-            return
-        try:
-            snapshot = self._controller.get_input_level()
-        except Exception:
-            snapshot = None
-        try:
-            if snapshot is not None:
-                value = level_fill(snapshot.rms_dbfs)
-                bar.set(value)
-                if snapshot.clipping_ratio > 0.02:
-                    text = self._t("input_level_clipping", "Clipping!")
-                    color = self._c["danger"]
-                elif value <= 0.001:
-                    text = self._t("input_level_no_signal", "No signal")
-                    color = self._c["muted"]
-                else:
-                    text = f"{snapshot.rms_dbfs:.0f} dBFS"
-                    color = self._c["text"]
-                label.configure(text=text, text_color=color)
-            self._sync_level_button()
-            self._level_poll_job = self.after(_LEVEL_POLL_MS, self._poll_level)
-        except tk.TclError:
-            self._level_poll_job = None  # widgets torn down between ticks
+    def _on_device_changed(self, _index: int) -> None:
+        """Follow the selection with the meter — but only while it is running.
+
+        Switching device must not stop the preview (auditioning inputs is the
+        whole point of this step), and must not silently re-open one the user
+        deliberately stopped either.
+        """
+        if self._level_test_running():
+            self._start_level_preview(auto=True)
 
     def _level_test_running(self) -> bool:
+        checker = getattr(self._controller, "is_input_level_test_running", None)
+        if checker is None:
+            return False
         try:
-            return bool(self._controller.is_input_level_test_running())
-        except Exception:
+            return bool(checker())
+        except Exception:  # noqa: BLE001 - the meter is never worth a crash
             return False
 
-    def _sync_level_button(self) -> None:
-        if self._level_btn is None:
-            return
-        self._level_btn.configure(
-            text=self._t("input_level_stop_test", "Stop")
-            if self._level_test_running()
-            else self._t("input_level_test", "Test mic")
-        )
-
-    def _toggle_level_test(self) -> None:
-        # An explicit test is never on a timer: it runs until stopped.
-        self._cancel_level_job("_level_auto_job")
-        self._cancel_level_job("_level_start_job")
-        if self._level_test_running():
-            self._stop_level_capture()
-        else:
-            self._start_level_preview(auto=False)
-        self._sync_level_button()
-
-    def _schedule_level_preview(self) -> None:
-        """Queue a short auto-preview just after the step is painted."""
-        self._cancel_level_job("_level_start_job")
-        self._level_start_job = self.after(
-            _LEVEL_START_DELAY_MS, lambda: self._start_level_preview(auto=True)
-        )
-
     def _start_level_preview(self, *, auto: bool) -> None:
-        self._level_start_job = None
-        self._cancel_level_job("_level_auto_job")
+        if self._controller is None:
+            return
         try:
             self._controller.start_input_level_test(self._selected_device_index())
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log(f"Input level preview failed: {exc}", level="WARNING")
             # A device that cannot be opened is worth a dialog only when the
             # user asked for the test — not while merely browsing the list.
             if not auto:
-                messagebox.showwarning("MinbarLive", str(exc), parent=self)
+                show_message(
+                    self, "MinbarLive", str(exc), translate=self._t
+                )
             self._sync_level_button()
             return
-        if auto:
-            self._level_auto_job = self.after(
-                _LEVEL_AUTO_SECONDS * 1000, self._auto_stop_level
-            )
+        self._level_timer.start(_LEVEL_POLL_MS)
         self._sync_level_button()
-
-    def _auto_stop_level(self) -> None:
-        self._level_auto_job = None
-        self._stop_level_capture()
-        self._sync_level_button()
-
-    def _cancel_level_job(self, attr: str) -> None:
-        job = getattr(self, attr, None)
-        setattr(self, attr, None)
-        if job is not None:
-            try:
-                self.after_cancel(job)
-            except Exception:
-                pass
 
     def _stop_level_capture(self) -> None:
+        self._level_timer.stop()
+        stopper = getattr(self._controller, "stop_input_level_test", None)
+        if stopper is not None:
+            try:
+                stopper()
+            except Exception:  # noqa: BLE001
+                pass
+        self._sync_level_button()
+
+    def _toggle_level_test(self) -> None:
+        if self._level_test_running():
+            self._stop_level_capture()
+        else:
+            self._start_level_preview(auto=False)
+
+    def _sync_level_button(self) -> None:
+        self.level_btn.setText(
+            self._t("input_level_stop_test", "Stop")
+            if self._level_test_running()
+            else self._t("input_level_test", "Test mic")
+        )
+
+    def _poll_level(self) -> None:
+        # See the control panel's meter: the APPLIED theme, not self._theme.
+        colors = current_colors()
         try:
-            self._controller.stop_input_level_test()
-        except Exception:
-            pass
+            snapshot = self._controller.get_input_level()
+        except Exception:  # noqa: BLE001
+            snapshot = None
+        if snapshot is not None:
+            value = level_fill(snapshot.rms_dbfs)
+            self.level_bar.set_value(value)
+            if snapshot.clipping_ratio > 0.02:
+                text, colour = (
+                    self._t("input_level_clipping", "Clipping!"),
+                    colors["danger"],
+                )
+            elif value <= 0.001:
+                text, colour = (
+                    self._t("input_level_no_signal", "No signal"),
+                    colors["muted"],
+                )
+            else:
+                text, colour = f"{snapshot.rms_dbfs:.0f} dBFS", colors["text"]
+            self.level_value.setText(text)
+            self.level_value.setStyleSheet(f"color: {colour};")
+        self._sync_level_button()
 
-    def _stop_level_meter(self) -> None:
-        """Drop the meter: timers cancelled, input device released.
-
-        Called when leaving the step and when the wizard closes — the device
-        must be free before the control panel starts a session on it.
-        """
-        for attr in ("_level_start_job", "_level_auto_job", "_level_poll_job"):
-            self._cancel_level_job(attr)
-        self._level_bar = None
-        self._level_label = None
-        self._level_btn = None
-        self._stop_level_capture()
-
-    # ── Step 4: provider + model + API key ─────────────────────────────────
-
-    def _build_step_provider(self) -> None:
-        self._section_label(
-            self._container,
-            self._t("wizard_provider_title", "AI provider & API key"),
+    def _step_provider(self) -> QWidget:
+        # The general note stays at the TOP of this card (the Tk wizard puts it
+        # last): it answers "why is there only one key field?" before the field
+        # is reached, and the per-provider caveats below are the exceptions.
+        page, inner = self._card(
+            "wizard_provider_title",
+            "AI provider & API key",
+            "wizard_keys_info",
+            "Add keys for as many providers as you like by switching the list "
+            "above. With OpenAI (the default), one key covers translation, "
+            "real-time transcription and Quran verse detection.",
         )
-
         # Deepgram (streaming STT) is listed alongside the translation
-        # providers so its key can be entered here too. Selecting a translation
-        # provider also makes it the active one; selecting Deepgram only reveals
-        # its key field (it has no translation capability). No "(real-time)"
-        # tag here — this step is about whose key is being entered, and the
-        # pipeline-mode wording only means something in the control panel.
-        choices = list(PROVIDER_CHOICES) + [("Deepgram", "deepgram")]
-        # The shipped provider is tagged so a first-run user has an answer to
-        # "which one do I pick?" without reading the notes below.
+        # providers so its key can be entered here too. It has no translation
+        # capability, so selecting it only reveals its key field — the active
+        # translation provider is still resolved from the keys entered.
+        self.provider_combo = Dropdown()
+        for _name, pid in self._provider_entries():
+            self.provider_combo.addItem("", pid)
+        self._refresh_provider_labels()
+        self.provider_combo.currentIndexChanged.connect(self._on_provider)
+
+        inner.addSpacing(6)
+        # Row label, not the card heading — repeating it reads as a bug.
+        inner.addWidget(self._label("wizard_provider", "Provider"))
+        inner.addWidget(self.provider_combo)
+        inner.addSpacing(6)
+        inner.addWidget(self._label("wizard_api_key", "API key"))
+        inner.addWidget(self._key_row())
+
+        links = QHBoxLayout()
+        links.setSpacing(8)
+        self.key_help_btn = QPushButton("")
+        self._tr(
+            self.key_help_btn,
+            "wizard_key_help",
+            "Where do I get an API key?",
+            prefix="🛈  ",
+        )
+        self.key_help_btn.clicked.connect(lambda: self._open_link(_KEY_HELP_LINKS))
+        self.key_site_btn = QPushButton("")
+        self._tr(
+            self.key_site_btn,
+            "wizard_key_site",
+            "Open the API key page",
+            prefix="🔑  ",
+        )
+        self.key_site_btn.clicked.connect(lambda: self._open_link(_KEY_SITE_LINKS))
+        links.addWidget(self.key_help_btn)
+        links.addWidget(self.key_site_btn)
+        links.addStretch(1)
+        inner.addSpacing(4)
+        inner.addLayout(links)
+
+        self.key_hint = QLabel("")
+        self.key_hint.setObjectName("wizard_sub")
+        self.key_hint.setWordWrap(True)
+        inner.addWidget(self.key_hint)
+
+        # Provider-specific caveats, as warning callouts rather than another
+        # grey note: they cost the user money or accuracy if missed. Rebuilt
+        # per selection so they always match the dropdown.
+        self._notes_layout = QVBoxLayout()
+        self._notes_layout.setSpacing(8)
+        inner.addLayout(self._notes_layout)
+        inner.addStretch(1)
+
+        # Keys entered this session, per provider — browsing away and back must
+        # not lose one, and finish resolves the provider from this map.
+        self._provider_keys: dict[str, str] = {}
+        self._on_provider(0)
+        return page
+
+    @staticmethod
+    def _provider_entries() -> list[tuple[str, str]]:
+        return [*PROVIDER_CHOICES, ("Deepgram", "deepgram")]
+
+    def _refresh_provider_labels(self) -> None:
+        """(Re-)label the provider entries, tagging the shipped default.
+
+        The tag is translated, so this runs again after a GUI-language switch.
+        """
         default_tag = self._t("provider_default_tag", "Default")
-        provider_names = [
-            f"{name} ({default_tag})" if pid == DEFAULT_AI_PROVIDER else name
-            for name, pid in choices
-        ]
-        provider_ids = [pid for _name, pid in choices]
+        for index, (name, pid) in enumerate(self._provider_entries()):
+            label = f"{name} ({default_tag})" if pid == DEFAULT_AI_PROVIDER else name
+            self.provider_combo.setItemText(index, label)
 
-        self._section_label(
-            self._container, self._t("wizard_provider", "Provider"), muted=True
-        )
-        provider_combo = self._combo(self._container, provider_names)
-        selected = self._state["selected_provider"]
-        provider_combo.set(
-            provider_names[provider_ids.index(selected)]
-            if selected in provider_ids
-            else provider_names[0]
-        )
-
-        def _on_provider_change(value: str) -> None:
-            self._capture_current_key()  # remember the key for the old provider
-            new = provider_ids[provider_names.index(value)]
-            self._state["selected_provider"] = new
-            self._render()
-
-        provider_combo.configure(command=_on_provider_change)
-
-        # No model picker — _finish uses the resolved provider's default model.
-
-        # One key field, for whichever provider is selected. Keys typed for other
-        # providers are remembered and all saved on finish, so several provider
-        # keys can be added just by switching the dropdown — no stacked fields.
-        self._section_label(
-            self._container, self._t("wizard_api_key", "API key"), muted=True
-        )
-        self._key_entry = self._key_entry_row(
-            self._state["provider_keys"].get(selected, "")
-        )
-
-        # Video tutorial + direct key-console link for the selected provider.
-        # Tutorial in the wizard's GUI language when available (falls back to
-        # English); the console link is per provider.
-        help_links = _KEY_HELP_LINKS.get(selected, {})
-        help_url = help_links.get(self._state["gui_language"]) or help_links.get("en")
-        site_url = _KEY_SITE_LINKS.get(selected)
-        if help_url or site_url:
-            btn_row = ctk.CTkFrame(self._container, fg_color="transparent")
-            btn_row.pack(anchor="w", padx=26, pady=(10, 0))
-            for text, url in (
-                ("🛈  " + self._t("wizard_key_help", "Where do I get an API key?"),
-                 help_url),
-                ("🔑  " + self._t("wizard_key_site", "Open the API key page"),
-                 site_url),
-            ):
-                if not url:
-                    continue
-                ctk.CTkButton(
-                    btn_row,
-                    text=text,
-                    command=lambda u=url: webbrowser.open(u),
-                    height=34,
-                    corner_radius=10,
-                    font=ctk.CTkFont(family="Segoe UI", size=13),
-                    fg_color=self._c["button"],
-                    hover_color=self._c["button_hover"],
-                    text_color=self._c["text"],
-                ).pack(side="left", padx=(0, 8))
-
-        if get_stored_api_key(selected):
-            self._section_label(
-                self._container,
-                self._t(
-                    "wizard_key_saved_hint",
-                    "A key is already saved — leave empty to keep it.",
-                ),
-                muted=True,
-                pady=(14, 10),
+    def _key_row(self) -> QWidget:
+        """The key field with a show/hide toggle beside it, as in Tk."""
+        holder = QWidget()
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+        self.key_edit = QLineEdit()
+        self.key_edit.setEchoMode(QLineEdit.Password)
+        self.show_key_check = QCheckBox("")
+        self._tr(self.show_key_check, "wizard_show_key", "Show")
+        self.show_key_check.toggled.connect(
+            lambda on: self.key_edit.setEchoMode(
+                QLineEdit.Normal if on else QLineEdit.Password
             )
-
-        self._section_label(
-            self._container,
-            self._t(
-                "wizard_keys_info",
-                "Add keys for as many providers as you like by switching the "
-                "list above. With OpenAI (the default), one key covers "
-                "translation, real-time transcription and Quran verse "
-                "detection.",
-            ),
-            muted=True,
-            pady=(14, 10),
         )
+        row.addWidget(self.key_edit, 1)
+        row.addWidget(self.show_key_check)
+        return holder
 
-        # Provider-specific notes — keyed to the SELECTED provider so they
-        # match the dropdown. Gemini has its own bundled embedding space, so
-        # the RAG note only applies to Anthropic (embeddings stay OpenAI).
-        # Shown as warning callouts so users don't miss the extra-key caveat.
-        if selected == "gemini":
-            # Picking Gemini here lands on gemini_realtime (see
-            # _REALTIME_ENGINE_FOR_PROVIDER), and both whitelisted Live models
-            # transcribe slower than realtime (live-measured 0.75x and 0.89x
-            # over a 63s sample), so subtitles drift further behind the longer
-            # someone speaks. Scoped to real-time on purpose: the SEGMENTED
-            # path (chunk/semantic) is a different API entirely and measures
-            # 0.97-1.42s per 12s segment, comfortably inside budget. Not shown
-            # for other providers — OpenAI holds 1.00x and has nothing to warn
-            # about.
-            self._warning_box(
-                self._container,
-                self._t(
-                    "wizard_gemini_latency_note",
-                    "In real-time mode, Google's models transcribe slower "
-                    "than people speak, so subtitles fall further behind "
-                    "during long talks and only catch up when the speaker "
-                    "pauses. OpenAI keeps up better here. Chunk and semantic "
-                    "mode are not affected.",
-                ),
-                pady=(14, 10),
-            )
-        if selected == "anthropic":
-            self._warning_box(
-                self._container,
-                self._t(
-                    "wizard_gemini_rag_note",
-                    "Quran verse detection uses OpenAI embeddings. Without an "
-                    "OpenAI key, verse matching is disabled.",
-                ),
-                pady=(14, 4),
-            )
-            self._warning_box(
-                self._container,
-                self._t(
-                    "wizard_anthropic_stt_note",
-                    "Claude has no speech-to-text — transcription runs on "
-                    "OpenAI, so an OpenAI key is also required.",
-                ),
-                pady=(8, 10),
-            )
+    def _open_link(self, table: dict) -> None:
+        provider = self._current_provider()
+        target = table.get(provider)
+        if isinstance(target, dict):
+            # German links for the German GUI, English everywhere else.
+            target = target.get(self._gui_language, target.get("en"))
+        if target:
+            QDesktopServices.openUrl(QUrl(target))
 
-    # ── Step 5: disclaimer ─────────────────────────────────────────────────
+    def _refresh_provider_notes(self) -> None:
+        while self._notes_layout.count():
+            item = self._notes_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
 
-    def _build_step_disclaimer(self) -> None:
-        self._section_label(
-            self._container, self._t("wizard_disclaimer_title", "Please note")
-        )
-        self._warning_box(
-            self._container,
+        provider = self._current_provider()
+        if provider == "gemini":
+            # Both whitelisted Live models transcribe slower than people speak
+            # (live-measured 0.75x), so subtitles drift further behind the
+            # longer someone talks. Scoped to real-time, which is where
+            # onboarding lands; the segmented path is comfortably inside budget.
+            self._notes_layout.addWidget(
+                warning_box(
+                    self._t(
+                        "wizard_gemini_latency_note",
+                        "In real-time mode, Google's models transcribe slower "
+                        "than people speak, so subtitles fall further behind "
+                        "during long talks and only catch up when the speaker "
+                        "pauses. OpenAI keeps up better here.",
+                    )
+                )
+            )
+        elif provider == "anthropic":
+            # Gemini ships its own embedding space, so the RAG caveat applies
+            # to Anthropic only.
+            self._notes_layout.addWidget(
+                warning_box(
+                    self._t(
+                        "wizard_gemini_rag_note",
+                        "Quran verse detection uses OpenAI embeddings. Without "
+                        "an OpenAI key, verse matching is disabled.",
+                    )
+                )
+            )
+            self._notes_layout.addWidget(
+                warning_box(
+                    self._t(
+                        "wizard_anthropic_stt_note",
+                        "Claude has no speech-to-text — transcription runs on "
+                        "OpenAI, so an OpenAI key is also required.",
+                    )
+                )
+            )
+        elif provider == "deepgram":
+            # Deepgram is transcription-only: no translation model and no
+            # embedding model, so a key here can never be the whole setup.
+            self._notes_layout.addWidget(
+                warning_box(
+                    self._t(
+                        "wizard_deepgram_note",
+                        "Deepgram only does real-time transcription — it has no "
+                        "translation and no embeddings for Quran verse "
+                        "detection. You also need a key for a translation "
+                        "provider (OpenAI, Google Gemini or Anthropic).",
+                    )
+                )
+            )
+        self.key_help_btn.setEnabled(provider in _KEY_HELP_LINKS)
+        self.key_site_btn.setEnabled(provider in _KEY_SITE_LINKS)
+
+    def _step_disclaimer(self) -> QWidget:
+        page, inner = self._card("wizard_disclaimer_title", "Please note")
+        # A warning callout, not body text: this is the one thing on the whole
+        # wizard the user must actually read.
+        self._disclaimer_box = warning_box(
             self._t(
                 "wizard_disclaimer_text",
                 "MinbarLive uses artificial intelligence to transcribe and "
@@ -1032,92 +665,167 @@ class OnboardingWizard(ctk.CTk):
                 "The audio is sent to the selected AI provider for processing. "
                 "Do not rely on the subtitles as an authoritative religious "
                 "source.",
-            ),
-        )
-
-        cb = ctk.CTkCheckBox(
-            self._container,
-            text=self._t(
-                "wizard_disclaimer_accept",
-                "I understand that AI translations can be inaccurate.",
-            ),
-            variable=self._disclaimer_var,
-            command=self._update_finish_state,
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
-            text_color=self._c["text"],
-        )
-        cb.pack(anchor="w", padx=26, pady=(18, 10))
-
-    def _update_finish_state(self) -> None:
-        if self._step == self.TOTAL_STEPS - 1:
-            self._next_btn.configure(
-                state="normal" if self._disclaimer_var.get() else "disabled"
             )
+        )
+        # warning_box already prefixes the sign; re-translation must keep it.
+        self._i18n.append(
+            (
+                self._disclaimer_box.label,
+                "wizard_disclaimer_text",
+                self._disclaimer_box.label.text()[3:],
+                "⚠  ",
+            )
+        )
+        inner.addSpacing(6)
+        inner.addWidget(self._disclaimer_box)
 
-    # ── Navigation ─────────────────────────────────────────────────────────
+        self.disclaimer_check = QCheckBox("")
+        self._tr(
+            self.disclaimer_check,
+            "wizard_disclaimer_accept",
+            "I understand that AI translations can be inaccurate.",
+        )
+        self.disclaimer_check.toggled.connect(lambda _: self._sync_nav())
+        inner.addSpacing(8)
+        inner.addWidget(self.disclaimer_check)
+        inner.addStretch(1)
+        return page
 
-    def _validate_step(self) -> bool:
-        if self._step == 3:  # provider + keys
-            # Keys are optional here — capture whatever was typed, never block.
-            # Missing keys are prompted when the user presses Start.
-            self._capture_current_key()
-        return True
+    @staticmethod
+    def _select(combo: QComboBox, value: str) -> None:
+        idx = combo.findText(value)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+
+    # ── handlers ─────────────────────────────────────────────────────────
+    def _on_gui_language(self, _index: int) -> None:
+        self._gui_language = self.gui_lang_combo.currentData()
+        self.texts = load_gui_translations(self._gui_language)
+        self._retranslate()
+
+    def _on_theme(self, index: int) -> None:
+        self._theme = THEME_MODES[index]
+        apply_theme(self._app, self._theme)
+
+    def _current_provider(self) -> str:
+        return self.provider_combo.currentData() or DEFAULT_AI_PROVIDER
+
+    def _on_provider(self, _index: int) -> None:
+        """Remember the key typed for the previous provider, show the next."""
+        provider = self._current_provider()
+        typed = self.key_edit.text().strip()
+        previous = getattr(self, "_last_provider", None)
+        if previous and typed:
+            self._provider_keys[previous] = typed
+        self._last_provider = provider
+        self.key_edit.setText(self._provider_keys.get(provider, ""))
+        self.key_edit.setPlaceholderText(get_key_placeholder(provider))
+        if get_stored_api_key(provider):
+            self.key_hint.setText(
+                self._t(
+                    "wizard_key_saved_hint",
+                    "A key is already saved — leave empty to keep it.",
+                )
+            )
+        else:
+            self.key_hint.setText("")
+        self._refresh_provider_notes()
+
+    def _capture_current_key(self) -> None:
+        typed = self.key_edit.text().strip()
+        if typed:
+            self._provider_keys[self._current_provider()] = typed
+
+    def _retranslate(self) -> None:
+        """Re-label everything after a GUI-language switch.
+
+        Rebuilding the pages instead would be simpler but would throw away the
+        language, device and key choices already made — the language step is
+        reachable via Back from any later step.
+        """
+        for widget, key, fallback, prefix in self._i18n:
+            widget.setText(prefix + self._t(key, fallback))
+        self.theme_segment.set_labels(self._theme_labels())
+        self._refresh_provider_labels()
+        self._on_provider(self.provider_combo.currentIndex())
+        self._sync_level_button()
+        self._sync_nav()
+
+    # ── navigation ───────────────────────────────────────────────────────
+    def _on_step_changed(self, index: int) -> None:
+        if index == _DEVICE_STEP:
+            self._start_level_preview(auto=True)
+        else:
+            self._stop_level_capture()
+
+    def _sync_nav(self) -> None:
+        index = self.stack.currentIndex()
+        last = self.stack.count() - 1
+        self.back_btn.setEnabled(index > 0)
+        self.step_label.setText(
+            self._t("wizard_step_of", "Step {current} of {total}").format(
+                current=index + 1, total=self.stack.count()
+            )
+        )
+        if index == last:
+            self.next_btn.setText(self._t("wizard_finish", "Finish"))
+            self.next_btn.setEnabled(self.disclaimer_check.isChecked())
+        else:
+            self.next_btn.setText(self._t("wizard_next", "Next"))
+            self.next_btn.setEnabled(True)
 
     def _on_back(self) -> None:
-        if self._step > 0:
-            if self._step == 3:  # keep typed keys when navigating away
-                self._capture_current_key()
-            self._step -= 1
-            self._render()
+        if self.stack.currentIndex() > 0:
+            self._capture_current_key()
+            self.stack.setCurrentIndex(self.stack.currentIndex() - 1)
+            self._sync_nav()
 
     def _on_next(self) -> None:
-        if not self._validate_step():
+        if self.stack.currentIndex() < self.stack.count() - 1:
+            self._capture_current_key()
+            self.stack.setCurrentIndex(self.stack.currentIndex() + 1)
+            self._sync_nav()
             return
-        if self._step < self.TOTAL_STEPS - 1:
-            self._step += 1
-            self._render()
-        else:
-            self._finish()
+        self._finish()
 
-    def _on_cancel(self) -> None:
-        self._stop_level_meter()
-        self.quit()
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        # Cancelling mid-setup must not leave the preview holding the mic.
+        self._stop_level_capture()
+        super().closeEvent(event)
 
+    # ── finish ───────────────────────────────────────────────────────────
     def _finish(self) -> None:
-        # Release the microphone before the control panel opens on it.
-        self._stop_level_meter()
         self._capture_current_key()
+        self._stop_level_capture()
         settings = load_settings()
-        settings.gui_language = self._state["gui_language"]
-        # One appearance answer drives both windows
-        settings.theme_mode = self._state["theme_mode"]
-        settings.subtitle_theme_mode = self._state["theme_mode"]
-        settings.source_language = self._state["source_language"]
-        settings.target_language = self._state["target_language"]
-        if self._state["device_name"]:
-            settings.input_device_name = self._state["device_name"]
-        # Keys decide the provider, not the dropdown's last position (browsing
-        # to a provider without entering its key must not select it): the
-        # default (Gemini) wins whenever its key exists or no key was given at
-        # all; otherwise the highest-ranked provider with a key is used and
-        # "Use default" is unchecked so the control panel shows the real one.
-        provider = resolve_provider_by_keys(self._state["provider_keys"])
+        settings.gui_language = self._gui_language
+        # One appearance answer drives both windows.
+        settings.theme_mode = self._theme
+        settings.subtitle_theme_mode = self._theme
+        settings.source_language = language_canonical_name(
+            self.source_combo.currentText()
+        )
+        settings.target_language = language_canonical_name(
+            self.target_combo.currentText()
+        )
+        pos = self.device_combo.currentIndex()
+        if 0 <= pos < len(self.device_base_names):
+            settings.input_device_name = self.device_base_names[pos]
+
+        # Keys decide the provider, never the dropdown's last position.
+        provider = resolve_provider_by_keys(self._provider_keys)
         settings.ai_provider = provider
         settings.translation_model = get_default_model(provider, "translation")
         settings.use_default_translation_model = provider == DEFAULT_AI_PROVIDER
-        # Onboarding lands on real-time streaming — on the engine that
-        # belongs to the CHOSEN provider, so the key the user just entered is
-        # the one the pipeline authenticates with. (A pinned Gemini engine
-        # used to prompt OpenAI-only users for a Gemini key on first Start.)
-        # Anthropic has no realtime engine of its own: use the first engine
-        # whose key exists (entered this session or already stored), falling
-        # back to the app default.
+
+        # Land on real-time streaming, on the engine belonging to the chosen
+        # provider. Anthropic has none: use the first engine whose key exists.
         engine = _REALTIME_ENGINE_FOR_PROVIDER.get(provider)
         if engine is None:
             engine = DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER
             for candidate in STREAMING_TRANSCRIPTION_PROVIDERS:
                 key_provider = get_streaming_key_provider(candidate)
-                if self._state["provider_keys"].get(key_provider) or get_stored_api_key(
+                if self._provider_keys.get(key_provider) or get_stored_api_key(
                     key_provider
                 ):
                     engine = candidate
@@ -1125,115 +833,48 @@ class OnboardingWizard(ctk.CTk):
         settings.transcription_provider = engine
         settings.pipeline_mode = PIPELINE_MODE_STREAMING
         settings.transcription_model = get_default_model(engine, "transcription")
-        # "Use default" only when the engine IS the default one — a greyed
-        # non-default engine next to a ticked "Standard" reads as broken.
         settings.use_default_transcription_model = (
             engine == DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER
         )
+
         settings.disclaimer_accepted = True
         settings.onboarding_completed = True
         save_settings(settings)
 
-        # Persist every provider key entered this session. Only the translation
-        # provider's key surfaces the session-only warning (once) so several
-        # keys don't stack dialogs.
+        # Persist every key entered this session. Only the active provider's
+        # key surfaces the session-only warning, so several keys cannot stack
+        # dialogs.
         session_only = False
-        for pid, key in self._state.get("provider_keys", {}).items():
+        for pid, key in self._provider_keys.items():
             if not key:
                 continue
-            stored = save_api_key(pid, key)
-            if pid == provider and not stored:
-                # No keychain: keys are never written to disk, so this one
-                # lasts for the session only.
+            if not save_api_key(pid, key) and pid == provider:
                 session_only = True
         if session_only:
-            messagebox.showwarning(
+            show_message(
+                self,
                 "MinbarLive",
                 self._t(
-                    "dlg_key_saved_session_only",
-                    "No keyring available — the key works for this session "
-                    "only and must be entered again after a restart. Set up "
-                    "an OS keychain to store it permanently.",
+                    "dlg_key_session_only_warning",
+                    "No system keychain was available, so this key is only "
+                    "active until you close MinbarLive.",
                 ),
-                parent=self,
+                translate=self._t,
             )
 
-        log("Onboarding completed.", level="INFO")
         self.completed = True
-        self.quit()
+        self.accept()
 
 
-def run_onboarding(controller) -> bool:
-    """Show the first-run wizard when it has not been completed yet.
+def run_onboarding(app, controller=None) -> bool:
+    """Run the wizard if first-run setup is outstanding.
 
-    ``controller`` is the app's AppController, borrowed for the input-level
-    preview on the microphone step (no pipeline is ever started here).
-
-    Returns:
-        True when the app should continue starting (wizard finished, or already
-        completed on an earlier run). False when the wizard was closed without
-        finishing — the app should exit, even if a key from a previous run
-        happens to be stored (closing the wizard means setup wasn't confirmed).
+    Returns False when the user cancelled, so the caller can exit without
+    opening the control panel. Already-completed setups return True without
+    showing anything. ``controller`` only feeds the input-level meter.
     """
-    settings = load_settings()
-    if settings.onboarding_completed:
+    if load_settings().onboarding_completed:
         return True
-
-    wizard = OnboardingWizard(controller)
-    wizard.mainloop()
-    completed = wizard.completed
-    # Belt and braces: no exit path may leave the preview holding the device.
-    wizard._stop_level_meter()
-
-    # Hide the window the instant its loop ends. On some setups the CTk root's
-    # destroy() below does not fully tear the window down — it can be left as a
-    # blank white shell next to the control panel. Withdrawing first guarantees
-    # the user never sees a stray onboarding window, and can never close it:
-    # as the process's first Tk root, closing it would take the whole app down.
-    try:
-        wizard.withdraw()
-    except Exception:
-        pass
-
-    # Cancel any still-pending after() callbacks (CustomTkinter's DPI-scaling
-    # tracker, a button's click animation, scheduled updates) before tearing
-    # the root down — otherwise they fire on destroyed widgets and Tcl prints
-    # "invalid command name ...check_dpi_scaling/_click_animation" noise.
-    try:
-        for after_id in wizard.tk.call("after", "info"):
-            try:
-                wizard.after_cancel(after_id)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    try:
-        wizard.destroy()
-    except Exception as exc:
-        log(f"Onboarding wizard teardown error: {exc}", level="WARNING")
-
-    _reset_wizard_root_state(wizard)
-    return completed
-
-
-def _reset_wizard_root_state(wizard: OnboardingWizard) -> None:
-    """Clear process-global state still pointing at the destroyed wizard root.
-
-    The wizard was the first Tk root (Tk's default root) and ``CustomDropdown``
-    caches, at class level, the root its global handlers are bound to plus the
-    last-open dropdown. Left untouched, both reference the dead wizard, so the
-    main window's root — created next — inherits stale references. Clearing them
-    (and dropping the default-root pointer if destroy left it dangling) lets the
-    control panel's root start from a clean slate.
-    """
-    try:
-        CustomDropdown._active = None
-        if CustomDropdown._bound_root is wizard:
-            CustomDropdown._bound_root = None
-    except Exception:
-        pass
-    try:
-        if tk._default_root is wizard:
-            tk._default_root = None
-    except Exception:
-        pass
+    wizard = OnboardingWizard(app, controller)
+    wizard.exec()
+    return wizard.completed

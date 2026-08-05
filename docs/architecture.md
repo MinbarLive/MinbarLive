@@ -134,7 +134,7 @@ The control panel shows a live **input level** (smoothed RMS in dBFS, `audio/lev
 
 ## Cost Tracking
 
-`utils/cost_tracking.py` meters what each provider call reports (tokens, audio seconds) per session and applies a versioned snapshot of published list prices, so the figure is an **estimate**, not an invoice. Worker threads only update memory; the Tk thread flushes to `cost_history/` so live subtitles never wait for disk I/O. Only counters, provider/model ids and timestamps are persisted, never prompts, transcripts, audio or credentials. The history viewer's **Costs** tab renders it (`utils/cost_display.py`). Anthropic and Deepgram usage is currently not metered.
+`utils/cost_tracking.py` meters what each provider call reports (tokens, audio seconds) per session and applies a versioned snapshot of published list prices, so the figure is an **estimate**, not an invoice. Worker threads only update memory; the GUI thread flushes to `cost_history/` so live subtitles never wait for disk I/O. Only counters, provider/model ids and timestamps are persisted, never prompts, transcripts, audio or credentials. The history viewer's **Costs** tab renders it (`utils/cost_display.py`). Anthropic and Deepgram usage is currently not metered.
 
 ## Announcements
 
@@ -154,6 +154,8 @@ Every stage that can avoid an API call does:
 
 ## Threading Model
 
-The pipeline runs on multiple threads (audio capture, segment writer, transcription/translation processor, streaming receive/feeder/reconnect-supervisor threads, async context summarizer, GUI main thread). The GUI communicates with the pipeline via queues polled from the Tk event loop; logging goes through the thread-safe `utils/logging.py`.
+The pipeline runs on multiple threads (audio capture, segment writer, transcription/translation processor, streaming receive/feeder/reconnect-supervisor threads, async context summarizer, GUI main thread). Logging goes through the thread-safe `utils/logging.py`.
+
+The controller and the GUI stay decoupled through the same queues either way: `gui/pipeline_bridge.py` runs a worker thread that *blocks* on `translation_queue`/`error_queue` and emits a Qt signal per item. Qt delivers those to the GUI thread through its event loop (a queued connection across threads), so there is no polling interval to tune and no latency floor of half a poll period. The one exception is the in-progress live transcript, which the controller exposes as a getter rather than a queue and is therefore sampled on a 100 ms timer.
 
 Each thread loop **captures its stop event at entry** rather than reading `controller.stop_event` live: `start()` replaces the event, so a thread that outlived a previous `stop()`'s join timeout (e.g. one blocked in an API call) would otherwise be re-armed by the next start and run as a zombie alongside the new session.

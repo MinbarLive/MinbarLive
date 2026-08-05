@@ -1,0 +1,229 @@
+"""Themed message and confirm dialogs. **Every box in the app goes through here
+— never ``QMessageBox``**, and a test fails if one reappears.
+
+Qt's ``QMessageBox`` statics draw the platform's own dialog: a blue system
+icon, system-coloured chrome that ignores the app theme, and English "OK" /
+"Yes" / "No" whatever the GUI language is. The icon is also what plays the
+Windows alert sound on every single appearance.
+
+The shape here: a card with a glyph tile coloured by severity, the title beside
+it, the message below, and localized buttons. Return accepts, Escape cancels.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+)
+
+# glyph + the object name that colours it, per severity.
+_KINDS = {
+    "info": ("ℹ", "dialog_icon_info"),
+    "warn": ("⚠", "dialog_icon_warn"),
+    "error": ("✕", "dialog_icon_error"),
+}
+
+_WIDTH = 430
+
+
+def _t_default(_key: str, fallback: str) -> str:
+    return fallback
+
+
+class MessageDialog(QDialog):
+    """OK-only, or Yes/No when ``confirm``. Use the helpers below."""
+
+    def __init__(
+        self,
+        parent,
+        title: str,
+        message: str,
+        *,
+        kind: str = "warn",
+        confirm: bool = False,
+        default_yes: bool = True,
+        yes_text: str | None = None,
+        no_text: str | None = None,
+        translate: Callable[[str, str], str] | None = None,
+    ):
+        super().__init__(parent)
+        # Which button was pressed, or None if the dialog was dismissed with
+        # the title-bar close button or Escape. Qt gives both No and dismissal
+        # the same Rejected result, and they are not the same thing: "No" is an
+        # answer, dismissal is "never mind" and the caller may need to do
+        # nothing at all.
+        self.answer: bool | None = None
+        t = translate or _t_default
+        self.setWindowTitle(title)
+        if parent is not None and not parent.windowIcon().isNull():
+            self.setWindowIcon(parent.windowIcon())
+        # No help button in the title bar, and no resizing a fixed-size card.
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+
+        glyph, icon_name = _KINDS.get(kind, _KINDS["warn"])
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 16, 16, 16)
+        outer.setSpacing(0)
+        card = QFrame()
+        card.setObjectName("card")
+        box = QVBoxLayout(card)
+        box.setContentsMargins(18, 16, 18, 16)
+        box.setSpacing(12)
+
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        icon = QLabel(glyph)
+        icon.setObjectName(icon_name)
+        icon.setFixedSize(44, 44)
+        icon.setAlignment(Qt.AlignCenter)
+        head.addWidget(icon, 0, Qt.AlignTop)
+        heading = QLabel(title)
+        heading.setObjectName("heading")
+        heading.setWordWrap(True)
+        head.addWidget(heading, 1)
+        box.addLayout(head)
+
+        self.body = QLabel(message)
+        self.body.setWordWrap(True)
+        # Selectable: an error dialog often carries the string a user needs to
+        # paste into a bug report.
+        self.body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        box.addWidget(self.body)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        buttons.addStretch(1)
+        if confirm:
+            # Named actions when the caller supplies them: "Yes/No" is wrong
+            # for a choice between two things the user is actually doing, and
+            # on a destructive one it makes them guess which button loses work.
+            self.no_btn = QPushButton(no_text or t("dlg_no", "No"))
+            self.no_btn.setMinimumHeight(38)
+            self.no_btn.clicked.connect(self._answer_no)
+            self.yes_btn = QPushButton(yes_text or t("dlg_yes", "Yes"))
+            self.yes_btn.setObjectName("accent")
+            self.yes_btn.setMinimumHeight(38)
+            self.yes_btn.clicked.connect(self._answer_yes)
+            buttons.addWidget(self.no_btn)
+            buttons.addWidget(self.yes_btn)
+            default = self.yes_btn if default_yes else self.no_btn
+        else:
+            self.ok_btn = QPushButton(t("dlg_ok", "OK"))
+            self.ok_btn.setObjectName("accent")
+            self.ok_btn.setMinimumHeight(38)
+            self.ok_btn.clicked.connect(self.accept)
+            buttons.addWidget(self.ok_btn)
+            default = self.ok_btn
+        for name in ("no_btn", "yes_btn", "ok_btn"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setMinimumWidth(96)
+                # Cleared first, so only the intended default carries it: on a
+                # destructive confirm, Return must not press Yes.
+                button.setAutoDefault(False)
+        default.setAutoDefault(True)
+        default.setDefault(True)
+        default.setFocus()
+        box.addLayout(buttons)
+
+        outer.addWidget(card)
+        # Fixed width, height from the message: a long error must not be
+        # clipped, and a short one must not sit in an empty box.
+        self.setFixedWidth(_WIDTH)
+        layout = self.layout()
+        layout.activate()
+        self.setFixedHeight(layout.totalHeightForWidth(_WIDTH))
+
+    def _answer_yes(self) -> None:
+        self.answer = True
+        self.accept()
+
+    def _answer_no(self) -> None:
+        self.answer = False
+        self.reject()
+
+
+def show_message(
+    parent,
+    title: str,
+    message: str,
+    *,
+    kind: str = "warn",
+    translate: Callable[[str, str], str] | None = None,
+) -> None:
+    MessageDialog(parent, title, message, kind=kind, translate=translate).exec()
+
+
+def ask_yes_no(
+    parent,
+    title: str,
+    message: str,
+    *,
+    kind: str = "warn",
+    default_yes: bool = True,
+    yes_text: str | None = None,
+    no_text: str | None = None,
+    translate: Callable[[str, str], str] | None = None,
+) -> bool:
+    """True for the accepting button. Pass ``yes_text``/``no_text`` to name the
+    two actions when "Yes"/"No" would not tell the user what each one does.
+
+    Dismissing the dialog counts as No. Use :func:`ask_yes_no_or_dismiss` where
+    that is wrong — where "never mind" has to leave everything as it was.
+    """
+    return (
+        ask_yes_no_or_dismiss(
+            parent,
+            title,
+            message,
+            kind=kind,
+            default_yes=default_yes,
+            yes_text=yes_text,
+            no_text=no_text,
+            translate=translate,
+        )
+        is True
+    )
+
+
+def ask_yes_no_or_dismiss(
+    parent,
+    title: str,
+    message: str,
+    *,
+    kind: str = "warn",
+    default_yes: bool = True,
+    yes_text: str | None = None,
+    no_text: str | None = None,
+    translate: Callable[[str, str], str] | None = None,
+) -> bool | None:
+    """True or False for the two buttons, **None if the dialog was dismissed**
+    with the title-bar close button or Escape.
+
+    Qt reports "No" and "dismissed" identically, which is wrong whenever the
+    dialog is asking about something already under way: dismissing a "what
+    should happen to this?" prompt means "nothing — put it back", not the
+    second option.
+    """
+    dialog = MessageDialog(
+        parent,
+        title,
+        message,
+        kind=kind,
+        confirm=True,
+        default_yes=default_yes,
+        yes_text=yes_text,
+        no_text=no_text,
+        translate=translate,
+    )
+    dialog.exec()
+    return dialog.answer

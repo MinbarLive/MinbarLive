@@ -188,11 +188,37 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      # tk: setup-python's interpreter links against libtk8.6/libtcl8.6.
       # libportaudio2: the Linux sounddevice wheel does not bundle PortAudio,
       # so the spec bundles the system copy. xvfb: for the smoke launch below.
+      #
+      # libegl1/libgl1: QtGui links against libEGL.so.1 and libGL.so.1, so
+      # `import PySide6.QtWidgets` fails on this machine without them — which
+      # breaks PyInstaller's analysis pass, not just the smoke launch. They are
+      # driver-adjacent and deliberately NOT bundled into the AppImage: every
+      # desktop has its own, and shipping ours would override the user's GPU
+      # driver. The clean-container check below installs them for that reason.
+      #
+      # libpulse0: `soundcard` loads libpulse through ctypes AT IMPORT, so
+      # without it PyInstaller cannot import the module and skips both its
+      # submodules and its own PyInstaller hook — silently, as a warning. The
+      # AppImage then ships a soundcard that cannot be imported, and the Linux
+      # device list loses the filter that hides JACK's output monitors and
+      # application streams from the microphone dropdown. Same trap as libEGL:
+      # a library missing on the BUILDER changes what gets bundled.
+      #
+      # The xcb set is a BUILD dependency, not just a test one: PyInstaller
+      # bundles the shared libraries it finds the collected binaries linking
+      # against, so Qt's xcb platform plugin only carries libxcb-cursor and
+      # friends into the AppImage if they exist on this machine when the build
+      # runs. Without them a user who has not installed anything gets a plugin
+      # that will not load, Qt falls through to Wayland, and the subtitle
+      # overlay can be neither placed on a screen nor kept on top. Never solve
+      # that by telling users to install a package.
       - name: System libraries
-        run: sudo apt-get update && sudo apt-get install -y tk libportaudio2 xvfb
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libportaudio2 libpulse0 xvfb libegl1 libgl1
+          libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0
 
       - run: pip install -r requirements.txt
 
@@ -268,6 +294,78 @@ jobs:
             exit 1
           fi
           echo "AppImage stayed up for 30s without FUSE."
+
+      # The step above cannot fail for a missing bundled library: it runs on the
+      # machine that installed the xcb set so PyInstaller could find it, so it
+      # passes whether or not those libraries actually reached the AppImage.
+      # This one runs the same file where it matters — a container that has none
+      # of them — and is the only check that speaks for a user who installed
+      # nothing. Qt's xcb plugin failing to load is not fatal in an obvious way:
+      # the app falls through to the Wayland plugin, which under xvfb means no
+      # platform plugin at all, so the process dies immediately instead of
+      # reaching the 30 s timeout.
+      #
+      # What the container gets is what every desktop already has (GL, ALSA,
+      # fontconfig, D-Bus, an X server) and NOT one library from the Qt xcb set.
+      # --appimage-extract-and-run because a container has no FUSE; the
+      # FUSE-less runtime is what the step above exists to prove.
+      - name: Smoke-launch the AppImage where nothing is installed
+        run: |
+          set +e
+          # The outer timeout is not belt-and-braces. `timeout` inside the
+          # container signals only its own child, and --appimage-extract-and-run
+          # forks: the extracted app survived as an orphan holding stdout open,
+          # so `docker run` never returned and the step ran 24 minutes against a
+          # 30-second limit before the job cap stopped it. Bound it out here,
+          # where nothing the container does can interfere.
+          timeout 360 docker run --rm -v "$PWD/dist:/dist:ro" ubuntu:24.04 bash -c '
+            set -e
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -yqq --no-install-recommends \
+              xvfb libglib2.0-0t64 libgl1 libegl1 libasound2t64 libfontconfig1 \
+              libfreetype6 libdbus-1-3 >/dev/null
+            echo "--- Qt xcb libraries present in this container (expect none) ---"
+            for lib in libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+                       libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+                       libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0; do
+              dpkg -s "$lib" >/dev/null 2>&1 && echo "  $lib (pulled in as a dependency)"
+            done
+            echo "---"
+            cd /tmp && cp /dist/MinbarLive-x86_64.AppImage . \
+              && chmod +x MinbarLive-x86_64.AppImage
+            # Extract FIRST, outside the run window. Unpacking 270 MB of
+            # squashfs onto a container filesystem can take longer than the
+            # window itself, and doing both under one `timeout 30` made a slow
+            # extraction indistinguishable from an app that stayed up: the
+            # timeout fired during extraction, exited 124, and this step read
+            # 124 as success. It would have passed without ever launching the
+            # app — in the one check that speaks for a user who installed
+            # nothing.
+            ./MinbarLive-x86_64.AppImage --appimage-extract >/dev/null
+            set +e
+            xvfb-run -a timeout 30 squashfs-root/AppRun
+            rc=$?
+            set -e
+            if [ "$rc" -ne 124 ]; then
+              echo "AppImage exited with $rc instead of staying up for 30 s."
+              exit 1
+            fi
+            echo "Stayed up for 30 s after extraction."
+          '
+          code=$?
+          set -e
+          if [ "$code" -eq 124 ]; then
+            echo "::error::The clean-container check did not finish within 6 minutes. Something inside it is wedged - it is not a slow runner."
+            exit 1
+          fi
+          # 0, not 124: the container script now decides for itself whether the
+          # app stayed up and reports a plain pass/fail, so a timeout code can
+          # never be mistaken for a successful launch again.
+          if [ "$code" -ne 0 ]; then
+            echo "::error::The AppImage did not survive 30 s on a machine with nothing installed (exit $code) - it is not self-contained. Check that the xcb libraries were installed BEFORE pyinstaller ran."
+            exit 1
+          fi
+          echo "AppImage stayed up for 30s with none of the xcb libraries installed."
 
       # The AppImage is the only shipped Linux artifact: it wraps this same
       # binary and adds double-click-run + menu integration, so uploading the

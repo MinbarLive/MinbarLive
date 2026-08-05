@@ -26,13 +26,13 @@ These settings are configurable from the control panel / settings window and sav
 | Scroll Speed           | 1.0                  | Speed for continuous mode (0.5x - 5x)                                   |
 | Adaptive catch-up      | On                   | Speeds up continuous scrolling when a backlog builds                    |
 | Subtitle window height | 50 %                 | Height of the subtitle window as % of the screen                        |
-| Transparent            | Off                  | Transparent overlay for static mode                                     |
+| Transparent            | Off                  | Transparent overlay for static mode (genuine per-pixel alpha; on X11 it needs a compositing window manager) |
 | Input Device           | System default       | Microphone, or a Windows `(Loopback)` output device (system audio)      |
 | Subtitle Screen        | Monitor 1            | Monitor for subtitle display                                            |
 | Hide subtitle window   | Never                | 3-way: **Never** (always shown) / **When stopped** / **Always** (no overlay at all — transcription and translation still run to history) |
 | Show footer            | On                   | AI-disclaimer pill on the subtitle window                               |
 | Windows on top         | When running         | 3-way: **Never** / **When running** / **Always**. The control panel is only ever topmost while a subtitle overlay is open |
-| Window style           | Windows              | **Windows** = separate OS windows; **Integrated** = secondary windows open inside the control panel over a dim overlay. Integrated is Windows-only (see below) |
+| Window style           | Integrated           | **Integrated** = secondary windows open inside the control panel over a dim overlay; **Windows** = separate OS windows (see below) |
 | Hide announcement when stopped | On           | Clears an "until stopped" announcement when the session is stopped      |
 | Auto start             | Off                  | Start translating as soon as the app launches                           |
 | Auto stop when idle    | On                   | Stop a running session after 10 min without any transcription (cost guard) |
@@ -72,7 +72,11 @@ Two of the settings above are 3-way selectors that replaced four older checkboxe
 | `subtitle_hide_mode` | `never` / `stopped` / `always`  | `subtitle_output_enabled` + `hide_subtitle_on_stop` |
 | `always_on_top_mode` | `never` / `running` / `always`  | `always_on_top` (a boolean)                        |
 
-**Window style** (`window_style`, default `windowed`) chooses between separate OS windows and Discord-style panels that open inside the control panel over a live dimmed backdrop (Esc or a click on the backdrop closes the topmost panel; dialogs are never closed by a stray click). Integrated mode is **Windows-only**: X11 without a compositor ignores per-window opacity, so the backdrop would render as solid black. On Linux and macOS the selector is disabled and separate windows are always used, even if `window_style` says otherwise.
+**Window style** (`window_style`, default `integrated`) chooses between Discord-style panels that open inside the control panel over a dimmed backdrop and separate OS windows. Esc, the floating ✕ or a click on the dim closes the topmost panel; dialogs are never closed by a stray click.
+
+Integrated mode works on **every platform**. It was Windows-only under the old Tk GUI, which built the panels as borderless top-level windows and needed per-window opacity from the window manager — something X11 without a compositor ignores, so the backdrop rendered solid black. The Qt host reparents the panels *into* the control panel as child widgets and paints the dim into the app's own back buffer, which asks nothing of the window manager (`gui/modal_host.py`).
+
+The default changed to `integrated` on 2026-08-04, and only for new installs: `save_settings` writes `window_style` out, so an existing `settings.json` keeps whatever it already had.
 
 The control panel also remembers whether it was **maximized** (`window_maximized`), which a `WxH+X+Y` geometry string cannot express. `window_geometry` keeps the last restored-down size, so un-maximizing after start-up lands somewhere sensible instead of filling the screen again.
 
@@ -143,31 +147,44 @@ The loudness-based silence gate above cannot tell speech from static or hum; `au
 | `STREAMING_RECONNECT_BASE_SECONDS` | 1.0     | First backoff delay after a dropped connection      |
 | `STREAMING_RECONNECT_MAX_SECONDS`  | 30.0    | Backoff cap; retries continue until Stop            |
 
-### Display scaling (gui/scaling.py)
+### Secondary window sizing (gui/window_size.py)
 
-Window sizes are defined in DPI-logical units, so Windows multiplies them by the display scaling. On a small high-DPI screen (a 1920×1080 laptop at the recommended 150 %) that made every window fill 80–100 % of the usable height, and at 175 % the wizard and settings windows were clipped. A single clamp scales all windows down so the largest one fits.
+Settings, Batch and Announcement are the same shape — a hero, a scrolling column
+of cards, and an action bar pinned below — so they open at the same width and
+take the height their content asks for, up to a cap. Past the cap the cards
+scroll rather than pushing the action bar off the bottom.
 
-| Parameter             | Default | Description                                                              |
-| --------------------- | ------- | ------------------------------------------------------------------------ |
-| `DESIGN_W`/`DESIGN_H` | 900/672 | Largest window the app can open (history viewer width, wizard height)     |
-| `MAX_SCREEN_FRACTION` | 0.85    | A window may use at most this much of the usable screen area              |
+| Parameter            | Default | Description                                                     |
+| -------------------- | ------- | ---------------------------------------------------------------- |
+| `SECONDARY_WINDOW_W` | 520     | Shared width; wider and the single-column cards stretch out of shape |
+| `SECONDARY_MAX_H`    | 760     | Height cap. Not lower: the batch window's collapsed cards already come to ~720 |
+| `_MAX_SCREEN_SHARE`  | 0.92    | …and never more than this share of a short screen                |
 
-The factor is never above 1.0; it only shrinks when the design would not fit, so a large monitor at 150 % keeps the bigger text the user asked for and is left exactly as-is.
+There is no display-scaling clamp any more. The old Tk tree needed one because
+window sizes were logical units that Windows multiplied by the display scaling,
+which clipped the wizard at 175 %; Qt handles per-monitor DPI itself (the frozen
+EXE declares per-monitor-aware-v2 in `MinbarLive.manifest`), and the windows that
+used to be fixed designs are now content-sized by the rule above.
 
-### Control-panel window & card grid (gui/app_gui.py)
+### Control-panel window & card grid (gui/control_panel.py)
 
 The control panel opens at a size that shows every card at once and can then be
 dragged as large or as small as you like; the cards reflow to fit. The last
-size and position are remembered in `window_geometry`.
+size and position are remembered in `window_geometry`, and whether it was
+maximized in `window_maximized`.
 
 | Parameter                 | Default   | Description                                                    |
 | ------------------------- | --------- | -------------------------------------------------------------- |
-| `_DEFAULT_W`/`_DEFAULT_H` | 880/597   | Size the window opens at on a fresh install (logical units)     |
-| `_MIN_W`/`_MIN_H`         | 380/300   | Floor the window may be dragged down to                         |
-| `_COL2_MIN_W`             | 720       | Card-grid width from which two columns are used                 |
-| `_COL3_MIN_W`             | 1320      | …and three columns (a maximized window shows everything at once) |
-| `_MAX_CARD_AREA_W`        | 1200      | Beyond this the 1/2-column grid is centered instead of stretched |
-| `_MAX_CARD_AREA_W_WIDE`   | 1800      | Same cap for the 3-column grid                                  |
+| `_DEFAULT_W`/`_DEFAULT_H` | 880/640   | Size the window opens at on a fresh install (logical units)     |
+| minimum size              | 420×420   | Floor the window may be dragged down to (`setMinimumSize`)      |
+| `_COL2_MIN_W`             | 800       | Card-grid width from which two columns are used                 |
+| `_COL3_MIN_W`             | 1030      | …and three columns (a maximized window shows everything at once) |
+| `_SIDEBAR_W_WITH_LOG`     | 500       | Width the card sidebar keeps when the log panel is open          |
+| `_LOG_PANEL_MIN_W`        | 340       | Minimum width of the log panel; the window widens only if both cannot fit |
+
+The column thresholds are measured from what the columns actually need. The
+horizontal scrollbar is off, so a threshold that lets a column drop below its
+minimum does not scroll — it clips.
 
 ### Announcements (config.py)
 

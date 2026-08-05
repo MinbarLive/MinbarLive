@@ -1,9 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import glob
+import importlib.util
+import os
 import sys
 
-from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
 
 IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
@@ -41,8 +43,8 @@ _pyi_hooks.copy_metadata = _copy_metadata_by_import_name
 # environment takes it from a .desktop entry, not from the binary.
 ICON_PATH = "public/MinbarLive.ico"
 # Embeds per-monitor DPI awareness (plus longPathAware and Common-Controls v6)
-# into the frozen EXE, so the packaged app is aware from process start rather
-# than from the first CustomTkinter window. Windows-only.
+# into the frozen EXE, so the packaged app is aware from process start.
+# Windows-only.
 MANIFEST_PATH = "MinbarLive.manifest"
 
 hiddenimports = (
@@ -67,17 +69,16 @@ hiddenimports = (
     + collect_submodules("dotenv")
     + collect_submodules("screeninfo")
     + collect_submodules("keyring")
-    + collect_submodules("customtkinter")
-    + collect_submodules("arabic_reshaper")
-    + collect_submodules("bidi")
+    # PySide6 has a comprehensive PyInstaller hook of its own — it collects the
+    # Qt libraries, the platform PLUGINS and the translations. Listing
+    # submodules on top of it only re-pulls what the hook already has. What the
+    # hook cannot do is conjure system libraries the build machine lacks: on
+    # Linux the xcb platform plugin links against libxcb-cursor and friends, so
+    # the builder must install them BEFORE this runs (release.yml does) or the
+    # plugin ships unloadable and the app falls through to Wayland, where the
+    # subtitle overlay can be neither placed nor kept on top.
     + collect_submodules("webrtcvad")  # imported lazily by audio/vad.py
     + collect_submodules("soundcard")  # imported lazily for WASAPI loopback capture
-    # PIL.ImageTk (utils/icons.py header logo) pulls in the C helper module
-    # PIL._tkinter_finder indirectly. PyInstaller's PIL hook picks it up on
-    # Windows but misses it on Linux, so the frozen Linux app crashes the
-    # logo render with "No module named 'PIL._tkinter_finder'" and shows a
-    # wordmark-only header. Harmless to list on every platform.
-    + ["PIL._tkinter_finder"]
 )
 
 # keyring's Linux Secret Service backend (GNOME Keyring / KWallet) is provided by
@@ -107,13 +108,14 @@ excludes = [
     "matplotlib",
     # PIL is NOT excluded: utils/icons.py crops and scales the header logo
     # with Pillow. Excluding it left the frozen app with a wordmark-only
-    # header (CustomTkinter's own PIL import is in a try/except, so nothing
-    # else failed loudly).
+    # header, and nothing failed loudly.
+    # Tkinter is gone with the CustomTkinter tree, and excluding it keeps a
+    # stray tkinter import from ever pulling Tcl/Tk into the bundle again.
+    "tkinter",
     "pandas",
     "IPython",
     "notebook",
     "jupyter",
-    "tkinter.test",
     # Build/packaging tooling never used at runtime. keyring's deps
     # (jaraco.*, more_itertools) are installed standalone, not via
     # setuptools._vendor, so dropping setuptools/pkg_resources is safe; the
@@ -149,7 +151,40 @@ if IS_LINUX:
         print("WARNING: libportaudio not found - the Linux build will have no audio.")
 
 # Bundle project data/ and public/ into the executable (available under sys._MEIPASS/)
-datas = [("data", "data"), ("public", "public")] + collect_data_files("customtkinter")
+datas = [("data", "data"), ("public", "public")]
+
+# soundcard reads a cffi header out of its own package directory AT IMPORT
+# (pulseaudio.py.h on Linux, coreaudio.py.h on macOS, mediafoundation.py.h on
+# Windows). Those are DATA files, so the import graph never carries them: the
+# only thing that bundles them is soundcard's own PyInstaller hook, which
+# PyInstaller discovers through an entry point it resolves by IMPORTING
+# soundcard.
+#
+# On Linux that import runs `_pulse = _PulseAudio()` at module level, and the
+# constructor ends in `assert ... == PA_CONTEXT_READY`. No CI runner runs a
+# PulseAudio DAEMON, so the context never becomes ready and the import raises
+# AssertionError. PyInstaller downgrades that to a warning, skips the hook, and
+# ships soundcard/pulseaudio.py without pulseaudio.py.h — so `import soundcard`
+# dies with FileNotFoundError inside the AppImage. Every call site catches
+# Exception (gui/device_list.py, app_controller.py), so nothing fails loudly:
+# the microphone dropdown silently loses both the JACK-monitor filter and every
+# loopback device. Installing libpulse0 on the builder was necessary but not
+# sufficient — it fixes the dlopen, not the absent daemon.
+#
+# So resolve the package path WITHOUT importing it (find_spec locates, it does
+# not execute) and bundle the headers here. What ships no longer depends on the
+# builder's audio stack, which is the same rule the xcb and libEGL notes in
+# release.yml are built on. Hard-fail rather than warn: a silent skip is what
+# made this survive a green build in the first place.
+_soundcard_spec = importlib.util.find_spec("soundcard")
+if _soundcard_spec is None or not _soundcard_spec.submodule_search_locations:
+    raise SystemExit("soundcard is not installed - loopback capture would ship broken.")
+_soundcard_headers = glob.glob(
+    os.path.join(_soundcard_spec.submodule_search_locations[0], "*.py.h")
+)
+if not _soundcard_headers:
+    raise SystemExit("soundcard ships no *.py.h - it cannot be imported at runtime.")
+datas += [(header, "soundcard") for header in _soundcard_headers]
 
 a = Analysis(
     ["main.py"],

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from utils.cost_display import (
     cost_bars,
@@ -115,7 +115,7 @@ class TestBars:
 
 
 class TestWindowTotal:
-    _NOW = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    _NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
 
     def test_sums_sessions_inside_window(self):
         sessions = [
@@ -154,7 +154,7 @@ class TestWindowTotal:
 
 
 class TestWindowByProvider:
-    _NOW = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    _NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
 
     def _two_provider_session(self, sid, start, gem, oai, gem_priced=True):
         s = _session(id=sid, started_at=start)

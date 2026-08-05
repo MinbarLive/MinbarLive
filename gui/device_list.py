@@ -9,6 +9,7 @@ import sounddevice as sd
 from audio.device_support import usable_input_samplerate
 from audio.loopback import clear as _loopback_clear
 from audio.loopback import register as _loopback_register
+from audio.loopback import soundcard_usable
 from config import FS
 
 
@@ -63,6 +64,12 @@ def _linux_real_source_names() -> set[str] | None:
     (soundcard missing, no PulseAudio) so the caller does no filtering and a
     pure-ALSA machine still shows its raw devices."""
     if not sys.platform.startswith("linux"):
+        return None
+    # No reachable PulseAudio server: calling soundcard would abort the process
+    # in a frozen build, and SIGABRT is not catchable (see soundcard_usable).
+    # Same answer as a missing soundcard — no filtering, so the pure-ALSA
+    # machine this docstring promises keeps its raw devices.
+    if not soundcard_usable():
         return None
     try:
         import soundcard as sc  # noqa: PLC0415 (lazy import is intentional)
@@ -232,7 +239,10 @@ def get_input_devices() -> tuple[list[str], list[str], list[int], list[bool]]:
         # Known soundcard limitation: recording a single channel on Windows
         # WASAPI produces garbage — the capture loops always use channels=2
         # and mix to mono.
-        if not _LOOPBACK_SUPPORTED:
+        # soundcard_usable(): on Linux without a PulseAudio server the call
+        # below would abort the process rather than raise (see its docstring),
+        # so the registry is left empty and no loopback entry is offered.
+        if not _LOOPBACK_SUPPORTED or not soundcard_usable():
             return display_names, base_names, indices, loopback_flags
         try:
             import soundcard as sc  # noqa: PLC0415 (lazy import is intentional)

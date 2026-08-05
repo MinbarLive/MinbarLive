@@ -1,540 +1,704 @@
-"""Shared UI building blocks for the control panel (mixin for AppGUI).
+"""The shared controls: segmented button, dropdown, slider, and the
+always-on-top helpers.
 
-Moved verbatim out of gui/app_gui.py: the theme palette, the themed
-message-box wrappers, the toplevel icon/titlebar helpers and the widget
-factory (_section_card / _field / _label / _combo / ...). The methods run
-on the AppGUI instance (``self``) and rely on attributes created in
-``AppGUI.__init__``: ``_colors``, ``gui_texts``, ``_theme_mode`` and the
-themed-widget registries (``_cards``, ``_labels``, ``_buttons``,
-``_combos``, ...).
+Qt ships no segmented button, and the panel uses one for every either/or choice
+(theme, window style, and the two 3-way selectors added in PR #22). It is
+rebuilt here rather than substituted with dropdowns, which is a decision about
+the UI users already know, not a technical one.
+
+Always-on-top goes through ``set_window_on_top``/``is_window_on_top`` and never
+through ``setWindowFlag`` — that recreates the native window (a white flash; it
+used to make the overlay vanish outright). ``QWidget.windowFlags()`` is
+deliberately not trusted as the state, because on X11 the flag is really the
+``_NET_WM_STATE_ABOVE`` property and Qt's xcb plugin only writes it while the
+window is unmapped.
 """
 
-import os
-import sys
-import tkinter as tk
-from collections.abc import Callable
-from typing import Any
+from __future__ import annotations
 
-import customtkinter as ctk
+from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QGuiApplication, QPainter, QPen
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QListView,
+    QPushButton,
+    QSizePolicy,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
-from config import ICON_PATH, ICON_PATH_PNG
-from gui.dropdown import CustomDropdown
-from utils.api_key_manager import apply_dark_titlebar, show_message
-from utils.icons import ICO_SUPPORTED, scaled_icon_photo
-
-# Whether integrated (in-app panel) window style can work on this platform.
-# Windows-only for now: on X11 without a compositor the dim overlay's
-# per-window alpha is ignored (the whole window goes solid black) and
-# borderless panels do not reliably stack above it. A named constant rather
-# than an inline platform test, so the gate and the Fenster-Stil control read
-# the same fact — and so tests can drive both branches on any host without
-# patching sys.platform process-wide.
-INTEGRATED_WINDOWS_SUPPORTED = sys.platform == "win32"
+# Height of a dropdown, and with it of every small button that shares a row
+# with one (the −/+ steppers, "?", the language swap, the colour pickers).
+# Mirrors the QComboBox metrics in theme.py: 8px padding top and bottom, a
+# 20px minimum content height and a 1px border on each side.
+CONTROL_H = 38
 
 
-class WidgetFactoryMixin:
-    """UI-kit methods shared by the control panel and its child windows."""
+def is_window_on_top(window: QWidget) -> bool:
+    """Whether ``window`` currently carries the always-on-top flag.
 
-    # Card header padding: above the header, and below it as the gap to the
-    # card's body. A collapsible card that is closed has no body, so the
-    # smaller bottom value would read as a lopsided card — see
-    # AppGUI._set_advanced_visible.
-    _CARD_HEADER_PADY = (18, 10)
+    Reads the platform window when there is one: set_window_on_top applies the
+    flag there, so the widget's cached copy can be a step behind.
+    """
+    handle = window.windowHandle()
+    flags = handle.flags() if handle is not None else window.windowFlags()
+    return bool(flags & Qt.WindowStaysOnTopHint)
 
-    def _palette(self, theme_mode: str) -> dict[str, str]:
-        if theme_mode == "light":
-            return {
-                "app_bg": "#edf2f7",
-                "sidebar": "#f8fafc",
-                "card": "#ffffff",
-                "panel": "#ffffff",
-                "panel_soft": "#f1f5f9",
-                "border": "#d7dee8",
-                "shadow": "#cbd5e1",
-                "text": "#111827",
-                "muted": "#64748b",
-                "log_bg": "#fbfdff",
-                "log_text": "#172033",
-                "accent": "#15803d",
-                "accent_hover": "#166534",
-                "accent_soft": "#dcfce7",
-                "danger": "#dc2626",
-                "danger_hover": "#b91c1c",
-                "danger_soft": "#fee2e2",
-                "warning": "#d97706",
-                "button": "#e2e8f0",
-                "button_hover": "#cbd5e1",
-                "entry": "#f8fafc",
-                "entry_border": "#cbd5e1",
-            }
-        return {
-            "app_bg": "#0b1020",
-            "sidebar": "#0f172a",
-            "card": "#111827",
-            "panel": "#111827",
-            "panel_soft": "#182235",
-            "border": "#263449",
-            "shadow": "#050817",
-            "text": "#f8fafc",
-            "muted": "#9ca3af",
-            "log_bg": "#0a0f1d",
-            "log_text": "#d8e3f0",
-            "accent": "#16a34a",
-            "accent_hover": "#15803d",
-            "accent_soft": "#163821",
-            "danger": "#dc2626",
-            "danger_hover": "#b91c1c",
-            "danger_soft": "#421719",
-            "warning": "#f59e0b",
-            "button": "#1f2a44",
-            "button_hover": "#263654",
-            "entry": "#0f172a",
-            "entry_border": "#334155",
-        }
 
-    # How long a fully built window stays transparent before it is revealed.
-    # CTk widgets do not paint at construction: each one redraws when the
-    # <Configure> event that follows mapping reaches it, and those events are
-    # only delivered once the event loop runs again. A window revealed on the
-    # last line of its build therefore appears EMPTY and fills in over the
-    # next ~0.6 s (measured: 551 widgets in the settings window, ~150 redraws
-    # landing after the reveal) — which is what "you can watch the window
-    # build itself" was. A beat back in the event loop lets that drawing
-    # happen while the window is still invisible.
-    #
-    # 250 ms is measured, not guessed: redraws still landing after the reveal
-    # were 38-39 at 40 ms and 21-32 at 120 ms, and exactly 0 at 250 ms — in
-    # BOTH window styles. The tail comes from the ``after(200)`` iconbitmap
-    # call every CTkToplevel schedules for itself (plus, in windowed mode, our
-    # own icon + dark-titlebar job behind it): those cannot run while the build
-    # blocks the loop, so they land right after it and repaint the window.
-    # A window therefore appears ~0.25 s later than it could, but it appears
-    # finished — and sooner than the old path finished filling in.
-    _REVEAL_SETTLE_MS = 250
+# Platforms where what a window ASKS FOR only takes effect while it is
+# unmapped. X11 carries always-on-top as the _NET_WM_STATE_ABOVE property,
+# which Qt's xcb plugin only writes before mapping (updateNetWmStateBeforeMap),
+# so setting the flag on a visible window changes nothing at all — the setting
+# simply had no effect on Linux. The same rule reaches geometry: a window
+# manager is free to refuse a mapped window's move, and honours the position on
+# the next map (gui/subtitle_window.py _fit_to_screen, and the Tk overlay's
+# withdraw/deiconify in _set_screen_position). Wayland has no always-on-top
+# protocol at all; see gui/app.py, which asks for xcb first for that reason.
+_REMAP_TO_RESTACK = ("xcb", "wayland")
 
-    def _reveal_when_drawn(self, win: tk.Misc) -> None:
-        """Fade a finished window in once its widgets have actually painted.
 
-        Deliberately not ``win.update()``: that would flush the same drawing
-        synchronously, but it also processes queued *user input* in the middle
-        of an open (a second click on the button that opened the window, a
-        click on Start), i.e. reentrancy in the worst place.
-        ``update_idletasks()`` alone cannot do it — the pending work is
-        events, not idle tasks (measured: 0 redraws, one pass)."""
+def needs_remap() -> bool:
+    """Whether this platform applies such a request only on the next map."""
+    return QGuiApplication.platformName().split(":")[0] in _REMAP_TO_RESTACK
 
-        def _show() -> None:
-            try:
-                if win.winfo_exists():
-                    win.attributes("-alpha", 1.0)
-            except tk.TclError:
-                pass
 
-        try:
-            win.update_idletasks()  # geometry now, so only drawing is left
-            win.after(self._REVEAL_SETTLE_MS, _show)
-        except tk.TclError:
-            pass
+def set_window_on_top(window: QWidget, on_top: bool) -> None:
+    """Toggle always-on-top without the window flashing.
 
-    def _integrated_windows_supported(self) -> bool:
-        """Whether this platform can render integrated windows at all.
+    ``QWidget.setWindowFlag`` DESTROYS and recreates the native window, which
+    hides the widget and repaints it from an empty surface — a white flash on
+    every change, and the reason the old code had to re-show and re-apply the
+    geometry afterwards. Setting the flag on the QWindow instead goes straight
+    to the platform plugin (a SetWindowPos on Windows), so the surface, the
+    geometry and the visibility all survive.
 
-        Off Windows the stored setting is ignored and the Fenster-Stil control
-        is forced to "windowed" + disabled (see gui/settings_view.py), so a
-        Linux user can't land on the black-screen bug."""
-        return INTEGRATED_WINDOWS_SUPPORTED
+    A widget that has never been shown has no QWindow yet; there the widget
+    call is both necessary and free of any flash.
 
-    def _use_integrated_windows(self) -> bool:
-        """Whether secondary windows open in-app (Discord-style panels over a
-        dim overlay) instead of as separate OS windows — the window_style
-        setting, applied per open via gui/modal_host.py, and only on a
-        platform that supports it."""
-        return (
-            self._integrated_windows_supported()
-            and getattr(self._saved_settings, "window_style", "windowed")
-            == "integrated"
+    On X11 the cheap path is not available — see ``_REMAP_TO_RESTACK`` — so
+    the window is re-created and shown again there. It is the flash Windows
+    was spared, in exchange for the setting working at all.
+    """
+    if is_window_on_top(window) == on_top and not needs_remap():
+        # Skipped only where the cached flag is the truth. On X11 it is not:
+        # the state lives in a property the window manager owns, and a window
+        # that has been re-mapped since (the overlay's geometry repair does
+        # that) can carry the flag in Qt and sit at the bottom of the stack on
+        # screen. Re-asserting costs a flash; believing a stale flag cost the
+        # overlay entirely — the panel obeyed the setting and the subtitles
+        # were left under the browser.
+        return
+    handle = window.windowHandle()
+    if handle is None or needs_remap():
+        visible = window.isVisible()
+        window.setWindowFlag(Qt.WindowStaysOnTopHint, on_top)
+        # setWindowFlag re-parents, which hides the widget; only a window that
+        # was on screen gets put back, and through the class's own show() so
+        # an overlay re-applies its geometry for the new stacking.
+        if visible:
+            window.show()
+            # A window the toolkit just destroyed and rebuilt is a NEW window to
+            # the WM, and it decides where to map it — under everything else,
+            # for one that never takes focus. Callers apply this to the overlay
+            # first and the panel last, so the panel still ends up in front.
+            window.raise_()
+        return
+    flags = handle.flags()
+    handle.setFlags(
+        flags | Qt.WindowStaysOnTopHint if on_top else flags & ~Qt.WindowStaysOnTopHint
+    )
+
+
+class SegmentedControl(QWidget):
+    """A joined row of mutually exclusive buttons — a CTkSegmentedButton.
+
+    Emits ``changed`` with the selected index. Corner rounding is driven by a
+    ``seg`` property (first/middle/last/only) that the stylesheet selects on,
+    so the row reads as one pill rather than separate buttons.
+    """
+
+    changed = Signal(int)
+
+    def __init__(self, labels: list[str], current: int = 0, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)  # joined, not separate buttons
+
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._buttons: list[QPushButton] = []
+
+        last = len(labels) - 1
+        for i, label in enumerate(labels):
+            btn = QPushButton(label)
+            btn.setObjectName("segment")
+            btn.setCheckable(True)
+            # A full-width row control like a dropdown, so it keeps the same
+            # height — two pixels short read as a slightly different control.
+            btn.setFixedHeight(CONTROL_H)
+            btn.setCursor(Qt.PointingHandCursor)
+            if len(labels) == 1:
+                seg = "only"
+            elif i == 0:
+                seg = "first"
+            elif i == last:
+                seg = "last"
+            else:
+                seg = "middle"
+            btn.setProperty("seg", seg)
+            self._group.addButton(btn, i)
+            layout.addWidget(btn)
+            self._buttons.append(btn)
+
+        if 0 <= current < len(self._buttons):
+            self._buttons[current].setChecked(True)
+        self._group.idClicked.connect(self.changed.emit)
+
+    def set_labels(self, labels: list[str]) -> None:
+        """Re-label the segments in place (a GUI-language switch).
+
+        Rebuilding the control instead would drop the selection and every
+        connection to it.
+        """
+        for btn, label in zip(self._buttons, labels, strict=False):
+            btn.setText(label)
+
+    def current_index(self) -> int:
+        return self._group.checkedId()
+
+    def set_current_index(self, index: int) -> None:
+        if 0 <= index < len(self._buttons):
+            self._buttons[index].setChecked(True)
+
+    def set_enabled(self, enabled: bool) -> None:
+        for btn in self._buttons:
+            btn.setEnabled(enabled)
+
+
+class Stepper(QWidget):
+    """A −/+ pair with a value label, matching the Tk stepper rows.
+
+    The Tk panel uses these (not a slider) for font size and scroll speed:
+    both are adjusted mid-session by an operator who wants a predictable step,
+    not a drag.
+    """
+
+    def __init__(self, on_decrease, on_increase, value_text: str = "", parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self.minus = QPushButton("−")
+        self.plus = QPushButton("+")
+        for btn in (self.minus, self.plus):
+            btn.setObjectName("stepper")
+            # Square, at the height of the dropdown it shares a row with —
+            # taller read as a different class of control.
+            btn.setFixedSize(CONTROL_H, CONTROL_H)
+            btn.setCursor(Qt.PointingHandCursor)
+        self.minus.clicked.connect(on_decrease)
+        self.plus.clicked.connect(on_increase)
+
+        self.value = QLabel(value_text)
+        self.value.setObjectName("stepper_value")
+        self.value.setAlignment(Qt.AlignCenter)
+        self.value.setMinimumWidth(64)
+
+        layout.addWidget(self.minus)
+        layout.addWidget(self.value)
+        layout.addWidget(self.plus)
+        # No trailing stretch: every caller puts the stepper at the right-hand
+        # end of a row, so an internal stretch would only pad it away from the
+        # edge it is meant to sit against.
+
+    def set_value_text(self, text: str) -> None:
+        self.value.setText(text)
+
+
+class Dropdown(QComboBox):
+    """A combo box that paints its own chevron.
+
+    The stylesheet flattens ``QComboBox::drop-down`` to kill the platform's
+    bevelled drop-down button, and that removes the arrow with it. Restoring
+    the arrow in CSS is not possible here: ``image:`` only takes a file or a
+    compiled resource, and the zero-box/transparent-border triangle trick
+    renders as a filled rectangle once a ``QProxyStyle`` is installed (probed,
+    not assumed). Painting it is three lines and always right.
+
+    Also carries the size policy every dropdown in the app wants: without
+    ``AdjustToMinimumContentsLengthWithIcon`` a combo demands its longest entry
+    and the whole window refuses to be made narrow.
+    """
+
+    _ARROW_BOX = 26  # must match the drop-down width in the stylesheet
+    # Longest popup before it scrolls. The language, model and device lists run
+    # to a dozen-plus entries, and a popup that tall covers the window it
+    # belongs to.
+    _MAX_VISIBLE_ITEMS = 6
+
+    def __init__(self, items: list[str] | None = None, parent=None):
+        super().__init__(parent)
+        if items:
+            self.addItems(items)
+        # An explicit item view, so the popup is a plain list on every
+        # platform and the stylesheet's `QComboBox QAbstractItemView` rules
+        # are what draws it. Left to itself, a platform style may hand back a
+        # menu-like or native view instead (see _ControlStyle.styleHint).
+        self.setView(QListView())
+        self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(8)
+        self.setMaxVisibleItems(self._MAX_VISIBLE_ITEMS)
+        # Picking an entry ends the interaction; keeping the accent focus ring
+        # afterwards reads as "still editing".
+        self.activated.connect(lambda _index: self.clearFocus())
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt API
+        """Never change the selection by scrolling over a closed combo.
+
+        Qt's default silently switches language, model or audio device when the
+        wheel passes over one — trivial to do while scrolling the panel, and
+        the setting it changes is not obviously connected to the gesture.
+
+        Ignoring the event hands the gesture to the scroll area behind, so the
+        page scrolls instead (verified with a real OS wheel). The open popup is
+        a separate widget and keeps its own wheel scrolling.
+        """
+        event.ignore()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().paintEvent(event)
+        from gui.theme import current_colors
+
+        colors = current_colors()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = QPen(
+            QColor(colors["border"] if not self.isEnabled() else colors["muted"]), 1.7
+        )
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        cx = self.width() - self._ARROW_BOX / 2 - 1
+        cy = self.height() / 2
+        half = 4.0
+        painter.drawPolyline(
+            [
+                QPointF(cx - half, cy - half / 2),
+                QPointF(cx, cy + half / 2),
+                QPointF(cx + half, cy - half / 2),
+            ]
+        )
+        painter.end()
+
+
+class Slider(QSlider):
+    """A horizontal slider the wheel does not touch.
+
+    Same rule as Dropdown: the panel scrolls, and a slider that happens to be
+    under the pointer would take the gesture instead. Both of ours drive the
+    audience overlay live — window height and backdrop opacity — so a stray
+    wheel resizes or fades what the room is looking at, mid-session. Dragging
+    and the arrow keys still work; the gesture goes to the page behind.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(Qt.Horizontal, parent)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt API
+        event.ignore()
+
+
+class AudioLevelBar(QWidget):
+    """Segmented input-level meter — the Qt twin of ``gui/audio_level_bar.py``.
+
+    A plain progress bar can only use one colour at a time; an audio meter is
+    easier to read when its green/amber/red zones stay in place while the fill
+    moves through them, so the three zones are painted directly.
+    """
+
+    # Zone boundaries on the GUI's -60..0 dBFS scale, as in the Tk widget.
+    GREEN_END = 0.70  # -18 dBFS
+    RED_START = 5.0 / 6.0  # -10 dBFS
+
+    GREEN = "#37B24D"
+    WARNING = "#F08C00"
+    DANGER = "#E03131"
+
+    # The zones are also washed faintly across the EMPTY part of the track, so
+    # someone sitting in the green can see how much headroom is left before
+    # amber and red rather than discovering the boundaries by clipping.
+    ZONE_GHOST_ALPHA = 60
+
+    def __init__(self, height: int = 12, parent=None):
+        super().__init__(parent)
+        self._value = 0.0
+        self.setFixedHeight(height)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    @staticmethod
+    def band_span(left: int, width: int, start: float, end: float) -> tuple[int, int]:
+        """Pixel range ``[x0, x1)`` for the fraction ``start``..``end``.
+
+        Both edges are rounded the same way, so consecutive zones share a
+        boundary EXACTLY. Rounding the width instead and padding it by a pixel
+        — the obvious way to close a rounding gap — makes every band reach one
+        pixel into the next. Invisible for the opaque fill, but the translucent
+        zone map composited twice there and drew a seam between amber and red.
+        """
+        return round(left + width * start), round(left + width * end)
+
+    def set_value(self, value: float) -> None:
+        value = max(0.0, min(1.0, float(value)))
+        # Repainting 20x a second for an unchanged reading is pure waste; the
+        # Tk meter learned the same lesson (PR #29).
+        if abs(value - self._value) < 0.004:
+            return
+        self._value = value
+        self.update()
+
+    def value(self) -> float:
+        return self._value
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt API
+        from gui.theme import current_colors
+
+        # Read at paint time rather than cached: a theme switch then needs no
+        # bookkeeping, and a caller passing a stale theme cannot desync it.
+        colors = current_colors()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = self.rect().adjusted(0, 0, -1, -1)
+        radius = rect.height() / 2
+
+        painter.setPen(QColor(colors["border"]))
+        painter.setBrush(QBrush(QColor(colors["panel_soft"])))
+        painter.drawRoundedRect(rect, radius, radius)
+
+        painter.setClipPath(self._rounded_path(rect, radius))
+        painter.setPen(Qt.NoPen)
+        zones = (
+            (0.0, self.GREEN_END, self.GREEN),
+            (self.GREEN_END, self.RED_START, self.WARNING),
+            (self.RED_START, 1.0, self.DANGER),
         )
 
-    def _set_toplevel_icon(self, win: ctk.CTkToplevel) -> None:
-        """Set the window icon on a CTkToplevel, then re-assert the themed
-        titlebar. On Windows ``iconbitmap()`` resets the DWM titlebar to the
-        light default, which left a white title bar above our dark windows."""
-        loaded = False
-        if ICO_SUPPORTED and os.path.exists(ICON_PATH):
-            try:
-                win.iconbitmap(ICON_PATH)
-                loaded = True
-            except Exception:
-                pass
-        if not loaded and os.path.exists(ICON_PATH_PNG):
-            try:
-                win.iconphoto(False, scaled_icon_photo(ICON_PATH_PNG))
-            except Exception:
-                pass
-        self._reassert_dark_titlebar(win)
+        def band(start: float, end: float, colour: QColor) -> None:
+            x0, x1 = self.band_span(rect.left(), rect.width(), start, end)
+            if x1 <= x0:
+                return
+            painter.setBrush(QBrush(colour))
+            painter.drawRect(x0, rect.top(), x1 - x0, rect.height())
 
-    def _reassert_dark_titlebar(self, win: ctk.CTkToplevel) -> None:
-        """Re-apply the themed DWM titlebar after ``iconbitmap`` reset it.
+        # The zone map first, at low opacity. Only amber and red are ghosted:
+        # washing the green zone too made a silent meter read as an already
+        # 70%-full bar, which is worse than showing no map at all.
+        for start, end, colour in zones[1:]:
+            ghost = QColor(colour)
+            ghost.setAlpha(self.ZONE_GHOST_ALPHA)
+            band(start, end, ghost)
 
-        Delegates to the shared ``apply_dark_titlebar`` (also used by the
-        themed message dialogs) so the DWM/ctypes logic lives in one place.
-        Deliberately NOT CTk's ``_windows_set_titlebar_color`` — that
-        withdraws/deiconifies and in our ``after()``-icon + transient flow the
-        async re-show never happened, leaving the window hidden.
+        # ...then the live level on top, at full strength.
+        for start, end, colour in zones:
+            filled = min(self._value, end)
+            if filled <= start:
+                break
+            band(start, filled, QColor(colour))
 
-        Passes the app's current theme explicitly — CTk's global appearance
-        mode is only set at startup, so it is stale after a runtime switch."""
-        apply_dark_titlebar(win, dark=self._theme_mode == "dark")
+        # The bands are drawn over the rounded outline, so restore it.
+        painter.setClipping(False)
+        painter.setPen(QColor(colors["border"]))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, radius, radius)
 
-    def _alert(
+    @staticmethod
+    def _rounded_path(rect, radius):
+        from PySide6.QtGui import QPainterPath
+
+        path = QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+        return path
+
+
+class _ClickableRow(QWidget):
+    """A plain row that reports clicks — the header of a collapsible card."""
+
+    clicked = Signal()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
+class Card(QFrame):
+    """A titled section card — the Qt twin of ``WidgetFactoryMixin._section_card``.
+
+    ``body`` is the layout callers fill; the symbol badge + title row above it
+    is built here so every card in the panel shares one look. The symbol sits
+    in its own rounded accent-coloured tile rather than being glued in front of
+    the title, which is what makes the Tk cards readable at a glance.
+
+    ``collapsible=True`` adds the ▾/▴ arrow and makes the whole header a toggle
+    (the Advanced card).
+    """
+
+    toggled = Signal(bool)
+
+    # Padding on all four sides, plus the gap the header keeps to the body.
+    # Qt drops that gap along with the hidden body, so a collapsed card is
+    # symmetric without any margin juggling.
+    _PAD = 16
+    _BODY_GAP = 10
+
+    def __init__(
+        self,
+        symbol: str,
+        title: str,
+        parent=None,
+        *,
+        collapsible: bool = False,
+        expanded: bool = True,
+    ):
+        super().__init__(parent)
+        self.setObjectName("card")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(self._PAD, self._PAD, self._PAD, self._PAD)
+        outer.setSpacing(self._BODY_GAP)
+
+        header = _ClickableRow()
+        header_row = QHBoxLayout(header)
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(12)
+
+        self.symbol_label = QLabel(symbol)
+        self.symbol_label.setObjectName("card_symbol")
+        self.symbol_label.setFixedSize(44, 44)
+        self.symbol_label.setAlignment(Qt.AlignCenter)
+        # setVisible AFTER the widget has a parent, always: a parentless widget
+        # shown is a TOP-LEVEL WINDOW, which is what the little boxes flashing
+        # across the screen before the panel opened were.
+        header_row.addWidget(self.symbol_label)
+        self.symbol_label.setVisible(bool(symbol))
+
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("card_title")
+        header_row.addWidget(self.title_label)
+        header_row.addStretch(1)
+
+        self.arrow_label = QLabel("▾")
+        self.arrow_label.setObjectName("card_arrow")
+        header_row.addWidget(self.arrow_label)
+        self.arrow_label.setVisible(collapsible)
+
+        self.header = header_row
+        self._header_widget = header
+        # Slack above the header, off while the card is open. A card given more
+        # height than it needs puts the difference into its trailing stretch,
+        # which is right for an open card (content stays top-aligned) but hangs
+        # a collapsed one's title off the top edge with a gap underneath. While
+        # collapsed the two stretches share it and the title sits centred.
+        outer.addStretch(0)
+        outer.addWidget(header)
+
+        self.content = QWidget()
+        self.body = QVBoxLayout(self.content)
+        self.body.setContentsMargins(0, 0, 0, 0)
+        self.body.setSpacing(10)
+        outer.addWidget(self.content)
+        self._outer = outer
+        self._collapsible = collapsible
+        self._expanded = True
+
+        # Connected whatever the current mode: set_expanded coerces a
+        # non-collapsible card back open, so the click is inert rather than
+        # needing the connection to be made and broken with set_collapsible.
+        header.clicked.connect(lambda: self.set_expanded(not self._expanded))
+        if collapsible:
+            header.setCursor(Qt.PointingHandCursor)
+            self.set_expanded(expanded)
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def is_collapsible(self) -> bool:
+        return self._collapsible
+
+    def set_expanded(self, expanded: bool) -> None:
+        # A card that cannot be collapsed is always open, so a header click
+        # (which asks for the opposite of the current state) is inert without
+        # needing a guard of its own.
+        expanded = bool(expanded) or not self._collapsible
+        if expanded == self._expanded:
+            return
+        self._expanded = expanded
+        self.content.setVisible(expanded)
+        self._outer.setStretch(0, 0 if expanded else 1)
+        self.arrow_label.setText("▴" if expanded else "▾")
+        self.toggled.emit(expanded)
+
+    def set_collapsible(self, collapsible: bool) -> None:
+        """Turn the header toggle on or off.
+
+        Not collapsible means always open: when the card is the only thing in
+        its column, a collapsed header strip would leave that column empty.
+        """
+        if collapsible == self._collapsible:
+            return
+        self._collapsible = collapsible
+        self.arrow_label.setVisible(collapsible)
+        self._header_widget.setCursor(
+            Qt.PointingHandCursor if collapsible else Qt.ArrowCursor
+        )
+        if not collapsible:
+            self.set_expanded(True)
+
+    def add_stretch(self) -> None:
+        """Absorb any height the card is given beyond its content.
+
+        Without it, a card stretched to match its neighbours spreads its own
+        rows apart; with it the content stays top-aligned and the slack sits at
+        the bottom.
+        """
+        self._outer.addStretch(1)
+
+
+class Expander(QWidget):
+    """A full-width toggle button with a panel that opens under it.
+
+    The Tk panel uses this shape for the subtitle-appearance controls: set-once
+    values that would otherwise make the Display card twice as tall.
+
+    ``collapsible=False`` keeps the panel open and renders the title as a plain
+    section heading instead — the shape a card's other sections have, so a
+    group that cannot be closed does not advertise a button.
+    """
+
+    toggled = Signal(bool)
+
+    _PANEL_PAD = 12
+
+    def __init__(
         self,
         title: str,
-        message: str,
+        parent=None,
         *,
-        parent: tk.Misc | None = None,
-        danger: bool = False,
-        icon: str | None = None,
-        icon_color: str | None = None,
-        sections: list[tuple[str, str]] | None = None,
-    ) -> None:
-        """Themed replacement for messagebox.showerror/showwarning (OK-only).
+        expanded: bool = False,
+        collapsible: bool = True,
+    ):
+        super().__init__(parent)
+        box = QVBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(8)
 
-        ``icon``/``icon_color`` default to a warning glyph; pass e.g. ``"🛈"``
-        with the accent colour for a neutral info dialog (dropdown help).
-        ``sections`` renders ``(heading, body)`` pairs with typographic
-        hierarchy instead of one flat ``message``."""
-        show_message(
-            parent or self,
-            title,
-            message,
-            self._colors,
-            icon=icon or ("✕" if danger else "⚠"),
-            icon_color=icon_color
-            or (self._colors["danger"] if danger else self._colors["warning"]),
-            ok_label=self.gui_texts.get("dlg_ok", "OK"),
-            sections=sections,
-            modal_host=self._modal_host if self._use_integrated_windows() else None,
-        )
+        self._title = title
+        self.heading = QLabel(title)
+        self.heading.setObjectName("section")
+        # Parented before any setVisible: a parentless widget that is shown is
+        # a top-level window (see Card).
+        box.addWidget(self.heading)
+        self.button = QPushButton()
+        self.button.setObjectName("expander")
+        self.button.setCursor(Qt.PointingHandCursor)
+        self.button.clicked.connect(lambda: self.set_expanded(not self._expanded))
+        box.addWidget(self.button)
 
-    def _confirm(
-        self, title: str, message: str, *, parent: tk.Misc | None = None
-    ) -> bool:
-        """Themed replacement for messagebox.askyesno. Returns True on Yes."""
-        return show_message(
-            parent or self,
-            title,
-            message,
-            self._colors,
-            confirm=True,
-            icon="⚠",
-            icon_color=self._colors["danger"],
-            yes_label=self.gui_texts.get("dlg_yes", "Yes"),
-            no_label=self.gui_texts.get("dlg_no", "No"),
-            modal_host=self._modal_host if self._use_integrated_windows() else None,
-        )
+        self.panel = QFrame()
+        self.body = QVBoxLayout(self.panel)
+        self.body.setSpacing(10)
+        box.addWidget(self.panel)
 
-    def _section_card(
-        self,
-        parent: ctk.CTkBaseClass,
-        symbol: str,
-        title_key: str,
-        subtitle_key: str | None = None,
-        toggle_command: Callable[[], Any] | None = None,
-    ) -> ctk.CTkFrame:
-        card = ctk.CTkFrame(
-            parent,
-            fg_color=self._colors["card"],
-            border_color=self._colors["border"],
-            border_width=2,
-            corner_radius=24,
-        )
-        # Placement is handled by _layout_sidebar_cards() (the card grid reflows
-        # into 1, 2 or 3 columns; single column while the log panel is open).
-        card.grid_columnconfigure(0, weight=1)
-        self._cards.append(card)
+        self._collapsible = collapsible
+        self._expanded = True
+        self.heading.setVisible(not collapsible)
+        self.button.setVisible(collapsible)
+        self._apply_panel_style()
+        self.set_expanded(expanded)
 
-        header = ctk.CTkFrame(card, fg_color="transparent")
-        # A collapsible card is built closed, and closed it has no body for the
-        # header's smaller bottom pad to sit against — that reads as a lopsided
-        # card, so it gets its top pad on both sides. AppGUI's
-        # _set_advanced_visible flips it back when the body opens.
-        top_pad, body_gap = self._CARD_HEADER_PADY
-        header.grid(
-            row=0,
-            column=0,
-            columnspan=99,
-            sticky="ew",
-            padx=20,
-            pady=(top_pad, top_pad if toggle_command is not None else body_gap),
-        )
-        header.grid_columnconfigure(1, weight=1)
+    def set_title(self, title: str) -> None:
+        self._title = title
+        self.heading.setText(title)
+        self._refresh_button()
 
-        symbol_label = ctk.CTkLabel(
-            header,
-            text=symbol,
-            font=ctk.CTkFont(family="Segoe UI Symbol", size=20, weight="bold"),
-            text_color=self._colors["accent"],
-            width=44,
-            height=44,
-            fg_color=self._colors["panel_soft"],
-            corner_radius=16,
-        )
-        if subtitle_key:
-            symbol_label.grid(
-                row=0, column=0, rowspan=2, sticky="nw", padx=(0, 12), pady=(1, 0)
-            )
-        else:
-            symbol_label.grid(row=0, column=0, sticky="w", padx=(0, 12))
-        self._symbol_labels.append(symbol_label)
+    def is_expanded(self) -> bool:
+        return self._expanded
 
-        title = ctk.CTkLabel(
-            header,
-            text=self.gui_texts.get(title_key, title_key),
-            font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"),
-            text_color=self._colors["text"],
-            width=0,
-            height=44,
-            wraplength=340,
-            justify="left",
-            anchor="w",
-        )
-        title.grid(row=0, column=1, sticky="ew")
-        title._text_key = title_key  # type: ignore[attr-defined]
-        self._section_titles.append(title)
+    def is_collapsible(self) -> bool:
+        return self._collapsible
 
-        if toggle_command is not None:
-            header.grid_columnconfigure(2, weight=0)
-            toggle_arrow = ctk.CTkLabel(
-                header,
-                text="▾",
-                font=ctk.CTkFont(family="Segoe UI Symbol", size=20),
-                text_color=self._colors["muted"],
-                width=36,
-                height=44,
-                fg_color="transparent",
-                cursor="hand2",
-            )
-            toggle_arrow.grid(row=0, column=2, sticky="e", padx=(4, 0))
-            self._labels.append(toggle_arrow)
-            self._advanced_toggle_arrow = toggle_arrow
-            self._advanced_header = header
-            for w in (header, symbol_label, title, toggle_arrow):
-                w.bind("<Button-1>", lambda _e: toggle_command(), add="+")
-                try:
-                    w.configure(cursor="hand2")
-                except Exception:
-                    pass
+    def set_expanded(self, expanded: bool) -> None:
+        expanded = bool(expanded) or not self._collapsible
+        changed = expanded != self._expanded
+        self._expanded = expanded
+        self.panel.setVisible(expanded)
+        self._refresh_button()
+        if changed:
+            # The card around it changes height, and in the 2-column layout
+            # that decides whether the columns can still end level.
+            self.toggled.emit(expanded)
 
-        if subtitle_key:
-            subtitle_text = self.gui_texts.get(subtitle_key, "")
-            subtitle = ctk.CTkLabel(
-                header,
-                text=subtitle_text,
-                font=ctk.CTkFont(family="Segoe UI", size=14),
-                text_color=self._colors["muted"],
-                width=0,
-                height=24,
-                wraplength=340,
-                justify="left",
-                anchor="w",
-            )
-            subtitle.grid(row=1, column=1, sticky="ew", pady=(2, 0))
-            subtitle._text_key = subtitle_key  # type: ignore[attr-defined]
-            self._muted_labels.append(subtitle)
+    def set_collapsible(self, collapsible: bool) -> None:
+        if collapsible == self._collapsible:
+            return
+        self._collapsible = collapsible
+        self.button.setVisible(collapsible)
+        self.heading.setVisible(not collapsible)
+        self._apply_panel_style()
+        self.set_expanded(self._expanded)  # forces it open when not collapsible
 
-        return card
+    def _apply_panel_style(self) -> None:
+        """The soft tile marks the group as collapsible.
 
-    def _field(
-        self,
-        parent: ctk.CTkBaseClass,
-        label_key: str,
-        symbol: str,
-        row: int,
-        column: int = 0,
-        columnspan: int = 1,
-        padx: int | tuple[int, int] = 18,
-    ) -> ctk.CTkFrame:
-        frame = ctk.CTkFrame(parent, fg_color="transparent")
-        frame.grid(
-            row=row,
-            column=column,
-            columnspan=columnspan,
-            sticky="ew",
-            padx=padx,
-            pady=(0, 18),
-        )
-        frame.grid_columnconfigure(0, weight=1)
-        label = self._label(frame, label_key, symbol=symbol, size=14, weight="bold")
-        label.pack(anchor="w")
-        return frame
+        Without the toggle there is nothing to mark, and the controls should
+        sit flush in the card like every other section — so the tile and its
+        padding go with the button.
+        """
+        pad = self._PANEL_PAD if self._collapsible else 0
+        self.panel.setObjectName("mini" if self._collapsible else "")
+        self.body.setContentsMargins(pad, pad, pad, pad)
+        self.panel.style().unpolish(self.panel)
+        self.panel.style().polish(self.panel)
 
-    def _mini_panel(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
-        frame = ctk.CTkFrame(
-            parent,
-            fg_color=self._colors["panel_soft"],
-            border_color=self._colors["border"],
-            border_width=1,
-            corner_radius=18,
-        )
-        self._main_panels.append(frame)
-        return frame
+    def _refresh_button(self) -> None:
+        self.button.setText(f"{'▾' if self._expanded else '▸'}  {self._title}")
 
-    def _label(
-        self,
-        parent: ctk.CTkBaseClass,
-        text_key: str,
-        symbol: str | None = None,
-        size: int = 14,
-        weight: str = "normal",
-        register: bool = True,
-    ) -> ctk.CTkLabel:
-        text = self.gui_texts.get(text_key, text_key)
-        if symbol:
-            text = f"{symbol}  {text}"
-        # The prefix symbols (▣ ◉ ⌁ ≋ ⇶ …) live in "Segoe UI Symbol", not the
-        # plain "Segoe UI" text font — the latter renders them as ".notdef"
-        # tofu boxes. Use the symbol font whenever a symbol is present (the same
-        # family the header/card icons already use); plain labels stay "Segoe UI".
-        family = "Segoe UI Symbol" if symbol else "Segoe UI"
-        label = ctk.CTkLabel(
-            parent,
-            text=text,
-            font=ctk.CTkFont(family=family, size=size, weight=weight),
-            text_color=self._colors["text"],
-            height=max(32, size + 16),
-        )
-        label._text_key = text_key  # type: ignore[attr-defined]
-        label._symbol = symbol  # type: ignore[attr-defined]
-        # Short-lived windows (Batch) pass register=False so their labels aren't
-        # held in the app-wide themed list — a destroyed window would otherwise
-        # leave dead widgets there and crash the next theme/language re-apply.
-        if register:
-            self._labels.append(label)
-        return label
 
-    def _combo(
-        self,
-        parent: ctk.CTkBaseClass,
-        values: list[str],
-        command: Callable[[str], Any] | None = None,
-        register: bool = True,
-    ) -> CustomDropdown:
-        combo = CustomDropdown(
-            parent,
-            values=values,
-            command=command,
-            height=46,
-            corner_radius=16,
-            border_width=1,
-            font=ctk.CTkFont(family="Segoe UI", size=14),
-            dropdown_font=ctk.CTkFont(family="Segoe UI", size=14),
-            fg_color=self._colors["entry"],
-            border_color=self._colors["entry_border"],
-            button_color=self._colors["entry"],
-            button_hover_color=self._colors["panel_soft"],
-            text_color=self._colors["text"],
-            dropdown_fg_color=self._colors["panel"],
-            dropdown_hover_color=self._colors["button_hover"],
-            dropdown_text_color=self._colors["text"],
-        )
-        # Short-lived dialogs pass register=False so their combos aren't held in
-        # the app-wide themed list after the dialog is destroyed.
-        if register:
-            self._combos.append(combo)
-        return combo
+def field(
+    label_text: str, widget: QWidget, spacing: int = 4, symbol: str | None = None
+) -> QWidget:
+    """A bold caption above its control, as every Tk card field is laid out.
 
-    def _plain_button(
-        self,
-        parent: ctk.CTkBaseClass,
-        text: str,
-        command: Callable[[], Any],
-        height: int = 48,
-        width: int | None = None,
-    ) -> ctk.CTkButton:
-        button = ctk.CTkButton(
-            parent,
-            text=text,
-            command=command,
-            height=height,
-            width=width or 0,
-            corner_radius=16,
-            font=ctk.CTkFont(family="Segoe UI Symbol", size=18, weight="bold"),
-            fg_color=self._colors["button"],
-            hover_color=self._colors["button_hover"],
-            text_color=self._colors["text"],
-        )
-        self._buttons.append(button)
-        return button
+    ``symbol`` prefixes the small glyph the Tk labels carry (▣ ◉ ⌁ → …); it is
+    part of the caption text rather than a second widget so the pair wraps and
+    aligns as one label.
+    """
+    holder = QWidget()
+    box = QVBoxLayout(holder)
+    box.setContentsMargins(0, 0, 0, 0)
+    box.setSpacing(spacing)
+    caption = QLabel(f"{symbol}  {label_text}" if symbol else label_text)
+    caption.setObjectName("field")
+    box.addWidget(caption)
+    box.addWidget(widget)
+    holder.caption = caption  # so callers can re-translate it
+    return holder
 
-    def _button(
-        self,
-        parent: ctk.CTkBaseClass,
-        text_key: str,
-        command: Callable[[], Any],
-        symbol: str | None = None,
-        height: int = 50,
-    ) -> ctk.CTkButton:
-        text = self.gui_texts.get(text_key, text_key)
-        if symbol:
-            text = f"{symbol}  {text}"
-        button = ctk.CTkButton(
-            parent,
-            text=text,
-            command=command,
-            height=height,
-            corner_radius=16,
-            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            fg_color=self._colors["button"],
-            hover_color=self._colors["button_hover"],
-            text_color=self._colors["text"],
-        )
-        button._text_key = text_key  # type: ignore[attr-defined]
-        button._symbol = symbol  # type: ignore[attr-defined]
-        self._buttons.append(button)
-        return button
 
-    def _checkbox(
-        self,
-        parent: ctk.CTkBaseClass,
-        text_key: str,
-        variable: tk.BooleanVar,
-        command: Callable[[], Any],
-    ) -> ctk.CTkCheckBox:
-        cb = ctk.CTkCheckBox(
-            parent,
-            text=self.gui_texts.get(text_key, text_key),
-            variable=variable,
-            command=command,
-            height=34,
-            font=ctk.CTkFont(family="Segoe UI", size=14),
-            corner_radius=8,
-            checkbox_width=24,
-            checkbox_height=24,
-            border_width=2,
-            fg_color=self._colors["accent"],
-            hover_color=self._colors["accent_hover"],
-            border_color=self._colors["entry_border"],
-            text_color=self._colors["text"],
-        )
-        cb._text_key = text_key  # type: ignore[attr-defined]
-        self._checkboxes.append(cb)
-        return cb
-
-    def _setup_autohide_scrollbar(self, sf: ctk.CTkScrollableFrame) -> None:
-        """Hide the scrollbar of a CTkScrollableFrame when all content fits."""
-
-        def _check(*_: object) -> None:
-            try:
-                if sf.winfo_reqheight() <= sf._parent_canvas.winfo_height():
-                    sf._scrollbar.grid_remove()
-                else:
-                    sf._scrollbar.grid()
-            except Exception:
-                pass
-
-        try:
-            sf.bind("<Configure>", _check, add="+")
-            sf._parent_canvas.bind("<Configure>", _check, add="+")
-            sf.after_idle(_check)
-        except Exception:
-            pass
-
+def warning_box(text: str) -> QFrame:
+    """A bordered, warning-coloured callout (wizard caveats, disclaimer)."""
+    box = QFrame()
+    box.setObjectName("warning")
+    layout = QVBoxLayout(box)
+    layout.setContentsMargins(14, 10, 14, 10)
+    label = QLabel(f"⚠  {text}")
+    label.setObjectName("warning_text")
+    label.setWordWrap(True)
+    layout.addWidget(label)
+    box.label = label
+    return box

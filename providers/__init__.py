@@ -467,6 +467,27 @@ PROVIDER_CHOICES = [
     ("Anthropic Claude", "anthropic"),
 ]
 
+# What each provider's key looks like, shown as the entry field's placeholder.
+# Lives beside the key handling rather than in the GUI, so the wizard and the
+# settings window read one list instead of keeping their own copies.
+#
+# Google issues both the newer "AQ." keys and the legacy "AIza" ones, so the
+# hint names both. Deepgram has no prefix to quote — its keys are a bare hex
+# string — so the hint shows that shape instead, which is the useful fact:
+# there is no "sk-"-style prefix to look for.
+KEY_PLACEHOLDERS: dict[str, str] = {
+    "openai": "sk-…",
+    "anthropic": "sk-ant-…",
+    "gemini": "AQ.… / AIza…",
+    "deepgram": "0123abcd…",
+}
+
+
+def get_key_placeholder(provider: str) -> str:
+    """Placeholder hint for ``provider``'s API-key field ("" when it has none)."""
+    return KEY_PLACEHOLDERS.get(provider, "")
+
+
 # (display_name, provider_id) for the transcription-provider dropdown.
 # The "(real-time)" entries are streaming engines; the others run the
 # segmented pipeline.

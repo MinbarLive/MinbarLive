@@ -10,23 +10,23 @@ on every push to `main`. The workflow lives in
 | `linux-smoke` | `ubuntu-latest`  | the same suite under `xvfb`, plus the Linux system libs |
 | `lint`        | `ubuntu-latest`  | `ruff check` on the Python files the PR changed         |
 
-`test` runs on Windows because that is the primary target: the code has
-`sys.platform == "win32"` branches (RTL shaping in `gui/subtitle_window.py`, DPI
-awareness in `gui/scaling.py`), and roughly a tenth of the suite builds real Tk
+`test` runs on Windows because that is the primary target: it is where the
+system-audio loopback path, the ffmpeg download offer and the DPI manifest live,
+and roughly 30 % of the suite (`tests/test_gui.py`, 345 tests) builds real Qt
 windows. `lint` has no such constraint and runs on Linux, which starts faster.
 
 `linux-smoke` exists because Linux users do run MinbarLive from source, and
 until it was added nothing in CI ever executed a line of the Linux branches.
-Both Linux bugs reported so far — the fatal X11 `BadLength` from passing a
-3200×3200 PNG to `wm iconphoto`, and CustomTkinter's missing `<Button-4>`/
-`<Button-5>` wheel bindings — reached users before anyone noticed. It installs
-three system packages the runner does not carry:
+Both Linux bugs reported against the old Tk GUI — the fatal X11 `BadLength` from
+a 3200×3200 icon, and missing `<Button-4>`/`<Button-5>` wheel bindings — reached
+users before anyone noticed. It installs the system packages the runner does not
+carry:
 
-| Package         | Needed for                                                              |
-| --------------- | ----------------------------------------------------------------------- |
-| `tk`            | `setup-python`'s interpreter links against libtk8.6/libtcl8.6; without them `import tkinter` fails outright |
-| `libportaudio2` | the Linux `sounddevice` wheel does not bundle PortAudio, unlike the Windows and macOS ones |
-| `xvfb`          | `tests/test_app_gui.py` and friends build real Tk windows, which need a display |
+| Package             | Needed for                                                          |
+| ------------------- | ------------------------------------------------------------------- |
+| `libportaudio2`     | the Linux `sounddevice` wheel does not bundle PortAudio, unlike the Windows and macOS ones |
+| `xvfb`              | `tests/test_gui.py` builds real windows, which need a display        |
+| the `libxcb-*` set  | Qt's xcb platform plugin links against them and refuses to load without them — and a Qt app whose only platform plugin fails to load cannot start at all. `libxcb-cursor0` is the one Qt names in its error hint and it is **not** the whole list; the full set is in both workflows and in the README |
 
 It is a *smoke* job, not a guarantee: a green run means the code imports and the
 headless tests pass on Linux, not that the subtitle overlay looks right there.
@@ -125,11 +125,16 @@ These features are Windows-only on Linux today:
 
 | Feature                              | On Linux                                                                 |
 | ------------------------------------ | ------------------------------------------------------------------------ |
-| Borderless overlay visible to OBS    | The `WS_EX_APPWINDOW` styling in `gui/subtitle_window.py` is Win32; Linux falls back to a bare `overrideredirect` window |
-| Transparent static mode              | `wm attributes -transparentcolor` does not exist outside Windows          |
+| Overlay placement and always-on-top  | Both need X11. A Wayland client cannot position its own windows and has no always-on-top protocol, so `gui/platform_setup.py` asks for `xcb` first and falls back to `wayland` — where the compositor centres the overlay and the always-on-top setting does nothing |
 | Loopback capture ("what the speakers play") | WASAPI-only by design, so Linux has microphone input only          |
 | OS keychain                          | Without a Secret Service backend, `utils/settings.set_saved_api_key` persists nothing — every provider's key is session-only and lost on restart |
 | ffmpeg download-on-first-use         | Windows-only; batch mode expects ffmpeg from the package manager          |
+
+The borderless OBS-visible overlay and transparent static mode are **no longer
+Windows-only**: the overlay is a frameless `Qt.Window` on every platform (a
+`Qt.Tool` would drop out of OBS's window-capture list), and transparency is
+genuine per-pixel alpha instead of the `-transparentcolor` chroma key Tk needed.
+Per-pixel alpha does still want a compositing window manager on X11.
 
 They ship as documented gaps (see the README's Linux note), not blockers — fix,
 hide, or keep documenting them as users report which ones actually matter.
@@ -151,12 +156,21 @@ would cost another ~182 MB against the 1 GB monthly allowance, halving the
 number of releases that fit in it. The price is that the two jobs run in
 sequence rather than in parallel.
 
-### Two steps fail loudly
+### Three steps fail loudly
 
 | Step                    | Catches                                                                                          |
 | ----------------------- | ------------------------------------------------------------------------------------------------ |
 | Verify the binary       | A build that lost the `data/` bundle, which shows up as a far smaller file                        |
-| Smoke-launch the binary | A startup crash — a shared library the bundle missed, an X11 request the toolkit rejects. The binary is launched under `xvfb` with a 30-second `timeout`, so **exit 124 is the success case**: it means the app was still running when the timeout killed it, sitting in the onboarding wizard. Any other exit code means it died on its own |
+| Smoke-launch the binary | A startup crash — a shared library the bundle missed, an X11 request Qt's platform plugin rejects. The binary is launched under `xvfb` with a 30-second `timeout`, so **exit 124 is the success case**: it means the app was still running when the timeout killed it, sitting in the onboarding wizard. Any other exit code means it died on its own |
+| Smoke-launch the AppImage **in a bare container** | An AppImage that is not self-contained. The two launches above run on the build machine, which installed the xcb set so PyInstaller could find it — they pass whether or not those libraries reached the bundle. This one runs the same file in `ubuntu:24.04` with **none** of them installed (`--appimage-extract-and-run`, since a container has no FUSE), and 124 is again the success case. Keep that container's package list minimal and keep the Qt xcb set out of it: **that list is the test** |
+
+**Why the builder installs the xcb libraries before `pyinstaller` runs:**
+PyInstaller bundles the shared libraries it finds the collected binaries linking
+against *on the build machine*. Qt's xcb plugin links against `libxcb-cursor`,
+`libxcb-icccm`, `libxkbcommon-x11` and the rest; a builder without them ships an
+AppImage whose only platform plugin is found and will not load, and every user
+falls through to Wayland — overlay centred, always-on-top dead. Never solve this
+by telling users to install a package.
 
 ### The macOS build
 
@@ -180,15 +194,14 @@ Platform limits that are real, not build bugs:
 | Feature | On macOS |
 | ------- | -------- |
 | Loopback capture ("what the speakers play") | CoreAudio cannot record an output device — `soundcard`'s backend warns and returns the real inputs, so `gui/device_list.py` lists no loopback entries there at all. Users route through BlackHole/Loopback, which appear as ordinary inputs |
-| Overlay above the Dock / menu bar | Tk's `-topmost` maps to `kCGUtilityWindowLevel` (19), below the Dock (20) and menu bar (24), so the overlay is laid out inside the usable area instead of covering them (`_macos_work_area`) |
-| Overlay title bar | `::tk::unsupported::MacWindowStyle` only applies at NSWindow creation, so the overlay uses `overrideredirect` instead — which also makes it non-activating, so its Escape shortcut is Windows/Linux only |
+| Overlay above the Dock / menu bar | No window level a Qt client can ask for sits above them — a stays-on-top window floats above other applications and still below both — so the overlay is laid out inside the work area instead of covering them (`_MACOS` in `gui/subtitle_window.py`). Windows and X11 keep the whole monitor, which is what OBS captures |
 
 Two build-time checks fail loudly: the bundled binary's size (a lost `data/`
 bundle shows up small) and `NSMicrophoneUsageDescription` being present in
 `Info.plist` — modern macOS hard-kills any app that opens an input stream
 without it, so the spec wires it in and CI asserts it with `PlistBuddy`. The GUI
 smoke-launch is best-effort (`continue-on-error`): whether a hosted runner's
-session can start a Tk window is not something this project has verified, so an
+session can start a GUI window is not something this project has verified, so an
 early exit is reported as a warning, not a build failure.
 
 ## Lint checks changed files only
@@ -198,19 +211,13 @@ repository, because the repo carries pre-existing findings that are
 intentionally left as they are. A repository-wide check would fail on day one
 and teach everyone to ignore it.
 
-Two files additionally carry a documented exemption in
-[`ruff.toml`](../ruff.toml) under `[lint.per-file-ignores]`, because their
-findings predate CI and appear in files a pull request often touches for
-unrelated reasons:
-
-| File                     | Ignored        | Why                                                                                 |
-| ------------------------ | -------------- | ----------------------------------------------------------------------------------- |
-| `gui/subtitle_window.py` | `I001`, `E402` | Imports sit below the `arabic_reshaper` try-block and module-level regex constants   |
-| `gui/dropdown.py`        | `E741`         | Ambiguous loop variable `l`                                                          |
-
-These are a baseline, not a blanket pass: both files are still checked for every
-other rule, and every other file is still checked for these rules. Remove an
-entry once the underlying finding is fixed.
+There are **no per-file exemptions** in [`ruff.toml`](../ruff.toml) any more. Two
+existed as a baseline (`I001`/`E402` on `gui/subtitle_window.py`, whose imports
+sat below the `arabic_reshaper` try-block, and `E741` on `gui/dropdown.py`) and
+the Qt migration removed both findings with the files that carried them — Qt
+shapes Arabic itself, so there is no try-block to import around. If a new
+baseline is ever needed, keep it to specific rules on specific files and delete
+the entry once the finding is fixed; never widen it into a blanket pass.
 
 ## Required status checks
 
@@ -225,6 +232,9 @@ codebase, not a verdict on the branch it happens to run against.
 
 ## Python version
 
-CI pins Python 3.12. Despite the comment in `requirements.txt`, 3.10 is not
-supported: `numpy==2.4.0` and `scipy==1.16.3` both declare
-`Requires-Python >=3.11`.
+CI pins Python 3.12, and so do the release builds.
+
+**The floor is 3.11**, not 3.10: `numpy==2.4.0` and `scipy==1.16.3` both declare
+`Requires-Python >=3.11`, so `pip install -r requirements.txt` cannot even run
+on 3.10. The README, `AGENTS.md`, `requirements.txt` and `ruff.toml`'s
+`target-version` all said 3.10 until 2026-08-05; they were wrong, not generous.

@@ -1,520 +1,291 @@
-"""Discord-style in-app presentation of secondary windows (integrated mode).
+"""In-app presentation of the secondary windows (integrated window style).
 
 With ``Settings.window_style == "integrated"`` the control panel's secondary
-windows (settings, history, batch, announcement, themed dialogs) do not open
-as separate OS windows: they are stripped of their titlebar
-(``overrideredirect``), sized proportionally to the main window, centred over
-it, and glued to it — they follow every move/resize, hide on minimize, and
-never appear in the taskbar or Alt-Tab. Behind the open panel a borderless
-black helper window at 60 % alpha dims the main window's content, so the
-panel reads as an in-app modal while the content behind stays live.
+windows (settings, history, batch, announcement) do not open as separate OS
+windows: they are reparented *into* the control panel as plain child widgets,
+centred over its content with a dim layer behind them, and closed by Esc, the
+floating ✕ or a click on the dim.
 
-Tkinter has no per-widget opacity — a frame inside the window cannot be
-semi-transparent — which is why the dim layer is a *window*-level-alpha
-toplevel pinned over the main window rather than a widget. On systems
-without alpha support the overlay degrades to solid black.
+Why reparenting rather than the Tk tree's borderless-toplevel trick: a child
+widget needs no per-window alpha and no stacking cooperation from the window
+manager — the dim is painted into our own window's back buffer, over the
+sibling widgets, which is something Qt does identically on every platform it
+runs on. That is exactly what made integrated mode Windows-only under Tk (X11
+without a compositor ignores per-window alpha, so the dim rendered solid black
+and borderless panels would not stack; PR #25 r6), and it is why this one is
+offered everywhere.
 
-The panels stay real Toplevels, so the existing window-building code
-(the view mixins, the dialog functions) runs unchanged; only the window
-decoration/placement differs. Esc closes the topmost panel.
-
-Z-order rules (see the s16 dropdown lesson): ``transient()`` does nothing
-for overrideredirect windows, so the main window's surface-restore lift
-would bury the overlay and panels — AppGUI calls :meth:`ModalHost.raise_all`
-after every lift, *before* re-raising dropdown popups (a popup can belong
-to a panel and must stack above it).
+The panels stay the same ``QDialog`` subclasses, so every window-building
+module runs unchanged — only where the widget lives differs. A window that is
+content-sized (see ``gui/window_size.py``) is told how much room it has
+through ``host_max_size`` and re-measures itself; the rest are simply clamped.
 """
 
 from __future__ import annotations
 
-import sys
-import tkinter as tk
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-import customtkinter as ctk
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QPainter
+from PySide6.QtWidgets import QFrame, QPushButton, QWidget
 
-from gui.scaling import centered_position
+# A panel may occupy at most this fraction of the control panel (per axis).
+# The remainder is the dim margin that makes it read as a panel *over* the app
+# rather than a replacement for it.
+PANEL_FRACTION = 0.9
 
-# A panel may occupy at most this fraction of the main window (per axis);
-# smaller main windows shrink the panels proportionally, larger ones never
-# stretch a panel past the size it asks for.
-#
-# The size a call site passes is therefore the panel's *maximum* — what it
-# wants when there is room — not the size it opens at in a separate window.
-# The big view windows (history, settings, summary) ask for far more than
-# their windowed geometry so they actually grow on a large screen; the
-# form-shaped ones (batch, announcement) ask only for a modest width because
-# their content is laid out for a narrow card. Notification dialogs ask for
-# their design size plus a tenth (see utils/api_key_manager.py) and are
-# nowhere near the fraction, so they never scale with the main window.
-PANEL_FRACTION = 0.85
+# Opacity of the black dim layer, 0-255. 150 ≈ the Tk host's 60 %.
+DIM_ALPHA = 150
 
-# The dim layer's opacity (0 = invisible, 1 = solid black).
-DIM_ALPHA = 0.6
+# Never shrink a panel below this: under it nothing inside is usable, and the
+# control panel's own 420×420 minimum keeps us near this regime only there.
+MIN_PANEL_W = 300
+MIN_PANEL_H = 260
 
-# Never shrink a panel below this (logical units) — below that nothing inside
-# is usable anyway, and the main window's minsize keeps us out of this regime.
-MIN_PANEL_W = 220
-MIN_PANEL_H = 160
-
-# Coalesce the <Configure> storm while the main window is dragged/resized.
-_FOLLOW_DELAY_MS = 15
-
-_FALLBACK_BORDER = "#263449"
+# The floating ✕: its size, and its inset from the panel's top-right corner.
+_CLOSE_BOX = 30
+_CLOSE_INSET = 12
 
 
 def clamped_panel_size(
-    design_w: int,
-    design_h: int,
-    main_w: float,
-    main_h: float,
-    fraction: float = PANEL_FRACTION,
-) -> tuple[int, int]:
-    """The size (logical units) a panel gets inside a main window: the size it
-    asks for (``design_w``/``design_h``, i.e. its maximum — see
-    PANEL_FRACTION), clamped to ``fraction`` of the main window per axis, with
-    a usability floor. Pure function so the sizing rule is testable without a
-    display."""
-    w = min(int(design_w), int(main_w * fraction))
-    h = min(int(design_h), int(main_h * fraction))
-    return max(MIN_PANEL_W, w), max(MIN_PANEL_H, h)
+    design: QSize, main: QSize, fraction: float = PANEL_FRACTION
+) -> QSize:
+    """The size a panel gets inside a main window of ``main``.
+
+    The size it asks for, clamped to ``fraction`` of the main window per axis,
+    with a usability floor. A pure function so the rule is testable without a
+    display.
+    """
+    width = min(design.width(), int(main.width() * fraction))
+    height = min(design.height(), int(main.height() * fraction))
+    return QSize(max(MIN_PANEL_W, width), max(MIN_PANEL_H, height))
+
+
+class _Backdrop(QWidget):
+    """The dim layer: semi-transparent black over the panel's own content.
+
+    Paints rather than styles: a stylesheet background is composited the same
+    way, but an ``rgba()`` there would be one more rule competing with the
+    app sheet's for every plain ``QWidget``.
+    """
+
+    clicked = Signal()
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        # Deliberately NOT WA_OpaquePaintEvent: Qt must keep painting the
+        # widgets underneath into the same back buffer for the dim to have
+        # anything to dim.
+        self.setCursor(Qt.ArrowCursor)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, DIM_ALPHA))
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt API
+        # Swallowed either way: the widgets below are dimmed and must not be
+        # reachable, which is the whole point of a modal backdrop.
+        event.accept()
+        self.clicked.emit()
 
 
 @dataclass
 class _Panel:
-    win: tk.Toplevel
-    design_w: int
-    design_h: int
-    close_command: Callable[[], None] | None = None
-    close_button: ctk.CTkButton | None = field(default=None, repr=False)
+    win: QWidget
+    design: QSize
+    close_btn: QPushButton | None = None
+    surface: QFrame | None = None
 
 
-class ModalHost:
-    """Presents Toplevels as in-app modal panels locked over ``main``."""
+class ModalHost(QObject):
+    """Presents secondary windows as in-app panels inside ``main``."""
 
-    def __init__(self, main: tk.Misc) -> None:
+    def __init__(self, main: QWidget):
+        super().__init__(main)
         self._main = main
-        self._overlay: tk.Toplevel | None = None
         self._panels: list[_Panel] = []
-        self._follow_job: str | None = None
-        self._colors: dict[str, str] | None = None
-        main.bind("<Configure>", self._on_main_configure, add="+")
-        main.bind("<Unmap>", self._on_main_unmap, add="+")
-        main.bind("<Map>", self._on_main_map, add="+")
-        # Esc pressed while the main window has focus (e.g. after a click on
-        # its titlebar) still closes the topmost panel. Panels additionally
-        # bind Esc themselves, so it works wherever the focus sits.
-        main.bind("<Escape>", self._on_escape, add="+")
+        self._backdrop = _Backdrop(main)
+        self._backdrop.hide()
+        self._backdrop.clicked.connect(self._on_backdrop_click)
+        main.installEventFilter(self)
 
-    # ── public API ───────────────────────────────────────────────────────────
-
+    # ── public API ───────────────────────────────────────────────────────
     @property
     def active(self) -> bool:
         return bool(self._panels)
 
-    def is_presented(self, win: tk.Misc) -> bool:
-        return any(p.win is win for p in self._panels)
+    def is_presented(self, win: QWidget) -> bool:
+        return any(panel.win is win for panel in self._panels)
 
-    def present(
-        self,
-        win: tk.Toplevel,
-        design_w: int,
-        design_h: int,
-        *,
-        close_command: Callable[[], None] | None = None,
-        close_button: bool = False,
-    ) -> None:
-        """Turn ``win`` into an in-app panel: borderless, dimmed backdrop,
-        centred + clamped over the main window, glued to it.
-
-        ``close_command`` is what Esc (and the optional floating ✕ button)
-        runs; ``None`` means the host never closes this window itself (the
-        themed dialogs manage their own result/close logic).
-
-        ``close_button`` floats a small ✕ in the panel's top-right corner —
-        for the big windows, which lose their titlebar ✕ in this mode. It is
-        created one event-loop turn later so it stacks above the content the
-        caller builds after this call returns.
-        """
+    def present(self, win: QWidget) -> None:
+        """Turn ``win`` into an in-app panel and show it."""
         if self.is_presented(win):
+            win.raise_()
             return
-        try:
-            # The clamp/centre math reads the main window's laid-out size.
-            self._main.update_idletasks()
-            win.overrideredirect(True)
-        except tk.TclError:
-            return  # cannot strip the titlebar: leave the window as-is
-        # A borderless panel over a dim layer needs an edge of its own.
-        try:
-            tk.Toplevel.configure(
-                win,
-                highlightthickness=2,
-                highlightbackground=self._border_color(),
-                highlightcolor=self._border_color(),
-            )
-        except tk.TclError:
-            pass
-        # Windows 11 rounds the panel via DWM (no-op on Win10/other systems).
-        if sys.platform == "win32":
-            try:
-                import ctypes
-
-                win.update_idletasks()
-                hwnd = ctypes.windll.user32.GetAncestor(win.winfo_id(), 2)
-                # 33 = DWMWA_WINDOW_CORNER_PREFERENCE, 2 = DWMWCP_ROUND
-                pref = ctypes.c_int(2)
-                ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                    hwnd, 33, ctypes.byref(pref), ctypes.sizeof(pref)
-                )
-            except Exception:
-                pass
-
-        panel = _Panel(win, int(design_w), int(design_h), close_command)
+        # The size it asks for as a window is the size it wants here too —
+        # read before reparenting, which can reset an unshown widget's size.
+        design = win.size().expandedTo(win.sizeHint())
+        if win.isWindow() or win.parentWidget() is not self._main:
+            # Skipped for a window that was already presented once and merely
+            # closed: setParent hides the widget and drops its place in the
+            # sibling order for nothing.
+            win.setParent(self._main, Qt.Widget)
+        win.setObjectName("modal_panel")
+        # Qt does not re-evaluate the stylesheet when an objectName changes,
+        # and this one is only set here — so without an explicit re-polish the
+        # #modal_panel rule never reaches the widget at all. That is why the
+        # panels used to sit on the dim as unstyled rectangles.
+        win.style().unpolish(win)
+        win.style().polish(win)
+        panel = _Panel(win, design)
         self._panels.append(panel)
-        self._show_overlay()
+        win.installEventFilter(self)
+        # Deliberately NOT also on destroyed(): a panel is always hidden before
+        # it is deleted, so that signal only ever arrives during application
+        # teardown — where the control panel has already taken the backdrop
+        # down with it, and touching it threw "Internal C++ object already
+        # deleted" out of a Qt slot on every exit with a panel open.
+
+        self._backdrop.setGeometry(self._main.rect())
+        self._backdrop.show()
+        self._backdrop.raise_()
         self._layout_panel(panel)
-        # Full re-stack: the overlay moves up under this new topmost panel,
-        # dimming any panel it opened over.
-        self.raise_all()
+        win.show()
+        win.raise_()
+        self._add_surface(panel)  # after raise_(): it stacks against the panel
+        self._add_close_button(panel)
+        win.setFocus(Qt.OtherFocusReason)
 
-        if close_command is not None:
-            win.bind("<Escape>", lambda _e: self._close_panel(panel), add="+")
-        win.bind(
-            "<Destroy>",
-            lambda e: self._release(win) if e.widget is win else None,
-            add="+",
-        )
-
-        def _finish() -> None:
-            if not self.is_presented(win):
-                return
-            if close_button:
-                self._add_close_button(panel)
-            self._focus_panel(win)
-
-        # After the caller finished building the window's content.
-        win.after(0, _finish)
-        # CTkToplevel's titlebar-color helper withdraws + re-deiconifies the
-        # window ~500 ms after creation, which can shuffle the stacking —
-        # settle the z-order once that dance is over.
-        win.after(600, self.raise_all)
-
-    def update_design_size(self, win: tk.Misc, design_w: int, design_h: int) -> None:
-        """Re-declare a panel's natural size (auto-height windows recompute it
-        when their content changes) and re-clamp/re-centre it."""
-        for panel in self._panels:
-            if panel.win is win:
-                panel.design_w = int(design_w)
-                panel.design_h = int(design_h)
-                self._layout_panel(panel)
-                return
-
-    def raise_all(self) -> None:
-        """Re-assert the stacking order: main < older panels < dim overlay <
-        topmost panel. The dim sits directly below the NEWEST popup, so a
-        dialog over an open panel dims that panel too — only the newest
-        popup is bright, focused and clickable; everything underneath is
-        dark and click-blocked by the overlay. Also called after the main
-        window lifted itself (surface restore)."""
-        if not self._panels:
-            return
-        for panel in self._panels[:-1]:
-            if panel.win.winfo_exists():
-                self._sync_topmost(panel.win)
-                try:
-                    panel.win.lift()
-                except tk.TclError:
-                    pass
-        if self._overlay is not None and self._overlay.winfo_exists():
-            self._sync_topmost(self._overlay)
-            try:
-                self._overlay.lift()
-            except tk.TclError:
-                pass
-        top = self._panels[-1]
-        if top.win.winfo_exists():
-            self._sync_topmost(top.win)
-            try:
-                top.win.lift()
-            except tk.TclError:
-                pass
-
-    def update_chrome(self, colors: dict[str, str]) -> None:
-        """Follow a runtime theme switch: panel borders + ✕ buttons."""
-        self._colors = colors
-        border = self._border_color()
-        for panel in self._panels:
-            if not panel.win.winfo_exists():
-                continue
-            try:
-                tk.Toplevel.configure(
-                    panel.win,
-                    highlightbackground=border,
-                    highlightcolor=border,
-                )
-            except tk.TclError:
-                pass
-            btn = panel.close_button
-            if btn is not None and btn.winfo_exists():
-                btn.configure(
-                    fg_color=colors["button"],
-                    hover_color=colors["button_hover"],
-                    text_color=colors["text"],
-                )
-
-    # ── internals ────────────────────────────────────────────────────────────
-
-    def _border_color(self) -> str:
-        colors = self._colors or getattr(self._main, "_colors", None)
-        if isinstance(colors, dict):
-            return colors.get("border", _FALLBACK_BORDER)
-        return _FALLBACK_BORDER
-
-    def _close_panel(self, panel: _Panel) -> None:
-        if panel.close_command is not None and panel.win.winfo_exists():
-            panel.close_command()
-
-    def _on_escape(self, _event: object | None = None) -> None:
+    # ── internals ────────────────────────────────────────────────────────
+    def _on_backdrop_click(self) -> None:
         if self._panels:
-            self._close_panel(self._panels[-1])
+            self._panels[-1].win.close()
 
-    def _on_overlay_click(self, _event: object | None = None) -> str:
-        """Clicking the dim backdrop closes the topmost panel (Discord
-        convention, same as Esc) — but only for windows the host may close
-        itself (``close_command`` set). Dialogs (alerts/confirms/key entry)
-        have explicit OK/Cancel semantics and are never dismissed by a stray
-        click; their grab normally swallows the click before it gets here
-        anyway. In that case just repair the stacking (the OS raises a
-        clicked window — the dim must never end up above the panels) and
-        hand focus back so Esc keeps working."""
-        try:
-            if self._panels and self._panels[-1].close_command is not None:
-                top = self._panels[-1]
-                self._main.after(0, lambda: self._close_panel(top))
-                return "break"
-            self._main.after(0, self.raise_all)
-            if self._panels:
-                win = self._panels[-1].win
-                self._main.after(0, lambda: self._focus_panel(win))
-        except tk.TclError:
-            pass
-        return "break"
-
-    def _release(self, win: tk.Misc) -> None:
-        self._panels = [p for p in self._panels if p.win is not win]
+    def _forget(self, win: QWidget) -> None:
+        """Drop a panel, whether it was closed, hidden or destroyed."""
+        panel = next((p for p in self._panels if p.win is win), None)
+        if panel is None:
+            return
+        self._panels.remove(panel)
+        win.removeEventFilter(self)
+        if panel.close_btn is not None:
+            panel.close_btn.deleteLater()
+            panel.close_btn = None
+        if panel.surface is not None:
+            panel.surface.deleteLater()
+            panel.surface = None
         if not self._panels:
-            self._hide_overlay()
-        elif self._panels[-1].win.winfo_exists():
-            # The overlay drops back under the new topmost panel (it
-            # brightens again), and focus returns so Esc keeps working.
-            self.raise_all()
-            self._focus_panel(self._panels[-1].win)
+            self._backdrop.hide()
+            return
+        # The dim drops back under the new topmost panel, which brightens.
+        self._backdrop.raise_()
+        top = self._panels[-1]
+        top.win.raise_()
+        # …and that panel's own background has to follow it back up, or the dim
+        # is left painting over it.
+        if top.surface is not None:
+            top.surface.stackUnder(top.win)
+        top.win.setFocus(Qt.OtherFocusReason)
 
-    def _focus_panel(self, win: tk.Toplevel) -> None:
-        try:
-            win.focus_force()
-            # focus_force targets the toplevel itself — restore the widget
-            # that held focus inside it (e.g. the key dialog's entry).
-            inner = win.focus_lastfor()
-            if inner is not win:
-                inner.focus_set()
-        except tk.TclError:
-            pass
+    def _add_surface(self, panel: _Panel) -> None:
+        """The panel's rounded, bordered background, painted behind it.
+
+        Why a widget of its own rather than styling the panel: a ``QDialog``
+        takes its stylesheet ``background-color`` through the PALETTE, and a
+        palette brush fills the whole rect knowing nothing about
+        ``border-radius`` — so ``#modal_panel``'s border and radius never
+        rendered and the panels sat on the dim as hard-edged rectangles.
+        Neither ``WA_StyledBackground`` nor setting it before the first show
+        changes that. A ``QFrame`` behind the (now transparent) panel is
+        styled the ordinary way and antialiases, which a ``setMask`` region —
+        being one bit deep — cannot.
+
+        It works because nothing reaches into a panel's corners: every one of
+        them insets its content, and the scroll areas are transparent.
+        """
+        surface = QFrame(self._main)
+        surface.setObjectName("panel_surface")
+        panel.surface = surface
+        self._sync_surface(panel)
+        surface.show()
+        surface.stackUnder(panel.win)
+
+    @staticmethod
+    def _sync_surface(panel: _Panel) -> None:
+        if panel.surface is not None:
+            panel.surface.setGeometry(panel.win.geometry())
 
     def _add_close_button(self, panel: _Panel) -> None:
-        colors = self._colors or getattr(self._main, "_colors", None) or {}
-        btn = ctk.CTkButton(
-            panel.win,
-            text="✕",
-            command=lambda: self._close_panel(panel),
-            width=32,
-            height=32,
-            corner_radius=16,
-            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
-            fg_color=colors.get("button", "#1f2a44"),
-            hover_color=colors.get("button_hover", "#263654"),
-            text_color=colors.get("text", "#f8fafc"),
-        )
-        # Clearly inside the panel: clear of the 2 px border, the rounded
-        # corner clip and the scrollbar column.
-        btn.place(relx=1.0, x=-18, y=14, anchor="ne")
-        panel.close_button = btn
+        """A floating ✕ — the panel lost its titlebar and with it the only
+        way to close the history window, which has no button of its own."""
+        button = QPushButton("✕", panel.win)
+        button.setObjectName("panel_close")
+        button.setFixedSize(_CLOSE_BOX, _CLOSE_BOX)
+        button.setCursor(Qt.PointingHandCursor)
+        button.clicked.connect(panel.win.close)
+        panel.close_btn = button
+        self._place_close_button(panel)
+        button.show()
+        button.raise_()
 
-    # ── geometry ─────────────────────────────────────────────────────────────
-
-    def _main_alive(self) -> bool:
-        try:
-            return bool(self._main.winfo_exists())
-        except tk.TclError:
-            return False
-
-    def _main_logical_size(self) -> tuple[float, float]:
-        try:
-            scaling = ctk.ScalingTracker.get_window_scaling(self._main)
-        except Exception:
-            scaling = 1.0
-        scaling = scaling or 1.0
-        return (
-            self._main.winfo_width() / scaling,
-            self._main.winfo_height() / scaling,
+    def _place_close_button(self, panel: _Panel) -> None:
+        button = panel.close_btn
+        if button is None:
+            return
+        button.move(
+            panel.win.width() - _CLOSE_BOX - _CLOSE_INSET,
+            _CLOSE_INSET,
         )
 
     def _layout_panel(self, panel: _Panel) -> None:
-        if not (self._main_alive() and panel.win.winfo_exists()):
-            return
-        main_w, main_h = self._main_logical_size()
-        w, h = clamped_panel_size(panel.design_w, panel.design_h, main_w, main_h)
-        x, y = centered_position(self._main, w, h)
-        try:
-            panel.win.geometry(f"{w}x{h}+{x}+{y}")
-        except tk.TclError:
-            pass
-
-    def _layout_overlay(self) -> None:
-        overlay = self._overlay
-        if overlay is None or not overlay.winfo_exists() or not self._main_alive():
-            return
-        # Plain tk.Toplevel: geometry is physical px on every axis — match the
-        # main window's client area exactly (the titlebar stays usable, so the
-        # window can still be moved/minimized/closed while a panel is open).
-        try:
-            overlay.geometry(
-                f"{self._main.winfo_width()}x{self._main.winfo_height()}"
-                f"+{self._main.winfo_rootx()}+{self._main.winfo_rooty()}"
-            )
-        except tk.TclError:
-            pass
-
-    # ── overlay lifecycle ────────────────────────────────────────────────────
-
-    def _show_overlay(self) -> None:
-        if not self._main_alive():
-            return
-        if self._overlay is None or not self._overlay.winfo_exists():
-            overlay = tk.Toplevel(self._main)
-            overlay.overrideredirect(True)
-            overlay.configure(bg="#000000")
-            try:
-                # 60 % black over the live content. Without alpha support the
-                # overlay stays solid black — still a working dim layer.
-                overlay.attributes("-alpha", DIM_ALPHA)
-            except tk.TclError:
-                pass
-            # A click on any window normally activates AND raises it — which
-            # would put the dim layer above the panels: everything goes dark
-            # and every further click lands on the overlay (reported as "all
-            # windows get dark and I can't do anything"). WS_EX_NOACTIVATE
-            # stops the OS from ever foregrounding the overlay on click.
-            if sys.platform == "win32":
-                try:
-                    import ctypes
-
-                    overlay.update_idletasks()
-                    hwnd = ctypes.windll.user32.GetAncestor(
-                        overlay.winfo_id(), 2
-                    )  # GA_ROOT
-                    GWL_EXSTYLE = -20
-                    WS_EX_NOACTIVATE = 0x08000000
-                    style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-                    ctypes.windll.user32.SetWindowLongW(
-                        hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE
-                    )
-                    # Changing GWL_EXSTYLE resets a layered window's alpha
-                    # RENDERING (hit-testing keeps working and Tk's cached
-                    # -alpha still reads 0.6, but nothing is painted — the
-                    # dim silently disappears). Re-apply it natively.
-                    ctypes.windll.user32.SetLayeredWindowAttributes(
-                        hwnd, 0, int(DIM_ALPHA * 255), 2  # LWA_ALPHA
-                    )
-                    # SWP_NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED — let the style
-                    # change take effect without disturbing the stacking.
-                    ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)
-                except Exception:
-                    pass
-            # Swallow clicks, and repair the stacking in case the click still
-            # raised the overlay (non-Windows fallback path).
-            overlay.bind("<Button-1>", self._on_overlay_click)
-            overlay.bind("<Escape>", self._on_escape)
-            self._overlay = overlay
+        room = clamped_panel_size(panel.design, self._main.size())
+        # Content-sized windows re-measure themselves against the room they
+        # have; the rest are resized straight to it (a fixed-size widget
+        # ignores the resize, which is the correct outcome for those too).
+        panel.win.host_max_size = room
+        refresh = getattr(panel.win, "_resize_to_content", None)
+        if callable(refresh):
+            refresh()
         else:
-            try:
-                self._overlay.deiconify()
-            except tk.TclError:
-                pass
-        self._layout_overlay()
-        self._sync_topmost(self._overlay)
-        try:
-            self._overlay.lift()
-        except tk.TclError:
-            pass
+            panel.win.resize(room)
+        size = panel.win.size()
+        panel.win.move(
+            max(0, (self._main.width() - size.width()) // 2),
+            max(0, (self._main.height() - size.height()) // 2),
+        )
+        self._sync_surface(panel)
 
-    def _hide_overlay(self) -> None:
-        if self._overlay is not None and self._overlay.winfo_exists():
-            try:
-                self._overlay.withdraw()
-            except tk.TclError:
-                pass
-
-    def _sync_topmost(self, win: tk.Toplevel) -> None:
-        """Panels/overlay must share the main window's -topmost: below it they
-        could never stack above a topmost main window; above it they would
-        float over other apps once the user switches away."""
-        try:
-            topmost = bool(int(self._main.attributes("-topmost")))
-        except (tk.TclError, ValueError, TypeError):
-            topmost = False
-        try:
-            win.attributes("-topmost", topmost)
-        except tk.TclError:
-            pass
-
-    # ── main-window follow ───────────────────────────────────────────────────
-
-    def _on_main_configure(self, event: object | None = None) -> None:
-        # <Configure> reaches the toplevel's bindtag for every descendant —
-        # only the main window's own moves/resizes matter here (s16 lesson).
-        if event is not None and str(getattr(event, "widget", "")) != str(self._main):
+    def _relayout(self) -> None:
+        if not self._panels:
             return
-        if not self._panels or self._follow_job is not None:
-            return
-        try:
-            self._follow_job = self._main.after(_FOLLOW_DELAY_MS, self._follow_main)
-        except tk.TclError:
-            pass
-
-    def _follow_main(self) -> None:
-        self._follow_job = None
-        if not (self._panels and self._main_alive()):
-            return
-        self._layout_overlay()
+        self._backdrop.setGeometry(self._main.rect())
         for panel in self._panels:
             self._layout_panel(panel)
 
-    def _on_main_unmap(self, event: object | None = None) -> None:
-        if event is not None and str(getattr(event, "widget", "")) != str(self._main):
-            return
-        if not self._panels:
-            return
-        self._hide_overlay()
-        for panel in self._panels:
-            if panel.win.winfo_exists():
-                try:
-                    panel.win.withdraw()
-                except tk.TclError:
-                    pass
-
-    def _on_main_map(self, event: object | None = None) -> None:
-        if event is not None and str(getattr(event, "widget", "")) != str(self._main):
-            return
-        if not self._panels:
-            return
-        self._show_overlay()
-        for panel in self._panels:
-            if panel.win.winfo_exists():
-                try:
-                    panel.win.deiconify()
-                except tk.TclError:
-                    pass
-        self._follow_main()
-        self.raise_all()
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt API
+        kind = event.type()
+        if obj is self._main:
+            if kind == QEvent.Resize:
+                self._relayout()
+            return False
+        if kind == QEvent.Hide:
+            # A hidden PARENT hides its children too, and those get a
+            # QHideEvent without ever being hidden themselves — releasing on
+            # that would tear the panels down every time the window is
+            # minimised. isHidden() is the attribute Qt sets only for the
+            # widget the hide was asked of.
+            if obj.isHidden():
+                self._forget(obj)
+        elif kind == QEvent.Resize and self.is_presented(obj):
+            # A content-sized panel changes height as its content changes.
+            for panel in self._panels:
+                if panel.win is obj:
+                    self._place_close_button(panel)
+                    size = obj.size()
+                    obj.move(
+                        max(0, (self._main.width() - size.width()) // 2),
+                        max(0, (self._main.height() - size.height()) // 2),
+                    )
+                    self._sync_surface(panel)
+                    break
+        return False

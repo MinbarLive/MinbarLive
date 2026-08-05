@@ -45,28 +45,37 @@
 │   ├── srt_writer.py        # SRT output (UTF-8 BOM)
 │   └── text_writer.py       # Plain transcript + translation export (output format txt/both)
 │
-├── gui/                     # User interface (CustomTkinter)
-│   ├── app_gui.py           # Control panel core (reflowing card grid, start/stop,
-│   │                        #   queue polling, theming, input-level meter)
-│   ├── control_state.py     # Settings-derived rules (key/mode/strategy), Tk-free, unit-tested
-│   ├── widgets.py           # Widget factory mixin: themed dialogs, cards, buttons
-│   ├── settings_view.py     # Settings window + per-provider API key management
-│   ├── batch_view.py        # Batch/File window (file picker, progress, ffmpeg download)
-│   ├── history_view.py      # History | Batch | Costs | Log viewer + "Summarise session"
-│   ├── announce_view.py     # Announcement window (message + duration) & overlay lifecycle
-│   ├── typography.py        # Subtitle appearance controls (source size, text colours)
-│   ├── audio_level_bar.py   # Segmented input-level bar widget
+├── gui/                     # User interface — PySide6/Qt, the only GUI (see gui/AGENTS.md)
+│   ├── app.py               # Qt application bootstrap (QApplication, wizard or panel)
+│   ├── control_panel.py     # Control panel core (reflowing card grid, start/stop,
+│   │                        #   theming, input-level meter, collapsible log panel)
+│   ├── control_state.py     # Settings-derived rules (key/mode/strategy), toolkit-free, unit-tested
+│   ├── pipeline_bridge.py   # Controller → GUI handoff as Qt signals (no polling loop)
+│   ├── subtitle_window.py   # Full-screen subtitle overlay (realtime/continuous/static)
+│   ├── subtitle_text.py     # Footer wording + oversized-block splitter (toolkit-free)
+│   ├── settings_window.py   # Settings window + per-provider API key management
+│   ├── batch_window.py      # Batch/File window (file picker, progress, ffmpeg download)
+│   ├── history_window.py    # History | Batch | Costs | Log viewer + "Summarise session"
+│   ├── announce_window.py   # Announcement window (message + duration)
 │   ├── onboarding.py        # First-run setup wizard (5 steps)
-│   ├── subtitle_window.py   # Full-screen subtitle display (realtime/continuous/static)
-│   ├── dropdown.py          # Shared themed dropdown (mouse + keyboard navigation)
+│   ├── api_keys.py          # API key entry dialog (storage via providers.save_api_key)
+│   ├── already_running.py   # "MinbarLive is already running" dialog
+│   ├── dialogs.py           # Themed message/confirm dialogs — never QMessageBox
+│   ├── widgets.py           # Shared controls (segmented button, dropdown, slider) + on-top helpers
+│   ├── theme.py             # Application stylesheet built from the shared palette
+│   ├── palette.py           # Theme palettes — plain hex, toolkit-free
+│   ├── fonts.py             # Font families per platform and per script
+│   ├── icons.py             # The cached QIcon every window carries (logo mark)
+│   ├── i18n.py              # GUI string loading from data/translations/gui/
+│   ├── levels.py            # Input-level dBFS scale shared by panel and wizard
 │   ├── modal_host.py        # Integrated window style: in-app panels over a dim
-│   │                        #   backdrop, clamping/centering, modal stack (Windows-only)
-│   ├── mousewheel.py        # Root-level wheel normaliser (X11 button-4/5 scrolling)
-│   ├── scaling.py           # Display-scaling clamp + centering (fits small high-DPI screens)
+│   │                        #   backdrop, clamping/centering, modal stack
+│   ├── window_size.py       # One size rule for the content-sized secondary windows
+│   ├── platform_setup.py    # QT_QPA_PLATFORM / logging rules, set before QApplication
+│   ├── update_banner.py     # "A newer release exists" strip in the control panel
 │   └── device_list.py       # Audio input device enumeration (mics + WASAPI loopback)
 │
 ├── utils/                   # Utilities
-│   ├── api_key_manager.py   # API key dialogs (provider-aware)
 │   ├── app_paths.py         # Per-user writable app data directory
 │   ├── cleanup.py           # Log/history/batch file retention cleanup
 │   ├── context_manager.py   # Adaptive context with async summarization
@@ -74,7 +83,7 @@
 │   ├── cost_tracking.py     # Provider usage metering + per-session cost history
 │   ├── ffmpeg_download.py   # One-time ffmpeg download for batch mode (Windows)
 │   ├── history.py           # Transcription/translation logging + history parsing
-│   ├── icons.py             # Shared window-icon helpers (ICO on Windows, scaled PNG elsewhere)
+│   ├── icons.py             # Icon paths + logo mark drawing (gui/icons.py builds the QIcon)
 │   ├── json_helpers.py      # JSON file I/O
 │   ├── keyring_storage.py   # OS keychain (one entry per provider)
 │   ├── logging.py           # Thread-safe logging
@@ -83,7 +92,9 @@
 │   ├── settings.py          # User preferences dataclass + model/provider lists
 │   ├── update_check.py      # Anonymous startup check for a newer GitHub release
 │   ├── user_messages.py     # Audience-facing status messages in the target language
-│   └── windows_dpi.py       # Per-monitor DPI awareness at process start (Windows)
+│   └── windows_dpi.py       # UNUSED at runtime: Qt claims per-monitor-v2 itself and the
+│                            #   EXE gets it from MinbarLive.manifest. Kept + tested as the
+│                            #   record of the contract (calling it first took it from Qt)
 │
 ├── data/                            # Static data files (see docs/data-files.md)
 │   ├── embeddings/
@@ -105,7 +116,7 @@
 │
 ├── docs/                    # This documentation + the GitHub Pages landing page (index.html)
 │
-└── tests/                   # Pytest suite (1007 tests), see docs/testing.md
+└── tests/                   # Pytest suite (1148 tests), see docs/testing.md
 ```
 
 ## Runtime Files

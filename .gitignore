@@ -21,4 +21,6 @@ internal/
 _internal/
 MinbarLive.exe*
 CLAUDE.md
-.claude/
+CLAUDE.md.bak
+.claude/*
+!.claude/skills/
