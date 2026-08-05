@@ -27,7 +27,9 @@ python-dotenv==1.2.1
 # Audio processing
 sounddevice==0.5.3
 scipy==1.16.3
-numpy==2.4.0
+# Not 2.4.0: PyPI yanked it for a backward-compatibility bug, so every install
+# pulled a withdrawn release and pip warned about it on every build.
+numpy==2.4.2
 
 # Loopback audio capture from output devices (speakers/headphones) on Windows
 SoundCard>=0.4.6
