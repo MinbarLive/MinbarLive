@@ -51,9 +51,17 @@ cp packaging/minbarlive.desktop "$APPDIR/usr/share/applications/MinbarLive.deskt
 # AppStream metadata — what software centres and AppImageHub read to show a
 # name, summary and description instead of a bare filename; without it
 # appimagetool warns "AppStream upstream metadata is missing". Presentational
-# only: it has no bearing on whether the AppImage runs. The filename must match
-# the component id (and the desktop entry above) or AppStream ignores it.
-cp packaging/minbarlive.appdata.xml "$APPDIR/usr/share/metainfo/MinbarLive.appdata.xml"
+# only: it has no bearing on whether the AppImage runs.
+#
+# The installed filename must be the component id, or appstreamcli reports a
+# mismatch. Version and date are substituted rather than hardcoded so the
+# <release> entry cannot go stale behind version.py.
+APPSTREAM_ID="live.minbar.MinbarLive"
+APP_VERSION="$(python3 -c 'from version import __version__; print(__version__)')"
+sed -e "s|@VERSION@|${APP_VERSION}|" \
+    -e "s|@DATE@|$(date -u +%Y-%m-%d)|" \
+    "packaging/${APPSTREAM_ID}.metainfo.xml" \
+    > "$APPDIR/usr/share/metainfo/${APPSTREAM_ID}.metainfo.xml"
 
 # AppRun: on first run, register a menu entry + the dome icon so MinbarLive
 # appears in the application grid with its icon (GNOME shows a generic icon for

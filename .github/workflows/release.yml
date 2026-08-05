@@ -316,6 +316,18 @@ jobs:
           fi
           echo "Stayed up for 30s."
 
+      # appstreamcli is what appimagetool uses to VALIDATE the AppStream
+      # metadata. Without it, appimagetool reports only that the file was found
+      # ("appstreamcli command is missing, please install it") — so metadata
+      # with, say, a non-reverse-DNS component id would ship looking fine and
+      # be ignored by every software centre. ci.yml validates the same file on
+      # every pull request; this is the check on the assembled tree.
+      #
+      # Installed after pyinstaller, for the same reason the PulseAudio daemon
+      # is: nothing here may influence what got bundled.
+      - name: AppStream validator
+        run: sudo apt-get install -y appstream
+
       - name: Package AppImage
         run: bash packaging/build-appimage.sh
 
