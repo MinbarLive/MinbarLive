@@ -839,14 +839,28 @@ class BatchWindow(QDialog):
         self.progress.setValue(0)
         if sys.platform == "win32" and self._offer_ffmpeg_download():
             return  # the run restarts itself once ffmpeg is in place
-        self._set_status(
-            self._t(
+        self._set_status(self._ffmpeg_missing_text(), "status_error")
+        self._resize_to_content()
+
+    def _ffmpeg_missing_text(self) -> str:
+        """What to say when there is no ffmpeg and no download to offer.
+
+        Naming the file format is only half an answer — on macOS and Linux
+        the operator was told what was wrong and nothing about what to do
+        next. Where we know the command, it goes in the message.
+        """
+        from utils.ffmpeg_download import ffmpeg_install_command
+
+        command = ffmpeg_install_command()
+        if not command:
+            return self._t(
                 "batch_ffmpeg_missing",
                 "ffmpeg not found — install ffmpeg to process this file format.",
-            ),
-            "status_error",
-        )
-        self._resize_to_content()
+            )
+        return self._t(
+            "batch_ffmpeg_missing_hint",
+            "ffmpeg not found — install it and try again:  {command}",
+        ).format(command=command)
 
     def _offer_ffmpeg_download(self) -> bool:
         """True when a download was started (and the run will resume)."""

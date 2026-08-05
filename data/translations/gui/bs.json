@@ -163,6 +163,7 @@
   "batch_close_keep_running": "Nastavi u pozadini",
   "batch_error": "Neuspješno: {error}",
   "batch_ffmpeg_missing": "ffmpeg nije pronađen — instaliraj ffmpeg za obradu ovog formata.",
+  "batch_ffmpeg_missing_hint": "ffmpeg nije pronađen — instaliraj ga i pokušaj ponovo:  {command}",
   "batch_ffmpeg_download_prompt": "Za konverziju ovog formata potreban je ffmpeg. Preuzeti ga sada? (jednokratno, ~{mb} MB)",
   "batch_ffmpeg_downloading": "Preuzimanje ffmpeg-a… {percent}%",
   "announce_title": "Objava",

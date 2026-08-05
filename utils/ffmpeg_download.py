@@ -1,4 +1,4 @@
-"""One-time consented ffmpeg download into the app data dir (Windows).
+"""How the user gets an ffmpeg: downloaded on Windows, named on the rest.
 
 Batch mode needs ffmpeg to convert anything that is not already a 16 kHz
 WAV. Most users don't have it installed, and bundling a static build would
@@ -6,12 +6,17 @@ grow the EXE by ~90 MB — so the batch card offers a one-time download to
 ``%APPDATA%/MinbarLive/bin/ffmpeg.exe`` instead. ``_find_ffmpeg`` in
 ``batch/processor.py`` picks that copy up automatically; users with a
 system ffmpeg never hit this module.
+
+macOS and Linux get no download — an unsigned binary pulled from the
+internet is a worse answer than the package manager they already have — so
+``ffmpeg_install_command`` supplies the line to type instead.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
+import sys
 import tempfile
 import urllib.request
 import zipfile
@@ -37,6 +42,42 @@ class FfmpegDownloadCancelled(RuntimeError):
 def bundled_ffmpeg_path() -> str:
     """Where the app-managed ffmpeg.exe lives (may not exist yet)."""
     return str(get_app_data_dir() / "bin" / "ffmpeg.exe")
+
+
+# Probed in order; the first package manager actually present wins. Ordered
+# by how many desktops run it, so a machine carrying two (apt plus a
+# hand-installed dnf, say) still gets told the one that owns its packages.
+_LINUX_INSTALL_COMMANDS = (
+    ("apt-get", "sudo apt install ffmpeg"),
+    ("dnf", "sudo dnf install ffmpeg"),
+    ("pacman", "sudo pacman -S ffmpeg"),
+    ("zypper", "sudo zypper install ffmpeg"),
+)
+
+
+def ffmpeg_install_command(platform: str | None = None) -> str | None:
+    """The command that installs ffmpeg here, or None when there is none to give.
+
+    None on Windows: the batch card offers the consented download above, and
+    a shell command would be the worse of two answers.
+
+    ``platform`` is injectable purely so tests can ask for another OS without
+    assigning to ``sys.platform``, which is process-wide and has taken this
+    suite down before — a faked "linux" makes Qt and sounddevice follow Linux
+    paths inside a Windows process. Callers pass nothing.
+    """
+    platform = sys.platform if platform is None else platform
+    if platform == "darwin":
+        return "brew install ffmpeg"
+    if platform.startswith("linux"):
+        for binary, command in _LINUX_INSTALL_COMMANDS:
+            if shutil.which(binary):
+                return command
+        # Either an unrecognised distribution or the same minimal PATH that
+        # hid ffmpeg itself. Naming the most widespread one beats saying
+        # nothing: wrong is correctable, absent is the dead end this fixes.
+        return _LINUX_INSTALL_COMMANDS[0][1]
+    return None
 
 
 def download_ffmpeg(

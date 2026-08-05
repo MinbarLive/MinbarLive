@@ -172,7 +172,7 @@ Use the **Test mic** button next to the level bar to check this before a session
 
 The **Batch / File** card in the control panel processes a pre-recorded audio or video file through the same transcription → Quran matching → translation pipeline and writes an `.srt` subtitle file next to the source file (e.g. `lecture.de.srt`).
 
-- Any common audio/video format. Non-WAV files are converted via **ffmpeg** (on Windows the app offers a one-time automatic download if ffmpeg is not installed)
+- Any common audio/video format. Non-WAV files are converted via **ffmpeg**. If it is missing, Windows offers a one-time automatic download; macOS and Linux get the install command to run (`brew install ffmpeg`, `sudo apt install ffmpeg`, …)
 - Transcription/translation model selectable per run
 - Finished runs are stored in the session history (Batch tab)
 

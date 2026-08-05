@@ -71,6 +71,7 @@ WIZARD_KEYS = [
     "batch_cancelled",
     "batch_error",
     "batch_ffmpeg_missing",
+    "batch_ffmpeg_missing_hint",
     "batch_ffmpeg_download_prompt",
     "batch_ffmpeg_downloading",
     "batch_more_settings",
@@ -210,6 +211,9 @@ class TestWizardTranslationCoverage:
         assert "{name}" in data["batch_done"]
         assert "{error}" in data["batch_error"]
         assert "{mb}" in data["batch_ffmpeg_download_prompt"]
+        # Lose this one and the hint says "install it" without saying how,
+        # which is the dead end the message exists to remove.
+        assert "{command}" in data["batch_ffmpeg_missing_hint"]
         assert "{percent}" in data["batch_ffmpeg_downloading"]
         assert "{count}" in data["history_entries"]
         assert "{minutes}" in data["history_minutes"]
