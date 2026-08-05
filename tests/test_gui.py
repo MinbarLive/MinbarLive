@@ -2669,7 +2669,20 @@ class TestBatchWindow:
         # in exactly this path). Patch it on gui.batch_window, not on
         # gui.api_keys — the import binds per module.
         monkeypatch.setattr(bw, "ensure_keys", lambda providers, texts, parent: True)
+        # closeEvent asks what to do with a run in progress, which is another
+        # real modal dialog. Recorded rather than shown, defaulting to the
+        # non-destructive answer; a test that wants the run cancelled sets
+        # calls["close_prompt"]["answer"] = True.
+        close_prompt: dict = {"asked": 0, "answer": False, "kwargs": {}}
+
+        def fake_ask(parent, title, message, **kwargs):
+            close_prompt["asked"] += 1
+            close_prompt["kwargs"] = kwargs
+            return close_prompt["answer"]
+
+        monkeypatch.setattr(bw, "ask_yes_no", fake_ask)
         w = bw.BatchWindow(lambda k, f="": f, load_settings())
+        calls["close_prompt"] = close_prompt
         yield w, calls
         w.close()
 
@@ -2842,14 +2855,12 @@ class TestBatchWindow:
         w._on_cancel()
         assert w.worker.cancel_event.is_set()
 
-    def test_closing_cancels_a_running_job(self, batch, monkeypatch):
-        # Otherwise the run continues and writes files after the window is gone.
-        # Needs a job that is still running when close() lands, so this stub
-        # blocks until cancelled rather than returning immediately.
+    @staticmethod
+    def _start_a_blocking_run(w, monkeypatch):
+        """Start a run that is still going when close() lands."""
         import sys
         import types
 
-        w, _ = batch
         started = threading.Event()
 
         def blocking_process_file(input_path, progress_callback=None,
@@ -2872,8 +2883,45 @@ class TestBatchWindow:
         w._input_path = "khutbah.mp3"
         w._on_start()
         assert started.wait(timeout=5), "worker never started"
+
+    def test_closing_a_running_job_asks_first(self, batch, monkeypatch):
+        # Closing a window is not a statement about the job: cancelling
+        # silently threw away a run that could be twenty minutes in.
+        w, calls = batch
+        self._start_a_blocking_run(w, monkeypatch)
+        calls["close_prompt"]["answer"] = True  # "Cancel run"
         w.close()
+        assert calls["close_prompt"]["asked"] == 1, "closed without asking"
         assert w.worker.cancel_event.is_set()
+
+    def test_closing_can_leave_the_run_in_the_background(self, batch, monkeypatch):
+        # The .srt and the history entry are written on the worker thread, so
+        # a run outliving this window still lands in the history's Batch tab.
+        w, calls = batch
+        self._start_a_blocking_run(w, monkeypatch)
+        calls["close_prompt"]["answer"] = False  # "Keep running"
+        w.close()
+        assert calls["close_prompt"]["asked"] == 1
+        assert not w.worker.cancel_event.is_set(), "the run was cancelled anyway"
+        w.worker.cancel()  # don't leave the thread parked on the test's clock
+
+    def test_the_close_prompt_names_both_actions_and_defaults_to_keeping(
+        self, batch, monkeypatch
+    ):
+        # "Yes"/"No" cannot say which button throws the work away, and Return
+        # must not be the one that does.
+        w, calls = batch
+        self._start_a_blocking_run(w, monkeypatch)
+        w.close()
+        kwargs = calls["close_prompt"]["kwargs"]
+        assert kwargs["yes_text"] and kwargs["no_text"]
+        assert kwargs["default_yes"] is False
+        w.worker.cancel()
+
+    def test_closing_without_a_run_asks_nothing(self, batch):
+        w, calls = batch
+        w.close()
+        assert calls["close_prompt"]["asked"] == 0
 
 
 class TestAnnounceWindow:

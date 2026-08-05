@@ -50,6 +50,8 @@ class MessageDialog(QDialog):
         kind: str = "warn",
         confirm: bool = False,
         default_yes: bool = True,
+        yes_text: str | None = None,
+        no_text: str | None = None,
         translate: Callable[[str, str], str] | None = None,
     ):
         super().__init__(parent)
@@ -95,10 +97,13 @@ class MessageDialog(QDialog):
         buttons.setSpacing(8)
         buttons.addStretch(1)
         if confirm:
-            self.no_btn = QPushButton(t("dlg_no", "No"))
+            # Named actions when the caller supplies them: "Yes/No" is wrong
+            # for a choice between two things the user is actually doing, and
+            # on a destructive one it makes them guess which button loses work.
+            self.no_btn = QPushButton(no_text or t("dlg_no", "No"))
             self.no_btn.setMinimumHeight(38)
             self.no_btn.clicked.connect(self.reject)
-            self.yes_btn = QPushButton(t("dlg_yes", "Yes"))
+            self.yes_btn = QPushButton(yes_text or t("dlg_yes", "Yes"))
             self.yes_btn.setObjectName("accent")
             self.yes_btn.setMinimumHeight(38)
             self.yes_btn.clicked.connect(self.accept)
@@ -151,8 +156,12 @@ def ask_yes_no(
     *,
     kind: str = "warn",
     default_yes: bool = True,
+    yes_text: str | None = None,
+    no_text: str | None = None,
     translate: Callable[[str, str], str] | None = None,
 ) -> bool:
+    """True for the accepting button. Pass ``yes_text``/``no_text`` to name the
+    two actions when "Yes"/"No" would not tell the user what each one does."""
     dialog = MessageDialog(
         parent,
         title,
@@ -160,6 +169,8 @@ def ask_yes_no(
         kind=kind,
         confirm=True,
         default_yes=default_yes,
+        yes_text=yes_text,
+        no_text=no_text,
         translate=translate,
     )
     return dialog.exec() == QDialog.Accepted

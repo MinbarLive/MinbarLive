@@ -882,8 +882,30 @@ class BatchWindow(QDialog):
         self._on_start()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
-        # A run keeps going in its own thread otherwise, writing files after
-        # the window is gone.
+        # Closing a window is not a statement about the job (AGENTS.md,
+        # 2026-08-05), so ask instead of deciding. Cancelling silently threw
+        # away a run that may be twenty minutes in; finishing silently left
+        # a thread writing files with no window to say so.
+        #
+        # Letting it run is safe: the .srt and the history entry are written
+        # by batch/processor.py on the worker thread, so the finished run shows
+        # up in the history viewer's Batch tab whether or not this window is
+        # still open. Only the progress display is lost.
         if self.worker.is_running():
-            self.worker.cancel()
+            cancel = ask_yes_no(
+                self,
+                self._t("batch_close_title", "A run is still going"),
+                self._t(
+                    "batch_close_question",
+                    "Cancel this run, or leave it working in the background? "
+                    "A background run still saves its file and appears in the "
+                    "history.",
+                ),
+                default_yes=False,  # never let Return throw the run away
+                yes_text=self._t("batch_close_cancel_run", "Cancel run"),
+                no_text=self._t("batch_close_keep_running", "Keep running"),
+                translate=self._t,
+            )
+            if cancel:
+                self.worker.cancel()
         super().closeEvent(event)
