@@ -163,6 +163,7 @@
   "batch_close_keep_running": "Arka planda sürdür",
   "batch_error": "Başarısız: {error}",
   "batch_ffmpeg_missing": "ffmpeg bulunamadı — bu dosya biçimini işlemek için lütfen ffmpeg yükleyin.",
+  "batch_ffmpeg_missing_hint": "ffmpeg bulunamadı — lütfen yükleyin ve tekrar deneyin:  {command}",
   "batch_ffmpeg_download_prompt": "Bu dosya biçimini dönüştürmek için ffmpeg gerekli. Şimdi indirilsin mi? (tek seferlik, ~{mb} MB)",
   "batch_ffmpeg_downloading": "ffmpeg indiriliyor… {percent}%",
   "announce_title": "Duyuru",

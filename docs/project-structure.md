@@ -81,7 +81,7 @@
 │   ├── context_manager.py   # Adaptive context with async summarization
 │   ├── cost_display.py      # Formatting/grouping of cost sessions for the GUI
 │   ├── cost_tracking.py     # Provider usage metering + per-session cost history
-│   ├── ffmpeg_download.py   # One-time ffmpeg download for batch mode (Windows)
+│   ├── ffmpeg_download.py   # One-time ffmpeg download (Windows) + install command elsewhere
 │   ├── history.py           # Transcription/translation logging + history parsing
 │   ├── icons.py             # Icon paths + logo mark drawing (gui/icons.py builds the QIcon)
 │   ├── json_helpers.py      # JSON file I/O

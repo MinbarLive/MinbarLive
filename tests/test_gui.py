@@ -2926,6 +2926,37 @@ class TestBatchWindow:
         assert w.status.objectName() == "status_error"
         assert "ffmpeg" in w.status.text()
 
+    def test_the_error_carries_the_install_command_where_there_is_one(
+        self, batch, monkeypatch
+    ):
+        # macOS and Linux are offered no download, so this message is the
+        # only place the operator can find out what to do next (#38). Patched
+        # rather than read off the host, so the branch is pinned on every OS.
+        w, _ = batch
+        monkeypatch.setattr(
+            "utils.ffmpeg_download.ffmpeg_install_command",
+            lambda: "brew install ffmpeg",
+        )
+        monkeypatch.setattr(w, "_offer_ffmpeg_download", lambda: False)
+        w._on_ffmpeg_missing()
+        assert w.status.objectName() == "status_error"
+        assert "brew install ffmpeg" in w.status.text()
+
+    def test_no_known_command_falls_back_to_the_plain_message(
+        self, batch, monkeypatch
+    ):
+        w, _ = batch
+        monkeypatch.setattr(
+            "utils.ffmpeg_download.ffmpeg_install_command", lambda: None
+        )
+        monkeypatch.setattr(w, "_offer_ffmpeg_download", lambda: False)
+        w._on_ffmpeg_missing()
+        text = w.status.text()
+        assert "ffmpeg" in text
+        # Not the hint's shape — nothing to interpolate, so no stray colon
+        # or an empty "install it and try again:" trailing off.
+        assert "{command}" not in text and not text.rstrip().endswith(":")
+
     def test_the_run_resumes_once_ffmpeg_is_downloaded(self, batch):
         # The whole point of the offer: the user asked for a run, not for a
         # download. The join matters — the emitting thread is still alive, and

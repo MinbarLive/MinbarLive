@@ -163,6 +163,7 @@
   "batch_close_keep_running": "متابعة في الخلفية",
   "batch_error": "فشل: {error}",
   "batch_ffmpeg_missing": "ffmpeg غير موجود — يرجى تثبيت ffmpeg لمعالجة هذا التنسيق.",
+  "batch_ffmpeg_missing_hint": "ffmpeg غير موجود — يرجى تثبيته ثم إعادة المحاولة:  {command}",
   "batch_ffmpeg_download_prompt": "يتطلب تحويل هذا التنسيق برنامج ffmpeg. هل تريد تنزيله الآن؟ (مرة واحدة، حوالي {mb} م.ب)",
   "batch_ffmpeg_downloading": "جارٍ تنزيل ffmpeg… {percent}%",
   "announce_title": "إعلان",

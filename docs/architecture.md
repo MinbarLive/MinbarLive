@@ -114,7 +114,7 @@ The context helps disambiguate unclear words without bloating the prompt.
 
 `batch/processor.py` runs a pre-recorded file through the same transcription → RAG → translation pipeline linearly and writes an `.srt` file ([srt_writer.py](../batch/srt_writer.py)):
 
-- Non-WAV input is converted to 16 kHz mono WAV via ffmpeg (auto-download offered on Windows)
+- Non-WAV input is converted to 16 kHz mono WAV via ffmpeg (auto-download offered on Windows; elsewhere the error names the install command, and the Homebrew prefixes are searched directly because a GUI launch inherits a minimal `PATH`)
 - Segmentation is VAD-style: splits fall in natural pauses, unbroken speech is capped at 15 s (cut at the quietest sustained window), and sub-2 s snippets are merged into a neighbor to avoid ASR hallucinations
 - Each segment's transcription is prompted with the previous segment's tail for cross-segment context
 - Timestamps come from the segment positions; output lands next to the source as `{name}.{target_code}.srt`
