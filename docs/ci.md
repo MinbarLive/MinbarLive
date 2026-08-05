@@ -164,6 +164,27 @@ sequence rather than in parallel.
 | Smoke-launch the binary | A startup crash — a shared library the bundle missed, an X11 request Qt's platform plugin rejects. The binary is launched under `xvfb` with a 30-second `timeout`, so **exit 124 is the success case**: it means the app was still running when the timeout killed it, sitting in the onboarding wizard. Any other exit code means it died on its own |
 | Smoke-launch the AppImage **in a bare container** | An AppImage that is not self-contained. The two launches above run on the build machine, which installed the xcb set so PyInstaller could find it — they pass whether or not those libraries reached the bundle. This one runs the same file in `ubuntu:24.04` with **none** of them installed (`--appimage-extract-and-run`, since a container has no FUSE), and 124 is again the success case. Keep that container's package list minimal and keep the Qt xcb set out of it: **that list is the test** |
 
+**A PulseAudio daemon runs before the smoke launches, and it is started *after*
+`pyinstaller`.** A hosted runner has no sound server, so `soundcard_usable()`
+returned `False` and every launch took the degrade branch — no loopback devices,
+no JACK-monitor filtering, no call into libpulse. The checks proved the app
+survives *without* audio and said nothing about the loopback feature the AppImage
+bundles `soundcard` for. That gap already cost a release: the frozen build strips
+`assert` (the spec's `optimize=1`), which removes `soundcard`'s only guard against
+an unreachable server, and a build aborted at startup with
+`Assertion 'o' failed at ../src/pulse/operation.c:67`.
+
+The ordering is not cosmetic. A daemon started before the build could change what
+gets **bundled** — the trap the xcb/libEGL/libpulse notes are about. Starting one
+for the *launch* cannot, because the bundle already exists. The step fails loudly
+if the socket is absent, since a daemon that quietly failed to start would put the
+launches back on the degrade path and still report success.
+
+The bare-container check keeps **no** daemon, deliberately: between them the two
+branches of `soundcard_usable()` are both covered — the real libpulse path on the
+host, the degrade path a machine without a sound server must still survive in the
+container. Do not "fix" the container by starting a daemon in it.
+
 **Why the builder installs the xcb libraries before `pyinstaller` runs:**
 PyInstaller bundles the shared libraries it finds the collected binaries linking
 against *on the build machine*. Qt's xcb plugin links against `libxcb-cursor`,
@@ -207,13 +228,22 @@ Platform limits that are real, not build bugs:
 | Loopback capture ("what the speakers play") | CoreAudio cannot record an output device — `soundcard`'s backend warns and returns the real inputs, so `gui/device_list.py` lists no loopback entries there at all. Users route through BlackHole/Loopback, which appear as ordinary inputs |
 | Overlay above the Dock / menu bar | No window level a Qt client can ask for sits above them — a stays-on-top window floats above other applications and still below both — so the overlay is laid out inside the work area instead of covering them (`_MACOS` in `gui/subtitle_window.py`). Windows and X11 keep the whole monitor, which is what OBS captures |
 
-Two build-time checks fail loudly: the bundled binary's size (a lost `data/`
-bundle shows up small) and `NSMicrophoneUsageDescription` being present in
-`Info.plist` — modern macOS hard-kills any app that opens an input stream
-without it, so the spec wires it in and CI asserts it with `PlistBuddy`. The GUI
-smoke-launch is best-effort (`continue-on-error`): whether a hosted runner's
-session can start a GUI window is not something this project has verified, so an
-early exit is reported as a warning, not a build failure.
+Checks that fail loudly: the bundle's size (a lost `data/` payload shows up
+small), both `.npz` matrices being present inside the bundle, and
+`NSMicrophoneUsageDescription` being present in `Info.plist` — modern macOS
+hard-kills any app that opens an input stream without it, so the spec wires it in
+and CI asserts it with `PlistBuddy`.
+
+**The GUI smoke-launch is fatal too, since 2026-08-05.** It was best-effort
+(`continue-on-error`, reporting a `::warning::`), which meant a build that
+crashed at startup was still uploaded *and* still attached to the release — the
+check could not fail anything it existed to protect. The hedge was reasonable
+when written: nobody had established that a Qt GUI can start on a hosted macOS
+runner at all, so a red job more likely meant "the runner cannot do this" than
+"the app is broken". Consecutive dispatch builds now report `Stayed up for 25s.`,
+so an early exit means the app. It still runs *after* `upload-artifact` on
+purpose: a crashing build leaves an artifact to download and debug, but never
+reaches the publish step.
 
 ## Lint checks changed files only
 
