@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import sys
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -13,7 +14,30 @@ import pytest
 import app_controller
 from app_controller import AppController
 from audio.level_meter import DBFS_FLOOR, AudioLevelMeter
+from streaming_session import StreamingSession
 from utils.settings import PIPELINE_MODE_STREAMING
+
+
+def _attach_streaming_session(controller: AppController, capture_rate: int) -> None:
+    """Give the controller a live streaming session to capture into.
+
+    Since issue #48 the streaming capture paths route audio through the
+    session rather than a queue on the controller, and read the capture rate
+    from it. Nothing here opens a connection.
+    """
+    controller._streaming = StreamingSession(
+        SimpleNamespace(open_stream=lambda **kwargs: None),
+        provider_id="fake",
+        model="fake-model",
+        language="ar",
+        capture_rate=capture_rate,
+        stop_event=threading.Event(),
+        stop_input=lambda: None,
+        translation_queue=queue.Queue(),
+        error_queue=queue.Queue(),
+        translate=lambda text: None,
+        on_activity=lambda: None,
+    )
 
 
 class FakeClock:
@@ -94,12 +118,13 @@ def test_sounddevice_segmented_and_streaming_callbacks_observe_mono_pcm():
     assert controller.get_input_level().rms_dbfs == pytest.approx(-12.0412, abs=0.01)
 
     controller.reset_input_level()
-    controller._streaming_capture_rate = 24000
+    _attach_streaming_session(controller, 24000)
     streaming = np.full((64, 1), 16384, dtype=np.int16)
     controller._streaming_audio_callback(streaming, 64, None, None)
 
     assert controller.get_input_level().rms_dbfs == pytest.approx(-6.0206, abs=0.01)
-    assert controller._streaming_feed_queue.get_nowait() == streaming[:, 0].tobytes()
+    fed = controller._streaming._feed_queue.get_nowait()
+    assert fed == streaming[:, 0].tobytes()
 
 
 class _OneBlockRecorder:
@@ -147,6 +172,7 @@ def test_loopback_segmented_and_streaming_paths_observe_mono_pcm(monkeypatch):
 
     controller.reset_input_level()
     controller._input_stop_event = app_controller.threading.Event()
+    _attach_streaming_session(controller, 24000)
     fake_soundcard.get_microphone = lambda **kwargs: _FakeLoopbackMicrophone(
         controller._input_stop_event, 0.4
     )
@@ -156,7 +182,7 @@ def test_loopback_segmented_and_streaming_paths_observe_mono_pcm(monkeypatch):
 
     assert startup_result.get_nowait() is None
     assert controller.get_input_level().rms_dbfs == pytest.approx(-7.9588, abs=0.01)
-    assert controller._streaming_feed_queue.get_nowait()
+    assert controller._streaming._feed_queue.get_nowait()
 
 
 class _PreviewInputStream:
