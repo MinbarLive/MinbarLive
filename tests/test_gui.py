@@ -2661,6 +2661,14 @@ class TestBatchWindow:
                 FfmpegNotFoundError=FfmpegNotFoundError,
             ),
         )
+        # _on_start asks for any missing provider key first, and ensure_keys
+        # opens a REAL modal ApiKeyDialog when none is stored. On a developer
+        # machine with keys in the keychain it returns immediately and the
+        # tests below pass; on a runner with an empty keychain it blocks the
+        # whole suite (it took CI's Windows job down with an access violation
+        # in exactly this path). Patch it on gui.batch_window, not on
+        # gui.api_keys — the import binds per module.
+        monkeypatch.setattr(bw, "ensure_keys", lambda providers, texts, parent: True)
         w = bw.BatchWindow(lambda k, f="": f, load_settings())
         yield w, calls
         w.close()

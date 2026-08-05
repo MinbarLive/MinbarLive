@@ -174,6 +174,18 @@ confident, wrong passes:
    `_finish_stop` and the batch worker report errors with a real modal dialog — a test
    that exercises those puts a box on the developer's desktop and blocks the run until
    it is dismissed (it looked like a 15-second test).
+6. **Stub `ensure_keys` before driving any Start path**, for the same reason and one
+   worse property: whether it opens a dialog depends on the machine. `_on_start` (batch)
+   and the panel's Start ask for any missing provider key first, and `ensure_keys` opens
+   a real modal `ApiKeyDialog` when none is stored. With keys in your keychain it returns
+   instantly and the test passes; on a runner with an empty keychain it blocks — this took
+   CI's Windows job down with an access violation and a 20-minute cancellation, on tests
+   that had been green locally for weeks. Patch it on the module that *imported* it
+   (`gui.batch_window.ensure_keys`), never on `gui.api_keys` — the import binds per module.
+
+**A green local run is not evidence for anything that reads the keychain, the filesystem
+or the display.** Reproduce a runner by patching `has_usable_key` to False before
+believing a Start path is covered.
 
 ## Packaging requirement for Phase 7
 
