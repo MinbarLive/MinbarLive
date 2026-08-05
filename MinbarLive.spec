@@ -1,6 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import glob
+import importlib.util
+import os
 import sys
 
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
@@ -150,6 +152,39 @@ if IS_LINUX:
 
 # Bundle project data/ and public/ into the executable (available under sys._MEIPASS/)
 datas = [("data", "data"), ("public", "public")]
+
+# soundcard reads a cffi header out of its own package directory AT IMPORT
+# (pulseaudio.py.h on Linux, coreaudio.py.h on macOS, mediafoundation.py.h on
+# Windows). Those are DATA files, so the import graph never carries them: the
+# only thing that bundles them is soundcard's own PyInstaller hook, which
+# PyInstaller discovers through an entry point it resolves by IMPORTING
+# soundcard.
+#
+# On Linux that import runs `_pulse = _PulseAudio()` at module level, and the
+# constructor ends in `assert ... == PA_CONTEXT_READY`. No CI runner runs a
+# PulseAudio DAEMON, so the context never becomes ready and the import raises
+# AssertionError. PyInstaller downgrades that to a warning, skips the hook, and
+# ships soundcard/pulseaudio.py without pulseaudio.py.h — so `import soundcard`
+# dies with FileNotFoundError inside the AppImage. Every call site catches
+# Exception (gui/device_list.py, app_controller.py), so nothing fails loudly:
+# the microphone dropdown silently loses both the JACK-monitor filter and every
+# loopback device. Installing libpulse0 on the builder was necessary but not
+# sufficient — it fixes the dlopen, not the absent daemon.
+#
+# So resolve the package path WITHOUT importing it (find_spec locates, it does
+# not execute) and bundle the headers here. What ships no longer depends on the
+# builder's audio stack, which is the same rule the xcb and libEGL notes in
+# release.yml are built on. Hard-fail rather than warn: a silent skip is what
+# made this survive a green build in the first place.
+_soundcard_spec = importlib.util.find_spec("soundcard")
+if _soundcard_spec is None or not _soundcard_spec.submodule_search_locations:
+    raise SystemExit("soundcard is not installed - loopback capture would ship broken.")
+_soundcard_headers = glob.glob(
+    os.path.join(_soundcard_spec.submodule_search_locations[0], "*.py.h")
+)
+if not _soundcard_headers:
+    raise SystemExit("soundcard ships no *.py.h - it cannot be imported at runtime.")
+datas += [(header, "soundcard") for header in _soundcard_headers]
 
 a = Analysis(
     ["main.py"],
