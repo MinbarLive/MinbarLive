@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
+from audio import loopback
 from audio.device_support import input_device_candidates, input_stream_kwargs
 from audio.loopback import get_speaker, register
 from gui import device_list
@@ -286,3 +287,80 @@ def test_loopback_speakers_are_listed_where_the_platform_supports_them(monkeypat
 def test_loopback_support_is_reported_per_platform():
     """The GUI asks this to decide whether to explain the missing entries."""
     assert device_list.loopback_supported() == (sys.platform != "darwin")
+
+
+# --- The PulseAudio guard -------------------------------------------------
+#
+# soundcard's own protection against an unreachable PulseAudio server is an
+# `assert`, and the frozen build strips asserts (MinbarLive.spec, optimize=1).
+# Without it libpulse aborts the process at the first API call, and SIGABRT
+# cannot be caught by any `except` — so the server has to be found BEFORE
+# soundcard is touched. See audio/loopback.soundcard_usable.
+#
+# sys.platform is never faked here: the guard is patched as a module attribute
+# instead, the way _LOOPBACK_SUPPORTED already is above.
+
+
+def test_pulse_server_is_found_via_the_explicit_env_var(monkeypatch):
+    monkeypatch.setenv("PULSE_SERVER", "tcp:192.168.0.5:4713")
+    monkeypatch.setattr(loopback.os.path, "exists", lambda path: False)
+
+    assert loopback._pulse_server_available() is True
+
+
+def test_pulse_server_is_found_via_the_per_user_socket(monkeypatch):
+    monkeypatch.delenv("PULSE_SERVER", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+    monkeypatch.setattr(
+        loopback.os.path,
+        "exists",
+        lambda path: str(path).replace("\\", "/") == "/run/user/1000/pulse/native",
+    )
+
+    assert loopback._pulse_server_available() is True
+
+
+def test_no_pulse_server_is_reported_when_nothing_answers(monkeypatch):
+    """A pure-ALSA box. Must report False rather than let soundcard abort."""
+    monkeypatch.delenv("PULSE_SERVER", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setattr(loopback.os.path, "exists", lambda path: False)
+
+    assert loopback._pulse_server_available() is False
+
+
+def test_soundcard_is_always_usable_off_linux():
+    """Windows WASAPI and macOS CoreAudio never go through libpulse."""
+    if sys.platform.startswith("linux"):
+        return
+    assert loopback.soundcard_usable() is True
+
+
+def test_no_loopback_devices_are_offered_without_a_pulse_server(monkeypatch):
+    """The guard must stop enumeration BEFORE soundcard is called at all.
+
+    Speakers are on offer and the platform supports loopback, so only the
+    missing server may suppress them — and the registry must stay empty, since
+    that is what keeps app_controller's three capture paths unreachable.
+    """
+    register(-1, object())
+    _patch_single_microphone(monkeypatch)
+    monkeypatch.setitem(
+        sys.modules,
+        "soundcard",
+        SimpleNamespace(
+            all_speakers=lambda: [SimpleNamespace(name="Speakers", id=7)],
+            all_microphones=lambda include_loopback=False: [
+                SimpleNamespace(name="Monitor of Speakers", id=8, isloopback=True)
+            ],
+        ),
+    )
+    monkeypatch.setattr(device_list, "_LOOPBACK_SUPPORTED", True)
+    monkeypatch.setattr(device_list, "soundcard_usable", lambda: False)
+
+    _, base_names, indices, loopback_flags = device_list.get_input_devices()
+
+    assert base_names == ["MacBook Pro Microphone"]
+    assert loopback_flags == [False]
+    assert all(idx >= 0 for idx in indices)
+    assert get_speaker(-1) is None
