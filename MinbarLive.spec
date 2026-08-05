@@ -212,13 +212,11 @@ a.datas = [
 
 pyz = PYZ(a.pure)
 
-# One-file mode - slower startup but easier distribution
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
+# Shared by both build shapes below. Kept in one place deliberately: the two
+# EXE() calls differ ONLY in whether the payload rides inside the executable,
+# and a setting that drifted between them would be invisible until a platform
+# behaved differently for no traceable reason.
+exe_options = dict(
     name="MinbarLive",
     icon=ICON_PATH if IS_WINDOWS else None,
     manifest=MANIFEST_PATH if IS_WINDOWS else None,
@@ -234,7 +232,26 @@ exe = EXE(
     entitlements_file=None,
 )
 
-# macOS: wrap the one-file binary in a .app bundle so it is double-clickable
+if IS_MACOS:
+    # ONEDIR on macOS, one-file everywhere else. PyInstaller deprecated
+    # one-file inside a .app ("a .app bundle can not be a single file …
+    # clashes with macOS's security") and makes it an ERROR in v7, so the
+    # macOS build would break on the first bump past the pyinstaller==6.18.0
+    # pin — including a routine security bump.
+    #
+    # Nothing changes for the user: a .app is *already* a directory that
+    # Finder draws as one icon, so they still download one zip and drag one
+    # icon to Applications. What goes away is the one-file bootloader
+    # unpacking ~200 MB into a temp directory on EVERY launch, which is the
+    # part macOS security dislikes — the code that runs lives at a fresh path
+    # each time, which is exactly what Gatekeeper and TCC (the microphone
+    # grant this app cannot work without) are built to track.
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **exe_options)
+    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="MinbarLive")
+else:
+    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], **exe_options)
+
+# macOS: wrap the collected directory in a .app bundle so it is double-clickable
 # (a bare Unix executable opens a Terminal, not the GUI). EXPERIMENTAL and
 # UNSIGNED — Gatekeeper will warn; users right-click → Open on first launch.
 # NSMicrophoneUsageDescription is REQUIRED: modern macOS (10.14+) hard-kills any
@@ -248,7 +265,7 @@ if IS_MACOS:
     except Exception:
         _mac_version = "0.0.0"
     app = BUNDLE(
-        exe,
+        coll,
         name="MinbarLive.app",
         icon=None,
         bundle_identifier="live.minbar.app",

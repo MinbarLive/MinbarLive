@@ -174,11 +174,22 @@ by telling users to install a package.
 
 ### The macOS build
 
-`build-macos` runs on `macos-14` (Apple Silicon), builds the one-file binary,
-wraps it in a `.app` via the spec's `BUNDLE` step and, on tagged builds, attaches
+`build-macos` runs on `macos-14` (Apple Silicon), builds **onedir** (the spec's
+`COLLECT` step), wraps it in a `.app` via `BUNDLE` and, on tagged builds, attaches
 `MinbarLive-macos-arm64.zip` to the release. It was manual-only
 (`workflow_dispatch`) until a real Mac ran the `.app` in 2026-07 — the same bar
 the Linux AppImage had to clear before it shipped.
+
+**Why onedir, when Windows and Linux stay one-file.** PyInstaller deprecated
+one-file inside a `.app` and makes it an error in v7, so the macOS build would
+break on the first bump past the `pyinstaller==6.18.0` pin. Nothing changes for
+the user — a `.app` is already a directory Finder draws as one icon, so it is
+still one zip and one drag to Applications — but the bootloader no longer
+unpacks ~200 MB to a temp directory on every launch. Two `build-macos` steps
+depend on the layout and were changed with it: the size guard measures the whole
+bundle (`Contents/MacOS/MinbarLive` is a small stub now, and the payload sits in
+`Contents/Frameworks` and `Contents/Resources`), and the smoke launch runs the
+binary inside the bundle, because `dist/MinbarLive` is a directory under onedir.
 
 It is **unsigned and un-notarized**: without an Apple Developer certificate
 Gatekeeper blocks the first launch, so the release notes tell users to
