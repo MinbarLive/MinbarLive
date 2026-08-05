@@ -31,7 +31,9 @@ audience-facing phone app. That distinction drives most product decisions below.
 - **GUI:** PySide6/Qt (`gui/`) — the CustomTkinter tree it replaced is gone (issue #44)
 - **Audio:** `sounddevice` + ring buffer, webrtcvad noise gate, WAV segment writing
 - **RAG:** in-memory cosine similarity over precomputed Quran verse embeddings — no vector DB
-- **Packaging:** PyInstaller (`MinbarLive.spec` → Windows EXE, Linux AppImage, macOS .app)
+- **Packaging:** PyInstaller (`MinbarLive.spec` → Windows EXE, Linux AppImage, macOS .app).
+  One-file on Windows/Linux; **onedir on macOS** — one-file inside a `.app` is an error in
+  PyInstaller 7, and the `.app` is a directory either way (issue #51)
 - **Testing:** pytest · **Linting:** ruff (`ruff.toml`) · **Secrets:** OS keychain via `keyring`
 
 **Providers.** OpenAI is the default everywhere (see the decisions table): `gpt-5.2`

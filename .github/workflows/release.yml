@@ -450,20 +450,36 @@ jobs:
             echo "$f: $size bytes"
           done
 
-      # Produces both dist/MinbarLive (the one-file binary) and
-      # dist/MinbarLive.app (the BUNDLE wrapper — see MinbarLive.spec).
+      # ONEDIR here (MinbarLive.spec says why): produces dist/MinbarLive/ — the
+      # collected directory — and dist/MinbarLive.app, which is the artifact.
+      # dist/MinbarLive is NOT an executable any more; nothing below may run it.
       - run: pyinstaller MinbarLive.spec
 
       - name: Verify the .app bundle
         run: |
           test -d dist/MinbarLive.app || { echo "::error::MinbarLive.app was not produced."; exit 1; }
-          bin="dist/MinbarLive.app/Contents/MacOS/MinbarLive"
-          size=$(wc -c < "$bin")
-          echo "$bin: $size bytes"
-          if [ "$size" -lt 100000000 ]; then
-            echo "::error::Bundled binary is only $size bytes, the data/ bundle is missing."
+          # Measure the WHOLE bundle, not Contents/MacOS/MinbarLive. Under
+          # onedir that file is a small launcher stub and the payload lives in
+          # Contents/Frameworks and Contents/Resources, so the old
+          # binary-size check would fail on a perfectly correct build.
+          size=$(du -sk dist/MinbarLive.app | cut -f1)
+          echo "dist/MinbarLive.app: $size KiB"
+          if [ "$size" -lt 100000 ]; then
+            echo "::error::The bundle is only $size KiB, the data/ payload is missing."
             exit 1
           fi
+          # Size alone is a proxy. These are what the size is standing in for,
+          # and the reason the payload moving is worth checking directly: the
+          # matrices are ~182 MB of the bundle and Quran verse matching dies
+          # silently without them.
+          for f in quran_embeddings_openai.npz quran_embeddings_gemini.npz; do
+            found=$(find dist/MinbarLive.app -name "$f" | head -1)
+            if [ -z "$found" ]; then
+              echo "::error::$f is not inside the bundle — RAG would ship dead."
+              exit 1
+            fi
+            echo "  $found"
+          done
           # The mic-usage string is REQUIRED — without it macOS hard-kills the app
           # the moment it opens an input stream (TCC). Fail if the spec did not
           # wire it into Info.plist.
@@ -489,15 +505,20 @@ jobs:
             dist/MinbarLive-macos-arm64.zip
             dist/SHA256SUMS-macos.txt
 
-      # Best-effort only (continue-on-error): whether a Tkinter GUI can start on
-      # a hosted macOS runner's session is not something this project has yet
+      # Best-effort only (continue-on-error): whether a Qt GUI can start on a
+      # hosted macOS runner's session is not something this project has yet
       # verified, so an early exit is reported as a warning, not a build failure.
       # macOS has no `timeout`, so launch in the background and kill after a grace
       # period; exiting on its own before then means it crashed at startup.
+      #
+      # Launched from INSIDE the bundle. It used to run ./dist/MinbarLive, which
+      # under onedir is a directory — the step would have failed on a good
+      # build. Running the bundle's own binary is also the better test: it is
+      # the file users actually execute, on the paths it will really resolve.
       - name: Smoke-launch (best effort)
         continue-on-error: true
         run: |
-          ./dist/MinbarLive >/tmp/mac_smoke.log 2>&1 &
+          ./dist/MinbarLive.app/Contents/MacOS/MinbarLive >/tmp/mac_smoke.log 2>&1 &
           pid=$!
           sleep 25
           if kill -0 "$pid" 2>/dev/null; then
