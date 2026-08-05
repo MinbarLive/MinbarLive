@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from audio import loopback
 from audio.device_support import input_device_candidates, input_stream_kwargs
 from audio.loopback import get_speaker, register
@@ -276,6 +278,11 @@ def test_loopback_speakers_are_listed_where_the_platform_supports_them(monkeypat
         ),
     )
     monkeypatch.setattr(device_list, "_LOOPBACK_SUPPORTED", True)
+    # Enumeration has TWO preconditions, and both must be pinned for this to be
+    # platform-independent as the comment above claims. Leaving this one to the
+    # host passed on Windows and failed on the Linux runner, which has no
+    # PulseAudio daemon and so offers no loopback at all.
+    monkeypatch.setattr(device_list, "soundcard_usable", lambda: True)
 
     display_names, _, indices, loopback = device_list.get_input_devices()
 
@@ -329,10 +336,12 @@ def test_no_pulse_server_is_reported_when_nothing_answers(monkeypatch):
     assert loopback._pulse_server_available() is False
 
 
+@pytest.mark.skipif(
+    sys.platform.startswith("linux"),
+    reason="asserts the non-Linux contract; on Linux the answer depends on the host",
+)
 def test_soundcard_is_always_usable_off_linux():
     """Windows WASAPI and macOS CoreAudio never go through libpulse."""
-    if sys.platform.startswith("linux"):
-        return
     assert loopback.soundcard_usable() is True
 
 
