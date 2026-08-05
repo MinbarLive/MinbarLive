@@ -21,6 +21,7 @@ fi
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" \
          "$APPDIR/usr/share/applications" \
+         "$APPDIR/usr/share/metainfo" \
          "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
 cp "$BIN" "$APPDIR/usr/bin/MinbarLive"
@@ -46,6 +47,13 @@ cp "$APPDIR/MinbarLive.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/Minbar
 # location (used once the AppImage is integrated into the menu).
 cp packaging/minbarlive.desktop "$APPDIR/MinbarLive.desktop"
 cp packaging/minbarlive.desktop "$APPDIR/usr/share/applications/MinbarLive.desktop"
+
+# AppStream metadata — what software centres and AppImageHub read to show a
+# name, summary and description instead of a bare filename; without it
+# appimagetool warns "AppStream upstream metadata is missing". Presentational
+# only: it has no bearing on whether the AppImage runs. The filename must match
+# the component id (and the desktop entry above) or AppStream ignores it.
+cp packaging/minbarlive.appdata.xml "$APPDIR/usr/share/metainfo/MinbarLive.appdata.xml"
 
 # AppRun: on first run, register a menu entry + the dome icon so MinbarLive
 # appears in the application grid with its icon (GNOME shows a generic icon for

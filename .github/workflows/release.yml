@@ -260,10 +260,50 @@ jobs:
             exit 1
           fi
 
+      # A hosted runner has no PulseAudio DAEMON, so soundcard_usable() returns
+      # False and every smoke launch below took the DEGRADE branch: no loopback
+      # devices, no JACK-monitor filtering, no call into libpulse at all. The
+      # checks proved the app survives WITHOUT audio and said nothing about the
+      # loopback feature the AppImage bundles soundcard for.
+      #
+      # That gap has already cost a release: the frozen build strips `assert`
+      # (the spec's optimize=1), which removes soundcard's only guard against an
+      # unreachable server, and a build aborted at startup with
+      #   Assertion 'o' failed at ../src/pulse/operation.c:67 … Aborting.
+      # A daemon here turns that class of crash into a failed smoke launch.
+      #
+      # DELIBERATELY AFTER pyinstaller. What must never happen is the builder's
+      # libraries deciding what gets BUNDLED — that is the trap the xcb, libEGL
+      # and libpulse notes above are about. Running a daemon for the launch is a
+      # different step and cannot change the bundle, which is already built.
+      - name: Start PulseAudio so the smoke launches exercise the audio path
+        run: |
+          sudo apt-get install -y pulseaudio pulseaudio-utils
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chown "$(id -u):$(id -g)" "$XDG_RUNTIME_DIR"
+          pulseaudio --start --exit-idle-time=-1
+          # A null sink gives the machine a monitor source, which is what a
+          # loopback device actually is — without one there is nothing to find.
+          pactl load-module module-null-sink sink_name=ci_sink
+          # Fail loudly rather than quietly falling back. A daemon that did not
+          # come up would put the launches below back on the degrade path and
+          # report success — precisely the "passes without proving anything"
+          # this step exists to remove.
+          test -S "$XDG_RUNTIME_DIR/pulse/native" \
+            || { echo "::error::No PulseAudio socket — the smoke launches would prove nothing."; exit 1; }
+          # soundcard_usable() checks PULSE_SERVER first, then the socket path.
+          # Export both so the frozen binary agrees with what we just started.
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "PULSE_SERVER=unix:$XDG_RUNTIME_DIR/pulse/native" >> "$GITHUB_ENV"
+          echo "--- sources visible to the app ---"
+          pactl list short sources
+
       # A startup crash — a shared library the bundle missed, an X11 request
-      # the toolkit rejects — exits within seconds. A healthy start sits in
-      # the onboarding wizard until `timeout` kills it, so exit 124 is the
-      # success case and anything else means it died on its own.
+      # the toolkit rejects, a libpulse call into a server that is now really
+      # there — exits within seconds. A healthy start sits in the onboarding
+      # wizard until `timeout` kills it, so exit 124 is the success case and
+      # anything else means it died on its own.
       - name: Smoke-launch the binary
         run: |
           set +e
@@ -314,6 +354,11 @@ jobs:
       #
       # What the container gets is what every desktop already has (GL, ALSA,
       # fontconfig, D-Bus, an X server) and NOT one library from the Qt xcb set.
+      # It also gets no PulseAudio daemon, unlike the two launches above — so
+      # between them the two branches of soundcard_usable() are both covered:
+      # up there the real libpulse path, down here the degrade path that a
+      # machine without a sound server still has to survive. Do not "fix" this
+      # one by starting a daemon in it; that would lose the degrade coverage.
       # --appimage-extract-and-run because a container has no FUSE; the
       # FUSE-less runtime is what the step above exists to prove.
       - name: Smoke-launch the AppImage where nothing is installed
@@ -496,8 +541,10 @@ jobs:
       - name: Checksum
         run: cd dist && shasum -a 256 MinbarLive-macos-arm64.zip | tee SHA256SUMS-macos.txt
 
-      # Uploaded BEFORE the smoke launch so the artifact survives even if the
-      # (best-effort, non-fatal) GUI launch below cannot start on the runner.
+      # Uploaded BEFORE the smoke launch, and that ORDER is the point: the
+      # launch below is fatal now, so a crashing build still leaves an artifact
+      # to download and debug. What it does not leave is a published release —
+      # the publish step comes after, and a failed job never reaches it.
       - uses: actions/upload-artifact@v7
         with:
           name: MinbarLive-macos
@@ -505,18 +552,25 @@ jobs:
             dist/MinbarLive-macos-arm64.zip
             dist/SHA256SUMS-macos.txt
 
-      # Best-effort only (continue-on-error): whether a Qt GUI can start on a
-      # hosted macOS runner's session is not something this project has yet
-      # verified, so an early exit is reported as a warning, not a build failure.
-      # macOS has no `timeout`, so launch in the background and kill after a grace
-      # period; exiting on its own before then means it crashed at startup.
+      # FATAL, not best-effort. This was `continue-on-error: true` reporting a
+      # ::warning::, which meant a macOS build that crashed at startup was still
+      # uploaded AND still attached to the release — the check could not fail
+      # anything it was there to protect.
+      #
+      # The hedge was reasonable when written: nobody had established that a Qt
+      # GUI can start on a hosted macOS runner's session at all, so a red job
+      # would more likely have meant "the runner cannot do this" than "the app
+      # is broken". That is settled now — consecutive dispatch builds both
+      # report "Stayed up for 25s." — so an early exit means the app.
+      #
+      # macOS has no `timeout`, so launch in the background and kill after a
+      # grace period; exiting on its own before then means it crashed at startup.
       #
       # Launched from INSIDE the bundle. It used to run ./dist/MinbarLive, which
       # under onedir is a directory — the step would have failed on a good
       # build. Running the bundle's own binary is also the better test: it is
       # the file users actually execute, on the paths it will really resolve.
-      - name: Smoke-launch (best effort)
-        continue-on-error: true
+      - name: Smoke-launch the .app
         run: |
           ./dist/MinbarLive.app/Contents/MacOS/MinbarLive >/tmp/mac_smoke.log 2>&1 &
           pid=$!
@@ -526,8 +580,9 @@ jobs:
             kill "$pid" 2>/dev/null || true
           else
             wait "$pid"; code=$?
-            echo "::warning::MinbarLive exited early with $code — see log below."
+            echo "::error::MinbarLive exited early with $code — see the log below."
             cat /tmp/mac_smoke.log || true
+            exit 1
           fi
 
       # Attach the macOS bundle to the release (tag builds only). The Windows
