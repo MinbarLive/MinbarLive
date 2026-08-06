@@ -5198,6 +5198,419 @@ class TestPairInkGap:
         assert abs(self._ink_gap(w, block) - (PAIR_GAP + clearance)) <= 2
 
 
+class TestSideBySideLayout:
+    """The two-column bilingual layout (issue #49).
+
+    A row is a table row, not two independent feeds: both cells start at the
+    row's top edge and the taller one decides its height. If each column
+    flowed on its own, pair 3 would end up beside pair 5 within a few
+    utterances.
+    """
+
+    _KEEP = object()  # "leave the default"; None means "no original at all"
+
+    def _overlay(self, overlay, mode=SUBTITLE_MODE_STATIC, **kwargs):
+        kwargs.setdefault("bilingual_mode", True)
+        kwargs.setdefault("side_by_side", True)
+        return overlay(mode, **kwargs)
+
+    def _block(self, translation=None, source=_KEEP):
+        from gui.subtitle_window import Block
+
+        if source is self._KEEP:
+            source = PAIRS[0][1]
+        return Block(translation or PAIRS[0][0], source)
+
+    def test_the_two_columns_share_a_top_edge(self, overlay):
+        w = self._overlay(overlay)
+        src, trans = w._column_rects(self._block(), 120)
+        assert src.y() == trans.y() == 120
+
+    def test_a_row_is_as_tall_as_its_taller_column_not_both(self, overlay):
+        w = self._overlay(overlay)
+        block = self._block()
+        src, trans = w._column_rects(block, 0)
+        assert w._measure_block(block) == max(src.height(), trans.height())
+        # And that is genuinely less than stacking them, or the layout would
+        # buy nothing.
+        assert w._measure_block(block) < src.height() + trans.height()
+
+    def test_the_columns_are_equal_and_separated_by_a_real_gutter(self, overlay):
+        w = self._overlay(overlay)
+        src, trans = w._column_rects(self._block(), 0)
+        assert src.width() == trans.width() == w._column_width()
+        left, right = sorted((src, trans), key=lambda r: r.x())
+        gutter = right.x() - (left.x() + left.width())
+        # Deliberately NOT compared against COLUMN_GAP_RATIO: that would pass
+        # for any value including zero. A hairline is the failure — two scripts
+        # running into each other — so the bound is a share of the column, and
+        # it holds at any window size.
+        assert gutter >= w._column_width() * 0.05
+
+    def test_the_panels_reach_much_closer_to_the_edge_than_a_text_margin(
+        self, overlay
+    ):
+        """The panels are the BACKDROP in this layout, not a line of text.
+        Keeping them SIDE_MARGIN_RATIO off the edge made them read as two small
+        boxes floating inside a big one."""
+        from gui.subtitle_window import SIDE_MARGIN_RATIO
+
+        w = self._overlay(overlay)
+        left, right = w._column_panel_rects()
+        text_margin = w.width() * SIDE_MARGIN_RATIO
+        assert left.x() < text_margin / 2
+        assert w.width() - right.right() < text_margin / 2
+        # Symmetric, so neither side looks pushed in.
+        assert abs(left.x() - (w.width() - 1 - right.right())) <= 1
+
+    def test_arabic_takes_the_right_column(self, overlay):
+        """The Arabic → German main path: Arabic right because it is RTL, so
+        the German translation lands on the left."""
+        w = self._overlay(overlay)
+        src, trans = w._column_rects(self._block(), 0)
+        assert src.x() > trans.x()
+
+    def test_the_columns_swap_when_the_translation_is_the_rtl_side(self, overlay):
+        """Turkish → Arabic: the Arabic is now the TRANSLATION and still has to
+        sit right, so the sides follow the script rather than the role."""
+        w = self._overlay(overlay)
+        block = self._block(translation=PAIRS[0][1], source="Rahman ve Rahim olan")
+        src, trans = w._column_rects(block, 0)
+        assert trans.x() > src.x()
+
+    def test_two_ltr_languages_keep_the_translation_on_the_left(self, overlay):
+        """No directional reason either way, so the audience's own language
+        stays where it was on the Arabic path — left."""
+        w = self._overlay(overlay)
+        block = self._block(translation="In the name of Allah", source="Im Namen")
+        src, trans = w._column_rects(block, 0)
+        assert trans.x() < src.x()
+
+    def test_a_block_with_no_original_spans_the_full_width(self, overlay):
+        """Same-language mode, error messages and the verified-verse bypass all
+        emit source=None, and that is routine rather than an edge case."""
+        w = self._overlay(overlay)
+        block = self._block(source=None)
+        assert w._column_rects(block, 0) is None
+        trans_font, _src = w._block_fonts(block)
+        assert w._measure_block(block) == w._measure(block.translation, trans_font)
+
+    def test_the_layout_needs_both_switches(self, overlay):
+        w = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, side_by_side=False)
+        assert w._column_rects(self._block(), 0) is None
+        w = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=False, side_by_side=True)
+        assert w._column_rects(self._block(), 0) is None
+
+    def test_every_mode_gets_it(self, overlay):
+        for mode in (
+            SUBTITLE_MODE_STATIC,
+            SUBTITLE_MODE_REALTIME,
+            SUBTITLE_MODE_CONTINUOUS,
+        ):
+            w = self._overlay(overlay, mode)
+            assert w._column_rects(self._block(), 0) is not None, mode
+
+    # ── the panels behind the columns ────────────────────────────────────
+    def test_two_identical_panels_sit_behind_the_columns(self, overlay):
+        """Two of them, the same size, in the same place every frame — that is
+        what makes it read as two columns rather than two stacks of text."""
+        w = self._overlay(overlay)
+        left, right = w._column_panel_rects()
+        assert left.size() == right.size()
+        assert left.y() == right.y()
+        assert left.x() < right.x()
+
+    def test_each_column_sits_inside_its_panel_with_an_even_inset(self, overlay):
+        """The panel is the container: a column is the panel less its inset on
+        both sides, so text can never reach a panel edge."""
+        from gui.subtitle_window import COLUMN_PANEL_PAD_X
+
+        w = self._overlay(overlay)
+        panels = w._column_panel_rects()
+        for text_rect in w._column_rects(self._block(), 0):
+            panel = next(
+                (p for p in panels if p.left() <= text_rect.left() <= p.right()), None
+            )
+            assert panel is not None, "no panel contains this column"
+            assert text_rect.left() - panel.left() == COLUMN_PANEL_PAD_X
+            assert panel.right() - text_rect.right() >= COLUMN_PANEL_PAD_X - 1
+
+    def test_the_window_backdrop_gives_way_to_the_panels(self, overlay):
+        """The panels ARE the backdrop here. Painting the window one as well
+        put a third, larger box behind the two the layout exists to show —
+        which is what it looked like on a real screen."""
+        w = self._overlay(overlay, backdrop_opacity=100)
+        assert w._backdrop().alpha() == 0
+        # And the panels carry exactly what the window backdrop would have, so
+        # the opacity slider still controls them.
+        assert w._backdrop_fill().alpha() == 255
+        stacked = overlay(
+            SUBTITLE_MODE_STATIC,
+            bilingual_mode=True,
+            side_by_side=False,
+            backdrop_opacity=100,
+        )
+        assert stacked._backdrop().alpha() == 255
+
+    def test_transparent_swaps_the_panels_for_a_card_per_sentence(self, overlay):
+        """It means the same thing in both layouts: no large background, a card
+        around each sentence instead. Here that takes the panels away and gives
+        each column's sentence its own card — never a card inside a panel."""
+        from PySide6.QtGui import QPainter, QPixmap
+
+        w = self._overlay(overlay, transparent_static=True)
+        assert w._transparent_static_active() is True
+        assert w._backdrop().alpha() == 0
+        assert w._column_panel_rects() is None, "the panels must give way"
+
+        drawn: list = []
+        w._draw_card = lambda p, text, font, rect: drawn.append(rect)
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            w._draw_block(painter, self._block(), 0, 0)
+        finally:
+            painter.end()
+        assert len(drawn) == 2, "each column's sentence needs its own card"
+        assert drawn[0].x() != drawn[1].x(), "both cards landed in one column"
+
+    def test_the_panels_stay_when_transparent_is_off(self, overlay):
+        w = self._overlay(overlay, transparent_static=False)
+        assert w._column_panel_rects() is not None
+
+    def test_the_panels_do_not_reach_the_footer_pill(self, overlay):
+        w = self._overlay(overlay)
+        left, _right = w._column_panel_rects()
+        assert left.bottom() <= w.height() - w.reserved_bottom()
+
+    def test_no_panels_outside_the_layout(self, overlay):
+        stacked = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, side_by_side=False)
+        assert stacked._column_panel_rects() is None
+        mono = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=False, side_by_side=True)
+        assert mono._column_panel_rects() is None
+
+    def test_an_announcement_takes_the_panels_away(self, overlay):
+        """It renders large and centred across the whole window; framing it in
+        two columns it does not use would read as a mistake."""
+        w = self._overlay(overlay)
+        assert w._column_panel_rects() is not None
+        w.set_announcement("Das Gebet beginnt in fünf Minuten.")
+        assert w._column_panel_rects() is None
+
+    # ── the original's weight ────────────────────────────────────────────
+    def test_the_newest_original_carries_the_same_weight_as_its_translation(
+        self, overlay
+    ):
+        """Stacked, the original is a subordinate line and takes the muted
+        tone. Side by side it is the other half of the row, and muted there
+        reads as already-said on one side and current on the other."""
+        from PySide6.QtGui import QColor
+
+        w = self._overlay(overlay)
+        assert w._column_source_qcolor(newest=True) == QColor(w._colors["text"])
+        assert w._column_source_qcolor(newest=False) == w._history_qcolor()
+
+    def test_the_stacked_layout_keeps_its_muted_original(self, overlay):
+        from PySide6.QtGui import QColor
+
+        w = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, side_by_side=False)
+        assert w._source_qcolor() == QColor(w._colors["muted"])
+
+    def test_a_configured_source_colour_still_wins(self, overlay):
+        from PySide6.QtGui import QColor
+
+        w = self._overlay(overlay)
+        w.set_source_text_color("#FF0000")
+        assert w._column_source_qcolor(newest=True) == QColor("#FF0000")
+
+    def test_the_original_is_bold_only_in_this_layout(self, overlay):
+        """AGENTS.md keeps Arabic source lines at regular weight in the STACKED
+        layout, where the original is a subordinate line. Side by side it is
+        the other half of the row and carries the same weight."""
+        block = self._block()
+        columns = self._overlay(overlay)
+        stacked = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, side_by_side=False)
+        assert columns._block_fonts(block)[1].bold() is True
+        assert stacked._block_fonts(block)[1].bold() is False
+        # The translation was always bold; this is about matching it.
+        assert columns._block_fonts(block)[0].bold() is True
+
+    def test_the_live_line_keeps_its_own_weight(self, overlay):
+        """The live transcript is not a column — it stays full width below the
+        feed — so source_font's new bold flag must not reach it by default.
+        Arabic there was already drawn in the translation font."""
+        w = self._overlay(overlay)
+        w.set_live_text("Im Namen Allahs")
+        assert w._live_font().bold() is False
+        w.set_live_text("بسم الله الرحمن الرحيم")
+        assert w._live_font().bold() is True
+
+    def test_toggling_it_restacks_a_continuous_feed(self, overlay):
+        """Continuous blocks carry an absolute y computed from their height,
+        and every height just changed."""
+        w = self._overlay(overlay, SUBTITLE_MODE_CONTINUOUS, side_by_side=False)
+        for translation, source in PAIRS:
+            w.add_subtitle(translation, source_text=source)
+        before = [b.y for b in w._blocks]
+        w.set_side_by_side(True)
+        assert [b.y for b in w._blocks] != before
+        # Still bottom-anchored and still in order, with no overlap.
+        for earlier, later in zip(w._blocks, w._blocks[1:], strict=False):
+            assert later.y >= earlier.y + w._measure_block(earlier)
+
+
+class TestLayoutAppearanceMemory:
+    """Each layout remembers its own font sizes and colours.
+
+    A column is half as wide and the two scripts sit at equal weight there, so
+    one set of values cannot suit both. The live fields are SWAPPED with the
+    other layout's on every toggle, so the subtitle window, the batch window
+    and the steppers all keep reading the same fields.
+    """
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        s = p.settings
+        s.font_size_base = 30
+        s.source_font_size_base = 42.0
+        s.translation_text_color = ""
+        s.source_text_color = ""
+        s.alt_font_size_base = None
+        s.alt_source_font_size_base = None
+        s.alt_translation_text_color = None
+        s.alt_source_text_color = None
+        yield p
+        p.close()
+
+    def _live(self, panel):
+        s = panel.settings
+        return (
+            s.font_size_base,
+            s.source_font_size_base,
+            s.translation_text_color,
+            s.source_text_color,
+        )
+
+    def test_the_selector_is_hidden_without_an_original_to_put_beside_it(self, panel):
+        panel._on_bilingual_toggled(False)
+        assert panel.layout_segment.isHidden()
+        panel._on_bilingual_toggled(True)
+        assert not panel.layout_segment.isHidden()
+
+    def test_hiding_the_selector_keeps_the_stored_layout(self, panel):
+        """Turning the original off and on again must not silently drop the
+        layout that was chosen."""
+        panel.layout_segment.set_current_index(1)
+        panel._on_bilingual_toggled(False)
+        panel._on_bilingual_toggled(True)
+        assert panel.layout_segment.current_index() == 1
+
+    def test_it_is_a_selector_that_names_both_layouts(self, panel):
+        """Not a checkbox: the off state is a real alternative layout, and
+        "Side by side" unticked leaves the other one unnamed."""
+        from gui.widgets import SEGMENT_COMPACT_H, SegmentedControl
+
+        assert isinstance(panel.layout_segment, SegmentedControl)
+        labels = panel._subtitle_layout_labels()
+        assert len(labels) == 2 and all(labels)
+        # Inline beside a checkbox, so it must not carry a row control's height.
+        assert panel.layout_segment._buttons[0].height() == SEGMENT_COMPACT_H
+
+    def test_the_selector_shares_the_row_with_the_toggle(self, panel):
+        """Next to "Show original text", not under it — which also means
+        hiding it cannot change the card's height.
+
+        Asserted on the layout rather than on coordinates: these windows are
+        never shown, so widget geometry is whatever Qt last happened to set.
+        """
+        body = panel.bilingual_check.parentWidget().layout()
+        row = None
+        for i in range(body.count()):
+            sub = body.itemAt(i).layout()
+            if sub is None:
+                continue
+            if any(
+                sub.itemAt(j).widget() is panel.bilingual_check
+                for j in range(sub.count())
+            ):
+                row = sub
+                break
+        assert row is not None, '"Show original text" is not on a row'
+        in_row = [row.itemAt(i).widget() for i in range(row.count())]
+        assert in_row[:2] == [panel.bilingual_check, panel.layout_segment]
+
+    def test_the_first_switch_moves_nothing(self, panel):
+        """Both layouts start from what was already chosen, so turning the mode
+        on for the first time does not resize the subtitles."""
+        before = self._live(panel)
+        panel._on_side_by_side_toggled(True)
+        assert self._live(panel) == before
+        assert panel.settings.alt_font_size_base == 30
+
+    def test_each_layout_keeps_what_was_chosen_for_it(self, panel):
+        """All four values, not just the original's: both sizes and both
+        colours belong to the layout they were chosen in."""
+        panel._on_side_by_side_toggled(True)  # seeds both sides
+        s = panel.settings
+        s.font_size_base = 45  # tuned for a half-width column
+        s.source_font_size_base = 45.0
+        s.translation_text_color = "#FFD700"
+        s.source_text_color = "#FFFFFF"
+
+        panel._on_side_by_side_toggled(False)
+        assert self._live(panel) == (30, 42.0, "", "")
+
+        panel._on_side_by_side_toggled(True)
+        assert self._live(panel) == (45, 45.0, "#FFD700", "#FFFFFF")
+
+    def test_the_controls_are_repainted_from_the_layout_that_was_restored(
+        self, panel
+    ):
+        """The steppers and colour buttons show stored values, and a switch
+        replaces all four at once — the translation stepper included, which
+        only ``_step_font`` used to keep in step."""
+        panel._on_side_by_side_toggled(True)
+        panel.settings.font_size_base = 60  # a much smaller rendered size
+        columns_text = panel._font_percent_text()
+        panel._refresh_typography()
+        assert panel.font_stepper.value.text() == columns_text
+
+        panel._on_side_by_side_toggled(False)
+        assert panel.settings.font_size_base == 30
+        assert panel.font_stepper.value.text() == panel._font_percent_text()
+        assert panel.font_stepper.value.text() != columns_text
+
+    def test_the_stacked_side_survives_more_than_one_round_trip(self, panel):
+        panel._on_side_by_side_toggled(True)
+        panel.settings.font_size_base = 45
+        for _ in range(3):
+            panel._on_side_by_side_toggled(False)
+            assert panel.settings.font_size_base == 30
+            panel._on_side_by_side_toggled(True)
+            assert panel.settings.font_size_base == 45
+
+    def test_a_change_made_while_stacked_stays_on_the_stacked_side(self, panel):
+        panel._on_side_by_side_toggled(True)
+        panel._on_side_by_side_toggled(False)
+        panel.settings.font_size_base = 25  # tuned for one full-width column
+        panel._on_side_by_side_toggled(True)
+        assert panel.settings.font_size_base == 30
+        panel._on_side_by_side_toggled(False)
+        assert panel.settings.font_size_base == 25
+
+
 class TestParagraphDirection:
     """A trailing full stop belongs at the END of the sentence, which for
     Arabic is its LEFT edge. QTextOption defaults its text direction to

@@ -129,6 +129,8 @@
   "wizard_key_help": "Ku mund të marr një çelës API?",
   "wizard_key_site": "Hap faqen e çelësit API",
   "bilingual_mode": "Shfaq tekstin origjinal",
+  "subtitle_layout_combined": "E kombinuar",
+  "subtitle_side_by_side": "Krah për krah",
   "show_interim_transcript": "Shfaq transkriptimin e drejtpërdrejtë",
   "batch_file": "Skedar / Batch",
   "batch_file_sub": "Krijo titra të përkthyera (.srt) nga një regjistrim",

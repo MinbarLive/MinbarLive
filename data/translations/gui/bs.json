@@ -129,6 +129,8 @@
   "wizard_key_help": "Gdje mogu dobiti API ključ?",
   "wizard_key_site": "Otvori stranicu API ključa",
   "bilingual_mode": "Prikaži izvorni tekst",
+  "subtitle_layout_combined": "Kombinovano",
+  "subtitle_side_by_side": "Uporedo",
   "show_interim_transcript": "Prikaži transkript uživo",
   "batch_file": "Datoteka / Batch",
   "batch_file_sub": "Kreiraj prevedene titlove (.srt) iz snimka",
