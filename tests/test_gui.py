@@ -5798,11 +5798,21 @@ class TestDropdownTooltips:
 
     @pytest.fixture
     def combo(self, qt_app):
-        """A *shown* dropdown, and it has to be shown: Qt defers the resize
-        event of a hidden widget until it is mapped, so a tooltip decided in
-        resizeEvent would never be taken on one."""
+        """A *shown, themed* dropdown, and it needs to be both.
+
+        Shown, because Qt defers a hidden widget's resize event until it is
+        mapped — a tooltip decided in resizeEvent is never taken on one.
+
+        Themed, because the stylesheet is what pads a popup row
+        (`QAbstractItemView::item`), and the row inset is measured from it.
+        `setStyleSheet` is global on the session-scoped QApplication, so
+        without this the class measures an unthemed popup when run alone and
+        a themed one when another test happens to run first.
+        """
+        from gui.theme import apply_theme
         from gui.widgets import Dropdown
 
+        apply_theme(qt_app, "light")
         made = Dropdown()
         made.show()
         qt_app.processEvents()
