@@ -789,7 +789,14 @@ class ControlPanel(QMainWindow):
         return f"{percent}%"
 
     def _refresh_typography(self) -> None:
-        """Repaint the colour buttons from the stored values."""
+        """Repaint both size steppers and both colour buttons from the settings.
+
+        The translation stepper is normally kept in step by ``_step_font``,
+        which owns the only other way it changes. A layout switch replaces all
+        four values at once (see ``_swap_layout_appearance``), so it has to be
+        repainted from the stored value like everything else here.
+        """
+        self.font_stepper.set_value_text(self._font_percent_text())
         self.source_font_stepper.set_value_text(self._source_font_percent_text())
         colors = current_colors()
         for attribute, pick in self._color_pick_btns.items():
@@ -853,6 +860,9 @@ class ControlPanel(QMainWindow):
     def _apply_typography_to_window(self) -> None:
         if not self.subtitle_window:
             return
+        # The translation base too: the steppers drive it through
+        # increase/decrease_font, but a layout switch replaces it outright.
+        self.subtitle_window.set_font_size_base(self.settings.font_size_base)
         self.subtitle_window.set_source_font_size_base(
             self.settings.source_font_size_base
         )
@@ -970,19 +980,35 @@ class ControlPanel(QMainWindow):
         )
         self.bilingual_check.setChecked(self.settings.bilingual_mode)
         self.bilingual_check.toggled.connect(self._on_bilingual_toggled)
+        # A selector, not a checkbox: the off state is a real alternative
+        # layout rather than "feature off", and a checkbox called "Side by
+        # side" leaves the other one unnamed. Same reasoning as the two 3-way
+        # selectors in the decisions table.
+        #
         # Only meaningful with an original to put in the second column, so it
-        # follows the bilingual toggle's state rather than sitting there dead.
-        self.side_by_side_check = QCheckBox(
-            self._t("subtitle_side_by_side", "Side by side")
+        # is hidden outright without one rather than sitting there dead. It
+        # rides on the same row as the toggle it depends on — which also means
+        # hiding it cannot change the card's height, so nothing has to be
+        # re-levelled the way _sync_mode_controls has to.
+        self.layout_segment = SegmentedControl(
+            self._subtitle_layout_labels(),
+            1 if self.settings.subtitle_side_by_side else 0,
+            compact=True,
         )
-        self.side_by_side_check.setChecked(self.settings.subtitle_side_by_side)
-        self.side_by_side_check.setEnabled(self.settings.bilingual_mode)
-        self.side_by_side_check.toggled.connect(self._on_side_by_side_toggled)
+        self.layout_segment.setVisible(self.settings.bilingual_mode)
+        self.layout_segment.changed.connect(
+            lambda index: self._on_side_by_side_toggled(index == 1)
+        )
+        bilingual_row = QHBoxLayout()
+        bilingual_row.setContentsMargins(0, 0, 0, 0)
+        bilingual_row.setSpacing(16)
+        bilingual_row.addWidget(self.bilingual_check)
+        bilingual_row.addWidget(self.layout_segment)
+        bilingual_row.addStretch(1)
         card.body.addWidget(self.catchup_check)
         card.body.addWidget(self.interim_check)
         card.body.addWidget(self.transparent_check)
-        card.body.addWidget(self.bilingual_check)
-        card.body.addWidget(self.side_by_side_check)
+        card.body.addLayout(bilingual_row)
 
         hide_caption = QLabel(self._t("hide_subtitle_label", "Hide subtitle window"))
         hide_caption.setObjectName("field")
@@ -1643,15 +1669,57 @@ class ControlPanel(QMainWindow):
         # The side-by-side layout has nothing to put in its second column
         # without an original. The stored preference is deliberately left
         # alone, so turning the original back on restores the chosen layout.
-        self.side_by_side_check.setEnabled(checked)
+        self.layout_segment.setVisible(checked)
         if self.subtitle_window:
             self.subtitle_window.set_bilingual_mode(checked)
 
+    def _subtitle_layout_labels(self) -> list[str]:
+        return [
+            self._t("subtitle_layout_combined", "Combined"),
+            self._t("subtitle_side_by_side", "Side by side"),
+        ]
+
+    _LAYOUT_APPEARANCE = (
+        ("font_size_base", "alt_font_size_base"),
+        ("source_font_size_base", "alt_source_font_size_base"),
+        ("translation_text_color", "alt_translation_text_color"),
+        ("source_text_color", "alt_source_text_color"),
+    )
+
+    def _swap_layout_appearance(self) -> None:
+        """Exchange the live font sizes and colours with the other layout's.
+
+        Each layout remembers what was chosen for it, so switching back
+        restores that rather than carrying one set across both. Swapping in
+        place, rather than making every reader pick a set, means the subtitle
+        window, the batch window and the steppers all keep reading the same
+        fields and never have to know which layout is on.
+
+        ``alt_font_size_base`` doubles as the "never switched yet" marker: it
+        is the only one of the four that can never legitimately be None. On the
+        first switch both sides are seeded from the live values, so nothing
+        moves until something is actually changed in one of them.
+        """
+        s = self.settings
+        live = [getattr(s, name) for name, _alt in self._LAYOUT_APPEARANCE]
+        if s.alt_font_size_base is None:
+            stashed = live
+        else:
+            stashed = [getattr(s, alt) for _name, alt in self._LAYOUT_APPEARANCE]
+        for (name, alt), was_live, now_live in zip(
+            self._LAYOUT_APPEARANCE, live, stashed, strict=True
+        ):
+            setattr(s, name, now_live)
+            setattr(s, alt, was_live)
+
     def _on_side_by_side_toggled(self, checked: bool) -> None:
         self.settings.subtitle_side_by_side = checked
+        self._swap_layout_appearance()
         save_settings(self.settings)
         if self.subtitle_window:
             self.subtitle_window.set_side_by_side(checked)
+        self._apply_typography_to_window()
+        self._refresh_typography()
 
     def _on_hide_mode_changed(self, index: int) -> None:
         self.settings.subtitle_hide_mode = SUBTITLE_HIDE_MODES[index]
@@ -2497,7 +2565,7 @@ class ControlPanel(QMainWindow):
         self.settings.subtitle_mode = self._current_mode()
         self.settings.monitor_index = self.monitor_combo.currentIndex()
         self.settings.bilingual_mode = self.bilingual_check.isChecked()
-        self.settings.subtitle_side_by_side = self.side_by_side_check.isChecked()
+        self.settings.subtitle_side_by_side = self.layout_segment.current_index() == 1
         pos = self.device_combo.currentIndex()
         if 0 <= pos < len(self.device_base_names):
             self.settings.input_device_name = self.device_base_names[pos]

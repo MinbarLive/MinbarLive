@@ -101,7 +101,25 @@ SIDE_MARGIN_RATIO = 0.06
 # original and its translation have to read as ONE utterance, and side by side
 # they have to read as two columns. The same distance that binds them
 # vertically would leave two scripts running into each other horizontally.
-COLUMN_GAP_RATIO = 0.05
+COLUMN_GAP_RATIO = 0.018
+# The panel drawn behind each column. Two of them, the same size, always — they
+# are what makes the layout read as two columns rather than two loose stacks of
+# text. Deliberately NOT sized to their contents, the way the transparent-static
+# cards are: a panel that changed shape with every utterance would be the
+# opposite of a column.
+#
+# In this layout the panels ARE the backdrop — the window one is not painted at
+# all (see _backdrop). So they reach much closer to the window edge than the
+# text ever did: SIDE_MARGIN_RATIO keeps a LINE off the edge, and a panel that
+# kept the same distance would read as a small box floating inside a big one.
+COLUMN_PANEL_MARGIN_RATIO = 0.02
+# Text inset inside a panel. The columns are measured to what is left, so this
+# is the only thing standing between a line and the panel's edge.
+COLUMN_PANEL_PAD_X = 30
+COLUMN_PANEL_PAD_Y = 18
+COLUMN_PANEL_RADIUS = 18
+# Where the realtime feed's first line sits, as a fraction of window height.
+FEED_TOP_RATIO = 0.06
 # Continuous mode advances by this many pixels per frame at speed 1.0.
 SCROLL_PIXELS_PER_FRAME = 1.0
 FRAME_MS = 16
@@ -280,15 +298,31 @@ class SubtitleWindow(QWidget):
         return QColor(self._colors["muted"])
 
     def _transparent_static_active(self) -> bool:
-        """Transparent backdrop is a static-mode option only."""
-        return self._mode == SUBTITLE_MODE_STATIC and self._transparent_static
+        """Transparent backdrop is a static-mode option only.
+
+        And not in the side-by-side layout: the column panels already are the
+        backdrop there, so the toggle has nothing left to take away and its
+        per-line cards would draw a card inside a panel.
+        """
+        return (
+            self._mode == SUBTITLE_MODE_STATIC
+            and self._transparent_static
+            and not self._columns_active()
+        )
 
     def _backdrop(self) -> QColor:
         """Window backdrop, drawn behind everything else."""
-        if self._transparent_static_active():
-            # Fully transparent: contrast comes from per-line cards instead, so
-            # the text stays readable over arbitrary video.
+        if self._transparent_static_active() or self._columns_active():
+            # Fully transparent. In static mode the contrast comes from
+            # per-line cards; in the side-by-side layout the two column panels
+            # carry it, and painting a window-wide backdrop as well would put a
+            # third, larger box behind the two the layout exists to show.
             return QColor(0, 0, 0, 0)
+        return self._backdrop_fill()
+
+    def _backdrop_fill(self) -> QColor:
+        """The backdrop's colour at the configured opacity, wherever it lands —
+        the window in the stacked layout, the two panels in side by side."""
         base = QColor(self._colors["app_bg"])
         base.setAlpha(round(self._backdrop_opacity * 255 / 100))
         return base
@@ -687,12 +721,74 @@ class SubtitleWindow(QWidget):
         return self._layout_text(text, font, width=width)[1]
 
     # ── side-by-side columns ─────────────────────────────────────────────
-    def _column_width(self) -> int:
-        """Width of one column of the side-by-side layout."""
-        return max(1, (self._content_width() - self._column_gap()) // 2)
+    def _panel_geometry(self) -> tuple[int, int, int]:
+        """``(left panel x, right panel x, panel width)``.
 
-    def _column_gap(self) -> int:
-        return int(self.width() * COLUMN_GAP_RATIO)
+        The panels come first and the text columns are measured to what is left
+        inside them, rather than the other way round: they are the backdrop in
+        this layout, so their distance from the window edge is a backdrop
+        margin (small) and not a text margin (SIDE_MARGIN_RATIO, much larger).
+        """
+        margin = int(self.width() * COLUMN_PANEL_MARGIN_RATIO)
+        gap = int(self.width() * COLUMN_GAP_RATIO)
+        width = max(1, (self.width() - 2 * margin - gap) // 2)
+        return margin, self.width() - margin - width, width
+
+    def _column_width(self) -> int:
+        """Width of one text column — a panel less its inset on both sides."""
+        return max(1, self._panel_geometry()[2] - 2 * COLUMN_PANEL_PAD_X)
+
+    def _columns_active(self) -> bool:
+        """Whether the overlay is in the side-by-side layout at all.
+
+        Block-independent, unlike ``_two_column``: the panels are drawn once
+        per frame and stay put whether or not the utterance on screen happens
+        to carry an original.
+        """
+        return bool(self._side_by_side and self._bilingual)
+
+    def _column_panel_rects(self) -> tuple[QRect, QRect] | None:
+        """The two fixed panels behind the columns, or None outside the layout.
+
+        Both the same size and in the same place every frame. They span the
+        content area — from above the feed's first line down to where the
+        footer pill's clearance begins.
+
+        None during an announcement: that renders large and centred across the
+        whole window, and framing it in two columns it does not use would read
+        as a mistake.
+        """
+        if not self._columns_active() or self._announcement:
+            return None
+        left_x, right_x, width = self._panel_geometry()
+        top = max(0, int(self.height() * FEED_TOP_RATIO) - COLUMN_PANEL_PAD_Y)
+        height = max(1, self._content_height() - top)
+        return (
+            QRect(left_x, top, width, height),
+            QRect(right_x, top, width, height),
+        )
+
+    def _draw_column_panels(self, p: QPainter, rects: tuple[QRect, QRect]) -> None:
+        colour = self._backdrop_fill()
+        for rect in rects:
+            path = QPainterPath()
+            path.addRoundedRect(rect, COLUMN_PANEL_RADIUS, COLUMN_PANEL_RADIUS)
+            p.fillPath(path, colour)
+
+    def _column_source_qcolor(self, newest: bool) -> QColor:
+        """The original's colour in the side-by-side layout.
+
+        Stacked, the original is a subordinate line above its translation and
+        takes the muted tone. Side by side it is the other half of the row, and
+        at the muted tone the newest utterance reads as already-said on one
+        side and current on the other. So the newest row's original carries the
+        full text colour like its translation, and older rows drop to history
+        exactly as the translation does. A configured source colour still wins;
+        only the DEFAULT differs from the stacked layout.
+        """
+        if not newest:
+            return self._history_qcolor()
+        return QColor(self._source_color or self._colors["text"])
 
     def _two_column(self, block: Block) -> bool:
         """Whether ``block`` lays out as two columns rather than stacked.
@@ -726,8 +822,12 @@ class SubtitleWindow(QWidget):
             is_arabic_text(block.translation) and not is_arabic_text(block.source or "")
         )
 
-    def _column_rects(self, block: Block, x: int, y: int) -> tuple[QRect, QRect] | None:
+    def _column_rects(self, block: Block, y: int) -> tuple[QRect, QRect] | None:
         """``(source rect, translation rect)`` for ``block``, or None if stacked.
+
+        Placed inside the panels rather than from the caller's ``x``: the panel
+        is the container, so a column sits at the panel's edge plus its inset
+        and the row's own left margin does not apply.
 
         Both rects share ``y``: the columns are a table row, top-aligned, and
         the taller of the two decides the row height. Letting each column flow
@@ -736,20 +836,24 @@ class SubtitleWindow(QWidget):
         """
         if not self._two_column(block):
             return None
+        left_panel_x, right_panel_x, _width = self._panel_geometry()
+        left_x = left_panel_x + COLUMN_PANEL_PAD_X
+        right_x = right_panel_x + COLUMN_PANEL_PAD_X
         col = self._column_width()
-        right_x = x + self._content_width() - col
         trans_font, src_font = self._block_fonts(block)
         src_h = self._measure(block.source, src_font, col)
         trans_h = self._measure(block.translation, trans_font, col)
         if self._translation_on_left(block):
-            return QRect(right_x, y, col, src_h), QRect(x, y, col, trans_h)
-        return QRect(x, y, col, src_h), QRect(right_x, y, col, trans_h)
+            return QRect(right_x, y, col, src_h), QRect(left_x, y, col, trans_h)
+        return QRect(left_x, y, col, src_h), QRect(right_x, y, col, trans_h)
 
     def _block_fonts(self, block: Block) -> tuple[QFont, QFont | None]:
         trans = subtitle_font(self._translation_px(), text=block.translation)
         src = None
         if self._bilingual and block.source:
-            src = source_font(self._source_px(), block.source)
+            src = source_font(
+                self._source_px(), block.source, bold=self._side_by_side
+            )
         return trans, src
 
     def _pair_gap(self, block: Block) -> int:
@@ -853,11 +957,13 @@ class SubtitleWindow(QWidget):
         trans_font, src_font = self._block_fonts(block)
         w = self._content_width()
         cards = self._transparent_static_active()
-        rects = self._column_rects(block, x, y)
+        rects = self._column_rects(block, y)
         if rects is not None:
             src_rect, trans_rect = rects
+            # No per-line cards here: the column panels already carry the text
+            # over video, and drawing both stacks a card inside a panel.
             for text, font, rect, colour in (
-                (block.source, src_font, src_rect, self._source_qcolor()),
+                (block.source, src_font, src_rect, self._column_source_qcolor(newest)),
                 (
                     block.translation,
                     trans_font,
@@ -866,8 +972,6 @@ class SubtitleWindow(QWidget):
                 ),
             ):
                 layout, _h = self._layout_text(text, font, width=rect.width())
-                if cards:
-                    self._draw_card(p, text, font, rect)
                 p.setPen(colour)
                 layout.draw(p, QPointF(rect.x(), rect.y()))
             return max(src_rect.height(), trans_rect.height())
@@ -893,6 +997,15 @@ class SubtitleWindow(QWidget):
         p.setRenderHint(QPainter.TextAntialiasing, True)
         p.fillRect(self.rect(), self._backdrop())
 
+        panels = self._column_panel_rects()
+        if panels is not None:
+            self._draw_column_panels(p, panels)
+            # A panel is a container, so its column's text is clipped to it:
+            # the realtime feed shifts up as it fills, and without this the
+            # rows that have scrolled past keep drawing ABOVE the panel, which
+            # reads as text floating loose next to the box it belongs in.
+            p.setClipRect(panels[0].united(panels[1]))
+
         if self._announcement:
             self._paint_announcement(p)
         elif self._mode == SUBTITLE_MODE_REALTIME:
@@ -901,6 +1014,10 @@ class SubtitleWindow(QWidget):
             self._paint_continuous(p)
         else:
             self._paint_static(p)
+
+        # Pills and announcements are full-width furniture and must never be
+        # cut by a column.
+        p.setClipping(False)
 
         # Pills paint last so they always sit above subtitle text. In the Tk
         # version z-order followed canvas item creation order, so every new
@@ -915,7 +1032,7 @@ class SubtitleWindow(QWidget):
         slide back down, which would read as the text jumping around.
         """
         x = int(self.width() * SIDE_MARGIN_RATIO)
-        top = int(self.height() * 0.06)
+        top = int(self.height() * FEED_TOP_RATIO)
         heights = [self._measure_block(b) for b in self._blocks]
         # The advance past each block: its own height plus the gap whatever
         # comes NEXT wants above it. One list, used by all three passes below,
@@ -1427,6 +1544,13 @@ class SubtitleWindow(QWidget):
 
     def decrease_font(self) -> None:
         self._font_size_base = min(80, self._font_size_base + 5)
+        self.update()
+
+    def set_font_size_base(self, value: int) -> None:
+        try:
+            self._font_size_base = max(20, min(80, int(value)))
+        except (TypeError, ValueError):
+            return
         self.update()
 
     def get_font_size_base(self) -> int:

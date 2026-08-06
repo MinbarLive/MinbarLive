@@ -413,6 +413,17 @@ class Settings:
     # mode: it composes with all three. Off by default — stacked is what every
     # existing install has been reading.
     subtitle_side_by_side: bool = False
+    # The OTHER layout's font sizes and colours, swapped with the live ones
+    # every time subtitle_side_by_side flips. Stacked and side by side each
+    # keep their own appearance: a column is half as wide and the two scripts
+    # sit at equal weight there, so one set of values cannot suit both.
+    # Everything else in the app keeps reading the live fields and never has to
+    # know which layout is on. None until the first switch, which seeds them
+    # from the live values so nothing moves the first time.
+    alt_font_size_base: int | None = None
+    alt_source_font_size_base: float | None = None
+    alt_translation_text_color: str | None = None
+    alt_source_text_color: str | None = None
     # Realtime mode only: show the in-progress transcript ("live line") while
     # the speaker is still talking. Off by default (user decision 2026-07-22):
     # the feed shows only finished translation blocks as they land.
@@ -672,6 +683,10 @@ def load_settings(use_cache: bool = True) -> Settings:
             show_footer=data.get("show_footer", True),
             bilingual_mode=data.get("bilingual_mode", True),
             subtitle_side_by_side=data.get("subtitle_side_by_side", False),
+            alt_font_size_base=data.get("alt_font_size_base"),
+            alt_source_font_size_base=data.get("alt_source_font_size_base"),
+            alt_translation_text_color=data.get("alt_translation_text_color"),
+            alt_source_text_color=data.get("alt_source_text_color"),
             show_interim_transcript=data.get("show_interim_transcript", False),
             islamic_mode=data.get("islamic_mode", True),
             always_on_top_mode=always_on_top_mode,
@@ -747,6 +762,10 @@ def save_settings(settings: Settings) -> None:
         "show_footer": settings.show_footer,
         "bilingual_mode": settings.bilingual_mode,
         "subtitle_side_by_side": settings.subtitle_side_by_side,
+        "alt_font_size_base": settings.alt_font_size_base,
+        "alt_source_font_size_base": settings.alt_source_font_size_base,
+        "alt_translation_text_color": settings.alt_translation_text_color,
+        "alt_source_text_color": settings.alt_source_text_color,
         "show_interim_transcript": settings.show_interim_transcript,
         "islamic_mode": settings.islamic_mode,
         "always_on_top_mode": settings.always_on_top_mode,

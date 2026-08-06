@@ -547,6 +547,14 @@ QPushButton#segment:disabled {{ color: {c["muted"]}; }}
 QPushButton#segment[seg="first"] {{ border-top-left-radius: 12px; border-bottom-left-radius: 12px; }}
 QPushButton#segment[seg="last"] {{ border-top-right-radius: 12px; border-bottom-right-radius: 12px; }}
 QPushButton#segment[seg="only"] {{ border-radius: 12px; }}
+/* Inline variant (see SEGMENT_COMPACT_H): the padding is what makes the full
+   size heavy, so it goes first. Deliberately sets no background — :hover and
+   :checked above must keep applying, and a background here would outrank
+   them. */
+QPushButton#segment[compact="true"] {{ padding: 2px 12px; }}
+QPushButton#segment[compact="true"][seg="first"] {{ border-top-left-radius: 9px; border-bottom-left-radius: 9px; }}
+QPushButton#segment[compact="true"][seg="last"] {{ border-top-right-radius: 9px; border-bottom-right-radius: 9px; }}
+QPushButton#segment[compact="true"][seg="only"] {{ border-radius: 9px; }}
 
 /* Tab strip (history viewer). */
 QPushButton#tab {{
