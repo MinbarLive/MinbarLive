@@ -69,9 +69,15 @@ from utils.settings import (
 
 # Gap between the source line and its translation inside one block, ON TOP of
 # whatever _reclaim closes up. They are one utterance and have to read as one:
-# in the Tk overlay the Arabic sits almost on its translation, and anything
-# more here separated them into two unrelated lines.
-PAIR_GAP = 2
+# in the Tk overlay the Arabic sits almost on its translation.
+#
+# Raised from 2 to 10 on 2026-08-07 at the maintainer's request, after seeing
+# the per-line ribbon (_ribbon_rects) on a real screen: the backdrop made the
+# join visible in a way bare text never did, and at 2 the two boxes read as one
+# jammed-together slab. This is REAL ink distance — the reclaim and the
+# descent slack are both subtracted from it — so it is the whole of the gap the
+# eye actually sees, not a metrics figure.
+PAIR_GAP = 10
 
 # Ink that must remain between two stacked lines, so they never actually touch.
 # Tuned against the Tk overlay side by side: it is the only thing standing
