@@ -41,7 +41,14 @@ class _Check(QObject):
     def start(self) -> None:
         def _run() -> None:
             # check_for_update never raises; a failed request is just None.
-            self.done.emit(check_for_update())
+            info = check_for_update()
+            try:
+                self.done.emit(info)
+            except RuntimeError:
+                # The banner went away while the request was in flight — a GUI
+                # language switch rebuilds the panel, and the request outlives
+                # it. Nobody left to tell, which is the whole handling.
+                pass
 
         threading.Thread(target=_run, daemon=True, name="qt-update-check").start()
 

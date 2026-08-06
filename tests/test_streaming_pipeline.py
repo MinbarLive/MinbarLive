@@ -3,10 +3,17 @@
 These drive AppController's streaming path end to end with a faked Deepgram
 provider and faked audio input: transcript callbacks → utterance
 accumulation → translate_text → translation_queue, plus the start/stop
-lifecycle guarantees (validation before side effects, stale-queue draining,
-final flush on stop, forced flush for continuous speech, error recovery).
+lifecycle guarantees (validation before side effects, no state carried between
+sessions, final flush on stop, forced flush for continuous speech, error
+recovery).
+
+The runtime half lives in ``streaming_session.py`` (issue #48): the controller
+builds one ``StreamingSession`` per ``start()`` and reaches it as
+``controller._streaming``. Tests that pin an internal invariant poke the
+session that owns the state rather than the controller.
 """
 
+import queue
 import sys
 import threading
 import time
@@ -20,8 +27,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import app_controller
-from app_controller import AppController, _StreamingUtteranceSession
+import streaming_session as streaming_session_module
+from app_controller import AppController
 from providers import resolve_streaming_transcription_model
+from streaming_session import StreamingSession, UtteranceSession
 from utils.settings import (
     DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER,
     PIPELINE_MODE_STREAMING,
@@ -29,7 +38,17 @@ from utils.settings import (
 )
 
 
-def _wait_for(predicate, timeout=2.0, interval=0.01):
+# 10 s, not the 2 s this started at, and it is not a latency assertion: the
+# predicate is polled every 10 ms and returns the moment it is true, so a
+# passing test costs exactly the same either way. The budget only has to cover
+# the worst stall a loaded runner can impose on a cross-thread hand-off — and
+# every path measured here runs through `log()`, which opens, appends to and
+# closes the day's log file under one process-wide lock, synchronously, per
+# line. test_translate_error_shows_message_and_keeps_thread_alive is the one
+# with TWO such writes before its queue put (the INFO "Translation started"
+# and then the ERROR branch), and it is the one that failed on 2 of 3
+# consecutive hosted-Windows runs while passing 15/15 locally.
+def _wait_for(predicate, timeout=10.0, interval=0.01):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():
@@ -124,10 +143,20 @@ def streaming_env(monkeypatch):
         app_controller, "log_transcription_and_translation", lambda *a, **k: None
     )
     monkeypatch.setattr(app_controller, "get_user_message", lambda key: f"MSG:{key}")
+    # The streaming workers live in their own module and import these names
+    # directly, so both modules need the fake.
+    monkeypatch.setattr(
+        streaming_session_module, "load_settings", lambda use_cache=True: settings
+    )
+    monkeypatch.setattr(
+        streaming_session_module, "get_user_message", lambda key: f"MSG:{key}"
+    )
     # Coalescing holds short utterances up to COALESCE_HOLD_SECONDS; compress
     # it so tests that emit a single short utterance flush in milliseconds
     # (the coalescing-specific tests override it back up).
-    monkeypatch.setattr(app_controller, "STREAMING_COALESCE_HOLD_SECONDS", 0.05)
+    monkeypatch.setattr(
+        streaming_session_module, "STREAMING_COALESCE_HOLD_SECONDS", 0.05
+    )
 
     env = SimpleNamespace(
         controller=AppController(),
@@ -141,7 +170,7 @@ def streaming_env(monkeypatch):
 
 class TestStreamingUtteranceSession:
     def test_take_joins_and_resets(self):
-        s = _StreamingUtteranceSession()
+        s = UtteranceSession()
         s.add_final("a")
         s.add_final("b")
         assert s.has_pending()
@@ -152,20 +181,20 @@ class TestStreamingUtteranceSession:
         assert text == ""
 
     def test_age_zero_when_empty(self):
-        s = _StreamingUtteranceSession()
+        s = UtteranceSession()
         assert s.seconds_since_first_part() == 0.0
 
     def test_age_measured_from_first_part_not_last(self):
         """Continuous speech keeps adding finals; the forced-flush clock must
         run from the FIRST part or it would never fire."""
-        s = _StreamingUtteranceSession()
+        s = UtteranceSession()
         s.add_final("first")
         time.sleep(0.05)
         s.add_final("second")
         assert s.seconds_since_first_part() >= 0.05
 
     def test_take_resets_age(self):
-        s = _StreamingUtteranceSession()
+        s = UtteranceSession()
         s.add_final("first")
         s.take_and_reset()
         assert s.seconds_since_first_part() == 0.0
@@ -173,19 +202,19 @@ class TestStreamingUtteranceSession:
 
 class TestSessionLiveText:
     def test_interim_publishes_live_text(self):
-        s = _StreamingUtteranceSession()
+        s = UtteranceSession()
         s.set_interim("bismi")
         assert s.get_live_state() == ("bismi", False)
 
     def test_interim_corrects_itself(self):
         """Each interim replaces the previous hypothesis (self-correction)."""
-        s = _StreamingUtteranceSession()
+        s = UtteranceSession()
         s.set_interim("bismi")
         s.set_interim("bismillah ar-rahman")
         assert s.get_live_state() == ("bismillah ar-rahman", False)
 
     def test_final_absorbs_interim_and_joins_parts(self):
-        s = _StreamingUtteranceSession()
+        s = UtteranceSession()
         s.set_interim("part one draft")
         s.add_final("part one")
         s.set_interim("part two dra")
@@ -194,7 +223,7 @@ class TestSessionLiveText:
     def test_take_keeps_live_text_settled_until_cleared(self):
         """The finished source must stay visible during the translation call,
         marked settled so the GUI recolors it in place ("finished")."""
-        s = _StreamingUtteranceSession()
+        s = UtteranceSession()
         s.add_final("settled text")
         _text, rev = s.take_and_reset()
         assert s.get_live_state() == ("settled text", True)
@@ -203,7 +232,7 @@ class TestSessionLiveText:
 
     def test_new_speech_resets_settled(self):
         """A pipelined next utterance takes over the line as in-progress."""
-        s = _StreamingUtteranceSession()
+        s = UtteranceSession()
         s.add_final("first utterance")
         s.take_and_reset()
         s.set_interim("second utter")
@@ -212,7 +241,7 @@ class TestSessionLiveText:
     def test_clear_skipped_when_newer_speech_arrived(self):
         """A pipelined next utterance must not be blanked when the previous
         utterance's translation lands."""
-        s = _StreamingUtteranceSession()
+        s = UtteranceSession()
         s.add_final("first utterance")
         _text, rev = s.take_and_reset()
         s.set_interim("second utter")  # newer speech during translation
@@ -220,7 +249,7 @@ class TestSessionLiveText:
         assert s.get_live_state() == ("second utter", False)
 
     def test_clear_live_is_unconditional(self):
-        s = _StreamingUtteranceSession()
+        s = UtteranceSession()
         s.set_interim("anything")
         s.clear_live()
         assert s.get_live_state() == ("", False)
@@ -268,8 +297,8 @@ class TestStreamingStartValidation:
 
         streaming_env.context_mgr.start.assert_not_called()
         assert streaming_env.controller._running is False
-        assert streaming_env.controller._streaming_handle is None
-        assert streaming_env.controller._streaming_session is None
+        # A session that never opened is never assigned to the controller.
+        assert streaming_env.controller._streaming is None
 
 
 class TestStreamingPipeline:
@@ -335,14 +364,24 @@ class TestStreamingPipeline:
         _controller, provider = self._start(streaming_env)
         assert provider.opened_with == {"model": "nova-2", "language": "ar"}
 
-    def test_stale_queues_drained_on_start(self, streaming_env):
+    def test_stale_state_is_not_carried_into_the_next_session(self, streaming_env):
+        """An utterance flushed right as the previous session stopped must not
+        be replayed into this one (possibly under a different language pair).
+        The subtitle queue lives on the controller and is drained; the streaming
+        queues die with the session that owned them."""
         controller = streaming_env.controller
-        controller._streaming_utterance_queue.put("stale from last session")
-        controller._streaming_feed_queue.put(b"stale-audio")
+        self._start(streaming_env)
+        first = controller._streaming
+        first._utterance_queue.put(("stale from last session", 0))
+        first._feed_queue.put(b"stale-audio")
+        controller.stop(timeout=2.0)
+
         controller.translation_queue.put(("stale subtitle", None))
         self._start(streaming_env)
-        assert controller._streaming_utterance_queue.empty()
-        assert controller._streaming_feed_queue.empty()
+
+        assert controller._streaming is not first
+        assert controller._streaming._utterance_queue.empty()
+        assert controller._streaming._feed_queue.empty()
         assert controller.translation_queue.empty()
 
     def test_stop_flushes_pending_text(self, streaming_env):
@@ -358,17 +397,16 @@ class TestStreamingPipeline:
         controller, provider = self._start(streaming_env)
         controller.stop(timeout=2.0)
         assert provider.handle.closed is True
-        assert controller._streaming_handle is None
-        assert controller._streaming_session is None
+        assert controller._streaming is None
         assert controller._running is False
 
     def test_forced_flush_caps_continuous_speech(self, streaming_env, monkeypatch):
         """Speech without pauses never produces an utterance-end; the
         max-utterance cap must flush anyway."""
-        monkeypatch.setattr(app_controller, "STREAMING_MAX_UTTERANCE_SECONDS", 0.3)
+        monkeypatch.setattr(streaming_session_module, "STREAMING_MAX_UTTERANCE_SECONDS", 0.3)
         controller, provider = self._start(streaming_env)
         provider.on_transcript("continuous speech", True)
-        assert _wait_for(lambda: not controller.translation_queue.empty(), timeout=3.0)
+        assert _wait_for(lambda: not controller.translation_queue.empty())
         translation, _source = controller.translation_queue.get_nowait()
         assert translation == "XX:continuous speech"
 
@@ -415,7 +453,7 @@ class TestStreamingPipeline:
 
     def test_audio_chunks_reach_the_stream(self, streaming_env):
         controller, provider = self._start(streaming_env)
-        controller._streaming_feed_queue.put(b"chunk-1")
+        controller._streaming._feed_queue.put(b"chunk-1")
         assert _wait_for(lambda: provider.handle.fed == [b"chunk-1"])
 
 
@@ -690,8 +728,8 @@ class TestStreamingCoalescing:
     def test_short_utterances_merge_into_one_call(self, streaming_env, monkeypatch):
         # Long hold so the first waits for the second; low min-words so their
         # merge crosses the flush threshold.
-        monkeypatch.setattr(app_controller, "STREAMING_COALESCE_HOLD_SECONDS", 5.0)
-        monkeypatch.setattr(app_controller, "STREAMING_COALESCE_MIN_WORDS", 4)
+        monkeypatch.setattr(streaming_session_module, "STREAMING_COALESCE_HOLD_SECONDS", 5.0)
+        monkeypatch.setattr(streaming_session_module, "STREAMING_COALESCE_MIN_WORDS", 4)
         controller, provider = self._start(streaming_env)
         provider.on_transcript("alpha beta", True)
         provider.on_utterance_end()  # 2 words: held
@@ -708,27 +746,30 @@ class TestStreamingCoalescing:
     def test_trailing_short_utterance_flushes_after_hold(
         self, streaming_env, monkeypatch
     ):
-        monkeypatch.setattr(app_controller, "STREAMING_COALESCE_HOLD_SECONDS", 0.05)
+        monkeypatch.setattr(streaming_session_module, "STREAMING_COALESCE_HOLD_SECONDS", 0.05)
         controller, provider = self._start(streaming_env)
         provider.on_transcript("lonely clause", True)
         provider.on_utterance_end()  # 2 words, no follow-up
-        assert _wait_for(lambda: not controller.translation_queue.empty(), timeout=2.0)
+        assert _wait_for(lambda: not controller.translation_queue.empty())
         assert controller.translation_queue.get_nowait()[0] == "XX:lonely clause"
 
     def test_long_utterance_flushes_immediately(self, streaming_env, monkeypatch):
         # Hold long enough that only an immediate (>= min-words) flush can pass.
-        monkeypatch.setattr(app_controller, "STREAMING_COALESCE_HOLD_SECONDS", 30.0)
-        monkeypatch.setattr(app_controller, "STREAMING_COALESCE_MIN_WORDS", 3)
+        monkeypatch.setattr(streaming_session_module, "STREAMING_COALESCE_HOLD_SECONDS", 30.0)
+        monkeypatch.setattr(streaming_session_module, "STREAMING_COALESCE_MIN_WORDS", 3)
         controller, provider = self._start(streaming_env)
         provider.on_transcript("one two three four", True)
         provider.on_utterance_end()
-        assert _wait_for(lambda: not controller.translation_queue.empty(), timeout=1.0)
+        # Kept explicit and well under the 30 s hold — here the budget IS the
+        # assertion ("immediately, not after the hold"), so it cannot inherit
+        # the default. 5 s only widens the room for a stalled runner.
+        assert _wait_for(lambda: not controller.translation_queue.empty(), timeout=5.0)
         assert controller.translation_queue.get_nowait()[0] == "XX:one two three four"
 
     def test_fragment_utterance_dropped_not_translated(
         self, streaming_env, monkeypatch
     ):
-        monkeypatch.setattr(app_controller, "STREAMING_COALESCE_HOLD_SECONDS", 0.05)
+        monkeypatch.setattr(streaming_session_module, "STREAMING_COALESCE_HOLD_SECONDS", 0.05)
         controller, provider = self._start(streaming_env)
         provider.on_transcript("م", True)  # sub-word fragment
         provider.on_utterance_end()
@@ -743,8 +784,8 @@ class TestStreamingReconnect:
 
     def _start(self, env, monkeypatch):
         # Real backoff is 1s+ — compress it so tests run in milliseconds.
-        monkeypatch.setattr(app_controller, "STREAMING_RECONNECT_BASE_SECONDS", 0.02)
-        monkeypatch.setattr(app_controller, "STREAMING_RECONNECT_MAX_SECONDS", 0.1)
+        monkeypatch.setattr(streaming_session_module, "STREAMING_RECONNECT_BASE_SECONDS", 0.02)
+        monkeypatch.setattr(streaming_session_module, "STREAMING_RECONNECT_MAX_SECONDS", 0.1)
         env.controller.start(input_device=0)
         assert env.provider.on_transcript is not None
         return env.controller, env.provider
@@ -756,8 +797,8 @@ class TestStreamingReconnect:
         assert _wait_for(lambda: provider.open_count == 2)
         assert first_handle.closed is True
         # The feeder routes to the fresh handle.
-        assert _wait_for(lambda: controller._streaming_handle is provider.handle)
-        controller._streaming_feed_queue.put(b"\x01\x00")
+        assert _wait_for(lambda: controller._streaming._handle is provider.handle)
+        controller._streaming._feed_queue.put(b"\x01\x00")
         assert _wait_for(lambda: provider.handle.fed == [b"\x01\x00"])
 
     def test_invalid_api_key_is_terminal_without_reconnect_or_audience_message(
@@ -832,7 +873,7 @@ class TestStreamingReconnect:
         stale_cb(RuntimeError("late duplicate from the dead connection"))
         time.sleep(0.15)  # would be enough for another (wrong) reconnect
         assert provider.open_count == 2
-        assert controller._streaming_handle is provider.handle
+        assert controller._streaming._handle is provider.handle
 
     def test_no_reconnect_after_stop(self, streaming_env, monkeypatch):
         controller, provider = self._start(streaming_env, monkeypatch)
@@ -842,14 +883,33 @@ class TestStreamingReconnect:
         time.sleep(0.15)
         assert provider.open_count == 1
 
+    def test_device_change_during_an_outage_keeps_the_streaming_capture_path(
+        self, streaming_env, monkeypatch
+    ):
+        """While an outage is being recovered the handle is None but the
+        session is very much alive. Choosing the capture thread by handle
+        started the *segmented* one here — filling a ring buffer nobody reads,
+        so the reconnected stream stayed silent for the rest of the session."""
+        controller, _provider = self._start(streaming_env, monkeypatch)
+        started = []
+        monkeypatch.setattr(
+            controller,
+            "_start_confirmed_input_thread",
+            lambda target, args, **kwargs: started.append(target),
+        )
+        controller._streaming._handle = None  # mid-swap: the connection is down
+
+        assert controller.change_input_device(1) is True
+        assert started == [controller._streaming_input_stream_thread]
+
     def test_backoff_grows_and_resets_on_transcript(self, streaming_env, monkeypatch):
         controller, provider = self._start(streaming_env, monkeypatch)
-        base = app_controller.STREAMING_RECONNECT_BASE_SECONDS
+        base = streaming_session_module.STREAMING_RECONNECT_BASE_SECONDS
         provider.on_error(RuntimeError("stream ended by server"))
         assert _wait_for(lambda: provider.open_count == 2)
-        assert controller._streaming_backoff > base
+        assert controller._streaming._backoff > base
         provider.on_transcript("healthy again", False)
-        assert controller._streaming_backoff == base
+        assert controller._streaming._backoff == base
 
 
 class _CountingHandle:
@@ -870,6 +930,23 @@ class _CountingHandle:
             self._closed.append(self)
 
 
+def _bare_session() -> StreamingSession:
+    """A StreamingSession with no controller behind it, for the lock tests."""
+    return StreamingSession(
+        FakeStreamingProvider(),
+        provider_id="fake",
+        model="fake-model",
+        language="ar",
+        capture_rate=16000,
+        stop_event=threading.Event(),
+        stop_input=lambda: None,
+        translation_queue=queue.Queue(),
+        error_queue=queue.Queue(),
+        translate=lambda text: None,
+        on_activity=lambda: None,
+    )
+
+
 class TestStreamingConnectionRaces:
     """The streaming connection handle is mutated from several threads (the
     reconnect supervisor, the stall watchdog, the terminal-error teardown and
@@ -878,10 +955,10 @@ class TestStreamingConnectionRaces:
     """
 
     def test_concurrent_swaps_leave_no_orphaned_connection(self):
-        """Many threads enter _swap_streaming_connection at once (the supervisor
-        and the watchdog can fire together). Every replaced connection must be
-        closed and exactly the last one opened stays live."""
-        controller = AppController()
+        """Many threads enter _swap_connection at once (the supervisor and the
+        watchdog can fire together). Every replaced connection must be closed
+        and exactly the last one opened stays live."""
+        session = _bare_session()
         opened: list = []
         closed: list = []
         record_lock = threading.Lock()
@@ -895,15 +972,15 @@ class TestStreamingConnectionRaces:
             time.sleep(0.001)
             return handle
 
-        controller._streaming_connect = connect
-        controller._streaming_handle = connect()  # the initial live connection
+        session._connect = connect
+        session._handle = connect()  # the initial live connection
 
         n = 24
         ready = threading.Barrier(n)
 
         def worker():
             ready.wait()  # release all threads together to force the overlap
-            controller._swap_streaming_connection("test")
+            session._swap_connection("test")
 
         threads = [threading.Thread(target=worker) for _ in range(n)]
         for t in threads:
@@ -914,9 +991,9 @@ class TestStreamingConnectionRaces:
         # n swaps + 1 initial handle opened; the live one stays open and every
         # other opened connection was closed exactly once — none leaked.
         assert len(opened) == n + 1
-        assert controller._streaming_handle in opened
+        assert session._handle in opened
         survivors = [h for h in opened if h not in closed]
-        assert survivors == [controller._streaming_handle]
+        assert survivors == [session._handle]
         assert len(closed) == n
 
     def test_stop_closes_a_connection_opened_during_shutdown(self, streaming_env):
@@ -926,6 +1003,7 @@ class TestStreamingConnectionRaces:
         nulling the reference and leaking it."""
         controller = streaming_env.controller
         controller.start(input_device=0)
+        session = controller._streaming
 
         entered = threading.Event()
         release = threading.Event()
@@ -938,11 +1016,9 @@ class TestStreamingConnectionRaces:
             reconnect_opened.append(handle)
             return handle
 
-        controller._streaming_connect = slow_connect
+        session._connect = slow_connect
 
-        swap = threading.Thread(
-            target=lambda: controller._swap_streaming_connection("dead")
-        )
+        swap = threading.Thread(target=lambda: session._swap_connection("dead"))
         swap.start()
         assert entered.wait(timeout=2.0)  # reconnect is mid-open, holding the lock
 
@@ -957,7 +1033,8 @@ class TestStreamingConnectionRaces:
         # The socket the reconnect opened during shutdown was closed, not leaked.
         assert len(reconnect_opened) == 1
         assert reconnect_opened[0].closed is True
-        assert controller._streaming_handle is None
+        assert session._handle is None
+        assert controller._streaming is None
         assert controller._running is False
 
     def test_feeder_survives_a_feed_error_from_a_closed_handle(self, streaming_env):
@@ -980,15 +1057,15 @@ class TestStreamingConnectionRaces:
                 pass
 
         # The live handle now rejects every feed, as a just-closed socket would.
-        controller._streaming_handle = _RaisingHandle()
-        controller._streaming_feed_queue.put(b"doomed-chunk")
+        controller._streaming._handle = _RaisingHandle()
+        controller._streaming._feed_queue.put(b"doomed-chunk")
         assert fed_attempted.wait(timeout=2.0)  # the feeder hit the error path
 
         # A healthy handle takes over (as a reconnect would install one). The
         # feeder is still alive and routes the next chunk to it.
         fresh = FakeStreamHandle()
-        controller._streaming_handle = fresh
-        controller._streaming_feed_queue.put(b"good-chunk")
+        controller._streaming._handle = fresh
+        controller._streaming._feed_queue.put(b"good-chunk")
         assert _wait_for(lambda: fresh.fed == [b"good-chunk"])
 
 
@@ -1002,12 +1079,12 @@ class TestStallWatchdog:
 
     def _start(self, streaming_env, monkeypatch, *, timeout=0.3, grace=0.4):
         monkeypatch.setattr(
-            app_controller, "STREAMING_STALL_TIMEOUT_SECONDS", timeout
+            streaming_session_module, "STREAMING_STALL_TIMEOUT_SECONDS", timeout
         )
         monkeypatch.setattr(
-            app_controller, "STREAMING_STALL_MIN_SPEECH_SECONDS", 1.0
+            streaming_session_module, "STREAMING_STALL_MIN_SPEECH_SECONDS", 1.0
         )
-        monkeypatch.setattr(app_controller, "STREAMING_STALL_GRACE_SECONDS", grace)
+        monkeypatch.setattr(streaming_session_module, "STREAMING_STALL_GRACE_SECONDS", grace)
         controller = streaming_env.controller
         controller.start(input_device=0)
         assert streaming_env.provider.open_count == 1
@@ -1018,8 +1095,8 @@ class TestStallWatchdog:
         connection is just as silent as a stuck one. The old watchdog
         reconnected here on every check cycle."""
         controller, provider = self._start(streaming_env, monkeypatch)
-        controller._speech_fed_since_activity = 0.0
-        controller._last_pipeline_activity = time.time() - 60  # way past timeout
+        controller._streaming._speech_fed_seconds = 0.0
+        controller._streaming._last_activity = time.time() - 60  # way past timeout
         time.sleep(0.8)  # several watchdog polls at the shrunk timeout
         assert provider.open_count == 1
 
@@ -1027,12 +1104,12 @@ class TestStallWatchdog:
         """The original stuck-session case stays covered: speech was fed, no
         transcript arrived, the gate reports a pause — swap immediately."""
         controller, provider = self._start(streaming_env, monkeypatch)
-        controller._noise_gate = SimpleNamespace(is_zeroing=True)
-        controller._speech_fed_since_activity = 5.0
-        controller._last_pipeline_activity = time.time() - 60
+        controller._streaming._noise_gate = SimpleNamespace(is_zeroing=True)
+        controller._streaming._speech_fed_seconds = 5.0
+        controller._streaming._last_activity = time.time() - 60
         assert _wait_for(lambda: provider.open_count == 2)
         # Re-armed fresh: the counted speech died with the old connection.
-        assert controller._speech_fed_since_activity == 0.0
+        assert controller._streaming._speech_fed_seconds == 0.0
 
     def test_transcript_during_grace_cancels_the_swap(
         self, streaming_env, monkeypatch
@@ -1041,9 +1118,9 @@ class TestStallWatchdog:
         transcript merely in flight. The grace wait must catch it and keep
         the connection (the live-observed harm case)."""
         controller, provider = self._start(streaming_env, monkeypatch, grace=1.2)
-        controller._noise_gate = SimpleNamespace(is_zeroing=False)  # speech flowing
-        controller._speech_fed_since_activity = 5.0
-        controller._last_pipeline_activity = time.time() - 60
+        controller._streaming._noise_gate = SimpleNamespace(is_zeroing=False)  # speech flowing
+        controller._streaming._speech_fed_seconds = 5.0
+        controller._streaming._last_activity = time.time() - 60
         time.sleep(0.3)  # let the watchdog arm and enter the grace wait
         provider.on_transcript("proof of life", False)  # interim
         time.sleep(1.8)  # past where the swap would have happened
@@ -1055,24 +1132,24 @@ class TestStallWatchdog:
         """Continuous speech with zero transcripts is the original bug — the
         gate never closes, so the swap must proceed once the grace runs out."""
         controller, provider = self._start(streaming_env, monkeypatch, grace=0.3)
-        controller._noise_gate = SimpleNamespace(is_zeroing=False)
-        controller._speech_fed_since_activity = 5.0
-        controller._last_pipeline_activity = time.time() - 60
-        assert _wait_for(lambda: provider.open_count == 2, timeout=3.0)
+        controller._streaming._noise_gate = SimpleNamespace(is_zeroing=False)
+        controller._streaming._speech_fed_seconds = 5.0
+        controller._streaming._last_activity = time.time() - 60
+        assert _wait_for(lambda: provider.open_count == 2)
 
     def test_feeder_accumulates_speech_seconds(self, streaming_env, monkeypatch):
         """The feeder converts fed bytes to seconds at the capture rate, and a
         transcript resets the count."""
         # Production timeout: the watchdog must not fire mid-test.
         controller, provider = self._start(streaming_env, monkeypatch, timeout=15.0)
-        assert controller._speech_fed_since_activity == 0.0
-        rate = controller._streaming_capture_rate
-        controller._streaming_feed_queue.put(b"\x00\x00" * rate)  # 1 s of int16
+        assert controller._streaming._speech_fed_seconds == 0.0
+        rate = controller._streaming.capture_rate
+        controller._streaming._feed_queue.put(b"\x00\x00" * rate)  # 1 s of int16
         assert _wait_for(
-            lambda: abs(controller._speech_fed_since_activity - 1.0) < 1e-6
+            lambda: abs(controller._streaming._speech_fed_seconds - 1.0) < 1e-6
         )
         provider.on_transcript("text arrived", True)
-        assert controller._speech_fed_since_activity == 0.0
+        assert controller._streaming._speech_fed_seconds == 0.0
 
 
 if __name__ == "__main__":

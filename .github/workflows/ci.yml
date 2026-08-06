@@ -23,7 +23,7 @@ jobs:
     # and was really a modal dialog blocking the whole job.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Deliberately NOT fetching LFS: the three embedding files are
           # ~600 MB, and the free LFS bandwidth quota is 1 GB/month.
@@ -31,7 +31,7 @@ jobs:
           # files are pointer stubs, and the suite passes that way.
           lfs: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -48,11 +48,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           lfs: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -78,17 +78,58 @@ jobs:
 
       - run: xvfb-run -a python -m pytest -q
 
+      # The AppStream metadata is a static file, so validating it needs no
+      # build at all — and doing it HERE is the point. release.yml only runs on
+      # tags and workflow_dispatch, so anything checked only there costs a
+      # 45-minute dispatch per attempt; this answers in the pull request.
+      # appimagetool validates the assembled tree again at package time, but by
+      # then a bad file has already cost a build.
+      #
+      # Worth knowing what "invalid" costs: metadata that fails validation is
+      # silently ignored by software centres, so the AppImage would show a bare
+      # filename and nothing would look broken.
+      - name: Validate the AppStream metadata
+        run: |
+          sudo apt-get install -y appstream
+          appstreamcli --version
+          # The shipped copy has @VERSION@/@DATE@ placeholders that
+          # build-appimage.sh substitutes; validate what actually gets
+          # installed, not the template.
+          tmp=$(mktemp -d)
+          sed -e "s|@VERSION@|$(python -c 'from version import __version__; print(__version__)')|" \
+              -e "s|@DATE@|$(date -u +%Y-%m-%d)|" \
+              packaging/live.minbar.MinbarLive.metainfo.xml \
+              > "$tmp/live.minbar.MinbarLive.metainfo.xml"
+          appstreamcli validate --no-net "$tmp/live.minbar.MinbarLive.metainfo.xml"
+
+          # Again on 22.04, because THAT is the version that gates the build.
+          # This runner is ubuntu-latest (AppStream 1.0) but release.yml's
+          # build-linux is ubuntu-22.04 (0.15), and appimagetool aborts on a
+          # validation failure — so a file that only 1.0 accepts would pass
+          # here and kill the AppImage step of a real release. The two
+          # versions disagree about enough (<developer> does not exist in
+          # 0.15; <developer_name> is deprecated in 1.0) that assuming they
+          # agree is how this file gets broken later. ~40 s, no LFS, versus a
+          # 45-minute dispatch to learn the same thing.
+          docker run --rm -v "$tmp:/m:ro" ubuntu:22.04 bash -c '
+            set -e
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -yqq appstream >/dev/null
+            appstreamcli --version
+            appstreamcli validate --no-net /m/live.minbar.MinbarLive.metainfo.xml
+          '
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           lfs: false
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip

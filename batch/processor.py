@@ -76,6 +76,32 @@ class FfmpegNotFoundError(RuntimeError):
     """Raised when a non-WAV input needs ffmpeg but none is installed."""
 
 
+# Started from Finder, a .desktop entry or an AppImage rather than a shell,
+# the process inherits a minimal PATH — on macOS typically just
+# /usr/bin:/bin:/usr/sbin:/sbin, which is where neither Homebrew prefix
+# appears. `shutil.which` then misses an ffmpeg the user definitely
+# installed, and batch mode reports it as missing.
+_EXTRA_FFMPEG_DIRS = (
+    "/opt/homebrew/bin",  # Homebrew on Apple Silicon
+    "/usr/local/bin",  # Homebrew on Intel, and manual installs
+    "/usr/bin",  # distribution packages
+)
+
+
+def _ffmpeg_in_known_dirs() -> str | None:
+    """First executable ffmpeg sitting in one of the prefixes above.
+
+    Split out of ``_find_ffmpeg`` so it can be tested anywhere: the branch
+    that calls it is behind a platform check, and faking ``sys.platform`` to
+    reach it is process-wide and has taken this suite down before.
+    """
+    for directory in _EXTRA_FFMPEG_DIRS:
+        candidate = os.path.join(directory, "ffmpeg")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def _find_ffmpeg() -> str | None:
     """Return the path to ffmpeg, or None if not found.
 
@@ -83,6 +109,9 @@ def _find_ffmpeg() -> str | None:
     WinGet/Chocolatey after VS Code was opened). As a fallback we read the
     current User and System PATH directly from the registry so the user
     doesn't have to restart VS Code after installing ffmpeg.
+
+    Off Windows the equivalent gap is a GUI launch with a minimal PATH, so
+    the well-known install prefixes are checked directly.
     """
     path = shutil.which("ffmpeg")
     if path:
@@ -97,7 +126,7 @@ def _find_ffmpeg() -> str | None:
     except Exception:
         pass
     if sys.platform != "win32":
-        return None
+        return _ffmpeg_in_known_dirs()
     try:
         import winreg
 

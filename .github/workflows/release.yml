@@ -22,14 +22,14 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Fetched selectively below; `lfs: true` would pull all three
           # tracked files including the 418 MB raw JSON, which the EXE does
           # not bundle. See "Git LFS" in docs/ci.md.
           lfs: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -82,7 +82,7 @@ jobs:
       # release instead of twice is the difference between five builds a
       # month and two. compression-level 0 because .npz is already zipped.
       - name: Share the matrices with the Linux job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: embeddings
           path: data/embeddings/*.npz
@@ -105,7 +105,7 @@ jobs:
         shell: bash
         run: cd dist && sha256sum MinbarLive.exe | tee SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: MinbarLive-exe
           path: |
@@ -179,11 +179,11 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           lfs: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -224,7 +224,14 @@ jobs:
 
       # The matrices the `build` job already pulled from LFS. They overwrite
       # the pointer stubs checkout left behind.
-      - uses: actions/download-artifact@v4
+      #
+      # Pinned at v7, not v8: v8 checks the Content-Type header before unzipping
+      # and skips whatever it does not consider zipped. These .npz files have to
+      # arrive EXTRACTED into data/embeddings — that hand-off is the only reason
+      # this job does not run its own `git lfs pull`, which would cost another
+      # ~182 MB against the 1 GB monthly allowance. Past v7 only with a build
+      # that proves they still land unpacked.
+      - uses: actions/download-artifact@v7
         with:
           name: embeddings
           path: data/embeddings
@@ -253,10 +260,50 @@ jobs:
             exit 1
           fi
 
+      # A hosted runner has no PulseAudio DAEMON, so soundcard_usable() returns
+      # False and every smoke launch below took the DEGRADE branch: no loopback
+      # devices, no JACK-monitor filtering, no call into libpulse at all. The
+      # checks proved the app survives WITHOUT audio and said nothing about the
+      # loopback feature the AppImage bundles soundcard for.
+      #
+      # That gap has already cost a release: the frozen build strips `assert`
+      # (the spec's optimize=1), which removes soundcard's only guard against an
+      # unreachable server, and a build aborted at startup with
+      #   Assertion 'o' failed at ../src/pulse/operation.c:67 … Aborting.
+      # A daemon here turns that class of crash into a failed smoke launch.
+      #
+      # DELIBERATELY AFTER pyinstaller. What must never happen is the builder's
+      # libraries deciding what gets BUNDLED — that is the trap the xcb, libEGL
+      # and libpulse notes above are about. Running a daemon for the launch is a
+      # different step and cannot change the bundle, which is already built.
+      - name: Start PulseAudio so the smoke launches exercise the audio path
+        run: |
+          sudo apt-get install -y pulseaudio pulseaudio-utils
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chown "$(id -u):$(id -g)" "$XDG_RUNTIME_DIR"
+          pulseaudio --start --exit-idle-time=-1
+          # A null sink gives the machine a monitor source, which is what a
+          # loopback device actually is — without one there is nothing to find.
+          pactl load-module module-null-sink sink_name=ci_sink
+          # Fail loudly rather than quietly falling back. A daemon that did not
+          # come up would put the launches below back on the degrade path and
+          # report success — precisely the "passes without proving anything"
+          # this step exists to remove.
+          test -S "$XDG_RUNTIME_DIR/pulse/native" \
+            || { echo "::error::No PulseAudio socket — the smoke launches would prove nothing."; exit 1; }
+          # soundcard_usable() checks PULSE_SERVER first, then the socket path.
+          # Export both so the frozen binary agrees with what we just started.
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "PULSE_SERVER=unix:$XDG_RUNTIME_DIR/pulse/native" >> "$GITHUB_ENV"
+          echo "--- sources visible to the app ---"
+          pactl list short sources
+
       # A startup crash — a shared library the bundle missed, an X11 request
-      # the toolkit rejects — exits within seconds. A healthy start sits in
-      # the onboarding wizard until `timeout` kills it, so exit 124 is the
-      # success case and anything else means it died on its own.
+      # the toolkit rejects, a libpulse call into a server that is now really
+      # there — exits within seconds. A healthy start sits in the onboarding
+      # wizard until `timeout` kills it, so exit 124 is the success case and
+      # anything else means it died on its own.
       - name: Smoke-launch the binary
         run: |
           set +e
@@ -268,6 +315,18 @@ jobs:
             exit 1
           fi
           echo "Stayed up for 30s."
+
+      # appstreamcli is what appimagetool uses to VALIDATE the AppStream
+      # metadata. Without it, appimagetool reports only that the file was found
+      # ("appstreamcli command is missing, please install it") — so metadata
+      # with, say, a non-reverse-DNS component id would ship looking fine and
+      # be ignored by every software centre. ci.yml validates the same file on
+      # every pull request; this is the check on the assembled tree.
+      #
+      # Installed after pyinstaller, for the same reason the PulseAudio daemon
+      # is: nothing here may influence what got bundled.
+      - name: AppStream validator
+        run: sudo apt-get install -y appstream
 
       - name: Package AppImage
         run: bash packaging/build-appimage.sh
@@ -307,6 +366,11 @@ jobs:
       #
       # What the container gets is what every desktop already has (GL, ALSA,
       # fontconfig, D-Bus, an X server) and NOT one library from the Qt xcb set.
+      # It also gets no PulseAudio daemon, unlike the two launches above — so
+      # between them the two branches of soundcard_usable() are both covered:
+      # up there the real libpulse path, down here the degrade path that a
+      # machine without a sound server still has to survive. Do not "fix" this
+      # one by starting a daemon in it; that would lose the degrade coverage.
       # --appimage-extract-and-run because a container has no FUSE; the
       # FUSE-less runtime is what the step above exists to prove.
       - name: Smoke-launch the AppImage where nothing is installed
@@ -374,7 +438,7 @@ jobs:
       - name: Checksum
         run: cd dist && sha256sum MinbarLive-x86_64.AppImage | tee SHA256SUMS-linux.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: MinbarLive-linux
           path: |
@@ -410,11 +474,11 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           lfs: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -424,7 +488,7 @@ jobs:
       # The matrices the `build` job already pulled from LFS. They overwrite the
       # pointer stubs checkout left behind (saves a second LFS pull — see the
       # note in the `build` job).
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: embeddings
           path: data/embeddings
@@ -443,20 +507,36 @@ jobs:
             echo "$f: $size bytes"
           done
 
-      # Produces both dist/MinbarLive (the one-file binary) and
-      # dist/MinbarLive.app (the BUNDLE wrapper — see MinbarLive.spec).
+      # ONEDIR here (MinbarLive.spec says why): produces dist/MinbarLive/ — the
+      # collected directory — and dist/MinbarLive.app, which is the artifact.
+      # dist/MinbarLive is NOT an executable any more; nothing below may run it.
       - run: pyinstaller MinbarLive.spec
 
       - name: Verify the .app bundle
         run: |
           test -d dist/MinbarLive.app || { echo "::error::MinbarLive.app was not produced."; exit 1; }
-          bin="dist/MinbarLive.app/Contents/MacOS/MinbarLive"
-          size=$(wc -c < "$bin")
-          echo "$bin: $size bytes"
-          if [ "$size" -lt 100000000 ]; then
-            echo "::error::Bundled binary is only $size bytes, the data/ bundle is missing."
+          # Measure the WHOLE bundle, not Contents/MacOS/MinbarLive. Under
+          # onedir that file is a small launcher stub and the payload lives in
+          # Contents/Frameworks and Contents/Resources, so the old
+          # binary-size check would fail on a perfectly correct build.
+          size=$(du -sk dist/MinbarLive.app | cut -f1)
+          echo "dist/MinbarLive.app: $size KiB"
+          if [ "$size" -lt 100000 ]; then
+            echo "::error::The bundle is only $size KiB, the data/ payload is missing."
             exit 1
           fi
+          # Size alone is a proxy. These are what the size is standing in for,
+          # and the reason the payload moving is worth checking directly: the
+          # matrices are ~182 MB of the bundle and Quran verse matching dies
+          # silently without them.
+          for f in quran_embeddings_openai.npz quran_embeddings_gemini.npz; do
+            found=$(find dist/MinbarLive.app -name "$f" | head -1)
+            if [ -z "$found" ]; then
+              echo "::error::$f is not inside the bundle — RAG would ship dead."
+              exit 1
+            fi
+            echo "  $found"
+          done
           # The mic-usage string is REQUIRED — without it macOS hard-kills the app
           # the moment it opens an input stream (TCC). Fail if the spec did not
           # wire it into Info.plist.
@@ -473,24 +553,38 @@ jobs:
       - name: Checksum
         run: cd dist && shasum -a 256 MinbarLive-macos-arm64.zip | tee SHA256SUMS-macos.txt
 
-      # Uploaded BEFORE the smoke launch so the artifact survives even if the
-      # (best-effort, non-fatal) GUI launch below cannot start on the runner.
-      - uses: actions/upload-artifact@v4
+      # Uploaded BEFORE the smoke launch, and that ORDER is the point: the
+      # launch below is fatal now, so a crashing build still leaves an artifact
+      # to download and debug. What it does not leave is a published release —
+      # the publish step comes after, and a failed job never reaches it.
+      - uses: actions/upload-artifact@v7
         with:
           name: MinbarLive-macos
           path: |
             dist/MinbarLive-macos-arm64.zip
             dist/SHA256SUMS-macos.txt
 
-      # Best-effort only (continue-on-error): whether a Tkinter GUI can start on
-      # a hosted macOS runner's session is not something this project has yet
-      # verified, so an early exit is reported as a warning, not a build failure.
-      # macOS has no `timeout`, so launch in the background and kill after a grace
-      # period; exiting on its own before then means it crashed at startup.
-      - name: Smoke-launch (best effort)
-        continue-on-error: true
+      # FATAL, not best-effort. This was `continue-on-error: true` reporting a
+      # ::warning::, which meant a macOS build that crashed at startup was still
+      # uploaded AND still attached to the release — the check could not fail
+      # anything it was there to protect.
+      #
+      # The hedge was reasonable when written: nobody had established that a Qt
+      # GUI can start on a hosted macOS runner's session at all, so a red job
+      # would more likely have meant "the runner cannot do this" than "the app
+      # is broken". That is settled now — consecutive dispatch builds both
+      # report "Stayed up for 25s." — so an early exit means the app.
+      #
+      # macOS has no `timeout`, so launch in the background and kill after a
+      # grace period; exiting on its own before then means it crashed at startup.
+      #
+      # Launched from INSIDE the bundle. It used to run ./dist/MinbarLive, which
+      # under onedir is a directory — the step would have failed on a good
+      # build. Running the bundle's own binary is also the better test: it is
+      # the file users actually execute, on the paths it will really resolve.
+      - name: Smoke-launch the .app
         run: |
-          ./dist/MinbarLive >/tmp/mac_smoke.log 2>&1 &
+          ./dist/MinbarLive.app/Contents/MacOS/MinbarLive >/tmp/mac_smoke.log 2>&1 &
           pid=$!
           sleep 25
           if kill -0 "$pid" 2>/dev/null; then
@@ -498,8 +592,9 @@ jobs:
             kill "$pid" 2>/dev/null || true
           else
             wait "$pid"; code=$?
-            echo "::warning::MinbarLive exited early with $code — see log below."
+            echo "::error::MinbarLive exited early with $code — see the log below."
             cat /tmp/mac_smoke.log || true
+            exit 1
           fi
 
       # Attach the macOS bundle to the release (tag builds only). The Windows

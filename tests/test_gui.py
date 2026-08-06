@@ -24,6 +24,8 @@ import pytest
 
 pytest.importorskip("PySide6", reason="PySide6 not installed")
 
+import shiboken6  # noqa: E402
+from PySide6.QtCore import QEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from gui.subtitle_window import SubtitleWindow  # noqa: E402
@@ -42,6 +44,13 @@ def cp_module():
     import gui.control_panel as cp
 
     return cp
+
+
+def card_grid_module():
+    """The card-grid module, for the width thresholds it owns."""
+    import gui.card_grid as card_grid
+
+    return card_grid
 
 
 PAIRS = [
@@ -88,6 +97,44 @@ def qt_app():
     """One QApplication for the session — Qt allows only a single instance."""
     app = QApplication.instance() or QApplication([])
     yield app
+
+
+@pytest.fixture(autouse=True)
+def destroy_leftover_widgets(qt_app):
+    """Destroy every widget a test leaves behind (issue #52).
+
+    ``close()`` only hides a widget, and dropping the last Python reference
+    does not free it either — a panel's own signal connections hold it
+    through a cycle ``gc.collect()`` does not break — so the suite kept every
+    widget it ever built: 223 per control-panel test, ~4900 alive by the time
+    the chrome tests ran. That made it quadratic, because
+    ``QApplication.setStyleSheet`` re-polishes every live widget: each
+    ``apply_theme`` paid for everything the earlier tests had left behind,
+    and the twelve ``TestControlChrome`` tests went from 0.98 s as a class on
+    their own to 7 s *each*. (``apply_theme``'s own ``allWidgets()`` loop is
+    not the cost — 3 ms against setStyleSheet's 1851 ms at 1118 widgets.)
+
+    Autouse rather than 64 fixture teardowns, because most of the slow tests
+    build their widgets inline with no fixture to hook.
+
+    Two things this has to get right, both of which cost a crash to learn:
+
+    * ``deleteLater`` plus an explicit drain. ``processEvents()`` does not
+      deliver ``DeferredDelete``, and a probe using it concluded the widgets
+      could not be freed at all, which was wrong.
+    * Only the parentless windows PYTHON built. ``topLevelWidgets()`` is
+      everything carrying the window flag, Qt's own included: an opened
+      drop-down leaves a popup container parented to its ``Dropdown`` and, on
+      Windows, a parentless helper window still marked visible after
+      ``hidePopup()``. Destroying either took Qt's combo machinery with it —
+      a reproducible access violation on the *next* ``showPopup()``.
+      ``createdByPython`` is the line: what Python built, the test owns.
+    """
+    yield
+    for widget in qt_app.topLevelWidgets():
+        if widget.parent() is None and shiboken6.createdByPython(widget):
+            widget.deleteLater()
+    qt_app.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 @pytest.fixture
@@ -853,23 +900,23 @@ class TestControlPanelLayout:
         for width, expected in ((1200, 3), (900, 2), (520, 1)):
             panel.resize(width, 800)
             panel._relayout_columns()
-            assert panel._columns == expected, f"{width}px should give {expected}"
+            assert panel.card_grid.count == expected, f"{width}px should give {expected}"
 
     def test_a_column_is_never_narrower_than_its_cards_need(self, panel):
         # The horizontal scrollbar is off, so a threshold that lets a column
         # below its minimum clips the card instead of scrolling it.
-        needs = [c.minimumSizeHint().width() for c in (panel.col_a, panel.col_b)]
-        margins = panel.grid.contentsMargins()
-        chrome = margins.left() + margins.right() + panel.grid.horizontalSpacing()
-        assert cp_module()._COL2_MIN_W >= sum(needs) + chrome
+        needs = [c.minimumSizeHint().width() for c in (panel.card_grid.col_a, panel.card_grid.col_b)]
+        margins = panel.card_grid.grid.contentsMargins()
+        chrome = margins.left() + margins.right() + panel.card_grid.grid.horizontalSpacing()
+        assert card_grid_module()._COL2_MIN_W >= sum(needs) + chrome
 
     def test_opening_the_log_gives_the_cards_one_column(self, panel):
         assert panel._log_collapsed
         panel.resize(1200, 800)
         panel._relayout_columns()
-        assert panel._columns == 3
+        assert panel.card_grid.count == 3
         panel._toggle_log_panel()
-        assert panel._columns == 1
+        assert panel.card_grid.count == 1
 
     def test_the_log_opens_inside_a_window_that_can_hold_it(self, panel, qt_app):
         # It shares the window rather than bolting 420px onto the side; only a
@@ -908,9 +955,9 @@ class TestControlPanelLayout:
         panel.resize(1200, 800)
         panel._relayout_columns()
         placed = {
-            panel.grid.itemAt(i).widget() for i in range(panel.grid.count())
+            panel.card_grid.grid.itemAt(i).widget() for i in range(panel.card_grid.grid.count())
         }
-        assert placed == {panel.col_a, panel.col_b, panel.col_c}
+        assert placed == {panel.card_grid.col_a, panel.card_grid.col_b, panel.card_grid.col_c}
 
     def test_window_can_shrink_below_the_cards_natural_width(self, panel, qt_app):
         # Combos otherwise demand their longest entry and pin the window open.
@@ -1243,10 +1290,67 @@ class TestAdvancedCard:
         panel.use_default_translation.setChecked(False)
         assert panel.provider_combo.isEnabled()
 
+    @staticmethod
+    def _other_than(combo, current):
+        """Some engine in the dropdown that is not the one already selected."""
+        for i in range(combo.count()):
+            if (value := combo.itemData(i)) != current:
+                return value
+        raise AssertionError("the dropdown offers only the current engine")
+
+    def test_unticking_restores_the_translation_engine_it_overrode(self, panel):
+        # Ticking replaces a manual pick, which is the point. Unticking has to
+        # give it back, or trying the box out once costs the choice for good.
+        from utils.settings import DEFAULT_AI_PROVIDER
+
+        panel.use_default_translation.setChecked(False)
+        manual = self._other_than(panel.provider_combo, DEFAULT_AI_PROVIDER)
+        panel.provider_combo.setCurrentIndex(panel.provider_combo.findData(manual))
+        manual_model = panel.settings.translation_model
+
+        panel.use_default_translation.setChecked(True)
+        assert panel.settings.ai_provider == DEFAULT_AI_PROVIDER
+
+        panel.use_default_translation.setChecked(False)
+        assert panel.settings.ai_provider == manual
+        assert panel.settings.translation_model == manual_model
+        assert panel.provider_combo.currentData() == manual
+
+    def test_unticking_restores_the_transcription_engine_it_overrode(self, panel):
+        from utils.settings import (
+            DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER,
+            DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER,
+            PIPELINE_MODE_STREAMING,
+        )
+
+        # The engine the tick will impose — which is what the manual pick has
+        # to differ from. Excluding merely the *current* one is not enough:
+        # the panel reads the real settings file, so whichever engine is
+        # selected there decides whether the two collide.
+        imposed = (
+            DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER
+            if panel.settings.pipeline_mode == PIPELINE_MODE_STREAMING
+            else DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER
+        )
+        panel.use_default_transcription.setChecked(False)
+        manual = self._other_than(panel.transcription_provider_combo, imposed)
+        panel.transcription_provider_combo.setCurrentIndex(
+            panel.transcription_provider_combo.findData(manual)
+        )
+        manual_model = panel.settings.transcription_model
+
+        panel.use_default_transcription.setChecked(True)
+        assert panel.settings.transcription_provider == imposed
+
+        panel.use_default_transcription.setChecked(False)
+        assert panel.settings.transcription_provider == manual
+        assert panel.settings.transcription_model == manual_model
+        assert panel.transcription_provider_combo.currentData() == manual
+
     def test_the_card_collapses_while_it_shares_a_column(self, panel):
         panel.resize(900, 800)
         panel._relayout_columns()
-        assert panel._columns == 2
+        assert panel.card_grid.count == 2
         panel.advanced_card.set_expanded(False)
         # isHidden(), not isVisible(): the panel is never shown in these tests,
         # so every descendant is invisible and isVisible() proves nothing.
@@ -1260,7 +1364,7 @@ class TestAdvancedCard:
         # Its column holds nothing else, so collapsing it empties the column.
         panel.resize(1200, 800)
         panel._relayout_columns()
-        assert panel._columns == 3
+        assert panel.card_grid.count == 3
         assert not panel.advanced_card.is_collapsible()
         assert panel.advanced_card.arrow_label.isHidden()
         panel.advanced_card.set_expanded(False)  # a header click
@@ -1524,10 +1628,10 @@ class TestEqualColumnHeights:
     def test_three_columns_end_level(self, panel, qt_app):
         panel.resize(1400, 980)
         qt_app.processEvents()
-        assert panel._columns == 3
+        assert panel.card_grid.count == 3
         bottoms = {
             card.geometry().y() + card.geometry().height()
-            for _box, card in panel._column_tails
+            for _box, card in panel.card_grid.tails
         }
         assert len(bottoms) == 1, f"columns end at {sorted(bottoms)}"
 
@@ -1542,7 +1646,7 @@ class TestEqualColumnHeights:
         host = panel.cards_host
         bottom = max(
             card.mapTo(host, card.rect().bottomLeft()).y()
-            for _box, card in panel._column_tails
+            for _box, card in panel.card_grid.tails
         )
         assert bottom < host.height() - 100, (
             f"cards reach {bottom} of {host.height()} — they filled the window"
@@ -1551,8 +1655,8 @@ class TestEqualColumnHeights:
     def test_one_column_keeps_natural_heights(self, panel, qt_app):
         panel.resize(600, 980)
         qt_app.processEvents()
-        assert panel._columns == 1
-        for _box, card in panel._column_tails:
+        assert panel.card_grid.count == 1
+        for _box, card in panel.card_grid.tails:
             assert card.height() == card.sizeHint().height()
 
     def _top(self, card):
@@ -1570,13 +1674,13 @@ class TestEqualColumnHeights:
             # (CI's runner is 1024x768) makes the gap a measurement of the
             # screen instead.
             pytest.skip("screen too short for the 900x900 layout under test")
-        assert panel._columns == 2
-        language = panel._column_tails[1][1]
+        assert panel.card_grid.count == 2
+        language = panel.card_grid.tails[1][1]
         host = panel.cards_host
         gap = self._top(panel.advanced_card) - (
             language.mapTo(host, language.rect().bottomLeft()).y()
         )
-        spacing = panel.grid.verticalSpacing()
+        spacing = panel.card_grid.grid.verticalSpacing()
         # The row spacing, give or take the pixel the grid's rounding leaves in
         # the row above. Bottom-aligning instead put a hundred here.
         assert spacing <= gap <= spacing + 2, f"{gap}px between the cards"
@@ -1591,8 +1695,8 @@ class TestEqualColumnHeights:
         for size in ((900, 900), (900, 700), (900, 1400)):
             panel.resize(*size)
             _settle(qt_app)
-            assert panel._columns == 2, size
-            display = panel._column_tails[0][1]
+            assert panel.card_grid.count == 2, size
+            display = panel.card_grid.tails[0][1]
             assert self._bottom(display) == self._bottom(panel.advanced_card), size
 
     def test_an_opened_appearance_section_is_not_absorbed(self, panel, qt_app):
@@ -1607,7 +1711,7 @@ class TestEqualColumnHeights:
         panel.typography.set_expanded(False)
         _settle(qt_app)
         # ...and levelling comes back once the section is closed again.
-        assert self._bottom(panel._column_tails[0][1]) == self._bottom(advanced)
+        assert self._bottom(panel.card_grid.tails[0][1]) == self._bottom(advanced)
 
     def test_a_collapsed_advanced_is_padded_above_not_inflated(
         self, panel, qt_app
@@ -1619,14 +1723,14 @@ class TestEqualColumnHeights:
         # line up (the rule three columns already used).
         panel.resize(900, 900)
         _settle(qt_app)
-        assert panel._columns == 2
+        assert panel.card_grid.count == 2
         advanced = panel.advanced_card
         advanced.set_expanded(False)
         panel._level_two_column_bottoms()
         _settle(qt_app)
         assert not advanced.is_expanded()
         assert advanced.height() == advanced.sizeHint().height(), "inflated"
-        assert self._bottom(panel._column_tails[0][1]) == self._bottom(advanced)
+        assert self._bottom(panel.card_grid.tails[0][1]) == self._bottom(advanced)
 
     def test_opening_the_appearance_expander_does_not_slide_advanced_away(
         self, panel, qt_app
@@ -1641,12 +1745,12 @@ class TestEqualColumnHeights:
         # never happen is it travelling by the section's own height.
         panel.resize(900, 900)
         _settle(qt_app)
-        assert panel._columns == 2
+        assert panel.card_grid.count == 2
         before = self._top(panel.advanced_card)
         panel.typography.set_expanded(True)
         _settle(qt_app)
         drift = abs(self._top(panel.advanced_card) - before)
-        assert drift <= cp_module()._LEVEL_FILL_MAX_PX, f"slid {drift}px"
+        assert drift <= card_grid_module()._LEVEL_FILL_MAX_PX, f"slid {drift}px"
         panel.typography.set_expanded(False)
         _settle(qt_app)
         assert self._top(panel.advanced_card) == before
@@ -2552,7 +2656,7 @@ class TestHistoryCostTab:
 
 
 class TestAlreadyRunningDialog:
-    """main.py's single-instance guard, under --qt.
+    """main.py's single-instance guard.
 
     It used to show the CustomTkinter dialog whatever tree was asked for,
     which put Tk in a Qt-only process and set the process DPI awareness to
@@ -2876,6 +2980,37 @@ class TestBatchWindow:
         w._on_ffmpeg_missing()
         assert w.status.objectName() == "status_error"
         assert "ffmpeg" in w.status.text()
+
+    def test_the_error_carries_the_install_command_where_there_is_one(
+        self, batch, monkeypatch
+    ):
+        # macOS and Linux are offered no download, so this message is the
+        # only place the operator can find out what to do next (#38). Patched
+        # rather than read off the host, so the branch is pinned on every OS.
+        w, _ = batch
+        monkeypatch.setattr(
+            "utils.ffmpeg_download.ffmpeg_install_command",
+            lambda: "brew install ffmpeg",
+        )
+        monkeypatch.setattr(w, "_offer_ffmpeg_download", lambda: False)
+        w._on_ffmpeg_missing()
+        assert w.status.objectName() == "status_error"
+        assert "brew install ffmpeg" in w.status.text()
+
+    def test_no_known_command_falls_back_to_the_plain_message(
+        self, batch, monkeypatch
+    ):
+        w, _ = batch
+        monkeypatch.setattr(
+            "utils.ffmpeg_download.ffmpeg_install_command", lambda: None
+        )
+        monkeypatch.setattr(w, "_offer_ffmpeg_download", lambda: False)
+        w._on_ffmpeg_missing()
+        text = w.status.text()
+        assert "ffmpeg" in text
+        # Not the hint's shape — nothing to interpolate, so no stray colon
+        # or an empty "install it and try again:" trailing off.
+        assert "{command}" not in text and not text.rstrip().endswith(":")
 
     def test_the_run_resumes_once_ffmpeg_is_downloaded(self, batch):
         # The whole point of the offer: the user asked for a run, not for a
@@ -4521,7 +4656,7 @@ class TestLiveStreamRestart:
 class TestHistoryNarrowLayout:
     """The viewer has to survive being made narrow.
 
-    Side by side it needs ~765 px. As a separate window the WM held it there,
+    Side by side it needs ~895 px. As a separate window the WM held it there,
     but as an in-app panel it is resized as a child widget, which bypasses that
     minimum — inside a control panel under ~620 px wide, Copy and Save… were
     laid out past its right edge and could not be clicked at all. The Tk viewer
@@ -4548,30 +4683,61 @@ class TestHistoryNarrowLayout:
             window.export_btn,
         )
 
-    def test_the_breakpoint_is_measured_not_assumed(self, history):
-        # It is the sum of the list, the margins and four TRANSLATED labels, so
-        # a hard-coded number would be wrong in some GUI language.
-        assert history._wide_min_w > 0
-        assert history.minimumWidth() < history._wide_min_w
+    def test_the_breakpoints_are_measured_not_assumed(self, history):
+        # Both are the sum of the list, the margins and four TRANSLATED labels,
+        # so hard-coded numbers would be wrong in some GUI language. They also
+        # have to stay in order, or an arrangement becomes unreachable.
+        assert history._one_row_min_w > 0
+        assert history.minimumWidth() < history._side_by_side_min_w
+        assert history._side_by_side_min_w < history._one_row_min_w
 
     def test_it_stays_side_by_side_while_there_is_room(self, history, qt_app):
         from PySide6.QtCore import Qt
 
-        history.resize(history._wide_min_w + 120, 560)
+        history.resize(history._one_row_min_w + 120, 560)
         _settle(qt_app)
         assert history.splitter.orientation() == Qt.Horizontal
         # One row: Summarise, a stretch, and the three secondary actions.
         assert history._action_bottom.count() == 0
 
+    def test_the_actions_wrap_before_the_panes_stack(self, history, qt_app):
+        from PySide6.QtCore import Qt
+
+        # The middle arrangement, and the reason there are two breakpoints:
+        # wrapping the buttons is the cheap concession, so it is spent first
+        # and the panes keep sitting side by side well past the width one row
+        # of actions needs.
+        history.resize(history._one_row_min_w - 60, 560)
+        _settle(qt_app)
+        assert history.splitter.orientation() == Qt.Horizontal
+        assert history._action_top.count() == 1
+        assert history._action_bottom.count() == 3
+
     def test_narrow_stacks_the_panes_and_wraps_the_actions(self, history, qt_app):
         from PySide6.QtCore import Qt
 
-        history.resize(history._wide_min_w - 60, 560)
+        history.resize(history._side_by_side_min_w - 60, 560)
         _settle(qt_app)
         assert history.splitter.orientation() == Qt.Vertical
         # Summarise alone above; Delete / Copy / Save… sharing the row below.
         assert history._action_top.count() == 1
         assert history._action_bottom.count() == 3
+
+    def test_it_is_still_side_by_side_where_the_host_is_two_column(
+        self, history, qt_app
+    ):
+        from PySide6.QtCore import Qt
+
+        from gui.card_grid import _COL2_MIN_W
+        from gui.modal_host import PANEL_FRACTION
+
+        # The viewer must not stack before the control panel behind it drops to
+        # one column. The narrowest an in-app panel can be while the control
+        # panel still lays its cards out in two is _COL2_MIN_W * PANEL_FRACTION;
+        # anything above that has to stay side by side.
+        history.resize(int(_COL2_MIN_W * PANEL_FRACTION), 560)
+        _settle(qt_app)
+        assert history.splitter.orientation() == Qt.Horizontal
 
     def test_it_can_be_made_narrower_than_the_wide_layout_needs(self, history, qt_app):
         # The regression this guards: with the window's floor left at the wide
@@ -4582,7 +4748,11 @@ class TestHistoryNarrowLayout:
         assert history.width() == 400
 
     def test_every_action_stays_inside_the_window(self, history, qt_app):
-        for width in (900, 760, 620, 500, 420):
+        # Also the guard on _side_by_side_min_w being derived rather than
+        # measured: if that arithmetic ever put the stacking breakpoint too
+        # low, the middle arrangement would be held past the width it fits in
+        # and the buttons would go over the edge here.
+        for width in (900, 880, 760, 620, 611, 609, 500, 420):
             history.resize(width, 460)
             _settle(qt_app)
             for button in self._buttons(history):
@@ -4614,6 +4784,144 @@ class TestHistoryNarrowLayout:
         finally:
             panel.close_secondary_windows()
             panel.close()
+
+
+class TestHistoryLayoutIsTabIndependent:
+    """Switching tab must not move the layout.
+
+    Summarise is hidden on the cost and log tabs, and a hidden widget counts as
+    empty to a layout — so the right pane asked for 168px less there. That
+    difference reached the operator twice: the session list took whatever the
+    right pane's minimum left it (225px on Verlauf, 280px on Kosten at an 820px
+    window), and the breakpoint between side-by-side and stacked moved with it.
+    """
+
+    @pytest.fixture
+    def viewer(self, qt_app, monkeypatch):
+        import gui.history_window as hw
+        from utils.history import BatchRun, HistorySession
+
+        monkeypatch.setattr(hw, "list_history_sessions", lambda: [
+            HistorySession(
+                date="2026-08-05", path="a.txt", start_time="12:35",
+                end_time="12:36", duration_minutes=1, active_seconds=53,
+                language_pair="AR → GE", entry_count=18, has_summary=False,
+            )
+        ])
+        monkeypatch.setattr(hw, "list_batch_runs", lambda: [
+            BatchRun(
+                date="2026-07-19", time="01:45", source_name="talk.mp3",
+                path="b.txt", duration_minutes=10, active_seconds=600,
+                language_pair="AU → GE", entry_count=83, has_summary=False,
+                formats=["srt", "txt"],
+            )
+        ])
+        monkeypatch.setattr(hw, "list_cost_sessions", lambda: [{
+            "id": "s1",
+            "started_at": "2026-08-05T10:35:00+00:00",
+            "ended_at": "2026-08-05T10:36:00+00:00",
+            "total_cost_usd": "0.0337",
+            "fully_priced": True,
+            "providers": {"openai": {
+                "requests": 18, "cost_usd": "0.0337",
+                "fully_priced": True, "models": {},
+            }},
+        }])
+        monkeypatch.setattr(hw, "list_log_files", lambda: [
+            type("LogFile", (), {"date": "2026-08-05", "path": "l.log",
+                                 "size_kb": 243})()
+        ])
+        monkeypatch.setattr(hw, "parse_history_file", lambda _p: [])
+        monkeypatch.setattr(hw, "read_summary", lambda _p: None)
+        monkeypatch.setattr(hw, "read_batch_languages", lambda _p: ("Arabic", "German"))
+
+        made = []
+
+        def _open(initial_tab="history", width=820):
+            window = hw.HistoryWindow(
+                lambda key, fallback="": fallback, initial_tab=initial_tab
+            )
+            window.resize(width, 600)
+            window.show()
+            _settle(qt_app)
+            made.append(window)
+            return window
+
+        yield _open
+        for window in made:
+            window.close()
+
+    def test_the_list_keeps_its_width_across_the_tabs(self, viewer, qt_app):
+        import gui.history_window as hw
+
+        # 820px: wide enough to stay side by side, narrow enough that the right
+        # pane's minimum used to eat into the list on the two Summarise tabs.
+        window = viewer()
+        widths = []
+        for index in range(4):
+            window._tab_group.button(index).click()
+            _settle(qt_app)
+            widths.append(window.entry_list.width())
+        assert widths == [hw.LIST_W] * 4
+
+    def test_a_viewer_opened_on_any_tab_agrees_on_the_width(self, viewer):
+        import gui.history_window as hw
+
+        # Clicking through one window and opening four are different paths: the
+        # splitter is re-pinned on resize, so only a fresh window shows the
+        # width a tab would have chosen for itself.
+        assert [
+            viewer(initial_tab=tab).entry_list.width()
+            for tab in ("history", "batch", "cost", "logs")
+        ] == [hw.LIST_W] * 4
+
+    def test_neither_breakpoint_depends_on_the_tab(self, viewer):
+        breakpoints = {
+            tab: (window._one_row_min_w, window._side_by_side_min_w)
+            for tab in ("history", "batch", "cost", "logs")
+            if (window := viewer(initial_tab=tab)) is not None
+        }
+        assert len(set(breakpoints.values())) == 1, breakpoints
+
+    def test_reserving_summarise_leaves_the_other_actions_where_they_were(
+        self, viewer, qt_app
+    ):
+        # The space Summarise keeps while hidden sits where the stretch after it
+        # would have been, so nothing else may move. If it did, the fix would be
+        # trading one visible jump for another.
+        window = viewer()
+        positions = []
+        for index in range(4):
+            window._tab_group.button(index).click()
+            _settle(qt_app)
+            positions.append(
+                window.delete_btn.mapTo(window, window.delete_btn.rect().topLeft()).x()
+            )
+        assert len(set(positions)) == 1, positions
+
+    def test_stacked_it_gives_the_reserved_space_back(self, viewer, qt_app):
+        # Narrow, Summarise is alone on its own row — reserving it on a tab that
+        # hides it would leave an empty row above the other three.
+        window = viewer(initial_tab="cost")
+        window.resize(window._side_by_side_min_w - 60, 560)
+        _settle(qt_app)
+        assert window._narrow
+        assert not window.summarise_btn.sizePolicy().retainSizeWhenHidden()
+
+    def test_the_list_floor_is_raised_only_side_by_side(self, viewer, qt_app):
+        import gui.history_window as hw
+
+        # Side by side the floor is what stops a tab's action bar taking from
+        # the list. Stacked it has to come back down: the window's own minimum
+        # is measured from THAT arrangement, so LIST_W there would raise the
+        # floor by 130px and undo the mode that exists to lower it.
+        window = viewer()
+        assert not window._narrow
+        assert window.splitter.widget(0).minimumWidth() == hw.LIST_W
+        window.resize(window._side_by_side_min_w - 60, 560)
+        _settle(qt_app)
+        assert window._narrow
+        assert window.splitter.widget(0).minimumWidth() == hw.LIST_W_MIN
 
 
 class TestBatchRunLock:
@@ -4896,6 +5204,419 @@ class TestPairInkGap:
         _trans, src_font = w._block_fonts(block)
         clearance = round(_STACK_INK_GAP_EM * src_font.pixelSize())
         assert abs(self._ink_gap(w, block) - (PAIR_GAP + clearance)) <= 2
+
+
+class TestSideBySideLayout:
+    """The two-column bilingual layout (issue #49).
+
+    A row is a table row, not two independent feeds: both cells start at the
+    row's top edge and the taller one decides its height. If each column
+    flowed on its own, pair 3 would end up beside pair 5 within a few
+    utterances.
+    """
+
+    _KEEP = object()  # "leave the default"; None means "no original at all"
+
+    def _overlay(self, overlay, mode=SUBTITLE_MODE_STATIC, **kwargs):
+        kwargs.setdefault("bilingual_mode", True)
+        kwargs.setdefault("side_by_side", True)
+        return overlay(mode, **kwargs)
+
+    def _block(self, translation=None, source=_KEEP):
+        from gui.subtitle_window import Block
+
+        if source is self._KEEP:
+            source = PAIRS[0][1]
+        return Block(translation or PAIRS[0][0], source)
+
+    def test_the_two_columns_share_a_top_edge(self, overlay):
+        w = self._overlay(overlay)
+        src, trans = w._column_rects(self._block(), 120)
+        assert src.y() == trans.y() == 120
+
+    def test_a_row_is_as_tall_as_its_taller_column_not_both(self, overlay):
+        w = self._overlay(overlay)
+        block = self._block()
+        src, trans = w._column_rects(block, 0)
+        assert w._measure_block(block) == max(src.height(), trans.height())
+        # And that is genuinely less than stacking them, or the layout would
+        # buy nothing.
+        assert w._measure_block(block) < src.height() + trans.height()
+
+    def test_the_columns_are_equal_and_separated_by_a_real_gutter(self, overlay):
+        w = self._overlay(overlay)
+        src, trans = w._column_rects(self._block(), 0)
+        assert src.width() == trans.width() == w._column_width()
+        left, right = sorted((src, trans), key=lambda r: r.x())
+        gutter = right.x() - (left.x() + left.width())
+        # Deliberately NOT compared against COLUMN_GAP_RATIO: that would pass
+        # for any value including zero. A hairline is the failure — two scripts
+        # running into each other — so the bound is a share of the column, and
+        # it holds at any window size.
+        assert gutter >= w._column_width() * 0.05
+
+    def test_the_panels_reach_much_closer_to_the_edge_than_a_text_margin(
+        self, overlay
+    ):
+        """The panels are the BACKDROP in this layout, not a line of text.
+        Keeping them SIDE_MARGIN_RATIO off the edge made them read as two small
+        boxes floating inside a big one."""
+        from gui.subtitle_window import SIDE_MARGIN_RATIO
+
+        w = self._overlay(overlay)
+        left, right = w._column_panel_rects()
+        text_margin = w.width() * SIDE_MARGIN_RATIO
+        assert left.x() < text_margin / 2
+        assert w.width() - right.right() < text_margin / 2
+        # Symmetric, so neither side looks pushed in.
+        assert abs(left.x() - (w.width() - 1 - right.right())) <= 1
+
+    def test_arabic_takes_the_right_column(self, overlay):
+        """The Arabic → German main path: Arabic right because it is RTL, so
+        the German translation lands on the left."""
+        w = self._overlay(overlay)
+        src, trans = w._column_rects(self._block(), 0)
+        assert src.x() > trans.x()
+
+    def test_the_columns_swap_when_the_translation_is_the_rtl_side(self, overlay):
+        """Turkish → Arabic: the Arabic is now the TRANSLATION and still has to
+        sit right, so the sides follow the script rather than the role."""
+        w = self._overlay(overlay)
+        block = self._block(translation=PAIRS[0][1], source="Rahman ve Rahim olan")
+        src, trans = w._column_rects(block, 0)
+        assert trans.x() > src.x()
+
+    def test_two_ltr_languages_keep_the_translation_on_the_left(self, overlay):
+        """No directional reason either way, so the audience's own language
+        stays where it was on the Arabic path — left."""
+        w = self._overlay(overlay)
+        block = self._block(translation="In the name of Allah", source="Im Namen")
+        src, trans = w._column_rects(block, 0)
+        assert trans.x() < src.x()
+
+    def test_a_block_with_no_original_spans_the_full_width(self, overlay):
+        """Same-language mode, error messages and the verified-verse bypass all
+        emit source=None, and that is routine rather than an edge case."""
+        w = self._overlay(overlay)
+        block = self._block(source=None)
+        assert w._column_rects(block, 0) is None
+        trans_font, _src = w._block_fonts(block)
+        assert w._measure_block(block) == w._measure(block.translation, trans_font)
+
+    def test_the_layout_needs_both_switches(self, overlay):
+        w = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, side_by_side=False)
+        assert w._column_rects(self._block(), 0) is None
+        w = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=False, side_by_side=True)
+        assert w._column_rects(self._block(), 0) is None
+
+    def test_every_mode_gets_it(self, overlay):
+        for mode in (
+            SUBTITLE_MODE_STATIC,
+            SUBTITLE_MODE_REALTIME,
+            SUBTITLE_MODE_CONTINUOUS,
+        ):
+            w = self._overlay(overlay, mode)
+            assert w._column_rects(self._block(), 0) is not None, mode
+
+    # ── the panels behind the columns ────────────────────────────────────
+    def test_two_identical_panels_sit_behind_the_columns(self, overlay):
+        """Two of them, the same size, in the same place every frame — that is
+        what makes it read as two columns rather than two stacks of text."""
+        w = self._overlay(overlay)
+        left, right = w._column_panel_rects()
+        assert left.size() == right.size()
+        assert left.y() == right.y()
+        assert left.x() < right.x()
+
+    def test_each_column_sits_inside_its_panel_with_an_even_inset(self, overlay):
+        """The panel is the container: a column is the panel less its inset on
+        both sides, so text can never reach a panel edge."""
+        from gui.subtitle_window import COLUMN_PANEL_PAD_X
+
+        w = self._overlay(overlay)
+        panels = w._column_panel_rects()
+        for text_rect in w._column_rects(self._block(), 0):
+            panel = next(
+                (p for p in panels if p.left() <= text_rect.left() <= p.right()), None
+            )
+            assert panel is not None, "no panel contains this column"
+            assert text_rect.left() - panel.left() == COLUMN_PANEL_PAD_X
+            assert panel.right() - text_rect.right() >= COLUMN_PANEL_PAD_X - 1
+
+    def test_the_window_backdrop_gives_way_to_the_panels(self, overlay):
+        """The panels ARE the backdrop here. Painting the window one as well
+        put a third, larger box behind the two the layout exists to show —
+        which is what it looked like on a real screen."""
+        w = self._overlay(overlay, backdrop_opacity=100)
+        assert w._backdrop().alpha() == 0
+        # And the panels carry exactly what the window backdrop would have, so
+        # the opacity slider still controls them.
+        assert w._backdrop_fill().alpha() == 255
+        stacked = overlay(
+            SUBTITLE_MODE_STATIC,
+            bilingual_mode=True,
+            side_by_side=False,
+            backdrop_opacity=100,
+        )
+        assert stacked._backdrop().alpha() == 255
+
+    def test_transparent_swaps_the_panels_for_a_card_per_sentence(self, overlay):
+        """It means the same thing in both layouts: no large background, a card
+        around each sentence instead. Here that takes the panels away and gives
+        each column's sentence its own card — never a card inside a panel."""
+        from PySide6.QtGui import QPainter, QPixmap
+
+        w = self._overlay(overlay, transparent_static=True)
+        assert w._transparent_static_active() is True
+        assert w._backdrop().alpha() == 0
+        assert w._column_panel_rects() is None, "the panels must give way"
+
+        drawn: list = []
+        w._draw_card = lambda p, text, font, rect: drawn.append(rect)
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            w._draw_block(painter, self._block(), 0, 0)
+        finally:
+            painter.end()
+        assert len(drawn) == 2, "each column's sentence needs its own card"
+        assert drawn[0].x() != drawn[1].x(), "both cards landed in one column"
+
+    def test_the_panels_stay_when_transparent_is_off(self, overlay):
+        w = self._overlay(overlay, transparent_static=False)
+        assert w._column_panel_rects() is not None
+
+    def test_the_panels_do_not_reach_the_footer_pill(self, overlay):
+        w = self._overlay(overlay)
+        left, _right = w._column_panel_rects()
+        assert left.bottom() <= w.height() - w.reserved_bottom()
+
+    def test_no_panels_outside_the_layout(self, overlay):
+        stacked = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, side_by_side=False)
+        assert stacked._column_panel_rects() is None
+        mono = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=False, side_by_side=True)
+        assert mono._column_panel_rects() is None
+
+    def test_an_announcement_takes_the_panels_away(self, overlay):
+        """It renders large and centred across the whole window; framing it in
+        two columns it does not use would read as a mistake."""
+        w = self._overlay(overlay)
+        assert w._column_panel_rects() is not None
+        w.set_announcement("Das Gebet beginnt in fünf Minuten.")
+        assert w._column_panel_rects() is None
+
+    # ── the original's weight ────────────────────────────────────────────
+    def test_the_newest_original_carries_the_same_weight_as_its_translation(
+        self, overlay
+    ):
+        """Stacked, the original is a subordinate line and takes the muted
+        tone. Side by side it is the other half of the row, and muted there
+        reads as already-said on one side and current on the other."""
+        from PySide6.QtGui import QColor
+
+        w = self._overlay(overlay)
+        assert w._column_source_qcolor(newest=True) == QColor(w._colors["text"])
+        assert w._column_source_qcolor(newest=False) == w._history_qcolor()
+
+    def test_the_stacked_layout_keeps_its_muted_original(self, overlay):
+        from PySide6.QtGui import QColor
+
+        w = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, side_by_side=False)
+        assert w._source_qcolor() == QColor(w._colors["muted"])
+
+    def test_a_configured_source_colour_still_wins(self, overlay):
+        from PySide6.QtGui import QColor
+
+        w = self._overlay(overlay)
+        w.set_source_text_color("#FF0000")
+        assert w._column_source_qcolor(newest=True) == QColor("#FF0000")
+
+    def test_the_original_is_bold_only_in_this_layout(self, overlay):
+        """AGENTS.md keeps Arabic source lines at regular weight in the STACKED
+        layout, where the original is a subordinate line. Side by side it is
+        the other half of the row and carries the same weight."""
+        block = self._block()
+        columns = self._overlay(overlay)
+        stacked = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, side_by_side=False)
+        assert columns._block_fonts(block)[1].bold() is True
+        assert stacked._block_fonts(block)[1].bold() is False
+        # The translation was always bold; this is about matching it.
+        assert columns._block_fonts(block)[0].bold() is True
+
+    def test_the_live_line_keeps_its_own_weight(self, overlay):
+        """The live transcript is not a column — it stays full width below the
+        feed — so source_font's new bold flag must not reach it by default.
+        Arabic there was already drawn in the translation font."""
+        w = self._overlay(overlay)
+        w.set_live_text("Im Namen Allahs")
+        assert w._live_font().bold() is False
+        w.set_live_text("بسم الله الرحمن الرحيم")
+        assert w._live_font().bold() is True
+
+    def test_toggling_it_restacks_a_continuous_feed(self, overlay):
+        """Continuous blocks carry an absolute y computed from their height,
+        and every height just changed."""
+        w = self._overlay(overlay, SUBTITLE_MODE_CONTINUOUS, side_by_side=False)
+        for translation, source in PAIRS:
+            w.add_subtitle(translation, source_text=source)
+        before = [b.y for b in w._blocks]
+        w.set_side_by_side(True)
+        assert [b.y for b in w._blocks] != before
+        # Still bottom-anchored and still in order, with no overlap.
+        for earlier, later in zip(w._blocks, w._blocks[1:], strict=False):
+            assert later.y >= earlier.y + w._measure_block(earlier)
+
+
+class TestLayoutAppearanceMemory:
+    """Each layout remembers its own font sizes and colours.
+
+    A column is half as wide and the two scripts sit at equal weight there, so
+    one set of values cannot suit both. The live fields are SWAPPED with the
+    other layout's on every toggle, so the subtitle window, the batch window
+    and the steppers all keep reading the same fields.
+    """
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        s = p.settings
+        s.font_size_base = 30
+        s.source_font_size_base = 42.0
+        s.translation_text_color = ""
+        s.source_text_color = ""
+        s.alt_font_size_base = None
+        s.alt_source_font_size_base = None
+        s.alt_translation_text_color = None
+        s.alt_source_text_color = None
+        yield p
+        p.close()
+
+    def _live(self, panel):
+        s = panel.settings
+        return (
+            s.font_size_base,
+            s.source_font_size_base,
+            s.translation_text_color,
+            s.source_text_color,
+        )
+
+    def test_the_selector_is_hidden_without_an_original_to_put_beside_it(self, panel):
+        panel._on_bilingual_toggled(False)
+        assert panel.layout_segment.isHidden()
+        panel._on_bilingual_toggled(True)
+        assert not panel.layout_segment.isHidden()
+
+    def test_hiding_the_selector_keeps_the_stored_layout(self, panel):
+        """Turning the original off and on again must not silently drop the
+        layout that was chosen."""
+        panel.layout_segment.set_current_index(1)
+        panel._on_bilingual_toggled(False)
+        panel._on_bilingual_toggled(True)
+        assert panel.layout_segment.current_index() == 1
+
+    def test_it_is_a_selector_that_names_both_layouts(self, panel):
+        """Not a checkbox: the off state is a real alternative layout, and
+        "Side by side" unticked leaves the other one unnamed."""
+        from gui.widgets import SEGMENT_COMPACT_H, SegmentedControl
+
+        assert isinstance(panel.layout_segment, SegmentedControl)
+        labels = panel._subtitle_layout_labels()
+        assert len(labels) == 2 and all(labels)
+        # Inline beside a checkbox, so it must not carry a row control's height.
+        assert panel.layout_segment._buttons[0].height() == SEGMENT_COMPACT_H
+
+    def test_the_selector_shares_the_row_with_the_toggle(self, panel):
+        """Next to "Show original text", not under it — which also means
+        hiding it cannot change the card's height.
+
+        Asserted on the layout rather than on coordinates: these windows are
+        never shown, so widget geometry is whatever Qt last happened to set.
+        """
+        body = panel.bilingual_check.parentWidget().layout()
+        row = None
+        for i in range(body.count()):
+            sub = body.itemAt(i).layout()
+            if sub is None:
+                continue
+            if any(
+                sub.itemAt(j).widget() is panel.bilingual_check
+                for j in range(sub.count())
+            ):
+                row = sub
+                break
+        assert row is not None, '"Show original text" is not on a row'
+        in_row = [row.itemAt(i).widget() for i in range(row.count())]
+        assert in_row[:2] == [panel.bilingual_check, panel.layout_segment]
+
+    def test_the_first_switch_moves_nothing(self, panel):
+        """Both layouts start from what was already chosen, so turning the mode
+        on for the first time does not resize the subtitles."""
+        before = self._live(panel)
+        panel._on_side_by_side_toggled(True)
+        assert self._live(panel) == before
+        assert panel.settings.alt_font_size_base == 30
+
+    def test_each_layout_keeps_what_was_chosen_for_it(self, panel):
+        """All four values, not just the original's: both sizes and both
+        colours belong to the layout they were chosen in."""
+        panel._on_side_by_side_toggled(True)  # seeds both sides
+        s = panel.settings
+        s.font_size_base = 45  # tuned for a half-width column
+        s.source_font_size_base = 45.0
+        s.translation_text_color = "#FFD700"
+        s.source_text_color = "#FFFFFF"
+
+        panel._on_side_by_side_toggled(False)
+        assert self._live(panel) == (30, 42.0, "", "")
+
+        panel._on_side_by_side_toggled(True)
+        assert self._live(panel) == (45, 45.0, "#FFD700", "#FFFFFF")
+
+    def test_the_controls_are_repainted_from_the_layout_that_was_restored(
+        self, panel
+    ):
+        """The steppers and colour buttons show stored values, and a switch
+        replaces all four at once — the translation stepper included, which
+        only ``_step_font`` used to keep in step."""
+        panel._on_side_by_side_toggled(True)
+        panel.settings.font_size_base = 60  # a much smaller rendered size
+        columns_text = panel._font_percent_text()
+        panel._refresh_typography()
+        assert panel.font_stepper.value.text() == columns_text
+
+        panel._on_side_by_side_toggled(False)
+        assert panel.settings.font_size_base == 30
+        assert panel.font_stepper.value.text() == panel._font_percent_text()
+        assert panel.font_stepper.value.text() != columns_text
+
+    def test_the_stacked_side_survives_more_than_one_round_trip(self, panel):
+        panel._on_side_by_side_toggled(True)
+        panel.settings.font_size_base = 45
+        for _ in range(3):
+            panel._on_side_by_side_toggled(False)
+            assert panel.settings.font_size_base == 30
+            panel._on_side_by_side_toggled(True)
+            assert panel.settings.font_size_base == 45
+
+    def test_a_change_made_while_stacked_stays_on_the_stacked_side(self, panel):
+        panel._on_side_by_side_toggled(True)
+        panel._on_side_by_side_toggled(False)
+        panel.settings.font_size_base = 25  # tuned for one full-width column
+        panel._on_side_by_side_toggled(True)
+        assert panel.settings.font_size_base == 30
+        panel._on_side_by_side_toggled(False)
+        assert panel.settings.font_size_base == 25
 
 
 class TestParagraphDirection:

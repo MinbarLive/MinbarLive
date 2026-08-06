@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata. Copied into usr/share/metainfo/ by build-appimage.sh,
+  which substitutes @VERSION@ and @DATE@ from version.py, and validated by
+  appimagetool via appstreamcli.
+
+  Purely presentational: it is what software centres and AppImageHub read to
+  show a name, summary and description instead of a bare filename. It has no
+  effect on whether the AppImage runs.
+
+  Three things here are load-bearing and easy to get wrong:
+
+  - The component id MUST be reverse-DNS for a desktop-application, or
+    `appstreamcli validate` fails with cid-desktopapp-is-not-rdns. The first
+    version of this file used a plain "MinbarLive" and would have been
+    rejected the moment validation was switched on.
+  - This FILE must be named after the component id, or the validator reports
+    a filename mismatch and software centres may ignore it.
+  - <launchable> points at the desktop entry as INSTALLED, which is
+    MinbarLive.desktop — packaging/minbarlive.desktop is lowercase but gets
+    copied under the capitalised name. It deliberately does NOT match the
+    component id; that is exactly what launchable is for.
+-->
+<component type="desktop-application">
+  <id>live.minbar.MinbarLive</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>MinbarLive</name>
+  <summary>Real-time Islamic live translation and subtitles</summary>
+
+  <description>
+    <p>
+      MinbarLive transcribes live speech and projects translated subtitles,
+      built for khutbahs and lectures. Audio is captured from a microphone or
+      the system's own output, transcribed, and translated into a full-screen
+      subtitle overlay that can be shown on a projector or captured by OBS.
+    </p>
+    <p>
+      Quran verses and Athan phrases are recognised and rendered from curated
+      published translations rather than being paraphrased by a model.
+      Pre-recorded recordings can be turned into subtitle files in batch mode.
+    </p>
+    <p>
+      The Linux build is experimental. Several features are Windows-only, and
+      storing API keys between sessions needs a Secret Service keyring backend.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">MinbarLive.desktop</launchable>
+
+  <url type="homepage">https://github.com/MinbarLive/MinbarLive</url>
+  <url type="bugtracker">https://github.com/MinbarLive/MinbarLive/issues</url>
+
+  <provides>
+    <binary>MinbarLive</binary>
+  </provides>
+
+  <!-- No <categories> and no <developer_name> on purpose. Categories come from
+       the desktop entry (Categories=AudioVideo;Audio;) and repeating them here
+       is discouraged, and <developer_name> is the AppStream 0.15 spelling that
+       1.0 deprecates while <developer> does not exist in 0.15 at all — the two
+       runners are ubuntu-22.04 (0.15) and ubuntu-latest (1.0), so any spelling
+       is a warning on one of them. Omitting both keeps validation clean on
+       both; neither is required. -->
+
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+
+  <content_rating type="oars-1.1"/>
+</component>

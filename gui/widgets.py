@@ -40,6 +40,9 @@ from PySide6.QtWidgets import (
 # Mirrors the QComboBox metrics in theme.py: 8px padding top and bottom, a
 # 20px minimum content height and a 1px border on each side.
 CONTROL_H = 38
+# A SegmentedControl that sits inline next to a checkbox rather than owning a
+# row. Sized to the checkbox beside it, not to the dropdowns above it.
+SEGMENT_COMPACT_H = 26
 
 
 def is_window_on_top(window: QWidget) -> bool:
@@ -127,7 +130,20 @@ class SegmentedControl(QWidget):
 
     changed = Signal(int)
 
-    def __init__(self, labels: list[str], current: int = 0, parent=None):
+    def __init__(
+        self,
+        labels: list[str],
+        current: int = 0,
+        parent=None,
+        *,
+        compact: bool = False,
+    ):
+        """``compact`` shrinks it to sit inline beside a checkbox.
+
+        The full size is a row control's — the same height as a dropdown, so a
+        selector that owns its own row reads as one. Next to a label it is far
+        too heavy, and the padding is what makes it so rather than the text.
+        """
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -144,7 +160,8 @@ class SegmentedControl(QWidget):
             btn.setCheckable(True)
             # A full-width row control like a dropdown, so it keeps the same
             # height — two pixels short read as a slightly different control.
-            btn.setFixedHeight(CONTROL_H)
+            btn.setFixedHeight(SEGMENT_COMPACT_H if compact else CONTROL_H)
+            btn.setProperty("compact", compact)
             btn.setCursor(Qt.PointingHandCursor)
             if len(labels) == 1:
                 seg = "only"

@@ -31,7 +31,9 @@ audience-facing phone app. That distinction drives most product decisions below.
 - **GUI:** PySide6/Qt (`gui/`) — the CustomTkinter tree it replaced is gone (issue #44)
 - **Audio:** `sounddevice` + ring buffer, webrtcvad noise gate, WAV segment writing
 - **RAG:** in-memory cosine similarity over precomputed Quran verse embeddings — no vector DB
-- **Packaging:** PyInstaller (`MinbarLive.spec` → Windows EXE, Linux AppImage, macOS .app)
+- **Packaging:** PyInstaller (`MinbarLive.spec` → Windows EXE, Linux AppImage, macOS .app).
+  One-file on Windows/Linux; **onedir on macOS** — one-file inside a `.app` is an error in
+  PyInstaller 7, and the `.app` is a directory either way (issue #51)
 - **Testing:** pytest · **Linting:** ruff (`ruff.toml`) · **Secrets:** OS keychain via `keyring`
 
 **Providers.** OpenAI is the default everywhere (see the decisions table): `gpt-5.2`
@@ -78,8 +80,9 @@ with inline comments. Read them there — they are not duplicated in this file.
 
 | Path | Purpose |
 | --- | --- |
-| `main.py` | Entry point (single-instance guard, `.env`, first-run wizard). `--qt` is accepted and ignored — an old shortcut must not die on it |
+| `main.py` | Entry point (single-instance guard, `.env`, first-run wizard) |
 | `app_controller.py` | Thread lifecycle — starts/stops the full pipeline |
+| `streaming_session.py` | One live realtime-STT connection: feed/utterance queues, reconnect, stall watchdog, utterance accumulation. Built per `start()` by the controller |
 | `config.py` | Static constants: durations, thresholds, model names |
 | `audio/capture.py` | Ring buffer, silence detection |
 | `audio/vad.py` | webrtcvad noise gate: `has_speech` (segmented/batch) + `StreamNoiseGate` (streaming) |
@@ -213,6 +216,6 @@ Do not revisit without a new explicit decision.
 | Qt keeps the Tk control arrangement (2026-07-30, #44) | Segmented buttons for themes and both 3-way selectors, −/+ steppers for font size and scroll speed, slider only for height. Don't swap in dropdowns |
 | Qt subtitle backdrop defaults to opacity 75 (alpha 190/255) (2026-07-30, #44) | Reviewed against live video and chosen. Adjustable 0–100; a test pins the default. The control exists to adjust it, not to replace the decision |
 | **The Qt tree asks for X11 (xcb) before Wayland on Linux** (2026-08-04, #44) | A Wayland client cannot position its own windows and has no always-on-top protocol — the subtitle overlay is exactly those two things, and under Wayland the compositor centred it and the always-on-top setting did nothing. `gui/platform_setup.py` sets `QT_QPA_PLATFORM=xcb;wayland` (fallback kept, so a session without XWayland still starts); an explicit `QT_QPA_PLATFORM` always wins. The plugin that loaded is logged at startup |
-| **Arabic source lines stay regular weight** (2026-08-05) | They were bold in the Tk overlay and are regular in Qt. Maintainer's call after seeing both: keep the Qt weight. Don't "restore parity" here |
+| **Arabic source lines stay regular weight — in the stacked layout** (2026-08-05) | They were bold in the Tk overlay and are regular in Qt. Maintainer's call after seeing both: keep the Qt weight. Don't "restore parity" here. **Narrowed 2026-08-06 (#49):** the side-by-side layout draws the original bold, because there it is the other half of the row rather than a subordinate line under its translation |
 | **Closing the batch window asks, it does not decide** (2026-08-05) | Qt cancels the run on close; Tk let it finish. Neither is right silently — closing a window is not a statement about the job. A dialog on close offers *cancel the run* or *keep it running in the background*. Not implemented yet |
 | **Don't cut over to Qt before Linux/macOS verification** (2026-07-30, #44) — satisfied | The migration exists to fix issues #35/#39, which are Linux/macOS bugs, so deleting the working Tk tree before Qt had run there would have been reckless. Both platforms ran the Qt tree first; the cut-over followed on 2026-08-04 |

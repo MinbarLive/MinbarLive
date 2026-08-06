@@ -10,7 +10,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from batch import processor
-from utils.ffmpeg_download import bundled_ffmpeg_path, extract_ffmpeg_exe
+from utils import ffmpeg_download
+from utils.ffmpeg_download import (
+    bundled_ffmpeg_path,
+    extract_ffmpeg_exe,
+    ffmpeg_install_command,
+)
 
 
 def _make_zip(path: Path, inner_name: str) -> None:
@@ -69,6 +74,102 @@ class TestFindFfmpegBundled:
         path = bundled_ffmpeg_path()
         assert path.endswith(os.path.join("bin", "ffmpeg.exe"))
         assert "MinbarLive" in path
+
+
+class TestFfmpegInKnownDirs:
+    """Launched from Finder or an AppImage, the process gets a minimal PATH
+    and `which` misses a Homebrew ffmpeg that is definitely installed."""
+
+    def _make_exe(self, directory: Path) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        binary = directory / "ffmpeg"
+        binary.write_bytes(b"x")
+        os.chmod(binary, 0o755)  # no-op on Windows, required on POSIX
+        return binary
+
+    def test_found_in_a_prefix_that_is_not_on_path(self, tmp_path, monkeypatch):
+        binary = self._make_exe(tmp_path / "opt" / "homebrew" / "bin")
+        monkeypatch.setattr(
+            processor, "_EXTRA_FFMPEG_DIRS", (str(binary.parent),)
+        )
+        assert processor._ffmpeg_in_known_dirs() == str(binary)
+
+    def test_the_earlier_prefix_wins(self, tmp_path, monkeypatch):
+        # Apple Silicon Homebrew before /usr/local, so a Mac carrying both an
+        # arm64 and a leftover Intel copy runs the native one.
+        first = self._make_exe(tmp_path / "first")
+        second = self._make_exe(tmp_path / "second")
+        monkeypatch.setattr(
+            processor,
+            "_EXTRA_FFMPEG_DIRS",
+            (str(first.parent), str(second.parent)),
+        )
+        assert processor._ffmpeg_in_known_dirs() == str(first)
+
+    def test_nothing_installed_is_still_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(processor, "_EXTRA_FFMPEG_DIRS", (str(tmp_path),))
+        assert processor._ffmpeg_in_known_dirs() is None
+
+    def test_a_directory_named_ffmpeg_is_not_mistaken_for_the_binary(
+        self, tmp_path, monkeypatch
+    ):
+        (tmp_path / "ffmpeg").mkdir()
+        monkeypatch.setattr(processor, "_EXTRA_FFMPEG_DIRS", (str(tmp_path),))
+        assert processor._ffmpeg_in_known_dirs() is None
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="the prefix scan is the non-Windows branch of _find_ffmpeg",
+    )
+    def test_find_ffmpeg_consults_the_prefixes(self, tmp_path, monkeypatch):
+        """The wiring, not just the helper: `which` misses, nothing is
+        bundled, and the prefix scan is what answers."""
+        binary = self._make_exe(tmp_path / "bin")
+        monkeypatch.setattr(processor.shutil, "which", lambda name: None)
+        monkeypatch.setattr(
+            processor, "_EXTRA_FFMPEG_DIRS", (str(binary.parent),)
+        )
+        assert processor._find_ffmpeg() == str(binary)
+
+
+class TestFfmpegInstallCommand:
+    """Step 1 of #38: off Windows there is no download to offer, so the
+    error has to carry the command instead of being a dead end."""
+
+    def test_macos_names_homebrew(self):
+        assert ffmpeg_install_command("darwin") == "brew install ffmpeg"
+
+    def test_windows_has_none_because_the_card_offers_a_download(self):
+        assert ffmpeg_install_command("win32") is None
+
+    @pytest.mark.parametrize(
+        "installed,expected",
+        [
+            ("apt-get", "sudo apt install ffmpeg"),
+            ("dnf", "sudo dnf install ffmpeg"),
+            ("pacman", "sudo pacman -S ffmpeg"),
+            ("zypper", "sudo zypper install ffmpeg"),
+        ],
+    )
+    def test_linux_names_the_package_manager_it_finds(
+        self, installed, expected, monkeypatch
+    ):
+        monkeypatch.setattr(
+            ffmpeg_download.shutil,
+            "which",
+            lambda name: "/usr/bin/" + name if name == installed else None,
+        )
+        assert ffmpeg_install_command("linux") == expected
+
+    def test_an_unknown_distribution_still_gets_an_answer(self, monkeypatch):
+        # Or the same minimal PATH that hid ffmpeg in the first place. A
+        # command that may be wrong is correctable; no command is the dead end.
+        monkeypatch.setattr(ffmpeg_download.shutil, "which", lambda name: None)
+        assert ffmpeg_install_command("linux") == "sudo apt install ffmpeg"
+
+    def test_the_platform_argument_is_only_for_tests(self):
+        # Production callers pass nothing and must get this machine's answer.
+        assert ffmpeg_install_command() == ffmpeg_install_command(sys.platform)
 
 
 if __name__ == "__main__":

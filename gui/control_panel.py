@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 
 from config import AUTO_STOP_INACTIVITY_SECONDS, ICON_PATH_PNG, ICON_PATH_PNG_ON_DARK
 from gui.api_keys import activate_stored_keys, ensure_keys
+from gui.card_grid import CardGrid
 from gui.control_state import (
     STRATEGY_IDS,
     apply_strategy,
@@ -111,13 +112,6 @@ from utils.settings import (
     save_settings,
 )
 
-# Logical widths at which the card grid gains a column, measured from what the
-# columns actually need (352 / 365 / 204 plus the grid's margins and spacing)
-# with a little headroom for a wordier GUI language. The horizontal scrollbar
-# is off, so a threshold that lets a column below its minimum does not scroll —
-# it clips.
-_COL2_MIN_W = 800
-_COL3_MIN_W = 1030
 # The attributes holding the four secondary windows, in the order they are
 # torn down. One list, because "for every secondary window" is asked three
 # times (always-on-top, a language change, a window-style change).
@@ -146,12 +140,6 @@ _HELP_BTN_PX = CONTROL_H
 # Breathing room above each section heading inside the Advanced card, so its
 # three groups read as groups rather than one long list.
 _SECTION_GAP = 8
-# Largest height difference the 2-column grid will absorb to make both columns
-# end on one line (see _level_two_column_bottoms). Comfortably above the tens
-# of pixels their content happens to differ by, and well below the ~240 an
-# opened subtitle-appearance section adds.
-_LEVEL_FILL_MAX_PX = 140
-
 # Step applied to the original-text divisor per −/+ click, as in gui/typography.
 _SOURCE_FONT_STEP = 5.0
 # The shipped font_size_base, i.e. the 100% the size stepper counts from.
@@ -212,9 +200,11 @@ class ControlPanel(QMainWindow):
         self._pending_device: int | None = None
         self._announcement_active = False
         self._announcement_text = ""
+        # The manual engine+model a "recommended" tick overrode, so unticking
+        # can put it back. Session-only: ticking is the state that persists.
+        self._manual_translation: tuple[str, str] | None = None
+        self._manual_transcription: tuple[str, str] | None = None
         self._log_collapsed = self.settings.log_panel_collapsed
-        self._columns: int | None = None
-        self._level_queued = False
         activate_stored_keys()
 
         self.bridge = PipelineBridge(controller, self)
@@ -393,40 +383,29 @@ class ControlPanel(QMainWindow):
         self.card_area = QScrollArea()
         self.card_area.setWidgetResizable(True)
         self.card_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # A rebuild (a GUI language change) replaces the cards, so the grid
+        # that was arranging the old ones goes with them: a levelling pass it
+        # had queued would otherwise land on destroyed cards. While the state
+        # lived on the panel a rebuild replaced it and a pending pass simply
+        # found the new cards; this keeps that. (Not a reproduced crash — an
+        # unguarded rebuild with a pass in flight survives; it is the stale
+        # work and the orphaned grid per switch that this removes.)
+        previous = getattr(self, "card_grid", None)
+        if previous is not None:
+            previous.deleteLater()
         self.cards_host = QWidget()
-        self.grid = QGridLayout(self.cards_host)
-        self.grid.setContentsMargins(18, 14, 18, 18)
-        self.grid.setHorizontalSpacing(18)
-        self.grid.setVerticalSpacing(18)
-
         # Three column groups, exactly as the Tk panel: A = Controls +
-        # Display, B = Translation flow, C = Advanced. A group is the reflow's
-        # atom, so a tall card never pads a short one out with dead space.
-        self.col_a, box_a = self._column()
-        self.col_b, box_b = self._column()
-        self.col_c, box_c = self._column()
+        # Display, B = Translation flow, C = Advanced. The arranging is
+        # gui/card_grid.py; this only says what goes in each column.
+        self.card_grid = CardGrid(self.cards_host, parent=self)
+        # Built in this order because the builders set the panel attributes
+        # each other's rows read; the columns they land in are below.
         display_card = self._display_card()
         language_card = self._language_card()
         advanced_card = self._advanced_card()
-        # A spacer above and below each column's cards: side by side the
-        # columns should end level, and which of the two spacers (or the card
-        # itself) absorbs the slack is what decides how. See
-        # _set_equal_column_heights.
-        for box in (box_a, box_b, box_c):
-            box.addStretch(0)
-        box_a.addWidget(self._control_card())
-        box_a.addWidget(display_card)
-        box_b.addWidget(language_card)
-        box_c.addWidget(advanced_card)
-        for box in (box_a, box_b, box_c):
-            box.addStretch(1)
-        self._column_tails = [
-            (box_a, display_card),
-            (box_b, language_card),
-            (box_c, advanced_card),
-        ]
-        for _box, card in self._column_tails:
-            card.add_stretch()
+        self.card_grid.add_column(0, self._control_card(), display_card)
+        self.card_grid.add_column(1, language_card)
+        self.card_grid.add_column(2, advanced_card)
 
         self.card_area.setWidget(self.cards_host)
         self.card_area.viewport().installEventFilter(self)
@@ -446,14 +425,6 @@ class ControlPanel(QMainWindow):
         self._relayout_columns()
         self._sync_mode_controls()
         self._sync_running_state()
-
-    @staticmethod
-    def _column() -> tuple[QWidget, QVBoxLayout]:
-        widget = QWidget()
-        box = QVBoxLayout(widget)
-        box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(18)
-        return widget, box
 
     def _header(self) -> QWidget:
         header = QWidget()
@@ -818,7 +789,14 @@ class ControlPanel(QMainWindow):
         return f"{percent}%"
 
     def _refresh_typography(self) -> None:
-        """Repaint the colour buttons from the stored values."""
+        """Repaint both size steppers and both colour buttons from the settings.
+
+        The translation stepper is normally kept in step by ``_step_font``,
+        which owns the only other way it changes. A layout switch replaces all
+        four values at once (see ``_swap_layout_appearance``), so it has to be
+        repainted from the stored value like everything else here.
+        """
+        self.font_stepper.set_value_text(self._font_percent_text())
         self.source_font_stepper.set_value_text(self._source_font_percent_text())
         colors = current_colors()
         for attribute, pick in self._color_pick_btns.items():
@@ -882,6 +860,9 @@ class ControlPanel(QMainWindow):
     def _apply_typography_to_window(self) -> None:
         if not self.subtitle_window:
             return
+        # The translation base too: the steppers drive it through
+        # increase/decrease_font, but a layout switch replaces it outright.
+        self.subtitle_window.set_font_size_base(self.settings.font_size_base)
         self.subtitle_window.set_source_font_size_base(
             self.settings.source_font_size_base
         )
@@ -999,10 +980,35 @@ class ControlPanel(QMainWindow):
         )
         self.bilingual_check.setChecked(self.settings.bilingual_mode)
         self.bilingual_check.toggled.connect(self._on_bilingual_toggled)
+        # A selector, not a checkbox: the off state is a real alternative
+        # layout rather than "feature off", and a checkbox called "Side by
+        # side" leaves the other one unnamed. Same reasoning as the two 3-way
+        # selectors in the decisions table.
+        #
+        # Only meaningful with an original to put in the second column, so it
+        # is hidden outright without one rather than sitting there dead. It
+        # rides on the same row as the toggle it depends on — which also means
+        # hiding it cannot change the card's height, so nothing has to be
+        # re-levelled the way _sync_mode_controls has to.
+        self.layout_segment = SegmentedControl(
+            self._subtitle_layout_labels(),
+            1 if self.settings.subtitle_side_by_side else 0,
+            compact=True,
+        )
+        self.layout_segment.setVisible(self.settings.bilingual_mode)
+        self.layout_segment.changed.connect(
+            lambda index: self._on_side_by_side_toggled(index == 1)
+        )
+        bilingual_row = QHBoxLayout()
+        bilingual_row.setContentsMargins(0, 0, 0, 0)
+        bilingual_row.setSpacing(16)
+        bilingual_row.addWidget(self.bilingual_check)
+        bilingual_row.addWidget(self.layout_segment)
+        bilingual_row.addStretch(1)
         card.body.addWidget(self.catchup_check)
         card.body.addWidget(self.interim_check)
         card.body.addWidget(self.transparent_check)
-        card.body.addWidget(self.bilingual_check)
+        card.body.addLayout(bilingual_row)
 
         hide_caption = QLabel(self._t("hide_subtitle_label", "Hide subtitle window"))
         hide_caption.setObjectName("field")
@@ -1085,7 +1091,11 @@ class ControlPanel(QMainWindow):
         self.transcription_model_combo.currentIndexChanged.connect(
             self._on_transcription_model_changed
         )
-        self.use_default_transcription = QCheckBox(self._t("use_default", "Default"))
+        # "Automatic", not "Default": ticking it overrides a manual pick, and a
+        # box labelled "Default" reads as describing the dropdown instead.
+        self.use_default_transcription = QCheckBox(
+            self._t("use_recommended", "Automatic")
+        )
         self.use_default_transcription.setChecked(
             self.settings.use_default_transcription_model
         )
@@ -1106,7 +1116,9 @@ class ControlPanel(QMainWindow):
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         self.model_combo = self._combo()
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
-        self.use_default_translation = QCheckBox(self._t("use_default", "Default"))
+        self.use_default_translation = QCheckBox(
+            self._t("use_recommended", "Automatic")
+        )
         self.use_default_translation.setChecked(
             self.settings.use_default_translation_model
         )
@@ -1171,7 +1183,7 @@ class ControlPanel(QMainWindow):
     def _engine_block(
         provider: QComboBox, model: QComboBox, check: QCheckBox
     ) -> QGridLayout:
-        """Provider above model, with "Default" beside the model.
+        """Provider above model, with "Automatic" beside the model.
 
         A grid rather than two rows so both combos end at the same edge: laid
         out as rows the provider ran the card's full width and passed behind the
@@ -1279,20 +1291,6 @@ class ControlPanel(QMainWindow):
             0, self.width() - (0 if self._log_collapsed else _SIDEBAR_W_WITH_LOG)
         )
 
-    def _column_count(self) -> int:
-        # With the log open the sidebar is pinned narrow, so the cards get one
-        # column — the same trade the Tk panel makes.
-        if not self._log_collapsed:
-            return 1
-        width = self._available_width()
-        if width <= 1:
-            return 2  # nothing to measure yet; the default window shows two
-        if width >= _COL3_MIN_W:
-            return 3
-        if width >= _COL2_MIN_W:
-            return 2
-        return 1
-
     def eventFilter(self, watched, event):  # noqa: N802 - Qt API
         """Reflow when the SCROLL VIEWPORT resizes, not just the window.
 
@@ -1305,193 +1303,17 @@ class ControlPanel(QMainWindow):
         return super().eventFilter(watched, event)
 
     def _relayout_columns(self, force: bool = False) -> None:
-        cols = self._column_count()
-        if cols == self._columns and not force:
-            # Cheap, and the only thing a plain resize can change: a card's
-            # content may have grown since the columns were last arranged.
-            self._level_two_column_bottoms()
-            return
-        changed = cols != self._columns
-        self._columns = cols
-        for widget in (self.col_a, self.col_b, self.col_c):
-            self.grid.removeWidget(widget)
-        for i in range(3):
-            self.grid.setColumnStretch(i, 0)
-
-        if cols == 1:
-            for i, widget in enumerate((self.col_a, self.col_b, self.col_c)):
-                self.grid.addWidget(widget, i, 0)
-            self.grid.setColumnStretch(0, 1)
-        elif cols == 2:
-            # A spans both rows so its height does not push C away from B.
-            self.grid.addWidget(self.col_a, 0, 0, 2, 1)
-            self.grid.addWidget(self.col_b, 0, 1)
-            self.grid.addWidget(self.col_c, 1, 1)
-            self.grid.setColumnStretch(0, 1)
-            self.grid.setColumnStretch(1, 1)
-        else:
-            for i, widget in enumerate((self.col_a, self.col_b, self.col_c)):
-                self.grid.addWidget(widget, 0, i)
-                self.grid.setColumnStretch(i, 1)
-        for widget in (self.col_a, self.col_b, self.col_c):
-            widget.setVisible(True)
-        # The scroll area makes cards_host at least viewport-tall, and without
-        # somewhere for that surplus to go the card row swallowed it — the
-        # cards grew to the bottom of the window instead of stopping at the
-        # tallest one. One stretched row absorbs it.
-        #
-        # In the 2-column layout that row is row 1 — the one holding Advanced —
-        # and it does a second job there: column A spans both rows, so its
-        # height (which changes whenever the subtitle-appearance expander
-        # opens) has to go somewhere. Stretched, row 1 takes all of it and
-        # row 0 stays exactly as tall as the card in it, which is what keeps
-        # Advanced sitting still under Translation flow instead of sliding
-        # down the window.
-        used_rows = 3 if cols == 1 else 1
-        for row in range(4):
-            self.grid.setRowStretch(row, 1 if row == used_rows else 0)
-        # Only side by side in three columns: in the L-shaped 2-column layout
-        # levelling this way means padding Advanced away from the card above
-        # it, and that gap grows every time column A does. Two columns end
-        # level a different way — see _level_two_column_bottoms.
-        self._set_equal_column_heights(cols >= 3)
-        self._level_two_column_bottoms()
-        # Last, so the re-entrant _relayout_columns its toggle triggers finds a
-        # grid that is already consistent.
-        if changed:
+        """Re-arrange the cards for the width now available."""
+        cols = self.card_grid.relayout(
+            self._available_width(), not self._log_collapsed, force
+        )
+        # Only when the count actually changed, and last, so the re-entrant
+        # _relayout_columns its toggle triggers finds a consistent grid.
+        if cols is not None:
             self._sync_advanced_for_columns(cols)
 
-    def _set_equal_column_heights(self, equal: bool) -> None:
-        """Side by side in three columns, the cards should end level.
-
-        Three ragged bottom edges read as unfinished. In the 1- and 2-column
-        layouts each card keeps its natural height instead: stacked, levelling
-        has nothing to level, and in the L-shaped 2-column layout it only pads
-        Advanced away from the card above it.
-
-        An OPEN card takes the slack itself (its own trailing stretch keeps its
-        content top-aligned). A COLLAPSED one must not — stretching a header
-        strip into a tall empty box is worse than a ragged edge — so the spacer
-        ABOVE it takes the slack instead and the strip sits on the baseline.
-
-        Every stretch factor has to be set explicitly: a spacer from
-        ``addStretch`` is expansive whatever its factor, so zeroing one alone
-        still let it swallow the height and the card grew by nothing.
-        """
-        for box, card in self._column_tails:
-            fill = equal and card.is_expanded()
-            lead = 1 if (equal and not fill) else 0
-            box.setStretch(0, lead)  # leading spacer: bottom-aligns the card
-            box.setStretch(box.indexOf(card), 1 if fill else 0)
-            box.setStretch(box.count() - 1, 0 if equal else 1)
-            card.setSizePolicy(
-                QSizePolicy.Preferred,
-                QSizePolicy.Expanding if fill else QSizePolicy.Preferred,
-            )
-
     def _level_two_column_bottoms(self) -> None:
-        """Queue the two-column levelling for once the layout has settled.
-
-        Hiding or showing a widget invalidates size hints through a posted
-        event, so anything reading them in the same call gets the PREVIOUS
-        layout's numbers — the padding would then be one toggle behind.
-        Coalesced, and the handler schedules nothing, so this cannot become
-        the idle-requeueing correction loop that froze the Tk panel (PR #43).
-        """
-        if self._level_queued:
-            return
-        self._level_queued = True
-        QTimer.singleShot(0, self._apply_two_column_levelling)
-
-    def _apply_two_column_levelling(self) -> None:
-        """Make the two columns end on one line.
-
-        Their natural heights are whatever their cards happen to add up to, so
-        the bottom borders land a handful of pixels apart — which reads as a
-        mistake rather than as a layout. The SHORTER column's last card takes
-        the difference; a Card keeps its content top-aligned, so the padding
-        lands below it, invisible.
-
-        Unless that card is COLLAPSED, and then it must not grow at all: a
-        header strip inflated into a tall empty box is exactly what a collapsed
-        card exists to avoid. The spacer ABOVE it takes the slack instead, so
-        the strip keeps its own height and the two columns still end on one
-        line — the rule _set_equal_column_heights already applies at three
-        columns.
-
-        Only a small difference, though: when one column is a whole opened
-        subtitle-appearance section taller, inflating a card by that much is
-        worse than a ragged edge — and pushing Advanced down to meet it is
-        exactly the dead gap this layout exists to avoid.
-
-        Each card's own ``sizeHint`` ignores the minimum set here, so the
-        measurement never sees the previous correction: running this twice
-        gives the same answer.
-        """
-        self._level_queued = False
-        tails = getattr(self, "_column_tails", None)
-        if not tails:
-            return
-        # Deliver the invalidations a hidden/shown widget posted, so the hints
-        # below describe the layout as it is now and not as it was one toggle
-        # ago. A 0-timer alone does not guarantee they have been processed.
-        QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
-        (display_box, display), (advanced_box, advanced) = tails[0], tails[2]
-        if self._columns != 2:
-            for box, card in ((display_box, display), (advanced_box, advanced)):
-                card.setMinimumHeight(0)
-                self._pad_above(box, 0)
-            return
-        gap = self.grid.verticalSpacing()
-        left = self._natural_height(display_box)
-        right = self._natural_height(tails[1][0]) + gap + self._natural_height(
-            advanced_box
-        )
-        if left > right:
-            (shorter, shorter_box), (taller, taller_box) = (
-                (advanced, advanced_box),
-                (display, display_box),
-            )
-        else:
-            (shorter, shorter_box), (taller, taller_box) = (
-                (display, display_box),
-                (advanced, advanced_box),
-            )
-        extra = abs(left - right)
-        if extra > _LEVEL_FILL_MAX_PX:
-            extra = 0
-        taller.setMinimumHeight(0)
-        self._pad_above(taller_box, 0)
-        collapsed = extra and not shorter.is_expanded()
-        self._pad_above(shorter_box, extra if collapsed else 0)
-        shorter.setMinimumHeight(
-            0 if collapsed or not extra else shorter.sizeHint().height() + extra
-        )
-
-    @staticmethod
-    def _pad_above(box, pixels: int) -> None:
-        """Set the height of a column's leading spacer.
-
-        Excluded from _natural_height (which counts widgets only), so a second
-        pass measures the same columns and lands on the same number — no
-        feedback loop.
-        """
-        spacer = box.itemAt(0).spacerItem() if box.count() else None
-        if spacer is None:
-            return
-        spacer.changeSize(0, pixels, QSizePolicy.Minimum, QSizePolicy.Fixed)
-        box.invalidate()
-
-    @staticmethod
-    def _natural_height(box) -> int:
-        """A column's height from its cards' own hints — spacers excluded, so
-        the stretch that fills a tall window does not count as content."""
-        heights = [
-            box.itemAt(i).widget().sizeHint().height()
-            for i in range(box.count())
-            if box.itemAt(i).widget() is not None
-        ]
-        return sum(heights) + max(0, len(heights) - 1) * box.spacing()
+        self.card_grid.level_two_column_bottoms()
 
     def _sync_advanced_for_columns(self, cols: int) -> None:
         """Move the collapse one level in or out with the column count.
@@ -1625,7 +1447,7 @@ class ControlPanel(QMainWindow):
         combo.blockSignals(blocked)
 
     def _sync_default_model_states(self) -> None:
-        """A model dropdown is disabled while its "Default" box is ticked —
+        """A model dropdown is disabled while its "Automatic" box is ticked —
         that is what the tick means."""
         # Provider choice is locked with the model: "Default" means the shipped
         # engine AND its shipped model, so leaving the engine changeable let a
@@ -1844,8 +1666,60 @@ class ControlPanel(QMainWindow):
     def _on_bilingual_toggled(self, checked: bool) -> None:
         self.settings.bilingual_mode = checked
         save_settings(self.settings)
+        # The side-by-side layout has nothing to put in its second column
+        # without an original. The stored preference is deliberately left
+        # alone, so turning the original back on restores the chosen layout.
+        self.layout_segment.setVisible(checked)
         if self.subtitle_window:
             self.subtitle_window.set_bilingual_mode(checked)
+
+    def _subtitle_layout_labels(self) -> list[str]:
+        return [
+            self._t("subtitle_layout_combined", "Combined"),
+            self._t("subtitle_side_by_side", "Side by side"),
+        ]
+
+    _LAYOUT_APPEARANCE = (
+        ("font_size_base", "alt_font_size_base"),
+        ("source_font_size_base", "alt_source_font_size_base"),
+        ("translation_text_color", "alt_translation_text_color"),
+        ("source_text_color", "alt_source_text_color"),
+    )
+
+    def _swap_layout_appearance(self) -> None:
+        """Exchange the live font sizes and colours with the other layout's.
+
+        Each layout remembers what was chosen for it, so switching back
+        restores that rather than carrying one set across both. Swapping in
+        place, rather than making every reader pick a set, means the subtitle
+        window, the batch window and the steppers all keep reading the same
+        fields and never have to know which layout is on.
+
+        ``alt_font_size_base`` doubles as the "never switched yet" marker: it
+        is the only one of the four that can never legitimately be None. On the
+        first switch both sides are seeded from the live values, so nothing
+        moves until something is actually changed in one of them.
+        """
+        s = self.settings
+        live = [getattr(s, name) for name, _alt in self._LAYOUT_APPEARANCE]
+        if s.alt_font_size_base is None:
+            stashed = live
+        else:
+            stashed = [getattr(s, alt) for _name, alt in self._LAYOUT_APPEARANCE]
+        for (name, alt), was_live, now_live in zip(
+            self._LAYOUT_APPEARANCE, live, stashed, strict=True
+        ):
+            setattr(s, name, now_live)
+            setattr(s, alt, was_live)
+
+    def _on_side_by_side_toggled(self, checked: bool) -> None:
+        self.settings.subtitle_side_by_side = checked
+        self._swap_layout_appearance()
+        save_settings(self.settings)
+        if self.subtitle_window:
+            self.subtitle_window.set_side_by_side(checked)
+        self._apply_typography_to_window()
+        self._refresh_typography()
 
     def _on_hide_mode_changed(self, index: int) -> None:
         self.settings.subtitle_hide_mode = SUBTITLE_HIDE_MODES[index]
@@ -2023,10 +1897,23 @@ class ControlPanel(QMainWindow):
         if checked:
             from utils.settings import DEFAULT_AI_PROVIDER
 
+            self._manual_translation = (
+                self.settings.ai_provider,
+                self.settings.translation_model,
+            )
             self.settings.ai_provider = DEFAULT_AI_PROVIDER
             self.settings.translation_model = get_default_model(
                 DEFAULT_AI_PROVIDER, "translation"
             )
+            self._refresh_provider_combos()
+        elif self._manual_translation is not None:
+            # Unticking restores the pick the tick overrode — otherwise trying
+            # the box out once costs the choice permanently.
+            (
+                self.settings.ai_provider,
+                self.settings.translation_model,
+            ) = self._manual_translation
+            self._manual_translation = None
             self._refresh_provider_combos()
         save_settings(self.settings)
         self._sync_default_model_states()
@@ -2044,10 +1931,21 @@ class ControlPanel(QMainWindow):
                 if self.settings.pipeline_mode == PIPELINE_MODE_STREAMING
                 else DEFAULT_SEGMENTED_TRANSCRIPTION_PROVIDER
             )
+            self._manual_transcription = (
+                self.settings.transcription_provider,
+                self.settings.transcription_model,
+            )
             self.settings.transcription_provider = provider
             self.settings.transcription_model = get_default_model(
                 provider, "transcription"
             )
+            self._refresh_provider_combos()
+        elif self._manual_transcription is not None:
+            (
+                self.settings.transcription_provider,
+                self.settings.transcription_model,
+            ) = self._manual_transcription
+            self._manual_transcription = None
             self._refresh_provider_combos()
         save_settings(self.settings)
         self._sync_default_model_states()
@@ -2208,7 +2106,6 @@ class ControlPanel(QMainWindow):
         self.texts = load_gui_translations(code)
         self.close_secondary_windows()
         geometry = self.saveGeometry()
-        self._columns = None
         self._build()
         self.restoreGeometry(geometry)
         log(
@@ -2595,6 +2492,7 @@ class ControlPanel(QMainWindow):
             show_footer=s.show_footer,
             theme_mode=s.subtitle_theme_mode,
             bilingual_mode=s.bilingual_mode,
+            side_by_side=s.subtitle_side_by_side,
             adaptive_catchup=s.adaptive_subtitle_catchup,
         )
         self.subtitle_window.set_always_on_top(self._effective_always_on_top())
@@ -2667,6 +2565,7 @@ class ControlPanel(QMainWindow):
         self.settings.subtitle_mode = self._current_mode()
         self.settings.monitor_index = self.monitor_combo.currentIndex()
         self.settings.bilingual_mode = self.bilingual_check.isChecked()
+        self.settings.subtitle_side_by_side = self.layout_segment.current_index() == 1
         pos = self.device_combo.currentIndex()
         if 0 <= pos < len(self.device_base_names):
             self.settings.input_device_name = self.device_base_names[pos]
