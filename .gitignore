@@ -24,3 +24,7 @@ CLAUDE.md
 CLAUDE.md.bak
 .claude/*
 !.claude/skills/
+
+# Benchmark output. A committed result is a latency claim nobody can
+# reproduce, and it goes stale the moment the model or the tree moves.
+bench/results/
