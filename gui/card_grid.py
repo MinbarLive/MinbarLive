@@ -102,6 +102,26 @@ class CardGrid(QObject):
         tail.add_stretch()
         self.tails.append((box, tail))
 
+    def minimum_width(self) -> int:
+        """Narrowest the host may be laid out at without clipping a card.
+
+        The WIDEST SINGLE COLUMN plus the grid's own margins — deliberately not
+        ``host.minimumSizeHint()``, which describes the arrangement in force
+        right now. At three columns that hint is the three minimums added
+        together (~960 px), and pinning a window's floor to it means a wide
+        window can never be dragged narrow again: it stays three columns wide
+        because it is three columns wide. One column is the narrowest the
+        reflow can produce, so this is the figure that always holds.
+
+        A column's own minimum does not depend on where the grid put it, so
+        this may be asked at any time.
+        """
+        margins = self.grid.contentsMargins()
+        widest = max(
+            (widget.minimumSizeHint().width() for widget in self.columns), default=0
+        )
+        return widest + margins.left() + margins.right()
+
     # ── the reflow ───────────────────────────────────────────────────────
     def column_count(self, width: int, log_open: bool) -> int:
         """How many columns ``width`` affords."""

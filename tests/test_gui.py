@@ -1601,6 +1601,142 @@ class TestCardPadding:
         card.deleteLater()
 
 
+class TestMinimumWindowWidth:
+    """The panel must not be draggable narrower than its cards.
+
+    The card area scrolls vertically only, so below the cards' own minimum the
+    content is simply cut off — there is no horizontal bar to reach it, and the
+    vertical one then draws on top of the clipped edge. Reported against the
+    old fixed 420 px floor, where the cards needed 449.
+    """
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        from gui.theme import apply_theme
+
+        # Themed, because every figure here is style-derived: a card's padding,
+        # border and font all come from the application stylesheet, and an
+        # unthemed panel measures a different (and order-dependent) minimum.
+        apply_theme(qt_app, "dark")
+        p = _panel(monkeypatch)
+        if not p._log_collapsed:
+            p._toggle_log_panel()
+        p.resize(1400, 900)
+        p.show()
+        _settle(qt_app)
+        yield p
+        p.close()
+
+    def test_the_window_cannot_be_squeezed_below_the_cards(self, panel, qt_app):
+        panel.resize(200, 900)
+        _settle(qt_app)
+        assert panel.card_area.viewport().width() >= panel.cards_host.width(), (
+            "the cards are wider than the viewport showing them"
+        )
+
+    def test_the_floor_is_measured_not_assumed(self, panel):
+        # It has to follow the cards, because the widest row is a translated
+        # label beside a segmented control and that differs per GUI language.
+        expected = (
+            panel.card_grid.minimum_width()
+            + panel.card_area.verticalScrollBar().sizeHint().width()
+            + 2 * panel.card_area.frameWidth()
+        )
+        assert panel.minimumWidth() == expected
+
+    def test_a_wide_panel_can_still_be_dragged_back_to_one_column(
+        self, panel, qt_app
+    ):
+        # The regression a host-based measurement causes: at three columns the
+        # host's minimum is all three columns added up, which pins the window
+        # open at the width it happens to have.
+        assert panel.card_grid.count == 3
+        panel.resize(600, 900)
+        _settle(qt_app)
+        assert panel.width() == 600
+        assert panel.card_grid.count == 1
+
+    def test_an_open_log_keeps_room_for_both(self, panel, qt_app):
+        # The sidebar is pinned wide while the log shares the window, so the
+        # floor is that plus the log panel's own minimum — not the cards'.
+        panel._toggle_log_panel()
+        _settle(qt_app)
+        cp = cp_module()
+        assert panel.minimumWidth() == cp._SIDEBAR_W_WITH_LOG + cp._LOG_PANEL_MIN_W
+        panel.resize(200, 900)
+        _settle(qt_app)
+        assert panel.log_panel.width() >= cp._LOG_PANEL_MIN_W
+
+
+class TestTitleBarTheme:
+    """The native title bar follows the app theme, not the OS preference.
+
+    Windows paints a caption bar from the system light/dark setting and from
+    nothing the application asks for, so a light-themed panel under a dark
+    Windows kept a black bar joined to a white header.
+    """
+
+    def test_a_window_without_a_native_handle_is_left_alone(self, qt_app):
+        from PySide6.QtWidgets import QWidget
+
+        from gui.widgets import set_titlebar_dark
+
+        # Asking for an HWND early would force Qt to create the platform
+        # window ahead of time; there is nothing to theme yet either way.
+        widget = QWidget()
+        set_titlebar_dark(widget, True)  # must not raise, must not create one
+        assert widget.windowHandle() is None
+        widget.deleteLater()
+
+    def test_the_theme_sweep_skips_frameless_windows(self, qt_app, monkeypatch):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
+
+        import gui.theme as theme
+        import gui.widgets as widgets
+
+        seen: list[tuple[QWidget, bool]] = []
+        monkeypatch.setattr(
+            widgets, "set_titlebar_dark", lambda w, dark: seen.append((w, dark))
+        )
+        framed = QWidget()
+        framed.show()
+        frameless = QWidget()
+        frameless.setWindowFlag(Qt.FramelessWindowHint, True)
+        frameless.show()
+        qt_app.processEvents()
+
+        theme.apply_titlebar_theme(qt_app, "light")
+
+        themed = [w for w, _dark in seen]
+        assert framed in themed
+        # The subtitle overlay is frameless: it has no caption to theme, and
+        # poking its HWND buys nothing.
+        assert frameless not in themed
+        assert all(dark is False for _w, dark in seen), "light asked for dark"
+        for w in (framed, frameless):
+            w.close()
+            w.deleteLater()
+
+    def test_dark_is_anything_that_is_not_light(self, qt_app, monkeypatch):
+        from PySide6.QtWidgets import QWidget
+
+        import gui.theme as theme
+        import gui.widgets as widgets
+
+        seen: list[bool] = []
+        monkeypatch.setattr(
+            widgets, "set_titlebar_dark", lambda w, dark: seen.append(dark)
+        )
+        window = QWidget()
+        window.show()
+        qt_app.processEvents()
+        theme.apply_titlebar_theme(qt_app, "dark")
+        assert seen and all(seen)
+        window.close()
+        window.deleteLater()
+
+
 class TestEqualColumnHeights:
     """Side by side the three cards end level; stacked they keep their own."""
 

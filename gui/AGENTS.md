@@ -49,6 +49,14 @@ packaging section below for the shipped build.
   On X11 the cheap path does not exist: the flag is the `_NET_WM_STATE_ABOVE` property
   and Qt's xcb plugin only writes it while the window is unmapped, so `set_window_on_top`
   re-creates and re-shows there. That is why the setting did nothing at all on Linux.
+- **The native title bar goes through `widgets.set_titlebar_dark`**, never the
+  stylesheet — a caption bar is the window manager's, not a widget. On Windows it
+  follows the SYSTEM light/dark preference and nothing the app asks for, so a
+  light panel under a dark Windows kept a black bar joined to a white header.
+  `DWMWA_USE_IMMERSIVE_DARK_MODE` is the only lever and Qt exposes no API for it,
+  which is why that one helper is ctypes. `theme.apply_titlebar_theme` sweeps the
+  windows that already exist (a theme switch); a window built *after* `apply_theme`
+  re-applies it in its own `showEvent` — the control panel and the wizard both do.
 - **The overlay stays out of focus via `WA_ShowWithoutActivating`**, never
   `Qt.WindowDoesNotAcceptFocus` — the latter sets `WS_EX_NOACTIVATE`, which drops the
   window off the taskbar unless `WS_EX_APPWINDOW` is also forced, and the taskbar button
@@ -117,6 +125,15 @@ still had it.
 
 ## Layout mechanics learned the hard way
 
+- **The panel's minimum WIDTH is measured, never a constant.** The card area
+  scrolls vertically only, so below the cards' own minimum the content is cut off
+  with no horizontal bar to reach it, and the vertical bar then draws on top of
+  the clipped edge. Two traps, both of which cost a round: measure it from
+  `cards_host.minimumSizeHint()` and at three columns you get the three minimums
+  ADDED UP, which pins a wide window open — use `CardGrid.minimum_width()`, the
+  widest single column, which is what the reflow can actually collapse to. And
+  measure it before the first show and you get 50 px, because a card's padding,
+  border and font all come from the stylesheet and Qt applies that at polish time.
 - **Where the collapse lives depends on the column count.** 1–2 columns: the Advanced
   *card* collapses and "Weitere Einstellungen" is a plain section. 3 columns: the card is
   pinned open and the *group* collapses, closed by default. Three columns level through
