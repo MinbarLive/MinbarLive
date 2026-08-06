@@ -118,6 +118,15 @@ COLUMN_PANEL_MARGIN_RATIO = 0.02
 COLUMN_PANEL_PAD_X = 30
 COLUMN_PANEL_PAD_Y = 18
 COLUMN_PANEL_RADIUS = 18
+# The per-line backdrop of transparent static mode (see _ribbon_rects). Its
+# fill is a fixed translucent black rather than the theme's backdrop colour:
+# the whole point of the mode is that there is no window backdrop, so this is
+# the only thing between the text and arbitrary video, and it has to work over
+# a bright frame as well as a dark one.
+_CARD_PAD_X = 20
+_CARD_PAD_Y = 8
+_CARD_RADIUS = 14
+_CARD_FILL = QColor(0, 0, 0, 150)
 # Where the realtime feed's first line sits, as a fraction of window height.
 FEED_TOP_RATIO = 0.06
 # Continuous mode advances by this many pixels per frame at speed 1.0.
@@ -159,6 +168,23 @@ FEED_ANIM_SNAP_PX = 1.0  # within this, land on the target and stop
 # rather than an inline check, so a test can drive the other platform's branch
 # without faking sys.platform for the whole process.
 _MACOS = sys.platform == "darwin"
+
+
+@dataclass
+class _Run:
+    """One laid-out paragraph, ready to draw and to measure a backdrop from.
+
+    Carries the layout rather than the text, because both the backdrop and the
+    glyphs have to come from the SAME layout: laying the paragraph out twice
+    invites the two to disagree about where a line broke. It also keeps the
+    layout referenced while its ``QTextLine``s are read — a line borrows from
+    its layout, and reading one whose layout has been collected takes the
+    process down with a heap error rather than an exception.
+    """
+
+    layout: QTextLayout
+    top: float
+    height: int
 
 
 @dataclass
@@ -952,20 +978,71 @@ class SubtitleWindow(QWidget):
             self._live_text or "", self._live_font()
         )
 
-    def _draw_card(self, p: QPainter, text: str, font: QFont, rect: QRect) -> None:
-        """Rounded backing card behind one line, sized to the text it holds.
+    def _ribbon_rects(self, runs: list[_Run], left: int, width: int) -> list[QRect]:
+        """One backdrop per RENDERED LINE, tiled into a single ribbon.
 
-        Only used when the backdrop is transparent: without it the subtitle
-        would have to compete with whatever video is underneath.
+        The shape a YouTube subtitle has, and the one asked for: each line gets
+        a box as wide as that line's own text, so a short line is a short box
+        and the backdrop grows and shrinks with what was said instead of always
+        running to the window's edges. Per LINE, not per paragraph — a
+        paragraph's width is its longest line, so one box around a wrapped
+        sentence is a rectangle with ragged text inside it.
+
+        Tiled, and that is also the fix for the overlap. A block's source line
+        and its translation are deliberately pulled together until their metric
+        BOXES overlap — ``_pair_gap`` is allowed to go negative and only the
+        INK is held apart — so two independent backdrops drew one on top of the
+        other and the second hid the last line of the first. Here each box ends
+        exactly where the next one begins, so none of them can cover anything.
+
+        Boxes are extended down by their own corner radius so the rounding does
+        not notch every join; the caller fills them as one winding path, which
+        is what keeps the overlap from painting the alpha twice.
         """
-        fm = QFontMetrics(font)
-        tw = min(fm.horizontalAdvance(text), rect.width())
-        pad_x, pad_y = 20, 8
-        cw = min(rect.width(), tw + pad_x * 2)
-        cx = rect.x() + (rect.width() - cw) // 2
+        tops: list[float] = []
+        widths: list[float] = []
+        bottom = 0.0
+        for run in runs:
+            for i in range(run.layout.lineCount()):
+                line = run.layout.lineAt(i)
+                tops.append(run.top + line.position().y())
+                widths.append(line.naturalTextWidth())
+            bottom = run.top + run.height
+        rects: list[QRect] = []
+        last = len(tops) - 1
+        for i, (top, text_width) in enumerate(zip(tops, widths, strict=True)):
+            box_top = top - _CARD_PAD_Y if i == 0 else top
+            if i == last:
+                box_bottom = bottom + _CARD_PAD_Y
+            else:
+                box_bottom = tops[i + 1] + _CARD_RADIUS
+            box_width = min(width, int(text_width) + 2 * _CARD_PAD_X)
+            rects.append(
+                QRect(
+                    left + (width - box_width) // 2,
+                    int(box_top),
+                    box_width,
+                    max(0, int(box_bottom - box_top)),
+                )
+            )
+        return rects
+
+    def _draw_ribbon(self, p: QPainter, rects: list[QRect]) -> None:
+        """Fill ``rects`` as one shape.
+
+        One path and one fill, with the WINDING rule: the boxes overlap by a
+        corner radius (see _ribbon_rects) and Qt's default odd-even rule would
+        punch that overlap out as a hole, while filling them one at a time
+        would composite the translucent black twice and leave a dark band
+        across every join.
+        """
+        if not rects:
+            return
         path = QPainterPath()
-        path.addRoundedRect(cx, rect.y() - pad_y, cw, rect.height() + pad_y * 2, 14, 14)
-        p.fillPath(path, QColor(0, 0, 0, 150))
+        path.setFillRule(Qt.WindingFill)
+        for rect in rects:
+            path.addRoundedRect(rect, _CARD_RADIUS, _CARD_RADIUS)
+        p.fillPath(path, _CARD_FILL)
 
     def _draw_block(
         self, p: QPainter, block: Block, x: int, y: int, newest: bool = True
@@ -975,6 +1052,11 @@ class SubtitleWindow(QWidget):
         ``newest`` carries the full translation colour; everything above it is
         history and drops to the muted tone, so the eye lands on the line
         being spoken now without having to search for it.
+
+        Every backdrop is drawn before any text, never interleaved: the source
+        and its translation are stacked close enough that their boxes overlap,
+        so a backdrop painted between them covers the line above (see
+        _ribbon_rects).
         """
         trans_font, src_font = self._block_fonts(block)
         w = self._content_width()
@@ -984,7 +1066,9 @@ class SubtitleWindow(QWidget):
             src_rect, trans_rect = rects
             # Cards only when the Transparent toggle has taken the panels away
             # — otherwise the panel already carries the text over video, and
-            # drawing both would stack a card inside a panel.
+            # drawing both would stack a card inside a panel. One ribbon per
+            # column, because the columns are side by side and share no run.
+            runs: list[tuple[_Run, QRect, QColor]] = []
             for text, font, rect, colour in (
                 (block.source, src_font, src_rect, self._column_source_qcolor(newest)),
                 (
@@ -994,25 +1078,37 @@ class SubtitleWindow(QWidget):
                     self._translation_qcolor() if newest else self._history_qcolor(),
                 ),
             ):
-                layout, _h = self._layout_text(text, font, width=rect.width())
-                if cards:
-                    self._draw_card(p, text, font, rect)
+                layout, height = self._layout_text(text, font, width=rect.width())
+                runs.append((_Run(layout, rect.y(), height), rect, colour))
+            if cards:
+                for run, rect, _colour in runs:
+                    self._draw_ribbon(
+                        p, self._ribbon_rects([run], rect.x(), rect.width())
+                    )
+            for run, rect, colour in runs:
                 p.setPen(colour)
-                layout.draw(p, QPointF(rect.x(), rect.y()))
+                run.layout.draw(p, QPointF(rect.x(), rect.y()))
             return max(src_rect.height(), trans_rect.height())
         used = 0
+        stacked: list[tuple[_Run, QColor]] = []
         if src_font is not None and block.source:
             layout, sh = self._layout_text(block.source, src_font)
-            if cards:
-                self._draw_card(p, block.source, src_font, QRect(x, y, w, sh))
-            p.setPen(self._source_qcolor())
-            layout.draw(p, QPointF(x, y))
+            stacked.append((_Run(layout, y, sh), self._source_qcolor()))
             used += sh + self._pair_gap(block)
         layout, th = self._layout_text(block.translation, trans_font)
+        stacked.append(
+            (
+                _Run(layout, y + used, th),
+                self._translation_qcolor() if newest else self._history_qcolor(),
+            )
+        )
         if cards:
-            self._draw_card(p, block.translation, trans_font, QRect(x, y + used, w, th))
-        p.setPen(self._translation_qcolor() if newest else self._history_qcolor())
-        layout.draw(p, QPointF(x, y + used))
+            self._draw_ribbon(
+                p, self._ribbon_rects([run for run, _c in stacked], x, w)
+            )
+        for run, colour in stacked:
+            p.setPen(colour)
+            run.layout.draw(p, QPointF(x, run.top))
         return used + th
 
     # ── painting ─────────────────────────────────────────────────────────

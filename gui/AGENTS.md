@@ -156,6 +156,18 @@ still had it.
   ignored, never overwritten, so leaving static restores the band the operator
   chose. The panel greys the row out and says why; entering or leaving static
   re-places the window, because the height changes although the setting did not.
+- **The transparent-static backdrop is one box per RENDERED LINE, tiled**
+  (`_ribbon_rects`). Per line, because a paragraph's width is its longest line, so
+  one box round a wrapped sentence is a rectangle with ragged text inside it. Tiled
+  — each box ending exactly where the next begins — because a block's source and
+  its translation are pulled together until their metric BOXES overlap (`_pair_gap`
+  goes negative on purpose; only the ink is held apart), so two independent
+  backdrops drew one on top of the other and the translation's hid the source's
+  last line. Draw every backdrop before any text for the same reason: interleaved,
+  a backdrop still lands on the line above however well the rects tile. Boxes
+  overlap by their own corner radius so the rounding does not notch each join, and
+  are filled as ONE `Qt.WindingFill` path — odd-even would punch the overlap out as
+  a hole, and filling them separately composites the translucent black twice.
 - **Subtitle lines are placed by their BASELINE, not by the top of their box.** A line's
   ascent is the tallest of the font engines that actually drew it, and a single glyph
   borrowed from a fallback family (the ﷺ/ﷻ honorifics on Linux) makes it far taller than

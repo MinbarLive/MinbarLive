@@ -5534,6 +5534,144 @@ class TestStaticTakesTheWholeMonitor:
         assert w._measure_block(block) <= w._content_height()
 
 
+class TestTransparentStaticRibbon:
+    """The backdrop of transparent static mode: one box per RENDERED LINE.
+
+    Reported against two per-paragraph boxes, which failed in both directions —
+    a short sentence still got a box running the width of the screen, and the
+    pair's boxes overlapped so the translation's hid the source's last line.
+    """
+
+    def _runs(self, w, block):
+        """The block's paragraphs, laid out exactly as _draw_block lays them."""
+        import gui.subtitle_window as sw
+
+        trans_font, src_font = w._block_fonts(block)
+        runs = []
+        used = 0
+        if src_font is not None and block.source:
+            layout, height = w._layout_text(block.source, src_font)
+            runs.append(sw._Run(layout, 0, height))
+            used += height + w._pair_gap(block)
+        layout, height = w._layout_text(block.translation, trans_font)
+        runs.append(sw._Run(layout, used, height))
+        return runs
+
+    def _rects(self, w, block):
+        return w._ribbon_rects(self._runs(w, block), 0, w._content_width())
+
+    def test_a_short_line_gets_a_short_box(self, overlay):
+        from gui.subtitle_window import Block
+
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True)
+        rects = self._rects(w, Block("Ja."))
+        assert len(rects) == 1
+        assert rects[0].width() < w._content_width() // 2, (
+            "the box still runs to the window's edges"
+        )
+
+    def test_a_longer_line_gets_a_wider_box(self, overlay):
+        from gui.subtitle_window import Block
+
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True)
+        short = self._rects(w, Block("Ja."))[0]
+        longer = self._rects(w, Block("Ja, und zwar ganz genau so."))[0]
+        assert longer.width() > short.width(), "the box did not grow with the text"
+
+    def test_one_box_per_rendered_line_not_per_paragraph(self, overlay):
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True, bilingual_mode=True)
+        block = _long_block()
+        runs = self._runs(w, block)
+        lines = sum(run.layout.lineCount() for run in runs)
+        assert lines > 2, "this block does not wrap; it proves nothing"
+        assert len(w._ribbon_rects(runs, 0, w._content_width())) == lines
+
+    def test_a_wrapped_paragraph_hugs_each_line_separately(self, overlay):
+        # One box around a wrapped sentence is a rectangle at its LONGEST
+        # line's width, with ragged text inside it.
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True)
+        rects = self._rects(w, _long_block(source=None))
+        assert len({r.width() for r in rects}) > 1, "every line got the same box"
+
+    def test_the_boxes_tile_so_none_can_hide_a_line(self, overlay):
+        """The overlap bug, stated as geometry.
+
+        A block's source and its translation are pulled together until their
+        metric boxes overlap — _pair_gap is allowed to go negative and only the
+        INK is held apart — so two independent backdrops drew one on top of the
+        other. Every box has to reach the next one and no further.
+        """
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True, bilingual_mode=True)
+        rects = self._rects(w, _long_block())
+        for above, below in zip(rects, rects[1:], strict=False):
+            assert above.top() < below.top(), "the ribbon ran backwards"
+            assert above.bottom() >= below.top() - 1, "a gap opened in the ribbon"
+
+    def test_every_line_of_the_source_keeps_a_backdrop(self, overlay):
+        # The visible failure: the translation's box covered the source's last
+        # line, so half the Arabic was drawn on a box and half on the video.
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True, bilingual_mode=True)
+        block = _long_block()
+        runs = self._runs(w, block)
+        rects = w._ribbon_rects(runs, 0, w._content_width())
+        source = runs[0]
+        for i in range(source.layout.lineCount()):
+            line = source.layout.lineAt(i)
+            middle = source.top + line.position().y() + line.height() / 2
+            assert any(r.top() <= middle <= r.bottom() for r in rects), (
+                f"source line {i} has no backdrop under it"
+            )
+
+    def test_the_ribbon_is_drawn_before_any_text(self, overlay):
+        """Order is the other half of the fix: interleaved, a backdrop still
+        lands on the line above it however well the rects tile."""
+        from PySide6.QtGui import QPainter, QPixmap
+
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True, bilingual_mode=True)
+        events: list[str] = []
+        w._draw_ribbon = lambda p, rects: events.append("ribbon")
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            import gui.subtitle_window as sw
+
+            original = sw.QTextLayout.draw
+            sw.QTextLayout.draw = lambda self, *a: events.append("text")
+            try:
+                w._draw_block(painter, _long_block(), 0, 0)
+            finally:
+                sw.QTextLayout.draw = original
+        finally:
+            painter.end()
+        assert events.count("ribbon") == 1
+        assert events.index("ribbon") < events.index("text")
+
+    @pytest.mark.parametrize(
+        ("mode", "transparent"),
+        [
+            (SUBTITLE_MODE_STATIC, False),
+            # Transparent is a static-mode option; a feed mode keeps its
+            # window backdrop whatever the toggle says.
+            (SUBTITLE_MODE_REALTIME, True),
+        ],
+    )
+    def test_no_ribbon_when_the_window_carries_the_backdrop(
+        self, overlay, mode, transparent
+    ):
+        from PySide6.QtGui import QPainter, QPixmap
+
+        w = overlay(mode, bilingual_mode=True, transparent_static=transparent)
+        drawn: list = []
+        w._draw_ribbon = lambda p, rects: drawn.append(rects)
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            w._draw_block(painter, _long_block(), 0, 0)
+        finally:
+            painter.end()
+        assert drawn == [], "a ribbon was drawn over the window's own backdrop"
+
+
 class TestSideBySideLayout:
     """The two-column bilingual layout (issue #49).
 
@@ -5700,7 +5838,10 @@ class TestSideBySideLayout:
         assert w._column_panel_rects() is None, "the panels must give way"
 
         drawn: list = []
-        w._draw_card = lambda p, text, font, rect: drawn.append(rect)
+        # One ribbon per column, never one spanning both: the columns are side
+        # by side and share no vertical run, so tiling them together would put
+        # a backdrop across the gutter.
+        w._draw_ribbon = lambda p, rects: drawn.append(rects)
         pixmap = QPixmap(w.width(), w.height())
         painter = QPainter(pixmap)
         try:
@@ -5708,7 +5849,8 @@ class TestSideBySideLayout:
         finally:
             painter.end()
         assert len(drawn) == 2, "each column's sentence needs its own card"
-        assert drawn[0].x() != drawn[1].x(), "both cards landed in one column"
+        assert drawn[0] and drawn[1], "a column was given an empty ribbon"
+        assert drawn[0][0].x() != drawn[1][0].x(), "both cards landed in one column"
 
     def test_the_panels_stay_when_transparent_is_off(self, overlay):
         w = self._overlay(overlay, transparent_static=False)
