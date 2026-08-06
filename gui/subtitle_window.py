@@ -60,6 +60,8 @@ from utils.settings import (
     BACKDROP_OPACITY_MAX,
     BACKDROP_OPACITY_MIN,
     DEFAULT_BACKDROP_OPACITY,
+    STATIC_LIFT_PERCENT_MAX,
+    STATIC_LIFT_PERCENT_MIN,
     SUBTITLE_MODE_CONTINUOUS,
     SUBTITLE_MODE_REALTIME,
     SUBTITLE_MODE_STATIC,
@@ -127,6 +129,21 @@ _CARD_PAD_X = 20
 _CARD_PAD_Y = 8
 _CARD_RADIUS = 14
 _CARD_FILL = QColor(0, 0, 0, 150)
+# Fitting a static block into a band too short for it (see _static_fit_scale).
+#
+# The REAL floor is the 12 px clamp in _translation_px / _source_px — text
+# nobody can read from the back of a hall is not an improvement on text that is
+# cut off. This constant only stops the refinement burning layouts below the
+# point where the clamp has taken over and further shrinking changes nothing.
+# It must stay under that point: at 0.35 it stopped one step early and a block
+# still ran 5 px past the bottom of a 5%-height overlay, where the clamped
+# minimum would have fitted with room to spare.
+_FIT_MIN_SCALE = 0.2
+# Bisection steps between that floor and 1.0. Eight brings the interval under
+# 0.4%, which is far finer than a whole pixel of font size, and the cost is one
+# re-layout of the block per step — paid once per utterance, since static mode
+# has no animation timer repainting behind it.
+_FIT_SEARCH_STEPS = 8
 # Where the realtime feed's first line sits, as a fraction of window height.
 FEED_TOP_RATIO = 0.06
 # Continuous mode advances by this many pixels per frame at speed 1.0.
@@ -255,6 +272,10 @@ class SubtitleWindow(QWidget):
         self._feed_target = 0.0
         self._adaptive_catchup = adaptive_catchup
         self._effective_scroll_speed = scroll_speed
+        # Live only while _paint_static is shrinking a block into a band too
+        # short for it (see _static_fit_scale). 1.0 everywhere else, so no
+        # other mode pays anything for it.
+        self._fit_scale = 1.0
 
         # A REAL window, not a Qt.Tool: a tool window is kept out of the
         # taskbar and the alt-tab list, and out of OBS's window-capture list
@@ -361,22 +382,54 @@ class SubtitleWindow(QWidget):
     def _effective_height_percent(self) -> int:
         """Height the overlay actually takes, whatever the slider says.
 
-        Static mode always takes the whole monitor. It draws ONE block, sized
-        to whatever the speaker just said, and a band shorter than that block
-        has nowhere to put the overflow: the first lines were cut off at the
-        top edge and the last ran under the disclaimer pill and off the bottom
-        of the screen. There is no scrolling here to rescue it either — the
-        feed modes shift as they fill, static does not.
-
-        Nothing is lost by it, because in static mode the overlay is not a
-        band: the backdrop is a box around the text (see _block_backdrops), so
+        **Transparent static takes the whole monitor.** It draws ONE block,
+        sized to whatever the speaker just said, and a band shorter than that
+        block has nowhere to put the overflow: the first lines were cut off at
+        the top edge and the last ran under the disclaimer pill and off the
+        bottom of the screen, with no scrolling to rescue it — the feed modes
+        shift as they fill, static does not. Nothing is lost by the full
+        height, because there the overlay has no backdrop of its own: the
+        contrast comes from a ribbon drawn around the text (_ribbon_rects), so
         a full-height window paints exactly as much as the text needs and the
-        video shows through everywhere else. The control panel greys the slider
-        out in this mode for the same reason.
+        video shows through everywhere else. The slider becomes a LIFT there
+        instead — see _static_lift.
+
+        Everywhere else the overlay IS a band and the slider is its height,
+        including static with the backdrop on: making that full height would
+        wash the whole screen at the backdrop opacity instead of the bottom
+        strip the operator asked for.
         """
-        if self._mode == SUBTITLE_MODE_STATIC:
+        if self._transparent_static_active():
             return 100
         return self._height_percent
+
+    def _static_lift(self) -> int:
+        """Pixels the static content sits above the bottom edge.
+
+        The height slider's other meaning (see WINDOW_HEIGHT_PERCENT_* in
+        utils/settings). With no band to resize, it moves the subtitles and the
+        footer pill UP the screen together — both are offset by this one figure,
+        so the disclaimer keeps its place under the text rather than the two
+        drifting apart.
+
+        Zero everywhere else, so the feed modes and opaque static are untouched
+        and this costs them nothing.
+
+        Clamped to what the block can actually clear: lifting further would
+        push the text off the TOP while trying to move it away from the bottom,
+        which is the same bug at the other end. Both stop together, so the pill
+        never climbs past the text it belongs to.
+        """
+        if not self._transparent_static_active():
+            return 0
+        percent = max(
+            STATIC_LIFT_PERCENT_MIN, min(STATIC_LIFT_PERCENT_MAX, self._height_percent)
+        )
+        lift = int(self.height() * percent / 100)
+        if self._blocks:
+            room = self._content_height() - self._measure_block(self._blocks[-1])
+            lift = min(lift, max(0, room))
+        return lift
 
     def _apply_geometry(self) -> None:
         """Occupy the bottom ``height_percent`` of the chosen screen.
@@ -484,15 +537,75 @@ class SubtitleWindow(QWidget):
     # ``font_size_base`` and ``source_font_size_base`` are DIVISORS, not pixel
     # sizes: the rendered size is the window width divided by the base, so text
     # keeps its proportion on any monitor. Smaller base => larger text.
+    #
+    # ``_fit_scale`` is applied on top, and is 1.0 except while static mode is
+    # shrinking a block into a band too short for it (see _static_fit_scale).
+    # It multiplies BOTH sizes, so the original keeps its proportion to its
+    # translation however far the pair has to shrink.
     def _translation_px(self) -> int:
         if not self.width():
             return 24
-        return max(12, min(120, int(self.width() / self._font_size_base)))
+        size = self.width() / self._font_size_base * self._fit_scale
+        return max(12, min(120, int(size)))
 
     def _source_px(self) -> int:
         if not self.width():
             return 17
-        return max(12, min(120, int(self.width() / self._source_font_size_base)))
+        size = self.width() / self._source_font_size_base * self._fit_scale
+        return max(12, min(120, int(size)))
+
+    def _measure_at(self, block: Block, scale: float) -> int:
+        """``block``'s height with the fonts scaled by ``scale``."""
+        previous = self._fit_scale
+        self._fit_scale = scale
+        try:
+            return self._measure_block(block)
+        finally:
+            self._fit_scale = previous
+
+    def _static_fit_scale(self, block: Block) -> float:
+        """Shrink factor that makes ``block`` fit the band it is drawn in.
+
+        Static draws one block and never scrolls, so a block taller than the
+        overlay simply loses its ends — the first lines cut off at the top, the
+        last under the disclaimer pill and off the screen. Where the overlay is
+        the whole monitor that cannot happen and this returns 1.0. Where it is a
+        BAND — static with the backdrop on, whose height is exactly what the
+        slider is for — the text is fitted to the band instead, which is what
+        the Tk overlay did (_static_fonts_for_content).
+
+        The answer is the LARGEST scale that fits, found by bisection, and it
+        has to be searched for in both directions. Height is only roughly
+        linear in font size — halve the size and each line is half as tall, but
+        twice as much text fits on it, so the line COUNT roughly halves too —
+        and "roughly" is the whole problem: wrapping moves in whole words, so
+        the linear estimate ``available / measured`` usually UNDERSHOOTS. A
+        search that only ever shrinks from it stops at the first size that
+        happens to fit and leaves the band visibly half empty (49 px of text in
+        a 66 px band, which is what this replaces).
+
+        Floored, because past a point shrinking stops being a fix — text nobody
+        can read from the back of a hall is not better than text that is cut
+        off, and ``_translation_px`` clamps at 12 px anyway. If even the floor
+        does not fit, it is returned regardless: it is the smallest this can
+        make the block, and the alternative is drawing it larger for no gain.
+        """
+        if self._transparent_static_active():
+            return 1.0
+        available = self._content_height()
+        if available <= 0 or self._measure_at(block, 1.0) <= available:
+            return 1.0
+        if self._measure_at(block, _FIT_MIN_SCALE) > available:
+            return _FIT_MIN_SCALE
+        # ``low`` always fits and ``high`` never does; the answer is between.
+        low, high = _FIT_MIN_SCALE, 1.0
+        for _ in range(_FIT_SEARCH_STEPS):
+            middle = (low + high) / 2
+            if self._measure_at(block, middle) <= available:
+                low = middle
+            else:
+                high = middle
+        return low
 
     @staticmethod
     def _ink(text: str, font: QFont) -> tuple[int, int]:
@@ -1255,13 +1368,23 @@ class SubtitleWindow(QWidget):
         ``_content_height`` already holds back the footer pill and its
         clearance, so this lands the block just above the disclaimer and grows
         UPWARD as the utterance gets longer.
+
+        ``_static_lift`` then raises the whole arrangement off the bottom edge
+        — the pills subtract the same figure, so the two move as one.
         """
         if not self._blocks:
             return
         block = self._blocks[-1]
         x = int(self.width() * SIDE_MARGIN_RATIO)
-        bottom = self._content_height()
-        self._draw_block(p, block, x, max(0, bottom - self._measure_block(block)))
+        # Set for the whole of the measuring AND the drawing, so the two can
+        # never disagree about how big the text is; restored afterwards because
+        # the pills and every other mode read the same two size helpers.
+        self._fit_scale = self._static_fit_scale(block)
+        try:
+            bottom = self._content_height() - self._static_lift()
+            self._draw_block(p, block, x, max(0, bottom - self._measure_block(block)))
+        finally:
+            self._fit_scale = 1.0
 
     def _live_font(self) -> QFont:
         """Font of the in-progress transcript line.
@@ -1361,7 +1484,17 @@ class SubtitleWindow(QWidget):
             r += self._pill_height() + PILL_GAP
         # Once, above whichever pill ends up topmost — and only when there is
         # one, so nothing is held back from an overlay that shows neither.
-        return r + PILL_CLEARANCE if r else 0
+        if not r:
+            return 0
+        r += PILL_CLEARANCE
+        # Never more than half a short overlay. The pills are a fixed size —
+        # they deliberately do not scale with the subtitle font — so on a band
+        # at the low end of the height slider they asked for more room than the
+        # whole window had: the content area collapsed to a single pixel, there
+        # was nothing left to fit the text into, and the pill itself was laid
+        # out from a bottom edge further up than its own height. Capped, the
+        # band keeps a usable content area and the text is fitted into THAT.
+        return min(r, max(1, self.height() // 2))
 
     def _content_height(self) -> int:
         return max(1, self.height() - self.reserved_bottom())
@@ -1423,8 +1556,14 @@ class SubtitleWindow(QWidget):
         return y
 
     def _paint_pills(self, p: QPainter) -> None:
-        """Footer last-but-one, stopped hint stacked directly above it."""
-        bottom = self.height() - FOOTER_MARGIN
+        """Footer last-but-one, stopped hint stacked directly above it.
+
+        Raised by ``_static_lift``, the same figure the block above them is
+        raised by, so the disclaimer travels with the text it belongs to rather
+        than staying pinned to the bottom of the screen while the subtitles
+        walk away from it. Zero outside transparent static.
+        """
+        bottom = self.height() - FOOTER_MARGIN - self._static_lift()
         if self._show_footer:
             bottom = self._pill(
                 p,
@@ -1550,14 +1689,14 @@ class SubtitleWindow(QWidget):
         self.update()
 
     def set_subtitle_mode(self, mode: str) -> None:
-        was_static = self._mode == SUBTITLE_MODE_STATIC
+        before = self._effective_height_percent()
         self._mode = mode
         self._scroll_offset = self._feed_target = 0.0
         self._feed_timer.stop()
-        # Static mode ignores the height slider (_effective_height_percent), so
-        # entering or leaving it changes the window's height even though the
-        # setting did not.
-        if was_static != (mode == SUBTITLE_MODE_STATIC):
+        # Transparent static takes the whole monitor whatever the slider says
+        # (_effective_height_percent), so entering or leaving it changes the
+        # window's height even though the setting did not.
+        if self._effective_height_percent() != before:
             self._apply_geometry()
         if mode == SUBTITLE_MODE_CONTINUOUS:
             # Blocks carried over from another mode have no meaningful y yet:
@@ -1659,7 +1798,13 @@ class SubtitleWindow(QWidget):
         return self._backdrop_opacity
 
     def set_transparent_static(self, enabled: bool) -> None:
+        # The toggle decides whether the overlay is a band or the whole monitor
+        # (_effective_height_percent), so in static mode it re-places the
+        # window as well as changing what is painted in it.
+        before = self._effective_height_percent()
         self._transparent_static = enabled
+        if self._effective_height_percent() != before:
+            self._apply_geometry()
         self.update()
 
     def set_translation_text_color(self, color: str | None) -> None:

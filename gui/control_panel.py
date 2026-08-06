@@ -103,10 +103,14 @@ from utils.settings import (
     SOURCE_FONT_SIZE_BASE_MAX,
     SOURCE_FONT_SIZE_BASE_MIN,
     SOURCE_LANGUAGES,
+    STATIC_LIFT_PERCENT_MAX,
+    STATIC_LIFT_PERCENT_MIN,
     STREAMING_TRANSCRIPTION_PROVIDERS,
     SUBTITLE_HIDE_MODES,
     TARGET_LANGUAGE_DISPLAY_NAMES,
     TARGET_LANGUAGE_NAMES,
+    WINDOW_HEIGHT_PERCENT_MAX,
+    WINDOW_HEIGHT_PERCENT_MIN,
     language_canonical_name,
     language_display_name,
     load_settings,
@@ -664,10 +668,12 @@ class ControlPanel(QMainWindow):
         return frame, slider, readout
 
     def _height_panel(self) -> QFrame:
+        # Range and caption are both provisional: _sync_display_sliders swaps
+        # them for the lift's when the mode calls for it.
         frame, self.height_slider, self.height_value = self._slider_panel(
             self._t("height", "Window height"),
-            5,
-            100,
+            WINDOW_HEIGHT_PERCENT_MIN,
+            WINDOW_HEIGHT_PERCENT_MAX,
             self.settings.window_height_percent,
             self._on_height_changed,
         )
@@ -1530,38 +1536,67 @@ class ControlPanel(QMainWindow):
         # with it what the two columns need to end level.
         self._level_two_column_bottoms()
 
-    def _sync_display_sliders(self) -> None:
-        """Grey out the two Display sliders wherever they control nothing.
+    def _lift_mode(self) -> bool:
+        """Whether the height slider is currently a LIFT rather than a height.
 
-        Disabled rather than hidden: a control that vanishes reads as a bug,
-        and both come back the moment the mode or the toggle changes. Whole
-        row, so the caption and the readout grey with the slider — Qt
-        propagates ``setEnabled`` to children.
-
-        **Height** does nothing in static mode. The overlay takes the whole
-        monitor there whatever the slider says (subtitle_window
-        _effective_height_percent), because static draws one block sized to
-        what was just said and a shorter band had nowhere to put the overflow:
-        the first lines were cut off at the top and the last ran off the bottom
-        of the screen. Nothing is lost, because in static mode the backdrop is
-        a box around the text rather than a band.
-
-        **Backdrop opacity** does nothing while Transparent is on, which is a
-        static-mode option: that toggle sets the window backdrop to fully
-        transparent, so its opacity has nothing left to apply to.
+        Transparent static only: there the overlay has no backdrop of its own,
+        so it takes the whole monitor and the slider moves the subtitles and
+        the footer up the screen together instead of resizing a band.
         """
-        static = self._current_mode() == "static"
-        self.height_row.setEnabled(not static)
+        return self._current_mode() == "static" and self.transparent_check.isChecked()
+
+    def _sync_display_sliders(self) -> None:
+        """Point the two Display sliders at what the current mode gives them.
+
+        **Height** never greys out — it means something in every mode — but it
+        means two different things, so its range, its readout and its caption
+        all swap with ``_lift_mode``. See WINDOW_HEIGHT_PERCENT_* in
+        utils/settings for why one stored field carries both.
+
+        The range change is made with the slider's signals blocked, and that is
+        load-bearing rather than tidy: ``setRange`` clamps the current value and
+        emits ``valueChanged``, so merely switching modes would have written a
+        halved number back into settings.json. Clamped on read, written only
+        when the operator actually drags — a feed mode's 100 survives a trip
+        through static untouched.
+
+        **Backdrop opacity** does grey out, because while Transparent is on
+        there is genuinely nothing for it to apply to: that toggle sets the
+        window backdrop to fully transparent. Disabled rather than hidden — a
+        control that vanishes reads as a bug — and the whole row, so the
+        caption and readout grey with it (Qt propagates ``setEnabled``).
+        """
+        lift = self._lift_mode()
+        slider = self.height_slider
+        blocked = slider.blockSignals(True)
+        if lift:
+            slider.setRange(STATIC_LIFT_PERCENT_MIN, STATIC_LIFT_PERCENT_MAX)
+            slider.setValue(
+                min(self.settings.window_height_percent, STATIC_LIFT_PERCENT_MAX)
+            )
+        else:
+            slider.setRange(WINDOW_HEIGHT_PERCENT_MIN, WINDOW_HEIGHT_PERCENT_MAX)
+            slider.setValue(
+                max(self.settings.window_height_percent, WINDOW_HEIGHT_PERCENT_MIN)
+            )
+        slider.blockSignals(blocked)
+        self.height_value.setText(f"{slider.value()}%")
+        self.height_caption.setText(
+            self._t("height_offset", "Distance from bottom:")
+            if lift
+            else self._t("height", "Height:")
+        )
         self.height_row.setToolTip(
             self._t(
-                "height_static_hint",
-                "Static mode always uses the whole screen — the backdrop is "
-                "sized to the text instead.",
+                "height_offset_hint",
+                "Transparent mode uses the whole screen, so this moves the "
+                "subtitles and the footer up together.",
             )
-            if static
+            if lift
             else ""
         )
-        transparent = static and self.transparent_check.isChecked()
+
+        transparent = lift
         self.opacity_row.setEnabled(not transparent)
         self.opacity_row.setToolTip(
             self._t(

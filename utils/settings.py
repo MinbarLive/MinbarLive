@@ -314,6 +314,28 @@ DEFAULT_BACKDROP_OPACITY = 75
 BACKDROP_OPACITY_MIN = 0
 BACKDROP_OPACITY_MAX = 100
 
+# The overlay's height control has two meanings, and ``window_height_percent``
+# carries both.
+#
+# Everywhere except transparent static it is a HEIGHT: the overlay is a band
+# occupying that share of the screen, measured from the bottom. 5 is the floor
+# because a band thinner than that holds no text at all.
+#
+# In transparent static the overlay takes the whole monitor — it has no
+# backdrop of its own there, so a full-height window paints nothing extra and
+# nothing can be clipped by a band too short for the utterance — and the same
+# number becomes a LIFT instead: how far the subtitles and the footer pill
+# together sit above the bottom edge. Capped at half the screen, because past
+# that a subtitle is no longer at the bottom of the picture.
+#
+# One field for both, deliberately. The control panel reads it clamped and
+# writes only when the slider is actually dragged, so switching modes can never
+# silently rewrite the other meaning's value.
+WINDOW_HEIGHT_PERCENT_MIN = 5
+WINDOW_HEIGHT_PERCENT_MAX = 100
+STATIC_LIFT_PERCENT_MIN = 0
+STATIC_LIFT_PERCENT_MAX = 50
+
 _HEX_COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}")
 
 
