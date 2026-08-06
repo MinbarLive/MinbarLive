@@ -1668,6 +1668,75 @@ class TestMinimumWindowWidth:
         assert panel.log_panel.width() >= cp._LOG_PANEL_MIN_W
 
 
+class TestTitleBarTheme:
+    """The native title bar follows the app theme, not the OS preference.
+
+    Windows paints a caption bar from the system light/dark setting and from
+    nothing the application asks for, so a light-themed panel under a dark
+    Windows kept a black bar joined to a white header.
+    """
+
+    def test_a_window_without_a_native_handle_is_left_alone(self, qt_app):
+        from PySide6.QtWidgets import QWidget
+
+        from gui.widgets import set_titlebar_dark
+
+        # Asking for an HWND early would force Qt to create the platform
+        # window ahead of time; there is nothing to theme yet either way.
+        widget = QWidget()
+        set_titlebar_dark(widget, True)  # must not raise, must not create one
+        assert widget.windowHandle() is None
+        widget.deleteLater()
+
+    def test_the_theme_sweep_skips_frameless_windows(self, qt_app, monkeypatch):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
+
+        import gui.theme as theme
+        import gui.widgets as widgets
+
+        seen: list[tuple[QWidget, bool]] = []
+        monkeypatch.setattr(
+            widgets, "set_titlebar_dark", lambda w, dark: seen.append((w, dark))
+        )
+        framed = QWidget()
+        framed.show()
+        frameless = QWidget()
+        frameless.setWindowFlag(Qt.FramelessWindowHint, True)
+        frameless.show()
+        qt_app.processEvents()
+
+        theme.apply_titlebar_theme(qt_app, "light")
+
+        themed = [w for w, _dark in seen]
+        assert framed in themed
+        # The subtitle overlay is frameless: it has no caption to theme, and
+        # poking its HWND buys nothing.
+        assert frameless not in themed
+        assert all(dark is False for _w, dark in seen), "light asked for dark"
+        for w in (framed, frameless):
+            w.close()
+            w.deleteLater()
+
+    def test_dark_is_anything_that_is_not_light(self, qt_app, monkeypatch):
+        from PySide6.QtWidgets import QWidget
+
+        import gui.theme as theme
+        import gui.widgets as widgets
+
+        seen: list[bool] = []
+        monkeypatch.setattr(
+            widgets, "set_titlebar_dark", lambda w, dark: seen.append(dark)
+        )
+        window = QWidget()
+        window.show()
+        qt_app.processEvents()
+        theme.apply_titlebar_theme(qt_app, "dark")
+        assert seen and all(seen)
+        window.close()
+        window.deleteLater()
+
+
 class TestEqualColumnHeights:
     """Side by side the three cards end level; stacked they keep their own."""
 

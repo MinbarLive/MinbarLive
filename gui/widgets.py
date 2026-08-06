@@ -12,9 +12,15 @@ used to make the overlay vanish outright). ``QWidget.windowFlags()`` is
 deliberately not trusted as the state, because on X11 the flag is really the
 ``_NET_WM_STATE_ABOVE`` property and Qt's xcb plugin only writes it while the
 window is unmapped.
+
+``set_titlebar_dark`` is the third piece of native window chrome that lives
+here rather than in the stylesheet, for the same reason as the other two: the
+caption bar belongs to the window manager, not to Qt.
 """
 
 from __future__ import annotations
+
+import sys
 
 from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QGuiApplication, QPainter, QPen
@@ -34,6 +40,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from utils.logging import log
 
 # Height of a dropdown, and with it of every small button that shares a row
 # with one (the −/+ steppers, "?", the language swap, the colour pickers).
@@ -118,6 +126,57 @@ def set_window_on_top(window: QWidget, on_top: bool) -> None:
     handle.setFlags(
         flags | Qt.WindowStaysOnTopHint if on_top else flags & ~Qt.WindowStaysOnTopHint
     )
+
+
+# Windows paints a title bar from the SYSTEM light/dark preference and from
+# nothing the application asks for, so a light-themed panel on a dark Windows
+# kept a black caption bar joined to a white header. DWMWA_USE_IMMERSIVE_DARK_MODE
+# is the only way to say otherwise — Qt exposes no API for it, which is why this
+# is ctypes. The Tk tree set the same attribute; the Qt migration lost it.
+# 20 since Windows 10 20H1, 19 before that.
+_DWMWA_IMMERSIVE_DARK_MODE = 20
+_DWMWA_IMMERSIVE_DARK_MODE_LEGACY = 19
+# SWP_NOSIZE|NOMOVE|NOZORDER|FRAMECHANGED — redraw the frame where it is,
+# without moving, resizing or restacking the window. Windows does not repaint
+# an already-painted caption bar just because the attribute changed.
+_SWP_FRAME_CHANGED = 0x0027
+
+
+def set_titlebar_dark(window: QWidget, dark: bool) -> None:
+    """Match ``window``'s native title bar to the application theme.
+
+    A no-op off Windows (every other platform already follows the application
+    or has no client-settable caption) and a no-op before the native window
+    exists — the attribute is set on an HWND, and asking for one early would
+    force Qt to create the platform window ahead of time.
+
+    Cosmetic in full: any failure is swallowed. The attribute is unsupported
+    before Windows 10 1809, and a caption bar that stays the system colour is
+    exactly the behaviour this replaces.
+    """
+    if sys.platform != "win32" or window.windowHandle() is None:
+        return
+    try:
+        import ctypes
+
+        hwnd = int(window.winId())
+        value = ctypes.c_int(1 if dark else 0)
+        dwm = ctypes.windll.dwmapi
+        if dwm.DwmSetWindowAttribute(
+            hwnd,
+            _DWMWA_IMMERSIVE_DARK_MODE,
+            ctypes.byref(value),
+            ctypes.sizeof(value),
+        ):
+            dwm.DwmSetWindowAttribute(
+                hwnd,
+                _DWMWA_IMMERSIVE_DARK_MODE_LEGACY,
+                ctypes.byref(value),
+                ctypes.sizeof(value),
+            )
+        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, _SWP_FRAME_CHANGED)
+    except Exception as exc:  # noqa: BLE001 - cosmetic; never break a window
+        log(f"Title bar theming unavailable: {exc}", level="DEBUG")
 
 
 class SegmentedControl(QWidget):

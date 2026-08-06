@@ -671,3 +671,25 @@ def apply_theme(app, theme_mode: str) -> None:
     app.setStyleSheet(stylesheet(theme_mode))
     for widget in app.allWidgets():
         widget.update()
+    apply_titlebar_theme(app, theme_mode)
+
+
+def apply_titlebar_theme(app, theme_mode: str) -> None:
+    """Re-theme the native title bar of every window already on screen.
+
+    Separate from the stylesheet because a title bar is not a styleable widget
+    — it belongs to the window manager, and on Windows it follows the SYSTEM
+    theme unless asked otherwise (``gui.widgets.set_titlebar_dark``). Frameless
+    windows are skipped: the subtitle overlay has no caption to theme, and
+    poking its HWND buys nothing.
+
+    Only windows that exist NOW. One created later paints its caption from the
+    system theme, so the two windows that always own one — the control panel
+    and the wizard — re-apply this in their own ``showEvent``.
+    """
+    from gui.widgets import set_titlebar_dark
+
+    dark = theme_mode != "light"
+    for widget in app.topLevelWidgets():
+        if widget.isWindow() and not (widget.windowFlags() & Qt.FramelessWindowHint):
+            set_titlebar_dark(widget, dark)

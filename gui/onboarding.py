@@ -44,7 +44,13 @@ from gui.i18n import load_gui_translations
 from gui.icons import app_icon
 from gui.levels import level_fill
 from gui.theme import apply_theme, current_colors
-from gui.widgets import AudioLevelBar, Dropdown, SegmentedControl, warning_box
+from gui.widgets import (
+    AudioLevelBar,
+    Dropdown,
+    SegmentedControl,
+    set_titlebar_dark,
+    warning_box,
+)
 from providers import (
     PROVIDER_CHOICES,
     get_default_model,
@@ -696,6 +702,13 @@ class OnboardingWizard(QDialog):
         idx = combo.findText(value)
         if idx >= 0:
             combo.setCurrentIndex(idx)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        # The wizard is built after apply_theme has run, so the sweep there
+        # never saw it — and this is the first point at which it has an HWND
+        # whose caption bar can be themed at all.
+        set_titlebar_dark(self, self._theme != "light")
 
     # ── handlers ─────────────────────────────────────────────────────────
     def _on_gui_language(self, _index: int) -> None:

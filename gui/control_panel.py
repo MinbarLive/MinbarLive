@@ -78,6 +78,7 @@ from gui.widgets import (
     Slider,
     Stepper,
     field,
+    set_titlebar_dark,
     set_window_on_top,
 )
 from providers import (
@@ -1294,6 +1295,9 @@ class ControlPanel(QMainWindow):
         # First point at which the cards have been styled, and so the first
         # point at which their minimum width is a real number.
         self._apply_minimum_size()
+        # …and the first point at which there is an HWND to theme. The panel is
+        # built AFTER apply_theme ran, so the sweep there never saw it.
+        set_titlebar_dark(self, self.settings.theme_mode != "light")
 
     def _toggle_log_panel(self) -> None:
         self._log_collapsed = not self._log_collapsed
