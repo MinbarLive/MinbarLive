@@ -5352,18 +5352,31 @@ class TestSideBySideLayout:
         )
         assert stacked._backdrop().alpha() == 255
 
-    def test_the_transparent_toggle_steps_aside_for_the_panels(self, overlay):
-        """It has nothing left to take away here, and its per-line cards would
-        draw a card inside a panel."""
+    def test_transparent_swaps_the_panels_for_a_card_per_sentence(self, overlay):
+        """It means the same thing in both layouts: no large background, a card
+        around each sentence instead. Here that takes the panels away and gives
+        each column's sentence its own card — never a card inside a panel."""
+        from PySide6.QtGui import QPainter, QPixmap
+
         w = self._overlay(overlay, transparent_static=True)
-        assert w._transparent_static_active() is False
-        stacked = overlay(
-            SUBTITLE_MODE_STATIC,
-            bilingual_mode=True,
-            side_by_side=False,
-            transparent_static=True,
-        )
-        assert stacked._transparent_static_active() is True
+        assert w._transparent_static_active() is True
+        assert w._backdrop().alpha() == 0
+        assert w._column_panel_rects() is None, "the panels must give way"
+
+        drawn: list = []
+        w._draw_card = lambda p, text, font, rect: drawn.append(rect)
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            w._draw_block(painter, self._block(), 0, 0)
+        finally:
+            painter.end()
+        assert len(drawn) == 2, "each column's sentence needs its own card"
+        assert drawn[0].x() != drawn[1].x(), "both cards landed in one column"
+
+    def test_the_panels_stay_when_transparent_is_off(self, overlay):
+        w = self._overlay(overlay, transparent_static=False)
+        assert w._column_panel_rects() is not None
 
     def test_the_panels_do_not_reach_the_footer_pill(self, overlay):
         w = self._overlay(overlay)

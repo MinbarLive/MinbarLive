@@ -300,15 +300,12 @@ class SubtitleWindow(QWidget):
     def _transparent_static_active(self) -> bool:
         """Transparent backdrop is a static-mode option only.
 
-        And not in the side-by-side layout: the column panels already are the
-        backdrop there, so the toggle has nothing left to take away and its
-        per-line cards would draw a card inside a panel.
+        It means the same thing in both layouts: no large background, a card
+        around each sentence instead. Side by side that takes the two column
+        panels away — they are the background there — and gives each column's
+        sentence its own card, so nothing ever draws a card inside a panel.
         """
-        return (
-            self._mode == SUBTITLE_MODE_STATIC
-            and self._transparent_static
-            and not self._columns_active()
-        )
+        return self._mode == SUBTITLE_MODE_STATIC and self._transparent_static
 
     def _backdrop(self) -> QColor:
         """Window backdrop, drawn behind everything else."""
@@ -756,9 +753,14 @@ class SubtitleWindow(QWidget):
 
         None during an announcement: that renders large and centred across the
         whole window, and framing it in two columns it does not use would read
-        as a mistake.
+        as a mistake. None with the Transparent toggle on too: it exists to
+        take the background away, and here the panels are the background.
         """
-        if not self._columns_active() or self._announcement:
+        if (
+            not self._columns_active()
+            or self._announcement
+            or self._transparent_static_active()
+        ):
             return None
         left_x, right_x, width = self._panel_geometry()
         top = max(0, int(self.height() * FEED_TOP_RATIO) - COLUMN_PANEL_PAD_Y)
@@ -960,8 +962,9 @@ class SubtitleWindow(QWidget):
         rects = self._column_rects(block, y)
         if rects is not None:
             src_rect, trans_rect = rects
-            # No per-line cards here: the column panels already carry the text
-            # over video, and drawing both stacks a card inside a panel.
+            # Cards only when the Transparent toggle has taken the panels away
+            # — otherwise the panel already carries the text over video, and
+            # drawing both would stack a card inside a panel.
             for text, font, rect, colour in (
                 (block.source, src_font, src_rect, self._column_source_qcolor(newest)),
                 (
@@ -972,6 +975,8 @@ class SubtitleWindow(QWidget):
                 ),
             ):
                 layout, _h = self._layout_text(text, font, width=rect.width())
+                if cards:
+                    self._draw_card(p, text, font, rect)
                 p.setPen(colour)
                 layout.draw(p, QPointF(rect.x(), rect.y()))
             return max(src_rect.height(), trans_rect.height())
