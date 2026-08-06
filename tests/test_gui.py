@@ -1498,10 +1498,10 @@ class TestStartStopFocus:
 
 
 class TestDisplaySlidersFollowTheMode:
-    """The height slider is greyed out wherever it controls nothing.
+    """Each Display slider is greyed out wherever it controls nothing.
 
-    Disabled rather than hidden: a control that vanishes reads as a bug, and it
-    comes back the moment the mode changes.
+    Disabled rather than hidden: a control that vanishes reads as a bug, and
+    both come back the moment the mode or the toggle changes.
     """
 
     @pytest.fixture
@@ -1533,6 +1533,23 @@ class TestDisplaySlidersFollowTheMode:
         self._set_mode(panel, mode)
         assert panel.height_row.isEnabled()
         assert not panel.height_row.toolTip()
+
+    def test_transparent_greys_the_opacity_row(self, panel):
+        self._set_mode(panel, SUBTITLE_MODE_STATIC)
+        panel.transparent_check.setChecked(True)
+        assert not panel.opacity_row.isEnabled()
+        assert panel.opacity_row.toolTip()
+        # It takes the window backdrop away; unticking gives it back.
+        panel.transparent_check.setChecked(False)
+        assert panel.opacity_row.isEnabled()
+
+    def test_opacity_survives_a_feed_mode_with_transparent_ticked(self, panel):
+        # Transparent is a static-mode option, so it must not reach across and
+        # grey out a slider that is doing its job.
+        self._set_mode(panel, SUBTITLE_MODE_STATIC)
+        panel.transparent_check.setChecked(True)
+        self._set_mode(panel, SUBTITLE_MODE_REALTIME)
+        assert panel.opacity_row.isEnabled()
 
     @staticmethod
     def _ink(widget) -> int:
@@ -1589,11 +1606,13 @@ class TestSlidersIgnoreTheWheel:
         from PySide6.QtCore import QPoint, Qt
         from PySide6.QtGui import QWheelEvent
 
-        # The height row has to be live, or the wheel never reaches its slider
-        # and the assertion below holds for the wrong reason: static mode greys
-        # it out (_sync_display_sliders), and which mode the panel opens in
-        # comes from the machine's own settings.json.
+        # Both rows have to be live, or the wheel never reaches a slider and
+        # the assertion below holds for the wrong reason: static mode greys the
+        # height row and Transparent greys the opacity one
+        # (_sync_display_sliders), and which mode the panel opens in comes from
+        # the machine's own settings.json.
         panel.height_row.setEnabled(True)
+        panel.opacity_row.setEnabled(True)
         for slider in (panel.height_slider, panel.opacity_slider):
             before = slider.value()
             event = QWheelEvent(

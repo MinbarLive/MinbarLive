@@ -255,6 +255,7 @@
   "scroll_speed_label": "Scroll-Geschwindigkeit:",
   "adaptive_catchup": "Beschleunigen, wenn Untertitel zurückfallen",
   "backdrop_opacity": "Hintergrund-Deckkraft:",
+  "opacity_transparent_hint": "Der transparente Modus entfernt den Hintergrund, es gibt also keine Deckkraft einzustellen.",
   "history_summary_heading": "Zusammenfassung",
   "history_has_summary": "Zusammenfassung gespeichert",
   "history_read_error": "Diese Sitzung konnte nicht gelesen werden."

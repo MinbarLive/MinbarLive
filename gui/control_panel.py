@@ -689,6 +689,7 @@ class ControlPanel(QMainWindow):
             self._on_opacity_changed,
         )
         self.opacity_caption = frame.caption
+        self.opacity_row = frame
         return frame
 
     # ── subtitle appearance (collapsible) ────────────────────────────────
@@ -1530,14 +1531,14 @@ class ControlPanel(QMainWindow):
         self._level_two_column_bottoms()
 
     def _sync_display_sliders(self) -> None:
-        """Grey out the height slider wherever it controls nothing.
+        """Grey out the two Display sliders wherever they control nothing.
 
         Disabled rather than hidden: a control that vanishes reads as a bug,
-        and it comes back the moment the mode changes. Whole row, so the
-        caption and the readout grey with the slider — Qt propagates
-        ``setEnabled`` to children.
+        and both come back the moment the mode or the toggle changes. Whole
+        row, so the caption and the readout grey with the slider — Qt
+        propagates ``setEnabled`` to children.
 
-        Height does nothing in static mode. The overlay takes the whole
+        **Height** does nothing in static mode. The overlay takes the whole
         monitor there whatever the slider says (subtitle_window
         _effective_height_percent), because static draws one block sized to
         what was just said and a shorter band had nowhere to put the overflow:
@@ -1545,6 +1546,9 @@ class ControlPanel(QMainWindow):
         of the screen. Nothing is lost, because in static mode the backdrop is
         a box around the text rather than a band.
 
+        **Backdrop opacity** does nothing while Transparent is on, which is a
+        static-mode option: that toggle sets the window backdrop to fully
+        transparent, so its opacity has nothing left to apply to.
         """
         static = self._current_mode() == "static"
         self.height_row.setEnabled(not static)
@@ -1555,6 +1559,17 @@ class ControlPanel(QMainWindow):
                 "sized to the text instead.",
             )
             if static
+            else ""
+        )
+        transparent = static and self.transparent_check.isChecked()
+        self.opacity_row.setEnabled(not transparent)
+        self.opacity_row.setToolTip(
+            self._t(
+                "opacity_transparent_hint",
+                "Transparent mode removes the background, so there is no "
+                "opacity to set.",
+            )
+            if transparent
             else ""
         )
 
@@ -1733,6 +1748,9 @@ class ControlPanel(QMainWindow):
     def _on_transparent_changed(self, checked: bool) -> None:
         self.settings.transparent_static = checked
         save_settings(self.settings)
+        # It takes the window backdrop away, so the opacity slider below it
+        # has nothing left to apply to.
+        self._sync_display_sliders()
         if self.subtitle_window:
             self.subtitle_window.set_transparent_static(checked)
 
