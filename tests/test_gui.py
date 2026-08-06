@@ -6095,6 +6095,33 @@ class TestSideBySideLayout:
         assert drawn[0] and drawn[1], "a column was given an empty ribbon"
         assert drawn[0][0].x() != drawn[1][0].x(), "both cards landed in one column"
 
+    def test_a_latin_original_drops_the_italic_beside_its_translation(
+        self, overlay
+    ):
+        """Italic marks the original as subordinate, which it only is when it
+        is stacked ABOVE its translation. In a row of two equals it read as a
+        quotation beside a sentence rather than the same thing twice."""
+        w = self._overlay(overlay)
+        block = self._block(translation="This is the translated line.")
+        block.source = "Das ist die Originalzeile."
+        _trans, source = w._block_fonts(block)
+        assert source.bold(), "side by side draws the original bold"
+        assert not source.italic()
+
+    def test_stacked_keeps_it_italic(self, overlay):
+        w = self._overlay(overlay, side_by_side=False)
+        block = self._block(translation="This is the translated line.")
+        block.source = "Das ist die Originalzeile."
+        _trans, source = w._block_fonts(block)
+        assert source.italic() and not source.bold()
+
+    def test_arabic_is_upright_in_both_layouts(self, overlay):
+        # It has no italic face worth the name, and never had one here.
+        for side_by_side in (True, False):
+            w = self._overlay(overlay, side_by_side=side_by_side)
+            _trans, source = w._block_fonts(self._block())
+            assert not source.italic(), side_by_side
+
     def test_the_panels_stay_when_transparent_is_off(self, overlay):
         w = self._overlay(overlay, transparent_static=False)
         assert w._column_panel_rects() is not None

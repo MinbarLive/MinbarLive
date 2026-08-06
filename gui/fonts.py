@@ -140,18 +140,20 @@ def subtitle_font(size_px: int, *, bold: bool = True, text: str = "") -> QFont:
 def source_font(size_px: int, text: str, *, bold: bool = False) -> QFont:
     """Font for original-language / live lines.
 
-    Latin renders italic and regular weight to separate it from the bold
-    upright translation; Arabic stays upright.
+    Arabic always stays upright. Latin renders italic to separate it from the
+    bold upright translation — but only where it IS subordinate to one.
 
-    ``bold`` is the side-by-side layout only. Stacked, the original is a
-    subordinate line above its translation and regular weight says so — the
-    decision recorded in AGENTS.md. Side by side it is the other half of the
-    row, and regular weight beside a bold translation reads as the secondary
-    one of two things that are meant to be equals.
+    ``bold`` is the side-by-side layout only, and it carries both halves of
+    that distinction. Stacked, the original is a subordinate line above its
+    translation: regular weight and italic both say so, which is the decision
+    recorded in AGENTS.md. Side by side it is the other half of the row rather
+    than a note under it, so it takes the translation's weight AND its upright
+    face — italic there marks one of two equals as the lesser, and the row
+    reads as a quotation beside a sentence instead of the same thing twice.
     """
     f = QFont()
     f.setFamilies(families_for(text))
     f.setPixelSize(max(1, int(size_px)))
     f.setBold(bold)
-    f.setItalic(not is_arabic_text(text))
+    f.setItalic(not bold and not is_arabic_text(text))
     return f
