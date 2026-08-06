@@ -238,6 +238,35 @@ class TestTwoColumnLevelling:
         qt_app.processEvents()  # would raise on a dead card if it still ran
 
 
+class TestMinimumWidth:
+    """The floor a window must not go below, or the cards are clipped and the
+    vertical scroll bar draws on top of what is left of them."""
+
+    @staticmethod
+    def _with_minimums(g, *widths: int):
+        for (_box, card), width in zip(g.tails, widths, strict=True):
+            card.setMinimumWidth(width)
+        return g
+
+    def _expected(self, g, widest: int) -> int:
+        margins = g.grid.contentsMargins()
+        return widest + margins.left() + margins.right()
+
+    def test_it_is_the_widest_column_plus_the_grid_margins(self, grid):
+        g = self._with_minimums(grid(100, 100, 100), 200, 380, 150)
+        assert g.minimum_width() == self._expected(g, 380)
+
+    @pytest.mark.parametrize("width", [400, 900, 2000])
+    def test_the_arrangement_does_not_change_it(self, grid, width):
+        # The trap this exists to avoid: the host's own minimumSizeHint at
+        # three columns is all three minimums added together, so a window
+        # floored at it can never be dragged narrow again — it stays three
+        # columns wide because it is three columns wide.
+        g = self._with_minimums(grid(100, 100, 100), 200, 380, 150)
+        g.relayout(width, log_open=False)
+        assert g.minimum_width() == self._expected(g, 380)
+
+
 class TestNaturalHeight:
     def test_it_counts_cards_and_their_spacing_only(self, grid):
         g = grid(100, 100, 100)

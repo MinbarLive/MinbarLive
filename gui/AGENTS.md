@@ -117,6 +117,15 @@ still had it.
 
 ## Layout mechanics learned the hard way
 
+- **The panel's minimum WIDTH is measured, never a constant.** The card area
+  scrolls vertically only, so below the cards' own minimum the content is cut off
+  with no horizontal bar to reach it, and the vertical bar then draws on top of
+  the clipped edge. Two traps, both of which cost a round: measure it from
+  `cards_host.minimumSizeHint()` and at three columns you get the three minimums
+  ADDED UP, which pins a wide window open — use `CardGrid.minimum_width()`, the
+  widest single column, which is what the reflow can actually collapse to. And
+  measure it before the first show and you get 50 px, because a card's padding,
+  border and font all come from the stylesheet and Qt applies that at polish time.
 - **Where the collapse lives depends on the column count.** 1–2 columns: the Advanced
   *card* collapses and "Weitere Einstellungen" is a plain section. 3 columns: the card is
   pinned open and the *group* collapses, closed by default. Three columns level through

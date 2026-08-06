@@ -149,6 +149,10 @@ _FONT_SIZE_BASE_DEFAULT = 40
 # without the sidebar scrollbar; the log adds its own width on top.
 _DEFAULT_W = 880
 _DEFAULT_H = 640
+# Height floor. Small enough that the panel can be dragged down to a corner of
+# the screen; everything above it scrolls. The WIDTH floor is not a constant —
+# it is measured from the cards, see _apply_minimum_size.
+_MIN_WINDOW_H = 420
 # The stored "WxH+X+Y" geometry, shared with the Tk panel so both trees read
 # one settings file.
 _GEOMETRY_RE = re.compile(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)")
@@ -214,11 +218,10 @@ class ControlPanel(QMainWindow):
 
         self.setWindowTitle(self._t("window_title", "MinbarLive"))
         self._apply_window_icon()
+        # _build() ends in _apply_log_panel_widths, which sets the window's
+        # minimum — before any geometry is applied, so a stored size is never
+        # clamped against a stale minimum.
         self._build()
-        # Small enough that the panel can be dragged down to a corner of the
-        # screen; everything above it scrolls. Before any geometry is applied,
-        # so a stored size is never clamped against a stale minimum.
-        self.setMinimumSize(QSize(420, 420))
         if not self._restore_window_geometry():
             self.resize(
                 max(_DEFAULT_W, _SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W)
@@ -1242,6 +1245,55 @@ class ControlPanel(QMainWindow):
         else:
             self.sidebar.setFixedWidth(_SIDEBAR_W_WITH_LOG)
             self._row_layout.setStretch(0, 0)
+        self._apply_minimum_size()
+
+    def _cards_minimum_width(self) -> int:
+        """Narrowest the card area may get without clipping a card.
+
+        The area scrolls vertically only, so anything narrower than the cards'
+        own minimum is simply cut off — there is no horizontal bar to reach it,
+        and the vertical one then sits ON the clipped edge. That is the whole
+        of the reported bug: at the old 420 px floor the cards needed 449, so
+        Stop and both dropdowns in the Display card ran under the scroll bar
+        and off the window.
+
+        Measured, not a constant: the widest row is a translated label beside a
+        segmented control ("Show original text" + Combined|Side by side), and
+        that width differs per GUI language.
+        """
+        return (
+            self.card_grid.minimum_width()
+            + self.card_area.verticalScrollBar().sizeHint().width()
+            + 2 * self.card_area.frameWidth()
+        )
+
+    def _apply_minimum_size(self) -> None:
+        """Pin the window's floor to what the current arrangement needs.
+
+        Re-applied whenever the log panel opens or closes, because that decides
+        which of the two arrangements has to fit: the cards alone, or the
+        pinned-width sidebar beside a log panel that has a minimum of its own.
+
+        Nothing is measured before the first show. A card's padding, font and
+        border all come from the application stylesheet, which Qt applies when
+        the widget is polished — so a pre-show ``minimumSizeHint`` describes
+        unstyled widgets and came out at 50 px against the real 449. Until then
+        the floor is the height alone, and ``showEvent`` re-runs this.
+        """
+        if not self.isVisible():
+            self.setMinimumSize(QSize(0, _MIN_WINDOW_H))
+            return
+        if self._log_collapsed:
+            width = self._cards_minimum_width()
+        else:
+            width = _SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W
+        self.setMinimumSize(QSize(width, _MIN_WINDOW_H))
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        # First point at which the cards have been styled, and so the first
+        # point at which their minimum width is a real number.
+        self._apply_minimum_size()
 
     def _toggle_log_panel(self) -> None:
         self._log_collapsed = not self._log_collapsed
