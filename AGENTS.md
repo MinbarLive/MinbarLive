@@ -98,6 +98,7 @@ with inline comments. Read them there — they are not duplicated in this file.
 | `providers/<id>/` | Per-provider implementations — the only place importing each SDK |
 | `batch/` | File/batch processing: `processor.py`, `srt_writer.py`, `text_writer.py` |
 | `gui/` | PySide6 tree, the only GUI — see [gui/AGENTS.md](gui/AGENTS.md) |
+| `bench/` | Translation-latency harness. **Makes real, paid API calls** — not a test, not in CI, never run by pytest |
 | `utils/settings.py` | User-preferences dataclass, model lists, fallback chains, `GUI_LANGUAGES` |
 | `utils/keyring_storage.py` | OS keychain integration |
 | `gui/api_keys.py` | API key prompting (storage goes through `providers.save_api_key`) |
@@ -155,6 +156,12 @@ pyinstaller MinbarLive.spec             # Windows EXE
 ```
 
 Qt work needs the venv — `./venv/Scripts/python.exe`, see [gui/AGENTS.md](gui/AGENTS.md).
+
+**`bench/` is not part of the suite and costs money.** `python bench/run_bench.py` runs the
+real `translate_text` path (RAG + LLM) over a fixed Arabic corpus — 13 utterances × `-n`
+repeats of billed API calls. Use it to answer a latency question with numbers, then compare
+two runs with `--compare`. Results land in `bench/results/`, which is gitignored: a
+committed latency figure is a claim nobody can reproduce.
 
 Test conventions:
 

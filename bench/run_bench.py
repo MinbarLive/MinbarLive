@@ -179,7 +179,7 @@ def run(n_repeats: int, out_name: str, min_interval_s: float) -> None:
     all_total: list[float] = []
 
     for entry in CORPUS:
-        t_totals = []
+        t_totals: list[float] = []
         output = ""
         bypassed = False
         for _ in range(n_repeats):
