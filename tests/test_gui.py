@@ -26,6 +26,7 @@ pytest.importorskip("PySide6", reason="PySide6 not installed")
 
 import shiboken6  # noqa: E402
 from PySide6.QtCore import QEvent  # noqa: E402
+from PySide6.QtGui import QColor  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from gui.subtitle_window import SubtitleWindow  # noqa: E402
@@ -58,6 +59,27 @@ PAIRS = [
     ("Alles Lob gebuehrt Allah ﷻ, dem Herrn der Welten.", "الحمد لله رب العالمين"),
     ("Gibt es einen Schoepfer ausser Allah?", "هل من خالق غير الله؟"),
 ]
+
+# Long enough to WRAP at the overlay's width, and with a short trailing line on
+# the source — which is the shape that exposed both static-mode bugs: the block
+# outgrew a lowered window, and the translation's backdrop landed on the
+# source's last line.
+_LONG_DE = (
+    "Alles Lob gebuehrt Allah, dem Herrn der Welten, und der Segen und Friede "
+    "seien auf dem Gesandten Allahs, seiner Familie und all seinen Gefaehrten, "
+    "und auf denen, die ihnen in Rechtschaffenheit folgen bis zum Tage des "
+    "Gerichts, und wir bitten Allah um Aufrichtigkeit im Wort und in der Tat."
+)
+_LONG_AR = (
+    "الحمد لله رب العالمين والصلاة والسلام على رسول الله وعلى آله وصحبه "
+    "أجمعين ومن تبعهم بإحسان إلى يوم الدين ونسأل الله الإخلاص في القول والعمل"
+)
+
+
+def _long_block(translation: str = _LONG_DE, source: str | None = _LONG_AR):
+    from gui.subtitle_window import Block
+
+    return Block(translation, source)
 
 
 @pytest.fixture(autouse=True)
@@ -1475,6 +1497,74 @@ class TestStartStopFocus:
         assert QApplication.focusWidget() is panel.stop_btn
 
 
+class TestDisplaySlidersFollowTheMode:
+    """The height slider is greyed out wherever it controls nothing.
+
+    Disabled rather than hidden: a control that vanishes reads as a bug, and it
+    comes back the moment the mode changes.
+    """
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        from gui.theme import apply_theme
+
+        apply_theme(qt_app, "dark")
+        p = _panel(monkeypatch)
+        yield p
+        p.close()
+
+    @staticmethod
+    def _set_mode(panel, mode: str) -> None:
+        index = panel.mode_combo.findData(mode)
+        if index < 0:
+            pytest.skip(f"the current strategy offers no {mode} mode")
+        panel.mode_combo.setCurrentIndex(index)
+
+    def test_static_greys_the_height_row(self, panel):
+        self._set_mode(panel, SUBTITLE_MODE_STATIC)
+        assert not panel.height_row.isEnabled()
+        assert panel.height_row.toolTip(), "greyed out with no reason given"
+
+    @pytest.mark.parametrize(
+        "mode", [SUBTITLE_MODE_REALTIME, SUBTITLE_MODE_CONTINUOUS]
+    )
+    def test_a_feed_mode_gives_the_height_row_back(self, panel, mode):
+        self._set_mode(panel, SUBTITLE_MODE_STATIC)
+        self._set_mode(panel, mode)
+        assert panel.height_row.isEnabled()
+        assert not panel.height_row.toolTip()
+
+    @staticmethod
+    def _ink(widget) -> int:
+        """Brightest pixel the widget paints — its text, on a darker tile."""
+        image = widget.grab().toImage()
+        return max(
+            sum(QColor(image.pixel(x, y)).getRgb()[:3])
+            for y in range(image.height())
+            for x in range(image.width())
+        )
+
+    @pytest.mark.parametrize("part", ["height_caption", "height_value"])
+    def test_the_caption_and_readout_grey_with_the_slider(
+        self, panel, qt_app, part
+    ):
+        """Measured on the rendered pixels, not on isEnabled().
+
+        Qt would normally grey a disabled label through the palette — but the
+        stylesheet's own ``QWidget {{ color }}`` outranks the palette, so both
+        labels stayed at full contrast beside a greyed-out slider and only
+        looked disabled to the API.
+        """
+        panel.resize(900, 900)
+        panel.show()
+        self._set_mode(panel, SUBTITLE_MODE_REALTIME)
+        _settle(qt_app)
+        live = self._ink(getattr(panel, part))
+        self._set_mode(panel, SUBTITLE_MODE_STATIC)
+        _settle(qt_app)
+        assert self._ink(getattr(panel, part)) < live, f"{part} did not grey"
+
+
 class TestSlidersIgnoreTheWheel:
     """Both sliders drive the audience overlay live, so a stray wheel while
     scrolling the panel would resize or fade what the room is looking at."""
@@ -1499,6 +1589,11 @@ class TestSlidersIgnoreTheWheel:
         from PySide6.QtCore import QPoint, Qt
         from PySide6.QtGui import QWheelEvent
 
+        # The height row has to be live, or the wheel never reaches its slider
+        # and the assertion below holds for the wrong reason: static mode greys
+        # it out (_sync_display_sliders), and which mode the panel opens in
+        # comes from the machine's own settings.json.
+        panel.height_row.setEnabled(True)
         for slider in (panel.height_slider, panel.opacity_slider):
             before = slider.value()
             event = QWheelEvent(
@@ -5342,6 +5437,84 @@ class TestPairInkGap:
         assert abs(self._ink_gap(w, block) - (PAIR_GAP + clearance)) <= 2
 
 
+class TestStaticTakesTheWholeMonitor:
+    """The height slider does nothing in static mode, and must not.
+
+    Static draws ONE block, sized to whatever was just said. A band shorter
+    than that block had nowhere to put the overflow — the first lines were cut
+    off at the top edge and the last ran under the disclaimer pill and off the
+    bottom of the screen — and there is no scrolling here to rescue it, because
+    only the feed modes shift as they fill.
+    """
+
+    def test_static_ignores_the_slider(self, overlay):
+        w = overlay(SUBTITLE_MODE_STATIC, window_height_percent=23)
+        assert w._effective_height_percent() == 100
+
+    @pytest.mark.parametrize(
+        "mode", [SUBTITLE_MODE_REALTIME, SUBTITLE_MODE_CONTINUOUS]
+    )
+    def test_a_feed_mode_still_obeys_it(self, overlay, mode):
+        w = overlay(mode, window_height_percent=23)
+        assert w._effective_height_percent() == 23
+
+    def test_the_setting_is_kept_for_when_the_mode_changes_back(self, overlay):
+        # Ignored, not overwritten: leaving static has to restore the band the
+        # operator chose, not reset it to full screen.
+        w = overlay(SUBTITLE_MODE_STATIC, window_height_percent=23)
+        w.set_subtitle_mode(SUBTITLE_MODE_REALTIME)
+        assert w._effective_height_percent() == 23
+
+    def test_entering_or_leaving_static_re_places_the_window(self, overlay):
+        # The height changes although the setting did not, so nothing else
+        # would have triggered the placement.
+        w = overlay(SUBTITLE_MODE_REALTIME, window_height_percent=23)
+        placed: list = []
+        w._apply_geometry = lambda: placed.append(w._mode)
+        w.set_subtitle_mode(SUBTITLE_MODE_STATIC)
+        w.set_subtitle_mode(SUBTITLE_MODE_CONTINUOUS)
+        assert placed == [SUBTITLE_MODE_STATIC, SUBTITLE_MODE_CONTINUOUS]
+        # ...and not on a change between two feed modes, which the slider
+        # already governs identically.
+        placed.clear()
+        w.set_subtitle_mode(SUBTITLE_MODE_REALTIME)
+        assert placed == []
+
+    def test_the_block_sits_above_the_footer_not_mid_screen(self, overlay):
+        """Centring was invisible in a short band and wrong on a whole monitor.
+
+        A subtitle belongs at the bottom of the picture, so the block is
+        anchored to the foot of the content area and grows upward.
+        """
+        from PySide6.QtGui import QPainter, QPixmap
+
+        w = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True)
+        w.add_subtitle(*reversed(PAIRS[0]))
+        tops: list[int] = []
+        w._draw_block = lambda p, block, x, y, newest=True: tops.append(y) or 0
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            w._paint_static(painter)
+        finally:
+            painter.end()
+        block_height = w._measure_block(w._blocks[-1])
+        assert tops == [w._content_height() - block_height]
+        # ...and clear of the disclaimer pill, which reserved_bottom holds back.
+        assert tops[0] + block_height <= w.height() - w.reserved_bottom()
+
+    def test_a_block_taller_than_the_band_no_longer_spills(self, overlay):
+        # The reported symptom, as geometry: at 23% a long bilingual block was
+        # taller than the whole content area.
+        w = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True)
+        screen = w._screen().geometry()
+        w.resize(screen.width(), int(screen.height() * 23 / 100))
+        block = _long_block()
+        assert w._measure_block(block) > w._content_height(), "not a spilling case"
+        w.resize(screen.width(), screen.height())
+        assert w._measure_block(block) <= w._content_height()
+
+
 class TestSideBySideLayout:
     """The two-column bilingual layout (issue #49).
 
@@ -6461,8 +6634,14 @@ class TestOverlayFitsTheScreen:
     HEIGHT_PERCENT = 30  # enough of the screen to be real, little enough to see past
 
     def _placed(self, qt_app, overlay):
-        """A shown overlay whose geometry the WM actually granted."""
-        w = overlay(SUBTITLE_MODE_STATIC, window_height_percent=self.HEIGHT_PERCENT)
+        """A shown overlay whose geometry the WM actually granted.
+
+        A FEED mode, because the height percent has to actually apply: static
+        ignores it and takes the whole monitor (_effective_height_percent), and
+        a full-height overlay is already at the position these tests move it
+        away from — every assertion would then hold trivially.
+        """
+        w = overlay(SUBTITLE_MODE_REALTIME, window_height_percent=self.HEIGHT_PERCENT)
         w.show()
         _settle(qt_app)
         g = w._screen().geometry()

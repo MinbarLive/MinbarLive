@@ -148,6 +148,14 @@ still had it.
 - **Measure a content-sized window with `layout().totalHeightForWidth()`, not
   `adjustSize()`** — a word-wrapped label's sizeHint reserves a line it doesn't use, and
   the surplus inflates whatever in the column can stretch.
+- **Static mode ignores the height slider and takes the whole monitor**
+  (`_effective_height_percent`). It draws ONE block sized to what was just said, and
+  a shorter band has nowhere to put the overflow — the first lines were cut off at
+  the top and the last ran under the disclaimer pill and off the screen, with no
+  scrolling to rescue it (only the feed modes shift as they fill). The setting is
+  ignored, never overwritten, so leaving static restores the band the operator
+  chose. The panel greys the row out and says why; entering or leaving static
+  re-places the window, because the height changes although the setting did not.
 - **Subtitle lines are placed by their BASELINE, not by the top of their box.** A line's
   ascent is the tallest of the font engines that actually drew it, and a single glyph
   borrowed from a fallback family (the ﷺ/ﷻ honorifics on Linux) makes it far taller than

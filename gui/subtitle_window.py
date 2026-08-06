@@ -332,6 +332,26 @@ class SubtitleWindow(QWidget):
         idx = max(0, min(self._monitor_index, len(screens) - 1))
         return screens[idx]
 
+    def _effective_height_percent(self) -> int:
+        """Height the overlay actually takes, whatever the slider says.
+
+        Static mode always takes the whole monitor. It draws ONE block, sized
+        to whatever the speaker just said, and a band shorter than that block
+        has nowhere to put the overflow: the first lines were cut off at the
+        top edge and the last ran under the disclaimer pill and off the bottom
+        of the screen. There is no scrolling here to rescue it either — the
+        feed modes shift as they fill, static does not.
+
+        Nothing is lost by it, because in static mode the overlay is not a
+        band: the backdrop is a box around the text (see _block_backdrops), so
+        a full-height window paints exactly as much as the text needs and the
+        video shows through everywhere else. The control panel greys the slider
+        out in this mode for the same reason.
+        """
+        if self._mode == SUBTITLE_MODE_STATIC:
+            return 100
+        return self._height_percent
+
     def _apply_geometry(self) -> None:
         """Occupy the bottom ``height_percent`` of the chosen screen.
 
@@ -358,7 +378,7 @@ class SubtitleWindow(QWidget):
             return
         over_the_taskbar = is_window_on_top(self) and not _MACOS
         g = screen.geometry() if over_the_taskbar else screen.availableGeometry()
-        h = max(1, int(g.height() * self._height_percent / 100))
+        h = max(1, int(g.height() * self._effective_height_percent() / 100))
         # Kept, because it is a REQUEST: _fit_to_screen compares it against what
         # the window manager actually did.
         self._requested = QRect(g.x(), g.y() + g.height() - h, g.width(), h)
@@ -1126,13 +1146,26 @@ class SubtitleWindow(QWidget):
         self._blocks = survivors
 
     def _paint_static(self, p: QPainter) -> None:
-        """Only the newest block, vertically centred."""
+        """Only the newest block, sitting just above the footer.
+
+        Anchored to the BOTTOM of the content area, not centred in it. Centring
+        was invisible while the overlay was a band at the bottom of the screen
+        — the band was barely taller than the block — but static now takes the
+        whole monitor (_effective_height_percent), and there it left the
+        subtitles floating in the middle of the picture. Where a subtitle
+        belongs is where the Tk overlay put it, an ink's distance off the
+        bottom edge (_create_outlined_text at canvas_height - 4).
+
+        ``_content_height`` already holds back the footer pill and its
+        clearance, so this lands the block just above the disclaimer and grows
+        UPWARD as the utterance gets longer.
+        """
         if not self._blocks:
             return
         block = self._blocks[-1]
         x = int(self.width() * SIDE_MARGIN_RATIO)
-        h = self._measure_block(block)
-        self._draw_block(p, block, x, max(0, (self._content_height() - h) // 2))
+        bottom = self._content_height()
+        self._draw_block(p, block, x, max(0, bottom - self._measure_block(block)))
 
     def _live_font(self) -> QFont:
         """Font of the in-progress transcript line.
@@ -1421,9 +1454,15 @@ class SubtitleWindow(QWidget):
         self.update()
 
     def set_subtitle_mode(self, mode: str) -> None:
+        was_static = self._mode == SUBTITLE_MODE_STATIC
         self._mode = mode
         self._scroll_offset = self._feed_target = 0.0
         self._feed_timer.stop()
+        # Static mode ignores the height slider (_effective_height_percent), so
+        # entering or leaving it changes the window's height even though the
+        # setting did not.
+        if was_static != (mode == SUBTITLE_MODE_STATIC):
+            self._apply_geometry()
         if mode == SUBTITLE_MODE_CONTINUOUS:
             # Blocks carried over from another mode have no meaningful y yet:
             # re-stack them from the bottom so the newest stays visible.

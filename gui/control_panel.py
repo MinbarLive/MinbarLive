@@ -672,6 +672,7 @@ class ControlPanel(QMainWindow):
             self._on_height_changed,
         )
         self.height_caption = frame.caption
+        self.height_row = frame
         return frame
 
     def _opacity_panel(self) -> QFrame:
@@ -1523,9 +1524,39 @@ class ControlPanel(QMainWindow):
         self.mode_controls.setVisible(mode == "continuous")
         self.catchup_check.setVisible(mode == "continuous")
         self.interim_check.setVisible(mode == "realtime")
+        self._sync_display_sliders()
         # Showing or hiding a row changes the translation card's height, and
         # with it what the two columns need to end level.
         self._level_two_column_bottoms()
+
+    def _sync_display_sliders(self) -> None:
+        """Grey out the height slider wherever it controls nothing.
+
+        Disabled rather than hidden: a control that vanishes reads as a bug,
+        and it comes back the moment the mode changes. Whole row, so the
+        caption and the readout grey with the slider — Qt propagates
+        ``setEnabled`` to children.
+
+        Height does nothing in static mode. The overlay takes the whole
+        monitor there whatever the slider says (subtitle_window
+        _effective_height_percent), because static draws one block sized to
+        what was just said and a shorter band had nowhere to put the overflow:
+        the first lines were cut off at the top and the last ran off the bottom
+        of the screen. Nothing is lost, because in static mode the backdrop is
+        a box around the text rather than a band.
+
+        """
+        static = self._current_mode() == "static"
+        self.height_row.setEnabled(not static)
+        self.height_row.setToolTip(
+            self._t(
+                "height_static_hint",
+                "Static mode always uses the whole screen — the backdrop is "
+                "sized to the text instead.",
+            )
+            if static
+            else ""
+        )
 
     def _sync_running_state(self) -> None:
         # Captured BEFORE the buttons change: Qt moves focus out of a widget

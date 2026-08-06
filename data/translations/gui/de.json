@@ -22,6 +22,7 @@
   "islamic_mode_off_confirm": "Islamischen Modus ausschalten? Koranvers-Erkennung, Athan-Erkennung und der islamische Übersetzungsstil werden deaktiviert — die App wird zum allgemeinen Übersetzer.",
   "font": "Schriftgröße:",
   "height": "Höhe:",
+  "height_static_hint": "Der statische Modus nutzt immer den ganzen Bildschirm — der Hintergrund passt sich stattdessen dem Text an.",
   "display_routing": "Anzeige & Audio",
   "screen": "Aufnahme & Routing",
   "subtitle_screen": "Untertitel-Bildschirm:",
