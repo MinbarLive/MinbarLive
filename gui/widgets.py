@@ -258,6 +258,40 @@ class Dropdown(QComboBox):
         # Picking an entry ends the interaction; keeping the accent focus ring
         # afterwards reads as "still editing".
         self.activated.connect(lambda _index: self.clearFocus())
+        # Long entries — device names above all — are elided both in the
+        # closed box and in the popup once the window is squeezed narrow. Carry
+        # the full text as a tooltip so hovering reveals it: on each row of the
+        # open popup (Qt.ToolTipRole below) and on the closed box itself, kept
+        # in sync with the selection.
+        self.currentIndexChanged.connect(self._sync_closed_tooltip)
+        self._sync_closed_tooltip()
+
+    def _sync_item_tooltip(self, index: int) -> None:
+        if 0 <= index < self.count():
+            self.setItemData(index, self.itemText(index), Qt.ToolTipRole)
+
+    def _sync_closed_tooltip(self) -> None:
+        # The closed box shows the current entry; a tooltip there needs the
+        # full text of exactly that one.
+        self.setToolTip(self.currentText())
+
+    def addItem(self, text: str, userData=None) -> None:  # noqa: N802 - Qt API
+        super().addItem(text, userData)
+        self._sync_item_tooltip(self.count() - 1)
+        self._sync_closed_tooltip()
+
+    def addItems(self, texts: list[str]) -> None:  # noqa: N802 - Qt API
+        start = self.count()
+        super().addItems(texts)
+        for i in range(start, self.count()):
+            self._sync_item_tooltip(i)
+        self._sync_closed_tooltip()
+
+    def setItemText(self, index: int, text: str) -> None:  # noqa: N802 - Qt API
+        super().setItemText(index, text)
+        self._sync_item_tooltip(index)
+        if index == self.currentIndex():
+            self._sync_closed_tooltip()
 
     def wheelEvent(self, event) -> None:  # noqa: N802 - Qt API
         """Never change the selection by scrolling over a closed combo.

@@ -881,12 +881,20 @@ class TestControlPanelLayout:
         assert panel.sidebar.width() == cp_module()._SIDEBAR_W_WITH_LOG
 
     def test_a_narrow_window_grows_to_fit_the_log(self, panel, qt_app):
+        from PySide6.QtGui import QGuiApplication
+
         panel.resize(600, 800)
         qt_app.processEvents()
         panel._toggle_log_panel()
-        assert panel.width() >= (
-            cp_module()._SIDEBAR_W_WITH_LOG + cp_module()._LOG_PANEL_MIN_W
-        )
+        # It grows to hold the sidebar and the log side by side — but never past
+        # the screen it is on (the production rule in _toggle_log_panel). On a
+        # headless/offscreen display narrower than that sum the window is capped
+        # at the screen width, so the assertion states the rule, not the number.
+        wanted = cp_module()._SIDEBAR_W_WITH_LOG + cp_module()._LOG_PANEL_MIN_W
+        screen = panel.screen() or QGuiApplication.primaryScreen()
+        if screen is not None:
+            wanted = min(wanted, screen.availableGeometry().width())
+        assert panel.width() >= wanted
 
     def test_advanced_opens_only_when_it_has_a_column_to_itself(self, panel):
         panel.resize(1200, 800)
