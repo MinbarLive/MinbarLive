@@ -129,6 +129,7 @@
   "wizard_key_help": "من أين أحصل على مفتاح API؟",
   "wizard_key_site": "افتح صفحة مفتاح API",
   "bilingual_mode": "عرض النص الأصلي",
+  "subtitle_side_by_side": "جنبًا إلى جنب",
   "show_interim_transcript": "عرض النص المباشر",
   "batch_file": "ملف / دفعة",
   "batch_file_sub": "إنشاء ترجمات مترجمة (.srt) من تسجيل",

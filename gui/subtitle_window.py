@@ -96,6 +96,12 @@ PILL_FONT_PX = 19
 PILL_GAP = 12
 # Side margin as a fraction of window width, so a line never runs edge to edge.
 SIDE_MARGIN_RATIO = 0.06
+# Gutter between the two columns of the side-by-side layout, as a fraction of
+# window width. Wider than PAIR_GAP by a lot and deliberately so: stacked, the
+# original and its translation have to read as ONE utterance, and side by side
+# they have to read as two columns. The same distance that binds them
+# vertically would leave two scripts running into each other horizontally.
+COLUMN_GAP_RATIO = 0.05
 # Continuous mode advances by this many pixels per frame at speed 1.0.
 SCROLL_PIXELS_PER_FRAME = 1.0
 FRAME_MS = 16
@@ -169,6 +175,7 @@ class SubtitleWindow(QWidget):
         show_footer: bool = True,
         theme_mode: str = "dark",
         bilingual_mode: bool = False,
+        side_by_side: bool = False,
         always_on_top: bool = True,
         adaptive_catchup: bool = False,
         on_stop=None,
@@ -186,6 +193,7 @@ class SubtitleWindow(QWidget):
         self._show_footer = show_footer
         self._theme_mode = theme_mode
         self._bilingual = bilingual_mode
+        self._side_by_side = side_by_side
         self._font_size_base = font_size_base
         self._source_font_size_base = source_font_size_base
         self._translation_color = translation_text_color
@@ -583,9 +591,18 @@ class SubtitleWindow(QWidget):
         return char_format
 
     def _layout_text(
-        self, text: str, font: QFont, direction=Qt.LayoutDirectionAuto
+        self,
+        text: str,
+        font: QFont,
+        direction=Qt.LayoutDirectionAuto,
+        width: int | None = None,
     ) -> tuple[QTextLayout, int]:
-        """``text`` wrapped to the content width, at a tightened line rhythm.
+        """``text`` wrapped to ``width``, at a tightened line rhythm.
+
+        ``width`` defaults to the full content width; the side-by-side layout
+        passes one column instead. Everything else about the rhythm is
+        width-independent, so measuring and drawing stay in step as long as
+        both are given the same figure.
 
         Qt does the line breaking — after shaping and bidi, so an RTL sentence
         cannot be broken in the wrong place — and this only sets where each
@@ -625,7 +642,8 @@ class SubtitleWindow(QWidget):
         # two wrapped lines of the same Arabic sentence stack at this distance
         # and would collide with each other otherwise.
         pitch = max(1, fm.lineSpacing() - reclaim + overhang)
-        width = self._content_width()
+        if width is None:
+            width = self._content_width()
         count, y = 0, 0.0
         layout.beginLayout()
         while True:
@@ -664,9 +682,68 @@ class SubtitleWindow(QWidget):
         # below that descent, or the next block starts inside this one.
         return layout, (count - 1) * pitch + fm.ascent() + fm.descent() + overhang
 
-    def _measure(self, text: str, font: QFont) -> int:
-        """Height ``text`` occupies at ``font`` within the content width."""
-        return self._layout_text(text, font)[1]
+    def _measure(self, text: str, font: QFont, width: int | None = None) -> int:
+        """Height ``text`` occupies at ``font`` within ``width``."""
+        return self._layout_text(text, font, width=width)[1]
+
+    # ── side-by-side columns ─────────────────────────────────────────────
+    def _column_width(self) -> int:
+        """Width of one column of the side-by-side layout."""
+        return max(1, (self._content_width() - self._column_gap()) // 2)
+
+    def _column_gap(self) -> int:
+        return int(self.width() * COLUMN_GAP_RATIO)
+
+    def _two_column(self, block: Block) -> bool:
+        """Whether ``block`` lays out as two columns rather than stacked.
+
+        Needs a separate original to put in the second column. Same-language
+        mode, error messages and the verified-verse bypass all emit a
+        translation with ``source=None``, and those rows keep the full width —
+        half a screen of blank beside an error message helps nobody.
+        """
+        return bool(self._side_by_side and self._bilingual and block.source)
+
+    def _translation_on_left(self, block: Block) -> bool:
+        """Which column the translation takes.
+
+        RTL text goes right, because that is where an RTL reader's eye starts —
+        the Arabic → German main path puts the Arabic right and the German
+        left. When the RTL side is the *translation* (Turkish → Arabic) the
+        columns swap, so this follows the script rather than "source vs
+        translation".
+
+        When neither side is RTL there is no directional reason, and the
+        tiebreak is that the translation keeps the left column anyway: the
+        audience's own language then sits in the same place whatever the
+        speaker switches to. ``is_arabic_text`` is the whole RTL test because
+        Arabic, Urdu and Persian are the only RTL languages offered and all
+        three are Arabic-script; the bidi-counting rule in
+        ``_dominant_direction`` is deliberately not reused here (see its
+        docstring — a translation quoting the other script would flip).
+        """
+        return not (
+            is_arabic_text(block.translation) and not is_arabic_text(block.source or "")
+        )
+
+    def _column_rects(self, block: Block, x: int, y: int) -> tuple[QRect, QRect] | None:
+        """``(source rect, translation rect)`` for ``block``, or None if stacked.
+
+        Both rects share ``y``: the columns are a table row, top-aligned, and
+        the taller of the two decides the row height. Letting each column flow
+        on its own is what would put pair 3 beside pair 5 within a few
+        utterances.
+        """
+        if not self._two_column(block):
+            return None
+        col = self._column_width()
+        right_x = x + self._content_width() - col
+        trans_font, src_font = self._block_fonts(block)
+        src_h = self._measure(block.source, src_font, col)
+        trans_h = self._measure(block.translation, trans_font, col)
+        if self._translation_on_left(block):
+            return QRect(right_x, y, col, src_h), QRect(x, y, col, trans_h)
+        return QRect(x, y, col, src_h), QRect(right_x, y, col, trans_h)
 
     def _block_fonts(self, block: Block) -> tuple[QFont, QFont | None]:
         trans = subtitle_font(self._translation_px(), text=block.translation)
@@ -698,6 +775,15 @@ class SubtitleWindow(QWidget):
 
     def _measure_block(self, block: Block) -> int:
         trans_font, src_font = self._block_fonts(block)
+        if self._two_column(block):
+            # A row is as tall as its taller cell, not as tall as both — the
+            # whole point of the layout is that the translation no longer sits
+            # below its own original.
+            col = self._column_width()
+            return max(
+                self._measure(block.source, src_font, col),
+                self._measure(block.translation, trans_font, col),
+            )
         h = self._measure(block.translation, trans_font)
         if src_font is not None and block.source:
             h += self._measure(block.source, src_font) + self._pair_gap(block)
@@ -712,6 +798,15 @@ class SubtitleWindow(QWidget):
         band to land in the same place.
         """
         trans_font, src_font = self._block_fonts(block)
+        if self._two_column(block):
+            # Both columns start at the block's top edge, so only the SMALLER
+            # of the two blank bands may be closed up: taking the larger would
+            # let the other column's ink reach into the block above.
+            reclaim = min(
+                self._reclaim(block.source, src_font),
+                self._reclaim(block.translation, trans_font),
+            )
+            return REALTIME_BLOCK_SPACING - reclaim
         if src_font is not None and block.source:
             first_text, first_font = block.source, src_font
         else:
@@ -758,6 +853,24 @@ class SubtitleWindow(QWidget):
         trans_font, src_font = self._block_fonts(block)
         w = self._content_width()
         cards = self._transparent_static_active()
+        rects = self._column_rects(block, x, y)
+        if rects is not None:
+            src_rect, trans_rect = rects
+            for text, font, rect, colour in (
+                (block.source, src_font, src_rect, self._source_qcolor()),
+                (
+                    block.translation,
+                    trans_font,
+                    trans_rect,
+                    self._translation_qcolor() if newest else self._history_qcolor(),
+                ),
+            ):
+                layout, _h = self._layout_text(text, font, width=rect.width())
+                if cards:
+                    self._draw_card(p, text, font, rect)
+                p.setPen(colour)
+                layout.draw(p, QPointF(rect.x(), rect.y()))
+            return max(src_rect.height(), trans_rect.height())
         used = 0
         if src_font is not None and block.source:
             layout, sh = self._layout_text(block.source, src_font)
@@ -1209,6 +1322,14 @@ class SubtitleWindow(QWidget):
 
     def get_subtitle_mode(self) -> str:
         return self._mode
+
+    def set_side_by_side(self, enabled: bool) -> None:
+        self._side_by_side = enabled
+        if self._mode == SUBTITLE_MODE_CONTINUOUS:
+            # Every block's height just changed, and in continuous mode the y
+            # values were computed from the old ones (see set_subtitle_mode).
+            self._restack_continuous()
+        self.update()
 
     def set_bilingual_mode(self, enabled: bool) -> None:
         self._bilingual = enabled

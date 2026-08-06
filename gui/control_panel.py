@@ -970,10 +970,19 @@ class ControlPanel(QMainWindow):
         )
         self.bilingual_check.setChecked(self.settings.bilingual_mode)
         self.bilingual_check.toggled.connect(self._on_bilingual_toggled)
+        # Only meaningful with an original to put in the second column, so it
+        # follows the bilingual toggle's state rather than sitting there dead.
+        self.side_by_side_check = QCheckBox(
+            self._t("subtitle_side_by_side", "Side by side")
+        )
+        self.side_by_side_check.setChecked(self.settings.subtitle_side_by_side)
+        self.side_by_side_check.setEnabled(self.settings.bilingual_mode)
+        self.side_by_side_check.toggled.connect(self._on_side_by_side_toggled)
         card.body.addWidget(self.catchup_check)
         card.body.addWidget(self.interim_check)
         card.body.addWidget(self.transparent_check)
         card.body.addWidget(self.bilingual_check)
+        card.body.addWidget(self.side_by_side_check)
 
         hide_caption = QLabel(self._t("hide_subtitle_label", "Hide subtitle window"))
         hide_caption.setObjectName("field")
@@ -1631,8 +1640,18 @@ class ControlPanel(QMainWindow):
     def _on_bilingual_toggled(self, checked: bool) -> None:
         self.settings.bilingual_mode = checked
         save_settings(self.settings)
+        # The side-by-side layout has nothing to put in its second column
+        # without an original. The stored preference is deliberately left
+        # alone, so turning the original back on restores the chosen layout.
+        self.side_by_side_check.setEnabled(checked)
         if self.subtitle_window:
             self.subtitle_window.set_bilingual_mode(checked)
+
+    def _on_side_by_side_toggled(self, checked: bool) -> None:
+        self.settings.subtitle_side_by_side = checked
+        save_settings(self.settings)
+        if self.subtitle_window:
+            self.subtitle_window.set_side_by_side(checked)
 
     def _on_hide_mode_changed(self, index: int) -> None:
         self.settings.subtitle_hide_mode = SUBTITLE_HIDE_MODES[index]
@@ -2405,6 +2424,7 @@ class ControlPanel(QMainWindow):
             show_footer=s.show_footer,
             theme_mode=s.subtitle_theme_mode,
             bilingual_mode=s.bilingual_mode,
+            side_by_side=s.subtitle_side_by_side,
             adaptive_catchup=s.adaptive_subtitle_catchup,
         )
         self.subtitle_window.set_always_on_top(self._effective_always_on_top())
@@ -2477,6 +2497,7 @@ class ControlPanel(QMainWindow):
         self.settings.subtitle_mode = self._current_mode()
         self.settings.monitor_index = self.monitor_combo.currentIndex()
         self.settings.bilingual_mode = self.bilingual_check.isChecked()
+        self.settings.subtitle_side_by_side = self.side_by_side_check.isChecked()
         pos = self.device_combo.currentIndex()
         if 0 <= pos < len(self.device_base_names):
             self.settings.input_device_name = self.device_base_names[pos]

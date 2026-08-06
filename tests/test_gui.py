@@ -5198,6 +5198,120 @@ class TestPairInkGap:
         assert abs(self._ink_gap(w, block) - (PAIR_GAP + clearance)) <= 2
 
 
+class TestSideBySideLayout:
+    """The two-column bilingual layout (issue #49).
+
+    A row is a table row, not two independent feeds: both cells start at the
+    row's top edge and the taller one decides its height. If each column
+    flowed on its own, pair 3 would end up beside pair 5 within a few
+    utterances.
+    """
+
+    _KEEP = object()  # "leave the default"; None means "no original at all"
+
+    def _overlay(self, overlay, mode=SUBTITLE_MODE_STATIC, **kwargs):
+        kwargs.setdefault("bilingual_mode", True)
+        kwargs.setdefault("side_by_side", True)
+        return overlay(mode, **kwargs)
+
+    def _block(self, translation=None, source=_KEEP):
+        from gui.subtitle_window import Block
+
+        if source is self._KEEP:
+            source = PAIRS[0][1]
+        return Block(translation or PAIRS[0][0], source)
+
+    def test_the_two_columns_share_a_top_edge(self, overlay):
+        w = self._overlay(overlay)
+        src, trans = w._column_rects(self._block(), 40, 120)
+        assert src.y() == trans.y() == 120
+
+    def test_a_row_is_as_tall_as_its_taller_column_not_both(self, overlay):
+        w = self._overlay(overlay)
+        block = self._block()
+        src, trans = w._column_rects(block, 0, 0)
+        assert w._measure_block(block) == max(src.height(), trans.height())
+        # And that is genuinely less than stacking them, or the layout would
+        # buy nothing.
+        assert w._measure_block(block) < src.height() + trans.height()
+
+    def test_the_columns_are_equal_and_separated_by_a_real_gutter(self, overlay):
+        w = self._overlay(overlay)
+        src, trans = w._column_rects(self._block(), 0, 0)
+        assert src.width() == trans.width() == w._column_width()
+        left, right = sorted((src, trans), key=lambda r: r.x())
+        gutter = right.x() - (left.x() + left.width())
+        # Deliberately NOT compared against COLUMN_GAP_RATIO: that would pass
+        # for any value including zero. A hairline is the failure — two scripts
+        # running into each other — so the bound is a share of the column, and
+        # it holds at any window size.
+        assert gutter >= w._column_width() * 0.05
+        # The row still fills the content width exactly, with no drift from the
+        # integer halving.
+        assert left.x() == 0
+        assert right.x() + right.width() == w._content_width()
+
+    def test_arabic_takes_the_right_column(self, overlay):
+        """The Arabic → German main path: Arabic right because it is RTL, so
+        the German translation lands on the left."""
+        w = self._overlay(overlay)
+        src, trans = w._column_rects(self._block(), 0, 0)
+        assert src.x() > trans.x()
+
+    def test_the_columns_swap_when_the_translation_is_the_rtl_side(self, overlay):
+        """Turkish → Arabic: the Arabic is now the TRANSLATION and still has to
+        sit right, so the sides follow the script rather than the role."""
+        w = self._overlay(overlay)
+        block = self._block(translation=PAIRS[0][1], source="Rahman ve Rahim olan")
+        src, trans = w._column_rects(block, 0, 0)
+        assert trans.x() > src.x()
+
+    def test_two_ltr_languages_keep_the_translation_on_the_left(self, overlay):
+        """No directional reason either way, so the audience's own language
+        stays where it was on the Arabic path — left."""
+        w = self._overlay(overlay)
+        block = self._block(translation="In the name of Allah", source="Im Namen")
+        src, trans = w._column_rects(block, 0, 0)
+        assert trans.x() < src.x()
+
+    def test_a_block_with_no_original_spans_the_full_width(self, overlay):
+        """Same-language mode, error messages and the verified-verse bypass all
+        emit source=None, and that is routine rather than an edge case."""
+        w = self._overlay(overlay)
+        block = self._block(source=None)
+        assert w._column_rects(block, 0, 0) is None
+        trans_font, _src = w._block_fonts(block)
+        assert w._measure_block(block) == w._measure(block.translation, trans_font)
+
+    def test_the_layout_needs_both_switches(self, overlay):
+        w = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, side_by_side=False)
+        assert w._column_rects(self._block(), 0, 0) is None
+        w = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=False, side_by_side=True)
+        assert w._column_rects(self._block(), 0, 0) is None
+
+    def test_every_mode_gets_it(self, overlay):
+        for mode in (
+            SUBTITLE_MODE_STATIC,
+            SUBTITLE_MODE_REALTIME,
+            SUBTITLE_MODE_CONTINUOUS,
+        ):
+            w = self._overlay(overlay, mode)
+            assert w._column_rects(self._block(), 0, 0) is not None, mode
+
+    def test_toggling_it_restacks_a_continuous_feed(self, overlay):
+        """Continuous blocks carry an absolute y computed from their height,
+        and every height just changed."""
+        w = self._overlay(overlay, SUBTITLE_MODE_CONTINUOUS, side_by_side=False)
+        for translation, source in PAIRS:
+            w.add_subtitle(translation, source_text=source)
+        before = [b.y for b in w._blocks]
+        w.set_side_by_side(True)
+        assert [b.y for b in w._blocks] != before
+        # Still bottom-anchored and still in order, with no overlap.
+        for earlier, later in zip(w._blocks, w._blocks[1:], strict=False):
+            assert later.y >= earlier.y + w._measure_block(earlier)
+
+
 class TestParagraphDirection:
     """A trailing full stop belongs at the END of the sentence, which for
     Arabic is its LEFT edge. QTextOption defaults its text direction to

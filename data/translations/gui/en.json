@@ -140,6 +140,7 @@
   "wizard_key_help": "Where do I get an API key?",
   "wizard_key_site": "Open the API key page",
   "bilingual_mode": "Show original text",
+  "subtitle_side_by_side": "Side by side",
   "show_interim_transcript": "Show live transcript",
   "batch_file": "Batch / File",
   "batch_file_sub": "Create translated subtitles (.srt) from a recording",
