@@ -5059,6 +5059,107 @@ class TestDropdownPopup:
             combo.close()
 
 
+class TestDropdownTooltips:
+    """A dropdown elides what it cannot fit, in the closed box and in the
+    popup alike. Device names are the case that hurts: two inputs from the
+    same chip differ only in the tail Qt cuts off, so the picker becomes
+    unreadable at the width people actually run the window at. The full text
+    is carried as a tooltip — but only where it is genuinely cut off, so
+    hovering never just repeats a label that is already fully readable.
+
+    Tooltips are asserted against the original string, never against
+    `itemText()`, which would pass for an elided value too."""
+
+    LONG = "Mikrofonarray (Intel Smart Sound Technology for Digital Microphones)"
+    SHORT = "Deutsch"
+    NARROW = 220
+    WIDE = 900
+
+    @pytest.fixture
+    def combo(self, qt_app):
+        """A *shown* dropdown, and it has to be shown: Qt defers the resize
+        event of a hidden widget until it is mapped, so a tooltip decided in
+        resizeEvent would never be taken on one."""
+        from gui.widgets import Dropdown
+
+        made = Dropdown()
+        made.show()
+        qt_app.processEvents()
+        yield made
+        made.hidePopup()
+        made.close()
+
+    @staticmethod
+    def _at(combo, width, qt_app):
+        combo.resize(width, 44)
+        qt_app.processEvents()
+
+    def test_a_cut_off_entry_gets_a_tooltip(self, combo, qt_app):
+        combo.addItem(self.LONG)
+        self._at(combo, self.NARROW, qt_app)
+        assert combo.toolTip() == self.LONG
+
+    def test_an_entry_that_fits_gets_none(self, combo, qt_app):
+        # The whole point of the rule: a tooltip repeating a readable label is
+        # noise, and it appears under the cursor during a live session.
+        combo.addItem(self.SHORT)
+        self._at(combo, self.NARROW, qt_app)
+        assert combo.toolTip() == ""
+
+    def test_the_tooltip_follows_the_width(self, combo, qt_app):
+        # Squeezing the window is what turns a readable entry into an elided
+        # one, so the decision cannot be taken once at insert time.
+        combo.addItem(self.LONG)
+        self._at(combo, self.WIDE, qt_app)
+        assert combo.toolTip() == ""
+        self._at(combo, self.NARROW, qt_app)
+        assert combo.toolTip() == self.LONG
+        self._at(combo, self.WIDE, qt_app)
+        assert combo.toolTip() == ""
+
+    def test_the_tooltip_follows_the_selection(self, combo, qt_app):
+        # A previous device's name on a box now showing another is worse
+        # than no tooltip at all.
+        combo.addItems([self.LONG, self.SHORT])
+        self._at(combo, self.NARROW, qt_app)
+        assert combo.toolTip() == self.LONG
+        combo.setCurrentIndex(1)
+        assert combo.toolTip() == ""
+
+    def test_an_entry_added_later_is_covered(self, combo, qt_app):
+        # Every device dropdown is built empty and filled after enumeration,
+        # so the constructor path alone would cover none of them.
+        self._at(combo, self.NARROW, qt_app)
+        combo.addItem(self.LONG)
+        assert combo.toolTip() == self.LONG
+
+    def test_the_arrow_and_padding_are_not_counted_as_room(self, combo, qt_app):
+        # Room for text is the edit-field subrect, not the whole box — the
+        # arrow and the padding take ~30 px of it. A box made exactly as wide
+        # as the string still cannot show it, so this fails for an
+        # implementation that measures self.width() and reports "it fits".
+        combo.addItem(self.LONG)
+        self._at(combo, combo.fontMetrics().horizontalAdvance(self.LONG), qt_app)
+        assert combo.toolTip() == self.LONG
+
+    def test_renaming_the_shown_entry_resyncs(self, combo, qt_app):
+        # gui/onboarding.py relabels the provider entry in place once its key
+        # is known; the old label must not survive on the box.
+        combo.addItem(self.LONG)
+        self._at(combo, self.NARROW, qt_app)
+        combo.setItemText(0, self.SHORT)
+        assert combo.toolTip() == ""
+
+    def test_popup_rows_carry_only_what_the_popup_cuts_off(self, combo, qt_app):
+        from PySide6.QtCore import Qt
+
+        combo.addItems([self.LONG, self.SHORT])
+        self._at(combo, self.NARROW, qt_app)
+        combo.showPopup()
+        assert combo.itemData(0, Qt.ToolTipRole) == self.LONG
+        assert combo.itemData(1, Qt.ToolTipRole) is None
+
+
 class TestAlwaysOnTopAcrossPlatforms:
     """X11 carries always-on-top as _NET_WM_STATE_ABOVE, which Qt's xcb plugin
     only writes while the window is unmapped. Setting the flag on a visible

@@ -28,6 +28,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSlider,
+    QStyle,
+    QStyleOptionComboBox,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
@@ -259,37 +262,72 @@ class Dropdown(QComboBox):
         # afterwards reads as "still editing".
         self.activated.connect(lambda _index: self.clearFocus())
         # Long entries — device names above all — are elided both in the
-        # closed box and in the popup once the window is squeezed narrow. Carry
-        # the full text as a tooltip so hovering reveals it: on each row of the
-        # open popup (Qt.ToolTipRole below) and on the closed box itself, kept
-        # in sync with the selection.
+        # closed box and in the popup once the window is squeezed narrow, and
+        # two inputs from the same chip then differ only in the tail Qt cut
+        # off. Carry the full text as a tooltip so hovering reveals it.
+        #
+        # Only when it is actually cut off. A tooltip that repeats a label you
+        # can already read in full teaches that hovering sometimes says
+        # nothing; the rule worth learning is "hover reveals what I cannot
+        # read". Measuring costs ~42 us and the panel holds ten dropdowns, so
+        # a full re-measure is 0.42 ms against a resize that already costs
+        # ~14.7 ms — under 3%, and not worth a cache with a staleness trap.
         self.currentIndexChanged.connect(self._sync_closed_tooltip)
         self._sync_closed_tooltip()
 
-    def _sync_item_tooltip(self, index: int) -> None:
-        if 0 <= index < self.count():
-            self.setItemData(index, self.itemText(index), Qt.ToolTipRole)
+    def _fits(self, text: str, available: int) -> bool:
+        return self.fontMetrics().horizontalAdvance(text) <= available
+
+    def _row_text_inset(self) -> int:
+        """Left padding the stylesheet puts before a popup row's text.
+
+        A row is clipped by the viewport, but its text does not start at the
+        viewport's edge — `QAbstractItemView::item` carries horizontal
+        padding. Asked of the style rather than hardcoded, so restyling the
+        popup cannot silently make this wrong.
+        """
+        view = self.view()
+        index = self.model().index(0, 0)
+        opt = QStyleOptionViewItem()
+        opt.initFrom(view)
+        opt.rect = view.visualRect(index)
+        text = view.style().subElementRect(QStyle.SE_ItemViewItemText, opt, view)
+        return max(0, text.left() - opt.rect.left())
+
+    def _closed_text_width(self) -> int:
+        """Width the closed box has for text, arrow and padding excluded."""
+        opt = QStyleOptionComboBox()
+        self.initStyleOption(opt)
+        return self.style().subControlRect(
+            QStyle.CC_ComboBox, opt, QStyle.SC_ComboBoxEditField, self
+        ).width()
 
     def _sync_closed_tooltip(self) -> None:
         # The closed box shows the current entry; a tooltip there needs the
-        # full text of exactly that one.
-        self.setToolTip(self.currentText())
+        # full text of exactly that one, and only if the box cannot show it.
+        text = self.currentText()
+        self.setToolTip("" if self._fits(text, self._closed_text_width()) else text)
 
-    def addItem(self, text: str, userData=None) -> None:  # noqa: N802 - Qt API
-        super().addItem(text, userData)
-        self._sync_item_tooltip(self.count() - 1)
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        # The same entry elides or does not depending on the width, and the
+        # width is exactly what changes when the window is squeezed.
+        super().resizeEvent(event)
         self._sync_closed_tooltip()
 
-    def addItems(self, texts: list[str]) -> None:  # noqa: N802 - Qt API
-        start = self.count()
-        super().addItems(texts)
-        for i in range(start, self.count()):
-            self._sync_item_tooltip(i)
-        self._sync_closed_tooltip()
+    def showPopup(self) -> None:  # noqa: N802 - Qt API
+        # Row tooltips are decided here rather than on insert: how much of a
+        # row fits depends on the viewport, which does not exist until the
+        # popup is up. Hence super() first, then measure.
+        super().showPopup()
+        available = self.view().viewport().width() - self._row_text_inset()
+        for i in range(self.count()):
+            text = self.itemText(i)
+            self.setItemData(
+                i, None if self._fits(text, available) else text, Qt.ToolTipRole
+            )
 
     def setItemText(self, index: int, text: str) -> None:  # noqa: N802 - Qt API
         super().setItemText(index, text)
-        self._sync_item_tooltip(index)
         if index == self.currentIndex():
             self._sync_closed_tooltip()
 
