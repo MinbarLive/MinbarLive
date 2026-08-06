@@ -148,14 +148,29 @@ still had it.
 - **Measure a content-sized window with `layout().totalHeightForWidth()`, not
   `adjustSize()`** — a word-wrapped label's sizeHint reserves a line it doesn't use, and
   the surplus inflates whatever in the column can stretch.
-- **Static mode ignores the height slider and takes the whole monitor**
-  (`_effective_height_percent`). It draws ONE block sized to what was just said, and
-  a shorter band has nowhere to put the overflow — the first lines were cut off at
-  the top and the last ran under the disclaimer pill and off the screen, with no
-  scrolling to rescue it (only the feed modes shift as they fill). The setting is
-  ignored, never overwritten, so leaving static restores the band the operator
-  chose. The panel greys the row out and says why; entering or leaving static
-  re-places the window, because the height changes although the setting did not.
+- **The height slider means two different things, and `window_height_percent` carries
+  both.** Everywhere except transparent static it is a HEIGHT: the overlay is a band
+  taking that share of the screen. In **transparent static** the overlay has no
+  backdrop of its own, so it takes the whole monitor (`_effective_height_percent`)
+  and the same number becomes a LIFT (`_static_lift`) — how far the subtitles and
+  the footer pill *together* sit above the bottom edge, capped at 50%. Both are
+  offset by the one figure or the disclaimer drifts away from its text.
+  - The row **never greys out**; its range, readout and caption swap instead. Block
+    the slider's signals around `setRange` — it clamps the value and emits
+    `valueChanged`, so switching modes would otherwise halve the stored number
+    behind the operator's back. Read clamped, write only on drag.
+  - Entering or leaving transparent static re-places the window, because the
+    window's height changes although the setting did not.
+- **Static never scrolls, so in a band the text is FITTED to it**
+  (`_static_fit_scale`), as the Tk overlay did (`_static_fonts_for_content`).
+  A rescue, not a policy: if the block already fits, the configured size is used
+  untouched. Otherwise the answer is the **largest** size that fits, by bisection —
+  search in both directions, because wrapping moves in whole words so the linear
+  estimate undershoots and a shrink-only search left 49 px of text in a 66 px band.
+- **`reserved_bottom` is capped at half a short overlay.** The pills are a fixed
+  size and deliberately do not scale with the subtitle font, so on a thin band they
+  asked for more room than the window had: the content area collapsed to one pixel
+  and the pill was laid out from a bottom edge above its own top.
 - **The transparent-static backdrop is one box per RENDERED LINE, tiled**
   (`_ribbon_rects`). Per line, because a paragraph's width is its longest line, so
   one box round a wrapped sentence is a rectangle with ragged text inside it. Tiled
