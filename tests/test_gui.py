@@ -7997,3 +7997,43 @@ class TestSettingChangesLeaveABreadcrumb:
         }
         lines = self._lines(lambda: panel._on_target_changed(0))
         assert lines and not any("ÜBERSETZT" in line for line in lines), lines
+
+
+class TestApiKeyDialogRefusesAnEmptyKey:
+    """OK on an empty field used to be indistinguishable from Cancel: both
+    callers treat "" as a cancel, and ensure_keys aborts the whole Start on it,
+    so the operator pressed OK and the session silently did not begin
+    (2026-08-07). The `dlg_key_empty` string existed for this and was never
+    wired up; disabling the button says it without a box to dismiss."""
+
+    @pytest.fixture
+    def dialog(self, qt_app):
+        from gui.api_keys import ApiKeyDialog
+
+        d = ApiKeyDialog("openai", {})
+        yield d
+        d.close()
+
+    def test_ok_is_disabled_while_the_field_is_empty(self, dialog):
+        assert not dialog._ok_button.isEnabled()
+
+    def test_ok_enables_once_a_key_is_typed(self, dialog):
+        dialog.edit.setText("sk-test-key")
+        assert dialog._ok_button.isEnabled()
+
+    def test_whitespace_alone_does_not_count_as_a_key(self, dialog):
+        # key() strips, so "   " would reach the caller as "" — the exact
+        # silent-cancel this guards against.
+        dialog.edit.setText("   ")
+        assert not dialog._ok_button.isEnabled()
+
+    def test_clearing_the_field_disables_ok_again(self, dialog):
+        dialog.edit.setText("sk-test-key")
+        dialog.edit.setText("")
+        assert not dialog._ok_button.isEnabled()
+
+    def test_cancel_is_always_available(self, dialog):
+        from PySide6.QtWidgets import QDialogButtonBox
+
+        box = dialog.findChild(QDialogButtonBox)
+        assert box.button(QDialogButtonBox.Cancel).isEnabled()
