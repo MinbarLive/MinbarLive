@@ -1518,6 +1518,14 @@ class SubtitleWindow(QWidget):
         if not r:
             return 0
         r += PILL_CLEARANCE
+        if self._transparent_static_active():
+            # A card is drawn _CARD_PAD_Y BELOW the text it wraps
+            # (_ribbon_rects), and reserving for the text alone spent the
+            # clearance on that pad: the card's bottom border came out flush
+            # against the disclaimer with nothing between them. The panel of
+            # the side-by-side layout keeps PILL_CLEARANCE of air there, and a
+            # card is the same thing — a backdrop with an edge the eye reads.
+            r += _CARD_PAD_Y
         # Never more than half a short overlay. The pills are a fixed size —
         # they deliberately do not scale with the subtitle font — so on a band
         # at the low end of the height slider they asked for more room than the
