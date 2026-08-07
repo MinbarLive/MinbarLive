@@ -2968,6 +2968,15 @@ class TestHistoryWindow:
         assert row_text(w, 0).startswith(hw.SUMMARY_MARK)
         assert not row_text(w, 1).startswith(hw.SUMMARY_MARK)
 
+    def test_the_summary_marker_says_what_it_means(self, history):
+        """📝 is a bare glyph. The Tk viewer and the first Qt one both explained
+        it in a tooltip; the four-tab rewrite dropped the only setToolTip call
+        in the window and left the marker unexplained."""
+        make, _ = history
+        w = make()
+        assert w.entry_list.item(0).toolTip()
+        assert not w.entry_list.item(1).toolTip()
+
     def test_delete_is_the_danger_button(self, history):
         # Deleting a record is irreversible; it must not read like Copy.
         make, _ = history

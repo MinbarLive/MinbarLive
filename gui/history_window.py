@@ -1028,6 +1028,9 @@ class HistoryWindow(QDialog):
             item.setData(RowDelegate.SUB_ROLE, subtitle)
             item.setData(RowDelegate.TAG_ROLE, tag)
             item.setData(RowDelegate.ELIDE_ROLE, elide)
+            # SUMMARY_MARK is a bare glyph on the title — say what it means.
+            if title.startswith(SUMMARY_MARK):
+                item.setToolTip(self._t("history_has_summary", "Has a saved summary"))
             self.entry_list.addItem(item)
         self.entry_list.blockSignals(False)
 
@@ -1409,6 +1412,7 @@ class HistoryWindow(QDialog):
         item = self.entry_list.item(row)
         if item is not None and not item.text().startswith(SUMMARY_MARK):
             item.setText(f"{SUMMARY_MARK}{item.text()}")
+            item.setToolTip(self._t("history_has_summary", "Has a saved summary"))
 
     def _close_summary(self) -> None:
         if self._summary_dialog is not None:
