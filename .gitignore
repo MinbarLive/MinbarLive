@@ -28,3 +28,14 @@ CLAUDE.md.bak
 # Benchmark output. A committed result is a latency claim nobody can
 # reproduce, and it goes stale the moment the model or the tree moves.
 bench/results/
+
+# Exported session transcripts and logs. `recordings/` and `history/` above
+# keep the app's own storage out, but the history window's Save… button writes
+# wherever the file dialog last was — and QFileDialog opens on the process CWD,
+# which is the repo root when the app is launched with `python main.py`. That
+# put a real khutbah transcript one `git add .` away from a public commit
+# (observed 2026-08-07). These names come from history_window.py's suggestions.
+/MinbarLive_????-??-??.txt
+/MinbarLive_????-??-??.srt
+/MinbarLive_????-??-??.log
+/MinbarLive_cost.txt
