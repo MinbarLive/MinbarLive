@@ -24,6 +24,8 @@ __version_info__ = tuple(int(x) for x in _version_nums)
 #              the original text keeps its muted tone
 #            - The language swap button reopens the stream, so the engine stops
 #              transcribing in the language you just switched away from
+#            - Linux: the real microphone is no longer filtered out of the input
+#              list (PulseAudio's description vs its source name)
 # 1.0.0-beta - Initial open source release
 #            - Real-time audio transcription and translation
 #            - RAG-enhanced Quran verse matching
