@@ -191,6 +191,18 @@ FEED_ANIM_SNAP_PX = 1.0  # within this, land on the target and stop
 # rather than an inline check, so a test can drive the other platform's branch
 # without faking sys.platform for the whole process.
 _MACOS = sys.platform == "darwin"
+# Windows keeps its taskbar in the SAME topmost band as the overlay, and the
+# order inside that band is whoever was raised last — so a click on the taskbar
+# lifts the shell over the subtitles and nothing ever lowers it again. The
+# overlay puts itself back (_keep_on_top) on this interval. A module constant
+# for the same reason as _MACOS: a test drives the branch without faking
+# sys.platform for the whole process.
+_WINDOWS = sys.platform == "win32"
+# Slow on purpose. The fix is for a click that happened, not a race, and
+# raising a window already at the top of its band costs nothing — but a client
+# that restacks itself many times a second is one that fights every other
+# topmost window on the desktop.
+RESTACK_MS = 1000
 
 
 @dataclass
@@ -318,6 +330,11 @@ class SubtitleWindow(QWidget):
         self._fit_timer.setSingleShot(True)
         self._fit_timer.setInterval(GEOMETRY_FIT_MS)
         self._fit_timer.timeout.connect(self._fit_to_screen)
+        # Parented, so it dies with the window. Started and stopped by
+        # set_always_on_top, which runs on the next line.
+        self._restack_timer = QTimer(self)
+        self._restack_timer.setInterval(RESTACK_MS)
+        self._restack_timer.timeout.connect(self._keep_on_top)
         self.set_always_on_top(always_on_top)
 
         self._scroll_timer = QTimer(self)
@@ -1855,9 +1872,40 @@ class SubtitleWindow(QWidget):
         this window is re-mapped behind Qt's back by its own geometry repair.
         Skipping the call there left the panel obeying the setting while the
         overlay sat under the browser.
+
+        The flag alone does not keep it in front on Windows — see
+        _keep_on_top, which this arms and disarms.
         """
         set_window_on_top(self, enabled)
+        if enabled and _WINDOWS:
+            self._restack_timer.start()
+        else:
+            self._restack_timer.stop()
         self._apply_geometry()
+
+    def _keep_on_top(self) -> None:
+        """Put the overlay back at the top of the topmost band.
+
+        Always-on-top is not a rank, it is a band: Windows keeps its taskbar in
+        that same band, and inside it the order is whoever was raised last. So
+        clicking the taskbar lifts the shell over the subtitles for good — the
+        flag is still set, the overlay is still "always on top", and it is
+        still behind the taskbar. Re-raising is the only lever a client has.
+
+        ``raise_`` and not a re-placement: it restacks without activating
+        (SWP_NOACTIVATE on Windows), so the overlay still never takes focus off
+        the control panel — the property WA_ShowWithoutActivating exists to
+        protect. Skipped while hidden, so a stopped session costs nothing but
+        the timer tick.
+
+        Windows only, and armed only while the setting is on. macOS puts a
+        floating window below the Dock and the menu bar whatever it asks for
+        (see _apply_geometry), so there is nothing to win there; on X11 the
+        stacking belongs to the window manager and a client re-raising itself
+        every second would be fighting it.
+        """
+        if self.isVisible():
+            self.raise_()
 
     def set_backdrop_opacity(self, percent: int) -> None:
         """Set backdrop opacity 0-100. 0 leaves the video fully visible.

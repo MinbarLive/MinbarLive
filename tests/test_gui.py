@@ -352,6 +352,61 @@ class TestAdaptiveCatchup:
         assert speed == pytest.approx(1.0, abs=0.05)
 
 
+class TestStayingInFrontOfTheTaskbar:
+    """Always-on-top is a BAND, not a rank.
+
+    Windows keeps its taskbar in that same band and orders it by whoever was
+    raised last, so a click on the taskbar puts the shell in front of the
+    subtitles for good: the flag is still set, and the overlay is still behind
+    it. The overlay re-raises itself on a timer (_keep_on_top).
+    """
+
+    @staticmethod
+    def _windows(monkeypatch, value: bool) -> None:
+        # The module constant, never sys.platform: faking that for the whole
+        # process crashed a previous run and spawned real windows.
+        monkeypatch.setattr("gui.subtitle_window._WINDOWS", value)
+
+    def test_the_timer_runs_while_the_setting_is_on(self, overlay, monkeypatch):
+        self._windows(monkeypatch, True)
+        w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
+        assert w._restack_timer.isActive()
+
+    def test_turning_the_setting_off_disarms_it(self, overlay, monkeypatch):
+        self._windows(monkeypatch, True)
+        w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
+        w.set_always_on_top(False)
+        assert not w._restack_timer.isActive()
+
+    def test_nothing_restacks_on_the_other_platforms(self, overlay, monkeypatch):
+        """macOS floats below the Dock whatever it asks for, and on X11 the
+        stacking is the window manager's — re-raising every second there is a
+        client fighting its own desktop."""
+        self._windows(monkeypatch, False)
+        w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
+        assert not w._restack_timer.isActive()
+
+    def test_a_tick_raises_the_overlay(self, overlay, monkeypatch):
+        self._windows(monkeypatch, True)
+        w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
+        raised: list[bool] = []
+        monkeypatch.setattr(w, "raise_", lambda: raised.append(True))
+        monkeypatch.setattr(w, "isVisible", lambda: True)
+        w._keep_on_top()
+        assert raised == [True]
+
+    def test_a_hidden_overlay_is_left_alone(self, overlay, monkeypatch):
+        """Raising a window nobody is looking at is a pointless SetWindowPos
+        once a second for as long as the app is open."""
+        self._windows(monkeypatch, True)
+        w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
+        raised: list[bool] = []
+        monkeypatch.setattr(w, "raise_", lambda: raised.append(True))
+        monkeypatch.setattr(w, "isVisible", lambda: False)
+        w._keep_on_top()
+        assert raised == []
+
+
 class TestFooterReserve:
     def test_content_never_extends_under_the_pills(self, overlay):
         w = overlay(SUBTITLE_MODE_STATIC, show_footer=True)
