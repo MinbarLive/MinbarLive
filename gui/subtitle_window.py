@@ -126,15 +126,14 @@ COLUMN_PANEL_MARGIN_RATIO = 0.02
 COLUMN_PANEL_PAD_X = 30
 COLUMN_PANEL_PAD_Y = 18
 COLUMN_PANEL_RADIUS = 18
-# The per-line backdrop of transparent static mode (see _ribbon_rects). Its
-# fill is a fixed translucent black rather than the theme's backdrop colour:
-# the whole point of the mode is that there is no window backdrop, so this is
-# the only thing between the text and arbitrary video, and it has to work over
-# a bright frame as well as a dark one.
+# The per-line backdrop of transparent static mode (see _ribbon_rects and
+# _card_fill). It is a flat black or white rather than the theme's backdrop
+# colour: the whole point of the mode is that there is no window backdrop, so
+# this is the only thing between the text and arbitrary video, and only an
+# extreme works over a bright frame as well as a dark one.
 _CARD_PAD_X = 20
 _CARD_PAD_Y = 8
 _CARD_RADIUS = 14
-_CARD_FILL = QColor(0, 0, 0, 150)
 # Fitting a static block into a band too short for it (see _static_fit_scale).
 #
 # The REAL floor is the 12 px clamp in _translation_px / _source_px — text
@@ -376,6 +375,25 @@ class SubtitleWindow(QWidget):
         base = QColor(self._colors["app_bg"])
         base.setAlpha(round(self._backdrop_opacity * 255 / 100))
         return base
+
+    def _card_fill(self) -> QColor:
+        """The per-line card's colour in transparent static mode.
+
+        **Black under the dark subtitle theme, white under the light one.** Not
+        the theme's own backdrop tone — over arbitrary video only the extremes
+        are a safe backing, which is the reason given at _CARD_PAD_X — but it
+        has to be the extreme the TEXT is not. The text colour comes from the
+        palette, so a card fixed at black put the light theme's near-black text
+        on a near-black box and the subtitles could not be read at all.
+
+        At the same opacity as every other backdrop: the mode takes the
+        window's backdrop away, it does not take away the operator's say in how
+        strongly the text sits on it. A fixed alpha left Hintergrund-Deckkraft
+        with nothing to do here, which is why the row used to grey out.
+        """
+        light = self._theme_mode == "light"
+        value = 255 if light else 0
+        return QColor(value, value, value, round(self._backdrop_opacity * 255 / 100))
 
     # ── geometry ─────────────────────────────────────────────────────────
     def _screen(self):
@@ -1186,7 +1204,7 @@ class SubtitleWindow(QWidget):
         path.setFillRule(Qt.WindingFill)
         for rect in rects:
             path.addRoundedRect(rect, _CARD_RADIUS, _CARD_RADIUS)
-        p.fillPath(path, _CARD_FILL)
+        p.fillPath(path, self._card_fill())
 
     def _draw_block(
         self, p: QPainter, block: Block, x: int, y: int, newest: bool = True

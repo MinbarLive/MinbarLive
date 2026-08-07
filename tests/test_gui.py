@@ -1506,8 +1506,8 @@ class TestDisplaySlidersFollowTheMode:
 
     Height never greys out — it means something everywhere — but in transparent
     static it stops being a height and becomes a lift, so its range, readout and
-    caption all swap. Opacity does grey out, because Transparent genuinely
-    leaves it nothing to apply to.
+    caption all swap. Neither does opacity: Transparent takes the WINDOW's
+    backdrop away and the slider moves to the card behind each line.
     """
 
     @pytest.fixture
@@ -1591,48 +1591,17 @@ class TestDisplaySlidersFollowTheMode:
         assert panel.height_value.text() == f"{STATIC_LIFT_PERCENT_MAX}%"
 
     # ── opacity ──────────────────────────────────────────────────────────
-    def test_transparent_greys_the_opacity_row(self, panel):
+    def test_transparent_keeps_the_opacity_row_live(self, panel):
+        """It used to grey out, on the grounds that Transparent leaves nothing
+        to apply an opacity to. The mode still paints a card behind each line,
+        and that card is the only thing between the text and the video — so the
+        slider keeps its job and the tooltip says which backdrop it reaches."""
         self._lift(panel)
-        assert not panel.opacity_row.isEnabled()
-        assert panel.opacity_row.toolTip()
-        # It takes the window backdrop away; unticking gives it back.
+        assert panel.opacity_row.isEnabled()
+        assert panel.opacity_row.toolTip(), "nothing says what it now applies to"
         panel.transparent_check.setChecked(False)
         assert panel.opacity_row.isEnabled()
-
-    def test_opacity_survives_a_feed_mode_with_transparent_ticked(self, panel):
-        # Transparent is a static-mode option, so it must not reach across and
-        # grey out a slider that is doing its job.
-        self._lift(panel)
-        self._set_mode(panel, SUBTITLE_MODE_REALTIME)
-        assert panel.opacity_row.isEnabled()
-
-    @staticmethod
-    def _ink(widget) -> int:
-        """Brightest pixel the widget paints — its text, on a darker tile."""
-        image = widget.grab().toImage()
-        return max(
-            sum(QColor(image.pixel(x, y)).getRgb()[:3])
-            for y in range(image.height())
-            for x in range(image.width())
-        )
-
-    @pytest.mark.parametrize("part", ["opacity_caption", "opacity_value"])
-    def test_the_caption_and_readout_grey_with_the_slider(self, panel, qt_app, part):
-        """Measured on the rendered pixels, not on isEnabled().
-
-        Qt would normally grey a disabled label through the palette — but the
-        stylesheet's own ``QWidget {{ color }}`` outranks the palette, so both
-        labels stayed at full contrast beside a greyed-out slider and only
-        looked disabled to the API.
-        """
-        panel.resize(900, 900)
-        panel.show()
-        self._set_mode(panel, SUBTITLE_MODE_REALTIME)
-        _settle(qt_app)
-        live = self._ink(getattr(panel, part))
-        self._lift(panel)
-        _settle(qt_app)
-        assert self._ink(getattr(panel, part)) < live, f"{part} did not grey"
+        assert not panel.opacity_row.toolTip()
 
 
 class TestSlidersIgnoreTheWheel:
@@ -1659,11 +1628,6 @@ class TestSlidersIgnoreTheWheel:
         from PySide6.QtCore import QPoint, Qt
         from PySide6.QtGui import QWheelEvent
 
-        # The opacity row has to be live, or the wheel never reaches its
-        # slider and the assertion below holds for the wrong reason:
-        # Transparent greys it out (_sync_display_sliders), and whether that is
-        # ticked comes from the machine's own settings.json.
-        panel.opacity_row.setEnabled(True)
         for slider in (panel.height_slider, panel.opacity_slider):
             before = slider.value()
             event = QWheelEvent(
@@ -5913,6 +5877,87 @@ class TestTransparentStaticRibbon:
         finally:
             painter.end()
         assert drawn == [], "a ribbon was drawn over the window's own backdrop"
+
+    @pytest.mark.parametrize("theme", ["dark", "light"])
+    def test_the_card_contrasts_with_the_text_drawn_on_it(self, overlay, theme):
+        """The card was a fixed black while the text colour follows the
+        subtitle theme, so Untertitel-Modus "Hell" put near-black text on a
+        near-black box and the subtitles could not be read at all."""
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True, theme_mode=theme)
+        card = w._card_fill()
+        text = w._translation_qcolor()
+        assert abs(card.lightness() - text.lightness()) > 128, (
+            f"{theme}: card {card.lightness()} vs text {text.lightness()}"
+        )
+
+    def test_the_backdrop_opacity_reaches_the_card(self, overlay):
+        """The control the mode used to grey out. Asserted on the pixels the
+        ribbon is actually filled with, because the fill is the whole of what
+        the operator is setting here."""
+        from PySide6.QtGui import QImage, QPainter
+
+        def alpha_at(percent: int) -> int:
+            w = overlay(
+                SUBTITLE_MODE_STATIC,
+                transparent_static=True,
+                backdrop_opacity=percent,
+            )
+            image = QImage(w.width(), w.height(), QImage.Format_ARGB32)
+            image.fill(0)
+            painter = QPainter(image)
+            try:
+                w._draw_ribbon(painter, w._ribbon_rects(self._runs(w, _long_block()), 0, 400))
+            finally:
+                painter.end()
+            return max(
+                QColor.fromRgba(image.pixel(x, y)).alpha()
+                for y in range(0, image.height(), 4)
+                for x in range(0, image.width(), 4)
+            )
+
+        faint, solid = alpha_at(20), alpha_at(90)
+        assert faint < solid, "the slider does not reach the card"
+        assert faint > 0, "20% painted nothing at all"
+
+    @pytest.mark.parametrize("side_by_side", [False, True])
+    def test_the_card_keeps_its_clearance_from_the_disclaimer(
+        self, overlay, side_by_side
+    ):
+        """A card is drawn _CARD_PAD_Y BELOW the text it wraps, and holding
+        back only for the TEXT spent the clearance on that pad: the card's
+        bottom border came out flush against the pill, with the two touching.
+        The panel of the side-by-side layout keeps air there and so must this.
+        """
+        from PySide6.QtGui import QPainter, QPixmap
+
+        from gui.subtitle_window import PILL_CLEARANCE
+
+        w = overlay(
+            SUBTITLE_MODE_STATIC,
+            transparent_static=True,
+            bilingual_mode=True,
+            side_by_side=side_by_side,
+            show_footer=True,
+            window_height_percent=0,
+        )
+        w.add_subtitle(*reversed(PAIRS[0]))
+        cards: list = []
+        pill_tops: list[int] = []
+        w._draw_ribbon = lambda p, rects: cards.extend(rects)
+        w._pill = lambda p, text, bottom, fill, fg, **kw: (
+            pill_tops.append(bottom - w._pill_height()) or bottom - w._pill_height()
+        )
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            w._paint_static(painter)
+            w._paint_pills(painter)
+        finally:
+            painter.end()
+        assert cards, "nothing drew a card; this proves nothing"
+        assert pill_tops, "no pill was drawn; this proves nothing"
+        gap = min(pill_tops) - max(r.bottom() for r in cards)
+        assert gap >= PILL_CLEARANCE, f"only {gap} px between card and pill"
 
 
 class TestSideBySideLayout:

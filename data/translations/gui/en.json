@@ -256,7 +256,7 @@
   "scroll_speed_label": "Scroll speed:",
   "adaptive_catchup": "Speed up when subtitles fall behind",
   "backdrop_opacity": "Background opacity:",
-  "opacity_transparent_hint": "Transparent mode removes the background, so there is no opacity to set.",
+  "opacity_transparent_hint": "Transparent mode has no background of its own, so this sets how dark the box behind each line is.",
   "history_summary_heading": "Summary",
   "history_has_summary": "Has a saved summary",
   "history_read_error": "Could not read this session."

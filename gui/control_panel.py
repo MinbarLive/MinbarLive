@@ -1596,15 +1596,13 @@ class ControlPanel(QMainWindow):
             else ""
         )
 
-        transparent = lift
-        self.opacity_row.setEnabled(not transparent)
         self.opacity_row.setToolTip(
             self._t(
                 "opacity_transparent_hint",
-                "Transparent mode removes the background, so there is no "
-                "opacity to set.",
+                "Transparent mode has no background of its own, so this sets "
+                "how dark the box behind each line is.",
             )
-            if transparent
+            if lift
             else ""
         )
 
