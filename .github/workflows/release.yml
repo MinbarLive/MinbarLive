@@ -101,6 +101,30 @@ jobs:
             exit 1
           fi
 
+      # Windows was the ONLY platform whose binary nothing ever executed: the
+      # size check above was the whole of it, while Linux smoke-launches three
+      # ways and macOS once. So the primary platform's EXE first ran on a
+      # user's machine. A frozen build can be the right size and still fail at
+      # startup — a missing DLL, a hook that did not run, a data file the spec
+      # forgot — and none of that shows up in a byte count.
+      #
+      # Started detached and inspected, rather than run under `timeout`:
+      # MSYS's timeout signals a native Windows GUI process unreliably, and
+      # "is it still alive" is the question anyway. A healthy start sits in
+      # the first-run onboarding wizard (the runner has no settings.json)
+      # until we stop it.
+      - name: Smoke-launch the EXE
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\MinbarLive.exe -PassThru
+          Start-Sleep -Seconds 30
+          if ($p.HasExited) {
+            Write-Host "::error::MinbarLive.exe exited with code $($p.ExitCode) instead of staying up for 30s."
+            exit 1
+          }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "Stayed up for 30s."
+
       - name: Checksum
         shell: bash
         run: cd dist && sha256sum MinbarLive.exe | tee SHA256SUMS.txt
