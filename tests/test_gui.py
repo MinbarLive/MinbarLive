@@ -1024,6 +1024,143 @@ class TestControlPanelLayout:
             wanted = min(wanted, screen.availableGeometry().width())
         assert panel.width() >= wanted
 
+    # --- log panel gives the width back (these need a SHOWN window) ---------
+    #
+    # The `panel` fixture never shows its window, and _apply_minimum_size()
+    # early-returns a minimum of 0 while a window is invisible. That matters
+    # here more than anywhere: opening the log widens the window by RAISING ITS
+    # MINIMUM, and setMinimumSize only grows a window that is really on screen.
+    # Driven hidden, these four tests pass against code that does nothing at
+    # all — measured, not assumed (702 -> 840 shown, 702 -> 702 hidden).
+
+    @staticmethod
+    def _shown(panel, qt_app, width: int):
+        """Show the panel at `width` and let the layout settle."""
+        panel.show()
+        qt_app.processEvents()
+        panel.resize(width, 800)
+        qt_app.processEvents()
+        return panel.width()
+
+    @staticmethod
+    def _log_width(panel) -> int:
+        """The width opening the log grows a too-narrow window to.
+
+        Computed the way production does rather than hardcoded: the rule caps
+        at the screen, so the number differs on a narrow display.
+        """
+        from PySide6.QtGui import QGuiApplication
+
+        wanted = cp_module()._SIDEBAR_W_WITH_LOG + cp_module()._LOG_PANEL_MIN_W
+        screen = panel.screen() or QGuiApplication.primaryScreen()
+        if screen is not None:
+            wanted = min(wanted, screen.availableGeometry().width())
+        return wanted
+
+    def test_closing_the_log_gives_the_widened_width_back(self, panel, qt_app):
+        """Opening the log on a narrow window widens it; closing has to undo
+        exactly that, or every peek at the log leaves the window bigger than
+        the user left it — permanently, since the geometry is stored on exit."""
+        narrow = self._log_width(panel) - 200
+        before = self._shown(panel, qt_app, narrow)
+        panel._toggle_log_panel()
+        qt_app.processEvents()
+        assert panel.width() > before  # it did widen — otherwise nothing to undo
+        panel._toggle_log_panel()
+        qt_app.processEvents()
+        assert panel.width() == before
+
+    def test_closing_the_log_leaves_a_window_it_never_widened(self, panel, qt_app):
+        """A window already wide enough is not grown on open, so it must not be
+        shrunk on close either."""
+        wide = self._log_width(panel) + 100
+        before = self._shown(panel, qt_app, wide)
+        panel._toggle_log_panel()
+        qt_app.processEvents()
+        assert panel.width() == before
+        panel._toggle_log_panel()
+        qt_app.processEvents()
+        assert panel.width() == before
+
+    def test_a_second_cycle_gives_back_its_own_width(self, panel, qt_app):
+        """The record belongs to the cycle that made it. A width left over from
+        an earlier open must never be the one a later close hands back."""
+        widened = self._log_width(panel)
+        self._shown(panel, qt_app, widened - 200)
+        panel._toggle_log_panel()
+        panel._toggle_log_panel()
+        qt_app.processEvents()
+
+        wide = self._shown(panel, qt_app, widened + 100)
+        panel._toggle_log_panel()  # wide enough already — widens nothing
+        qt_app.processEvents()
+        panel._toggle_log_panel()
+        qt_app.processEvents()
+        assert panel.width() == wide
+
+    def test_a_log_window_dragged_wider_is_not_snapped_back(self, panel, qt_app):
+        """Dragging the window out to read the log is a deliberate choice.
+        Closing must give back what OPENING took, not undo the user's resize."""
+        narrow = self._log_width(panel) - 200
+        self._shown(panel, qt_app, narrow)
+        panel._toggle_log_panel()
+        qt_app.processEvents()
+        panel.resize(panel.width() + 200, 800)
+        qt_app.processEvents()
+        dragged = panel.width()
+        panel._toggle_log_panel()
+        qt_app.processEvents()
+        assert panel.width() == dragged
+
+    def test_a_wide_log_window_dragged_wider_is_not_snapped_back(
+        self, panel, qt_app
+    ):
+        """Same, for a window that was wide enough to begin with — opening took
+        nothing from it, so closing owes it nothing."""
+        wide = self._shown(panel, qt_app, self._log_width(panel) + 100)
+        panel._toggle_log_panel()
+        qt_app.processEvents()
+        panel.resize(wide + 200, 800)
+        qt_app.processEvents()
+        dragged = panel.width()
+        panel._toggle_log_panel()
+        qt_app.processEvents()
+        assert panel.width() == dragged
+
+    def test_a_log_window_dragged_smaller_is_not_snapped_back_up(
+        self, panel, qt_app
+    ):
+        """Reported live. A wide window (2 or 3 columns) is not widened by the
+        log at all, so it records its own width; dragging it SMALLER and then
+        closing the log used to snap it back up to the old size. Shrinking is a
+        deliberate choice exactly as much as widening is."""
+        self._shown(panel, qt_app, self._log_width(panel) + 400)
+        panel._toggle_log_panel()
+        qt_app.processEvents()
+        panel.resize(self._log_width(panel) + 60, 800)
+        qt_app.processEvents()
+        dragged = panel.width()
+        panel._toggle_log_panel()
+        qt_app.processEvents()
+        assert panel.width() == dragged
+
+    def test_the_log_widens_by_raising_the_minimum_not_only_by_resizing(
+        self, panel, qt_app
+    ):
+        """Pins the mechanism the first fix got wrong: _apply_log_panel_widths()
+        raises the window's minimum to fit the log, and setMinimumSize grows a
+        window sitting under the new floor on the spot. So the width to give
+        back has to be captured BEFORE that call — after it, it is gone."""
+        narrow = self._log_width(panel) - 200
+        self._shown(panel, qt_app, narrow)
+        assert panel.minimumWidth() < narrow  # the cards' floor, well under it
+        panel._log_collapsed = False  # what the toggle sets before it applies
+        panel._apply_log_panel_widths()  # no resize() call anywhere inside
+        qt_app.processEvents()
+        assert panel.minimumWidth() > narrow
+        assert panel.width() > narrow
+        panel._log_collapsed = True  # leave the fixture as we found it
+
     def test_advanced_opens_only_when_it_has_a_column_to_itself(self, panel):
         panel.resize(1200, 800)
         panel._relayout_columns()

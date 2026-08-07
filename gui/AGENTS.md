@@ -134,6 +134,20 @@ still had it.
   widest single column, which is what the reflow can actually collapse to. And
   measure it before the first show and you get 50 px, because a card's padding,
   border and font all come from the stylesheet and Qt applies that at polish time.
+- **`setMinimumSize` RESIZES a window that is under the new floor** — synchronously, on the
+  spot. So raising a minimum is a layout change *and* a resize, and any code that wants the
+  size a widget had before must read it **before** the call, not after. This is what widens
+  the control panel when the log opens (`_apply_log_panel_widths` → `_apply_minimum_size`):
+  measured on a shown panel, 702 px becomes 840 px with no `resize()` executed anywhere.
+  The explicit `resize()` in `_toggle_log_panel` is dead on a shown window and only carries
+  the hidden case.
+- **The `panel` fixture in `tests/test_gui.py` never calls `show()`**, and
+  `_apply_minimum_size` early-returns a minimum of **zero** while a window is invisible. So
+  anything driven by the window's minimum is simply *absent* under that fixture — a test
+  for it passes against code that does nothing. Show the window in tests that touch window
+  sizing. (The rule "widget geometry is meaningless on a window that was never shown"
+  applies to the MINIMUM too, not only to size hints — that gap shipped a fix that passed
+  its own tests and did not work in the app.)
 - **Where the collapse lives depends on the column count.** 1–2 columns: the Advanced
   *card* collapses and "Weitere Einstellungen" is a plain section. 3 columns: the card is
   pinned open and the *group* collapses, closed by default. Three columns level through
