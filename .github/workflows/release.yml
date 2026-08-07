@@ -123,6 +123,19 @@ jobs:
         run: |
           tag="$GITHUB_REF_NAME"
 
+          # A tag carrying a suffix (v1.0.0-rc.1, v1.0.0-beta) is a PRE-RELEASE
+          # and must be marked as one. `gh` does not infer that from the tag,
+          # so publishing an rc with --latest would hand it to every installed
+          # copy: the in-app update check (utils/update_check.py) and all six
+          # website download buttons go through /releases/latest, which excludes
+          # pre-releases *only* when the flag is actually set. A plain vX.Y.Z is
+          # the real thing and takes --latest.
+          if [[ "${tag#v}" == *-* ]]; then
+            visibility=(--prerelease)
+          else
+            visibility=(--latest)
+          fi
+
           # Always the first thing in the release description. `gh` prepends
           # --notes-file to whatever --generate-notes produces, so the
           # changelog follows underneath.
@@ -151,12 +164,15 @@ jobs:
               printf '\n%s\n' "$body" >> notes.md
               gh release edit "$tag" --notes-file notes.md
             fi
+            # Unconditionally, and outside the notes check above: a hand-made
+            # release is exactly the one likely to have been left as "latest".
+            gh release edit "$tag" "${visibility[@]}"
           else
             gh release create "$tag" \
               --title "MinbarLive $tag" \
               --notes-file notes.md \
               --generate-notes \
-              --latest
+              "${visibility[@]}"
           fi
 
           gh release upload "$tag" \
