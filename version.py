@@ -5,8 +5,6 @@ __version__ = "1.0.0-rc.1"
 _version_parts = __version__.split("-")
 _version_nums = _version_parts[0].split(".")
 __version_info__ = tuple(int(x) for x in _version_nums)
-# Optionally, you can also expose the suffix if needed:
-# __version_suffix__ = _version_parts[1] if len(_version_parts) > 1 else None
 
 # Version history:
 # 1.0.0-rc.1 - Release candidate for 1.0.0. Published as a PRE-RELEASE, so it is

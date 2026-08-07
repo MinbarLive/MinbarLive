@@ -769,11 +769,6 @@ class Expander(QWidget):
         self._apply_panel_style()
         self.set_expanded(expanded)
 
-    def set_title(self, title: str) -> None:
-        self._title = title
-        self.heading.setText(title)
-        self._refresh_button()
-
     def is_expanded(self) -> bool:
         return self._expanded
 

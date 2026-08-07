@@ -344,9 +344,6 @@ CONTEXT_HOURLY_INTERVAL = 3600  # Seconds between hourly summaries
 # -------------------------
 # GUI SETTINGS
 # -------------------------
-LINE_SPACING = 18
-MARGIN_BOTTOM = 45
-
 # Announcement overlay (megaphone): a custom operator message shown big and
 # centred above the subtitles. Preset display durations in seconds; 0 means
 # "show until the operator stops it" (survives even a translation stop).

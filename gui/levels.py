@@ -7,12 +7,9 @@ be testable without building either of them.
 
 from __future__ import annotations
 
-# Conventional audio-meter zone colours (readable in both themes) and the
-# scale the GUI maps dBFS onto. Shared so the control panel and the setup
-# wizard show the same meter.
-LEVEL_GREEN = "#37B24D"
-LEVEL_WARNING = "#F08C00"
-LEVEL_DANGER = "#E03131"
+# The scale the GUI maps dBFS onto, shared so the control panel and the setup
+# wizard show the same meter. The zone colours live with the widget that
+# paints them (``gui.widgets.AudioLevelBar``), not here.
 LEVEL_FLOOR_DBFS = -60.0
 
 

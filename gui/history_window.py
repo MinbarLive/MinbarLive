@@ -271,12 +271,6 @@ class CostChart(QWidget):
         self._selected_id = selected_id
         self.update()
 
-    def set_selected(self, session_id: str) -> None:
-        if session_id == self._selected_id:
-            return
-        self._selected_id = session_id
-        self.update()
-
     def _slot_width(self) -> float:
         return (self.width() - 2 * self._PAD_X) / max(1, len(self._bars))
 
