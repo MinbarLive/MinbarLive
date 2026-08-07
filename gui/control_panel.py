@@ -262,7 +262,9 @@ class ControlPanel(QMainWindow):
 
         # One anonymous request to the GitHub releases API, off the GUI thread;
         # the banner appears only if it answers with a newer version.
-        self.update_banner.start_check(self.settings.check_for_updates)
+        self.update_banner.start_check(
+            self.settings.check_for_updates, self.settings.include_prereleases
+        )
 
         # With hide mode "never" (the default) the overlay is open even while
         # stopped — that is what makes the stopped hint and a stopped-session

@@ -22,15 +22,18 @@ from utils.update_check import UpdateInfo, check_for_update
 
 # One request per process. A GUI-language switch rebuilds the panel, and a
 # fresh request per rebuild would be pure waste — the answer cannot change in
-# that time, and the banner should come straight back.
+# that time, and the banner should come straight back. Keyed on the
+# pre-release flag, which is the one thing that *can* change the answer within
+# a process: toggling it in settings must not replay the other channel's
+# cached result.
 _result: UpdateInfo | None = None
-_checked = False
+_checked_with: bool | None = None
 
 
 def reset_cache() -> None:
     """Forget the cached result (tests; each wants its own answer)."""
-    global _result, _checked
-    _result, _checked = None, False
+    global _result, _checked_with
+    _result, _checked_with = None, None
 
 
 class _Check(QObject):
@@ -38,10 +41,10 @@ class _Check(QObject):
 
     done = Signal(object)  # UpdateInfo, or None
 
-    def start(self) -> None:
+    def start(self, include_prereleases: bool) -> None:
         def _run() -> None:
             # check_for_update never raises; a failed request is just None.
-            info = check_for_update()
+            info = check_for_update(include_prereleases)
             try:
                 self.done.emit(info)
             except RuntimeError:
@@ -83,17 +86,17 @@ class UpdateBanner(QFrame):
         # top-level window, and hiding is the safe half of the same rule.
         self.setVisible(False)
 
-    def start_check(self, enabled: bool) -> None:
+    def start_check(self, enabled: bool, include_prereleases: bool = False) -> None:
         """Ask GitHub whether a newer release exists, unless opted out."""
         if not enabled:
             return
-        global _checked
-        if _checked:
+        global _checked_with
+        if _checked_with == include_prereleases:
             # Already answered this process; show it again after a rebuild.
             self._apply(_result)
             return
-        _checked = True
-        self._check.start()
+        _checked_with = include_prereleases
+        self._check.start(include_prereleases)
 
     def _on_result(self, info: UpdateInfo | None) -> None:
         global _result

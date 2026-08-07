@@ -31,6 +31,10 @@ class TestIsNewerVersion:
             ("1.0.0", "1.0.0-beta"),  # final release beats its pre-release
             ("1.0.1-beta", "1.0.0"),  # newer numbers beat older final
             ("1.1", "1.0.9"),  # short tag pads to 1.1.0
+            ("1.0.0-rc.2", "1.0.0-rc.1"),  # the next rc reaches an rc build
+            ("1.0.0-rc.10", "1.0.0-rc.9"),  # suffix numbers compare as numbers
+            ("1.0.0-rc.1", "1.0.0-beta"),  # beta -> rc is forward
+            ("1.0.0-rc.1", "1.0.0-rc"),  # a numbered rc beats the bare one
         ],
     )
     def test_newer(self, remote, current):
@@ -47,6 +51,9 @@ class TestIsNewerVersion:
             ("not-a-version", "1.0.0"),
             ("", "1.0.0"),
             ("1.0.0", "garbage"),  # unparseable current -> never "newer"
+            ("1.0.0-rc.1", "1.0.0-rc.2"),  # an rc never goes backwards
+            ("1.0.0-rc.1", "1.0.0-rc.1"),
+            ("1.0.0-beta", "1.0.0-rc.1"),
         ],
     )
     def test_not_newer(self, remote, current):
@@ -160,6 +167,114 @@ class TestCheckForUpdate:
     def test_malformed_body_is_silent(self, monkeypatch):
         _fake_urlopen(b"<html>rate limited</html>", monkeypatch)
         assert check_for_update() is None
+
+
+def _tag_url(tag: str) -> str:
+    return f"https://github.com/MinbarLive/MinbarLive/releases/tag/{tag}"
+
+
+class TestFetchPrereleases:
+    """include_prereleases reads the full list, which does contain rcs."""
+
+    def test_uses_release_list_endpoint(self, monkeypatch):
+        captured = _fake_urlopen(
+            [{"tag_name": "v1.0.0-rc.1", "html_url": _tag_url("v1.0.0-rc.1")}],
+            monkeypatch,
+        )
+        assert fetch_latest_release(include_prereleases=True) == (
+            "v1.0.0-rc.1",
+            _tag_url("v1.0.0-rc.1"),
+        )
+        assert captured["url"] == update_check.RELEASE_LIST_API_URL
+
+    def test_highest_version_wins_not_first_entry(self, monkeypatch):
+        # GitHub returns the list newest-published first, which is not the
+        # same as newest version.
+        _fake_urlopen(
+            [
+                {"tag_name": "v0.9.1", "html_url": _tag_url("v0.9.1")},
+                {"tag_name": "v1.0.0-rc.2", "html_url": _tag_url("v1.0.0-rc.2")},
+                {"tag_name": "v1.0.0-rc.1", "html_url": _tag_url("v1.0.0-rc.1")},
+            ],
+            monkeypatch,
+        )
+        assert fetch_latest_release(include_prereleases=True) == (
+            "v1.0.0-rc.2",
+            _tag_url("v1.0.0-rc.2"),
+        )
+
+    def test_unparseable_tags_are_skipped(self, monkeypatch):
+        _fake_urlopen(
+            [
+                {"tag_name": "nightly", "html_url": _tag_url("nightly")},
+                {"tag_name": "v1.0.0-rc.1", "html_url": _tag_url("v1.0.0-rc.1")},
+            ],
+            monkeypatch,
+        )
+        assert fetch_latest_release(include_prereleases=True) == (
+            "v1.0.0-rc.1",
+            _tag_url("v1.0.0-rc.1"),
+        )
+
+    def test_empty_list_returns_none(self, monkeypatch):
+        _fake_urlopen([], monkeypatch)
+        assert fetch_latest_release(include_prereleases=True) is None
+
+    def test_non_list_body_returns_none(self, monkeypatch):
+        _fake_urlopen({"tag_name": "v9.9.9"}, monkeypatch)
+        assert fetch_latest_release(include_prereleases=True) is None
+
+    def test_hostile_url_falls_back_to_releases_page(self, monkeypatch):
+        _fake_urlopen(
+            [{"tag_name": "v1.0.0-rc.1", "html_url": "javascript:alert(1)"}],
+            monkeypatch,
+        )
+        assert fetch_latest_release(include_prereleases=True) == (
+            "v1.0.0-rc.1",
+            update_check.RELEASES_PAGE_URL,
+        )
+
+
+class TestPrereleaseOptIn:
+    """The setting is the only thing that can expose an rc to a user."""
+
+    def test_opted_out_never_sees_the_rc(self, monkeypatch):
+        # What every normal user gets: /releases/latest, which excludes the
+        # rc, so the answer is the release they already run.
+        monkeypatch.setattr(update_check, "__version__", "1.0.0-beta")
+        captured = _fake_urlopen(
+            {"tag_name": "v1.0.0-beta", "html_url": _tag_url("v1.0.0-beta")},
+            monkeypatch,
+        )
+        assert check_for_update() is None
+        assert captured["url"] == update_check.LATEST_RELEASE_API_URL
+
+    def test_opted_in_sees_the_rc(self, monkeypatch):
+        monkeypatch.setattr(update_check, "__version__", "1.0.0-beta")
+        _fake_urlopen(
+            [
+                {"tag_name": "v1.0.0-rc.1", "html_url": _tag_url("v1.0.0-rc.1")},
+                {"tag_name": "v1.0.0-beta", "html_url": _tag_url("v1.0.0-beta")},
+            ],
+            monkeypatch,
+        )
+        assert check_for_update(include_prereleases=True) == UpdateInfo(
+            version="1.0.0-rc.1", url=_tag_url("v1.0.0-rc.1")
+        )
+
+    def test_opted_in_still_prefers_the_final(self, monkeypatch):
+        # An rc tester must not be parked on the rc once 1.0.0 ships.
+        monkeypatch.setattr(update_check, "__version__", "1.0.0-rc.1")
+        _fake_urlopen(
+            [
+                {"tag_name": "v1.0.0", "html_url": _tag_url("v1.0.0")},
+                {"tag_name": "v1.0.0-rc.1", "html_url": _tag_url("v1.0.0-rc.1")},
+            ],
+            monkeypatch,
+        )
+        assert check_for_update(include_prereleases=True) == UpdateInfo(
+            version="1.0.0", url=_tag_url("v1.0.0")
+        )
 
 
 if __name__ == "__main__":

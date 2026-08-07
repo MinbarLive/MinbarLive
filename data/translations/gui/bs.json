@@ -214,6 +214,7 @@
   "wizard_disclaimer_accept": "Razumijem da AI prijevodi mogu biti neprecizni.",
   "update_available": "Verzija {version} je dostupna — kliknite za preuzimanje",
   "check_updates_on_launch": "Provjeri ažuriranja pri pokretanju",
+  "include_prereleases": "Nudi i beta i testne verzije",
   "integrated_windows_hint": "Otvaraj postavke, historiju i batch unutar glavnog prozora (Esc zatvara) umjesto kao zasebne prozore.",
   "window_style_label": "Stil prozora",
   "window_style_integrated": "Integrisano",

@@ -183,6 +183,15 @@ class SettingsWindow(QDialog):
         self.updates_check.setChecked(self.settings.check_for_updates)
         self.updates_check.toggled.connect(self._on_updates)
         box.addWidget(self.updates_check)
+
+        self.prerelease_check = QCheckBox(
+            self._t("include_prereleases", "Also offer beta and test versions")
+        )
+        self.prerelease_check.setChecked(self.settings.include_prereleases)
+        # Only meaningful while the check itself runs.
+        self.prerelease_check.setEnabled(self.settings.check_for_updates)
+        self.prerelease_check.toggled.connect(self._on_prereleases)
+        box.addWidget(self.prerelease_check)
         return card
 
     def _appearance_card(self) -> QFrame:
@@ -294,6 +303,11 @@ class SettingsWindow(QDialog):
 
     def _on_updates(self, checked: bool) -> None:
         self.settings.check_for_updates = checked
+        self.prerelease_check.setEnabled(checked)
+        self._save()
+
+    def _on_prereleases(self, checked: bool) -> None:
+        self.settings.include_prereleases = checked
         self._save()
 
     def _on_theme(self, index: int) -> None:

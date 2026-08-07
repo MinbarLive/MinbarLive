@@ -227,6 +227,7 @@
   "wizard_disclaimer_accept": "I understand that AI translations can be inaccurate.",
   "update_available": "Version {version} available — click to download",
   "check_updates_on_launch": "Check for updates at startup",
+  "include_prereleases": "Also offer beta and test versions",
   "integrated_windows_hint": "Open settings, history and batch inside the main window (Esc closes) instead of as separate windows.",
   "window_style_label": "Window style",
   "window_style_integrated": "Integrated",
