@@ -214,6 +214,7 @@
   "wizard_disclaimer_accept": "E kuptoj që përkthimet e IA-së mund të jenë të pasakta.",
   "update_available": "Versioni {version} është i disponueshëm — klikoni për ta shkarkuar",
   "check_updates_on_launch": "Kontrollo për përditësime në nisje",
+  "include_prereleases": "Ofro edhe versionet beta dhe të testimit",
   "integrated_windows_hint": "Hap cilësimet, historikun dhe batch-in brenda dritares kryesore (Esc mbyll) në vend të dritareve të veçanta.",
   "window_style_label": "Stili i dritareve",
   "window_style_integrated": "I integruar",

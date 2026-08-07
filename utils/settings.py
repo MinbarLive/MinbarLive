@@ -499,6 +499,9 @@ class Settings:
     # Startup update check: one anonymous GET to the GitHub releases API;
     # a newer release shows a dismissible notice in the control panel.
     check_for_updates: bool = True
+    # Widen that check to release candidates and betas. Off by default: the
+    # notice is for everyone, and untested builds are not.
+    include_prereleases: bool = False
     ai_provider: str = DEFAULT_AI_PROVIDER  # Translation provider (providers/ pkg)
     transcription_provider: str = (
         DEFAULT_TRANSCRIPTION_PROVIDER  # STT engine (streaming ones => streaming)
@@ -747,6 +750,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             auto_start=data.get("auto_start", False),
             auto_stop_inactivity=data.get("auto_stop_inactivity", True),
             check_for_updates=data.get("check_for_updates", True),
+            include_prereleases=bool(data.get("include_prereleases", False)),
             ai_provider=ai_provider,
             transcription_provider=transcription_provider,
             onboarding_completed=data.get("onboarding_completed", False),
@@ -820,6 +824,7 @@ def save_settings(settings: Settings) -> None:
         "auto_start": settings.auto_start,
         "auto_stop_inactivity": settings.auto_stop_inactivity,
         "check_for_updates": settings.check_for_updates,
+        "include_prereleases": settings.include_prereleases,
         "ai_provider": settings.ai_provider,
         "transcription_provider": settings.transcription_provider,
         "onboarding_completed": settings.onboarding_completed,

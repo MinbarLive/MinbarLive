@@ -3341,7 +3341,9 @@ class TestUpdateBanner:
         monkeypatch.setattr(
             ub,
             "check_for_update",
-            lambda: UpdateInfo(version="9.9.9", url="https://example.invalid/r"),
+            lambda include_prereleases=False: UpdateInfo(
+                version="9.9.9", url="https://example.invalid/r"
+            ),
         )
         made = ub.UpdateBanner(lambda key, fallback="": fallback)
         yield made, ub
@@ -3361,7 +3363,9 @@ class TestUpdateBanner:
     def test_opting_out_makes_no_request(self, banner, monkeypatch):
         made, ub = banner
         calls = []
-        monkeypatch.setattr(ub, "check_for_update", lambda: calls.append(1))
+        monkeypatch.setattr(
+            ub, "check_for_update", lambda *_: calls.append(1)
+        )
         made.start_check(False)
         assert calls == []
         assert made.isHidden()
@@ -3380,12 +3384,40 @@ class TestUpdateBanner:
         made.start_check(True)
         _wait_for(qt_app, lambda: not made.isHidden())
         calls = []
-        ub.check_for_update = lambda: calls.append(1)
+        ub.check_for_update = lambda *_: calls.append(1)
         second = ub.UpdateBanner(lambda key, fallback="": fallback)
         try:
             second.start_check(True)
             assert calls == []
             assert "9.9.9" in second.label.text()
+        finally:
+            second.close()
+
+    def test_the_channel_is_passed_through(self, banner, qt_app):
+        made, ub = banner
+        seen = []
+        ub.check_for_update = lambda include_prereleases=False: seen.append(
+            include_prereleases
+        )
+        made.start_check(True, True)
+        _wait_for(qt_app, lambda: seen == [True])
+        assert seen == [True]
+
+    def test_toggling_the_channel_re_asks(self, banner, qt_app):
+        # The cached answer belongs to one channel. Opting into pre-releases
+        # must not replay the stable answer.
+        made, ub = banner
+        made.start_check(True)
+        _wait_for(qt_app, lambda: not made.isHidden())
+        seen = []
+        ub.check_for_update = lambda include_prereleases=False: seen.append(
+            include_prereleases
+        )
+        second = ub.UpdateBanner(lambda key, fallback="": fallback)
+        try:
+            second.start_check(True, True)
+            _wait_for(qt_app, lambda: seen == [True])
+            assert seen == [True]
         finally:
             second.close()
 

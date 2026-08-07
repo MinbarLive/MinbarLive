@@ -214,6 +214,7 @@
   "wizard_disclaimer_accept": "أفهم أن ترجمات الذكاء الاصطناعي قد تكون غير دقيقة.",
   "update_available": "الإصدار {version} متاح — انقر للتنزيل",
   "check_updates_on_launch": "التحقق من التحديثات عند بدء التشغيل",
+  "include_prereleases": "عرض الإصدارات التجريبية أيضًا",
   "integrated_windows_hint": "فتح الإعدادات والسجل والدفعات داخل النافذة الرئيسية (يُغلق بزر Esc) بدلاً من نوافذ منفصلة.",
   "window_style_label": "نمط النوافذ",
   "window_style_integrated": "مدمج",
