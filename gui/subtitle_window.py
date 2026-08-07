@@ -369,6 +369,25 @@ class SubtitleWindow(QWidget):
         """
         return QColor(self._colors["muted"])
 
+    def _dims_history(self) -> bool:
+        """Whether a block that is no longer the newest is drawn muted.
+
+        **Fortlaufend (Ticker) does not dim.** Every line there scrolls steadily
+        past at the same reading distance, so the audience is reading the whole
+        column, not one live line with a settled history behind it — dimming
+        just makes most of the screen harder to read for no information gained.
+
+        Realtime keeps it: there the history sits still underneath a live line,
+        and the mute is what says "already said".
+        """
+        return self._mode != SUBTITLE_MODE_CONTINUOUS
+
+    def _block_translation_qcolor(self, newest: bool) -> QColor:
+        """Translation colour for one block of the feed."""
+        if newest or not self._dims_history():
+            return self._translation_qcolor()
+        return self._history_qcolor()
+
     def _transparent_static_active(self) -> bool:
         """Transparent backdrop is a static-mode option only.
 
@@ -1022,7 +1041,7 @@ class SubtitleWindow(QWidget):
         exactly as the translation does. A configured source colour still wins;
         only the DEFAULT differs from the stacked layout.
         """
-        if not newest:
+        if not newest and self._dims_history():
             return self._history_qcolor()
         return QColor(self._source_color or self._colors["text"])
 
@@ -1263,7 +1282,7 @@ class SubtitleWindow(QWidget):
                     block.translation,
                     trans_font,
                     trans_rect,
-                    self._translation_qcolor() if newest else self._history_qcolor(),
+                    self._block_translation_qcolor(newest),
                 ),
             ):
                 layout, height = self._layout_text(text, font, width=rect.width())
@@ -1287,7 +1306,7 @@ class SubtitleWindow(QWidget):
         stacked.append(
             (
                 _Run(layout, y + used, th),
-                self._translation_qcolor() if newest else self._history_qcolor(),
+                self._block_translation_qcolor(newest),
             )
         )
         if cards:

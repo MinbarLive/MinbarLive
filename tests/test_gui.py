@@ -267,6 +267,71 @@ class TestContinuousMode:
         w.add_subtitle("Nur eine Zeile.")
         assert w.get_subtitle_backlog_count() == 0
 
+    # ── the ticker does not dim what it has already scrolled past ────────
+    #
+    # Reported live from the 1.0.0-rc.1 binary. Every line in the ticker goes
+    # past at the same reading distance, so the audience is reading the whole
+    # column rather than one live line over a settled history — dimming the
+    # older ones just makes most of the screen harder to read.
+
+    def test_the_ticker_does_not_dim_older_translations(self, overlay):
+        w = overlay(SUBTITLE_MODE_CONTINUOUS)
+        assert w._block_translation_qcolor(newest=False) == w._translation_qcolor()
+
+    def test_realtime_still_dims_its_history(self, overlay):
+        """There the history sits still under a live line, and the mute is
+        what says "already said". Only the ticker changes."""
+        w = overlay(SUBTITLE_MODE_REALTIME)
+        assert w._block_translation_qcolor(newest=False) == w._history_qcolor()
+
+    def test_static_still_dims_its_history(self, overlay):
+        w = overlay(SUBTITLE_MODE_STATIC)
+        assert w._block_translation_qcolor(newest=False) == w._history_qcolor()
+
+    def test_the_ticker_leaves_the_stacked_original_muted(self, overlay):
+        """"All the subtitles white, BESIDES the original text" — the stacked
+        original stays the muted tone, which is what marks it as the source
+        rather than as already-said."""
+        from PySide6.QtGui import QColor
+
+        w = overlay(SUBTITLE_MODE_CONTINUOUS, bilingual_mode=True, side_by_side=False)
+        assert w._source_qcolor() == QColor(w._colors["muted"])
+
+    def test_the_ticker_keeps_a_side_by_side_original_with_its_translation(
+        self, overlay
+    ):
+        """Side by side the original is the other half of the row and drops to
+        history exactly as its translation does. The ticker stops dimming the
+        translation, so dimming the original would split the pair down the
+        middle. Only that layout is affected — stacked is the test above."""
+        w = overlay(SUBTITLE_MODE_CONTINUOUS, bilingual_mode=True, side_by_side=True)
+        assert w._column_source_qcolor(newest=False) == w._column_source_qcolor(
+            newest=True
+        )
+
+    def test_every_ticker_line_renders_in_the_same_colour(self, overlay, qt_app):
+        """The rule above, checked on PIXELS rather than on the model — the two
+        are different claims, and it is the painted ink the audience reads."""
+        from PySide6.QtGui import QColor
+
+        w = overlay(SUBTITLE_MODE_CONTINUOUS)
+        for i in range(4):
+            w.add_subtitle(f"Zeile Nummer {i} mit genug Text zum Messen.")
+        w.render(w.grab())
+
+        wanted = QColor(w._translation_qcolor()).rgb()
+        muted = QColor(w._history_qcolor()).rgb()
+        assert wanted != muted, "theme gives both the same value — test proves nothing"
+
+        image = w.grab().toImage()
+        found = {image.pixel(x, y) & 0xFFFFFF
+                 for y in range(0, image.height(), 2)
+                 for x in range(0, image.width(), 2)}
+        assert (wanted & 0xFFFFFF) in found, "no text drawn in the live colour"
+        assert (muted & 0xFFFFFF) not in found, (
+            "the ticker still painted a block in the muted history colour"
+        )
+
 
 class TestRealtimeMode:
     """The default streaming mode: a top-down feed that must not run off."""
@@ -5155,6 +5220,35 @@ class TestLiveStreamRestart:
         self._drive(qt_app, controller, p)
         assert controller.restarts
         assert p._running
+
+    def test_swapping_the_languages_reconnects_too(self, panel, qt_app):
+        """Reported live: the ⇄ button changed the SOURCE on a running stream
+        without reopening it, so the engine kept transcribing the previous
+        language — German speech came back written in Arabic script — while the
+        target, read per translation call, changed at once.
+
+        _on_source_changed cannot cover this: _refresh_source_combo blocks the
+        combo's signals across its repopulate, so the handler never runs.
+        """
+        p, controller = panel
+        p._running = True
+        p.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+        p.settings.source_language = "German"
+        p.settings.target_language = "English"
+        p._on_swap_languages()
+        self._drive(qt_app, controller, p)
+        assert p.settings.source_language == "English"
+        assert controller.restarts, "the swap left the stream on the old language"
+
+    def test_swapping_while_stopped_does_not_reconnect(self, panel):
+        p, controller = panel
+        p._running = False
+        p.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+        p.settings.source_language = "German"
+        p.settings.target_language = "English"
+        p._on_swap_languages()
+        assert p.settings.source_language == "English"  # the swap still happens
+        assert controller.restarts == []
 
     def test_segmented_session_does_not(self, panel):
         p, controller = panel

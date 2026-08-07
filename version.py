@@ -20,6 +20,10 @@ __version_info__ = tuple(int(x) for x in _version_nums)
 #              three-column threshold
 #            - Build: dependencies' own test suites are no longer bundled
 #              (hiddenimports 3468 -> 3245, #48)
+#            - Fortlaufend (Ticker) no longer dims every line but the newest;
+#              the original text keeps its muted tone
+#            - The language swap button reopens the stream, so the engine stops
+#              transcribing in the language you just switched away from
 # 1.0.0-beta - Initial open source release
 #            - Real-time audio transcription and translation
 #            - RAG-enhanced Quran verse matching

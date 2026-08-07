@@ -1818,6 +1818,14 @@ class ControlPanel(QMainWindow):
         self._refresh_source_combo()
         self.target_combo.setCurrentText(language_display_name(source))
         save_settings(self.settings)
+        # Swapping changes the SOURCE, and a live streaming socket fixed that
+        # at connect. _on_source_changed cannot carry this: _refresh_source_combo
+        # above blocks the combo's signals across its repopulate, so the handler
+        # never runs. Without this call the button silently left the engine
+        # transcribing the previous language — German speech came back written
+        # in Arabic script — while the target language, read per translation
+        # call, changed immediately.
+        self._restart_pipeline_for_live_change()
 
     def _current_mode(self) -> str:
         return self.mode_combo.currentData() or "continuous"
