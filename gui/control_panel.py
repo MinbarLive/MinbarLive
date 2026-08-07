@@ -1549,36 +1549,36 @@ class ControlPanel(QMainWindow):
         """Point the two Display sliders at what the current mode gives them.
 
         **Height** never greys out — it means something in every mode — but it
-        means two different things, so its range, its readout and its caption
-        all swap with ``_lift_mode``. See WINDOW_HEIGHT_PERCENT_* in
-        utils/settings for why one stored field carries both.
+        means two different things, so its range, its value, its readout and its
+        caption all swap with ``_lift_mode``. The two meanings have a stored
+        field each (``window_height_percent`` and ``static_lift_percent``), so
+        toggling Transparent hands the slider the value that meaning was last
+        left at rather than the other one's — see WINDOW_HEIGHT_PERCENT_* in
+        utils/settings for what one shared field cost.
 
-        The range change is made with the slider's signals blocked, and that is
+        The swap is made with the slider's signals blocked, and that is
         load-bearing rather than tidy: ``setRange`` clamps the current value and
-        emits ``valueChanged``, so merely switching modes would have written a
-        halved number back into settings.json. Clamped on read, written only
-        when the operator actually drags — a feed mode's 100 survives a trip
-        through static untouched.
+        ``setValue`` moves it, and both emit ``valueChanged`` — so merely
+        switching modes would write the mode you just LEFT the value belonging
+        to the one you arrived in.
 
-        **Backdrop opacity** does grey out, because while Transparent is on
-        there is genuinely nothing for it to apply to: that toggle sets the
-        window backdrop to fully transparent. Disabled rather than hidden — a
-        control that vanishes reads as a bug — and the whole row, so the
-        caption and readout grey with it (Qt propagates ``setEnabled``).
+        **Backdrop opacity** stays live in every mode. It used to grey out
+        under Transparent, on the grounds that the toggle sets the window
+        backdrop to fully transparent and leaves nothing to apply it to — but
+        the mode still paints a card behind each line (``_ribbon_rects``), and
+        that card is the only thing between the text and the video. So the
+        slider keeps its job and sets the card's opacity instead; only the
+        tooltip says which backdrop it is reaching.
         """
         lift = self._lift_mode()
         slider = self.height_slider
         blocked = slider.blockSignals(True)
         if lift:
             slider.setRange(STATIC_LIFT_PERCENT_MIN, STATIC_LIFT_PERCENT_MAX)
-            slider.setValue(
-                min(self.settings.window_height_percent, STATIC_LIFT_PERCENT_MAX)
-            )
+            slider.setValue(self.settings.static_lift_percent)
         else:
             slider.setRange(WINDOW_HEIGHT_PERCENT_MIN, WINDOW_HEIGHT_PERCENT_MAX)
-            slider.setValue(
-                max(self.settings.window_height_percent, WINDOW_HEIGHT_PERCENT_MIN)
-            )
+            slider.setValue(self.settings.window_height_percent)
         slider.blockSignals(blocked)
         self.height_value.setText(f"{slider.value()}%")
         self.height_caption.setText(
@@ -1666,11 +1666,23 @@ class ControlPanel(QMainWindow):
             self.subtitle_window.set_monitor(index)
 
     def _on_height_changed(self, value: int) -> None:
-        self.settings.window_height_percent = value
+        """One slider, two settings — whichever meaning is in force right now.
+
+        The mode decides where the number goes, so the other meaning keeps the
+        value the operator last left it at and Transparent can be toggled back
+        and forth without either drifting.
+        """
+        if self._lift_mode():
+            self.settings.static_lift_percent = value
+        else:
+            self.settings.window_height_percent = value
         self.height_value.setText(f"{value}%")
         save_settings(self.settings)
         if self.subtitle_window:
-            self.subtitle_window.set_window_height_percent(value)
+            if self._lift_mode():
+                self.subtitle_window.set_static_lift_percent(value)
+            else:
+                self.subtitle_window.set_window_height_percent(value)
 
     def _on_opacity_changed(self, value: int) -> None:
         self.settings.subtitle_backdrop_opacity = value
@@ -2626,6 +2638,7 @@ class ControlPanel(QMainWindow):
             scroll_speed=s.scroll_speed,
             transparent_static=s.transparent_static,
             window_height_percent=s.window_height_percent,
+            static_lift_percent=s.static_lift_percent,
             backdrop_opacity=s.subtitle_backdrop_opacity,
             show_footer=s.show_footer,
             theme_mode=s.subtitle_theme_mode,

@@ -1565,28 +1565,49 @@ class TestDisplaySlidersFollowTheMode:
         assert panel.height_caption.text() == panel._t("height", "Height:")
         assert not panel.height_row.toolTip()
 
-    def test_switching_modes_never_rewrites_the_stored_value(self, panel):
-        """setRange clamps the current value and emits valueChanged, so without
-        blocking the signal a trip through static would have halved a feed
-        mode's height behind the operator's back."""
+    def test_each_meaning_comes_back_to_its_own_value(self, panel):
+        """The point of the two fields: toggling Transparent must hand the
+        slider what THAT meaning was last left at, not the other one's number
+        squeezed into its range."""
         panel.settings.window_height_percent = WINDOW_HEIGHT_PERCENT_MAX
+        panel.settings.static_lift_percent = 0
         self._lift(panel)
-        assert panel.height_slider.value() == STATIC_LIFT_PERCENT_MAX, "not clamped"
+        assert panel.height_slider.value() == 0, "the lift got the height's value"
+        panel.transparent_check.setChecked(False)
+        panel._sync_display_sliders()
+        assert panel.height_slider.value() == WINDOW_HEIGHT_PERCENT_MAX
+        # And neither write touched the other's field.
+        assert panel.settings.window_height_percent == WINDOW_HEIGHT_PERCENT_MAX
+        assert panel.settings.static_lift_percent == 0
+
+    def test_switching_modes_never_rewrites_the_stored_value(self, panel):
+        """setRange clamps and setValue moves, and both emit valueChanged — so
+        without blocking the signal, arriving in a mode would write ITS value
+        into the field of the mode just left."""
+        panel.settings.window_height_percent = WINDOW_HEIGHT_PERCENT_MAX
+        panel.settings.static_lift_percent = 30
+        self._lift(panel)
         assert panel.settings.window_height_percent == WINDOW_HEIGHT_PERCENT_MAX
         panel.transparent_check.setChecked(False)
-        assert panel.settings.window_height_percent == WINDOW_HEIGHT_PERCENT_MAX
-        assert panel.height_slider.value() == WINDOW_HEIGHT_PERCENT_MAX
+        panel._sync_display_sliders()
+        assert panel.settings.static_lift_percent == 30
 
-    def test_dragging_it_does_write(self, panel):
-        # Clamped on READ, written on drag — the operator changing it is the
-        # one thing that should change it.
+    def test_dragging_it_writes_the_meaning_in_force(self, panel):
         self._lift(panel)
         panel.height_slider.setValue(12)
-        assert panel.settings.window_height_percent == 12
+        assert panel.settings.static_lift_percent == 12
+        assert panel.settings.window_height_percent != 12, "wrote the wrong field"
         assert panel.height_value.text() == "12%"
+
+        panel.transparent_check.setChecked(False)
+        panel._sync_display_sliders()
+        panel.height_slider.setValue(40)
+        assert panel.settings.window_height_percent == 40
+        assert panel.settings.static_lift_percent == 12, "the lift was overwritten"
 
     def test_the_readout_follows_the_swap(self, panel):
         panel.settings.window_height_percent = WINDOW_HEIGHT_PERCENT_MAX
+        panel.settings.static_lift_percent = STATIC_LIFT_PERCENT_MAX
         self._lift(panel)
         assert panel.height_value.text() == f"{STATIC_LIFT_PERCENT_MAX}%"
 
@@ -5509,6 +5530,24 @@ class TestTransparentStaticGeometry:
         assert w._effective_height_percent() == 23
         assert w._static_lift() == 0
 
+    def test_the_lift_does_not_reach_the_band(self, overlay):
+        """The reported bug: dragging Abstand von unten to 0 and unticking
+        Transparent left a 0%-tall overlay — one pixel, subtitles and footer
+        gone, and only a drag of the height slider brought them back. The two
+        meanings had one stored field and do not even share a floor."""
+        w = self._transparent(
+            overlay, static_lift_percent=0, window_height_percent=40
+        )
+        assert w._static_lift() == 0, "this value is not the one that broke it"
+        w.set_transparent_static(False)
+        assert w._effective_height_percent() == 40
+
+    def test_a_band_is_never_thinner_than_it_can_hold(self, overlay):
+        """Still clamped where the number becomes pixels, although the lift can
+        no longer arrive here — a hand-edited settings.json is enough."""
+        w = overlay(SUBTITLE_MODE_STATIC, window_height_percent=0)
+        assert w._effective_height_percent() == WINDOW_HEIGHT_PERCENT_MIN
+
     def test_the_setting_is_kept_for_when_the_mode_changes_back(self, overlay):
         # Ignored, not overwritten: leaving transparent static has to restore
         # the band the operator chose, not reset it to full screen.
@@ -5674,22 +5713,22 @@ class TestTransparentStaticGeometry:
 
     # ── the lift ─────────────────────────────────────────────────────────
     def test_the_slider_lifts_the_content_off_the_bottom(self, overlay):
-        w = self._transparent(overlay, window_height_percent=0)
+        w = self._transparent(overlay, static_lift_percent=0)
         w.add_subtitle(*reversed(PAIRS[0]))
         assert w._static_lift() == 0
-        w.set_window_height_percent(20)
+        w.set_static_lift_percent(20)
         assert w._static_lift() == int(w.height() * 20 / 100)
 
     def test_the_lift_is_capped_at_half_the_screen(self, overlay):
         # Past halfway a subtitle is no longer at the bottom of the picture.
-        w = self._transparent(overlay, window_height_percent=100)
+        w = self._transparent(overlay, static_lift_percent=100)
         w.add_subtitle(*reversed(PAIRS[0]))
         assert w._static_lift() == int(w.height() * STATIC_LIFT_PERCENT_MAX / 100)
 
     def test_the_lift_never_pushes_the_block_off_the_top(self, overlay):
         # The same bug at the other end: it stops where the block runs out of
         # room rather than walking the text off the top edge.
-        w = self._transparent(overlay, window_height_percent=STATIC_LIFT_PERCENT_MAX)
+        w = self._transparent(overlay, static_lift_percent=STATIC_LIFT_PERCENT_MAX)
         w.add_subtitle(_LONG_DE, _LONG_AR)
         w.resize(w.width(), 420)
         assert w._static_lift() <= max(
@@ -5702,7 +5741,7 @@ class TestTransparentStaticGeometry:
         from PySide6.QtGui import QPainter, QPixmap
 
         def measure(percent):
-            w = self._transparent(overlay, window_height_percent=percent)
+            w = self._transparent(overlay, static_lift_percent=percent)
             w.add_subtitle(*reversed(PAIRS[0]))
             tops: list[int] = []
             pills: list[int] = []

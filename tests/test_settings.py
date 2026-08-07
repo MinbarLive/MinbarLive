@@ -490,6 +490,57 @@ class TestSubtitleTypography:
         finally:
             settings_module._cached_settings = None
 
+    def _loaded(self, tmp_path, monkeypatch, stored: dict):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps(stored), encoding="utf-8")
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            return load_settings(use_cache=False)
+        finally:
+            settings_module._cached_settings = None
+
+    @pytest.mark.parametrize(
+        ("stored", "expected"), [(0, 5), (3, 5), (5, 5), (100, 100), (400, 100)]
+    )
+    def test_the_band_height_clamps_to_its_own_range(
+        self, tmp_path, monkeypatch, stored, expected
+    ):
+        # A band thinner than 5% holds no text at all.
+        loaded = self._loaded(tmp_path, monkeypatch, {"window_height_percent": stored})
+        assert loaded.window_height_percent == expected
+
+    @pytest.mark.parametrize(
+        ("stored", "expected"), [(0, 0), (-10, 0), (30, 30), (50, 50), (90, 50)]
+    )
+    def test_the_lift_clamps_to_its_own_range_and_keeps_zero(
+        self, tmp_path, monkeypatch, stored, expected
+    ):
+        """Its own field since 2026-08-07. Sharing the height's meant the
+        height's floor of 5 rewrote "Abstand von unten: 0%" on every restart."""
+        loaded = self._loaded(tmp_path, monkeypatch, {"static_lift_percent": stored})
+        assert loaded.static_lift_percent == expected
+
+    def test_the_two_meanings_no_longer_overwrite_each_other(
+        self, tmp_path, monkeypatch
+    ):
+        loaded = self._loaded(
+            tmp_path,
+            monkeypatch,
+            {"window_height_percent": 80, "static_lift_percent": 0},
+        )
+        assert (loaded.window_height_percent, loaded.static_lift_percent) == (80, 0)
+
+    def test_a_file_from_before_the_split_gets_the_lift_default(
+        self, tmp_path, monkeypatch
+    ):
+        """NOT migrated from the height field: that carries whichever meaning
+        was written last, so reading it as a lift would hand anyone who left
+        the slider on a band height a lift of up to 50% they never chose."""
+        loaded = self._loaded(tmp_path, monkeypatch, {"window_height_percent": 80})
+        assert loaded.static_lift_percent == 0
+        assert loaded.window_height_percent == 80
+
     @pytest.mark.parametrize(
         "stored", ["", "red", "#FFF", "#GGGGGG", "#ff8800 ", 42, None]
     )

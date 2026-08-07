@@ -65,6 +65,7 @@ from utils.settings import (
     SUBTITLE_MODE_CONTINUOUS,
     SUBTITLE_MODE_REALTIME,
     SUBTITLE_MODE_STATIC,
+    WINDOW_HEIGHT_PERCENT_MIN,
 )
 
 # Gap between the source line and its translation inside one block, ON TOP of
@@ -237,6 +238,7 @@ class SubtitleWindow(QWidget):
         scroll_speed: float = 1.0,
         transparent_static: bool = False,
         window_height_percent: int = 100,
+        static_lift_percent: int = 0,
         backdrop_opacity: int = DEFAULT_BACKDROP_OPACITY,
         show_footer: bool = True,
         theme_mode: str = "dark",
@@ -255,6 +257,7 @@ class SubtitleWindow(QWidget):
         self._scroll_speed = scroll_speed
         self._transparent_static = transparent_static
         self._height_percent = window_height_percent
+        self._lift_percent = static_lift_percent
         self._backdrop_opacity = backdrop_opacity
         self._show_footer = show_footer
         self._theme_mode = theme_mode
@@ -422,19 +425,25 @@ class SubtitleWindow(QWidget):
         including static with the backdrop on: making that full height would
         wash the whole screen at the backdrop opacity instead of the bottom
         strip the operator asked for.
+
+        Still clamped, although the lift now has a field of its own
+        (``_lift_percent``) and can no longer arrive here: a band thinner than
+        ``WINDOW_HEIGHT_PERCENT_MIN`` holds no text at all, and this is where
+        the number is turned into pixels. A hand-edited settings.json is enough
+        to reach it.
         """
         if self._transparent_static_active():
             return 100
-        return self._height_percent
+        return max(WINDOW_HEIGHT_PERCENT_MIN, self._height_percent)
 
     def _static_lift(self) -> int:
         """Pixels the static content sits above the bottom edge.
 
-        The height slider's other meaning (see WINDOW_HEIGHT_PERCENT_* in
-        utils/settings). With no band to resize, it moves the subtitles and the
-        footer pill UP the screen together — both are offset by this one figure,
-        so the disclaimer keeps its place under the text rather than the two
-        drifting apart.
+        The height slider's other meaning, and its own stored field (see
+        STATIC_LIFT_PERCENT_* in utils/settings). With no band to resize, it
+        moves the subtitles and the footer pill UP the screen together — both
+        are offset by this one figure, so the disclaimer keeps its place under
+        the text rather than the two drifting apart.
 
         Zero everywhere else, so the feed modes and opaque static are untouched
         and this costs them nothing.
@@ -447,7 +456,7 @@ class SubtitleWindow(QWidget):
         if not self._transparent_static_active():
             return 0
         percent = max(
-            STATIC_LIFT_PERCENT_MIN, min(STATIC_LIFT_PERCENT_MAX, self._height_percent)
+            STATIC_LIFT_PERCENT_MIN, min(STATIC_LIFT_PERCENT_MAX, self._lift_percent)
         )
         lift = int(self.height() * percent / 100)
         if self._blocks:
@@ -1820,6 +1829,16 @@ class SubtitleWindow(QWidget):
     def set_window_height_percent(self, percent: int) -> None:
         self._height_percent = percent
         self._apply_geometry()
+        self.update()
+
+    def set_static_lift_percent(self, percent: int) -> None:
+        """The transparent-static lift. Never a geometry change.
+
+        The overlay is already the whole monitor there (_effective_height_
+        percent), so this moves what is PAINTED inside it and nothing else —
+        unlike the height, which resizes the window itself.
+        """
+        self._lift_percent = percent
         self.update()
 
     def set_always_on_top(self, enabled: bool) -> None:
