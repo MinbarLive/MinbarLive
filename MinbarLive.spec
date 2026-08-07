@@ -47,10 +47,37 @@ ICON_PATH = "public/MinbarLive.ico"
 # Windows-only.
 MANIFEST_PATH = "MinbarLive.manifest"
 
+
+def _not_test_code(name: str) -> bool:
+    """False for a module that is part of a package's bundled test suite.
+
+    Several dependencies ship their tests inside the installed package, and
+    ``collect_submodules`` takes all of them: ``google.genai.tests.*`` alone is
+    ~195 modules. The app can never import any of it, and much of it imports
+    ``pytest`` — which is in ``excludes`` below, so it was being bundled in a
+    state where it could not have run even if something tried (#48).
+
+    Matches on path COMPONENTS (``a.tests.b``), never on a substring, so a
+    package whose name merely contains "test" is not caught. The leaf rule
+    covers the loose modules that sit beside a suite rather than inside one:
+    ``scipy.io._test_fortran``, ``soundcard.__pyinstaller.test_soundcard``,
+    ``google.genai._test_api_client``.
+    """
+    parts = name.split(".")
+    if {"tests", "testing", "conftest"} & set(parts):
+        return False
+    return not parts[-1].startswith(("test_", "_test_"))
+
+
+def _submodules(package: str) -> list[str]:
+    """``collect_submodules`` minus the package's own test suite."""
+    return collect_submodules(package, filter=_not_test_code)
+
+
 hiddenimports = (
-    collect_submodules("sounddevice")
+    _submodules("sounddevice")
     # numpy is collected by PyInstaller's comprehensive built-in hook-numpy.
-    # collect_submodules("numpy") on top of it only added numpy.testing/f2py/
+    # _submodules("numpy") on top of it only added numpy.testing/f2py/
     # distutils/tests (build+test tooling the app never imports), so it is
     # dropped — the hook still bundles everything numpy needs at runtime.
     # scipy: the app only uses scipy.io.wavfile. Collecting just scipy.io (not
@@ -60,15 +87,15 @@ hiddenimports = (
     # import graph, so wavfile reading/writing keeps working. Collecting all of
     # scipy.sparse instead would re-pull scipy.linalg (via scipy.sparse.linalg)
     # and undo most of the saving.
-    + collect_submodules("scipy.io")
-    + collect_submodules("openai")
-    + collect_submodules("google.genai")  # imported lazily by providers/gemini
-    + collect_submodules("anthropic")  # imported lazily by providers/anthropic
-    + collect_submodules("deepgram")  # imported lazily by providers/deepgram
-    + collect_submodules("websockets")  # streaming transport (deepgram + openai realtime)
-    + collect_submodules("dotenv")
-    + collect_submodules("screeninfo")
-    + collect_submodules("keyring")
+    + _submodules("scipy.io")
+    + _submodules("openai")
+    + _submodules("google.genai")  # imported lazily by providers/gemini
+    + _submodules("anthropic")  # imported lazily by providers/anthropic
+    + _submodules("deepgram")  # imported lazily by providers/deepgram
+    + _submodules("websockets")  # streaming transport (deepgram + openai realtime)
+    + _submodules("dotenv")
+    + _submodules("screeninfo")
+    + _submodules("keyring")
     # PySide6 has a comprehensive PyInstaller hook of its own — it collects the
     # Qt libraries, the platform PLUGINS and the translations. Listing
     # submodules on top of it only re-pulls what the hook already has. What the
@@ -77,13 +104,13 @@ hiddenimports = (
     # the builder must install them BEFORE this runs (release.yml does) or the
     # plugin ships unloadable and the app falls through to Wayland, where the
     # subtitle overlay can be neither placed nor kept on top.
-    + collect_submodules("webrtcvad")  # imported lazily by audio/vad.py
-    + collect_submodules("soundcard")  # imported lazily for WASAPI loopback capture
+    + _submodules("webrtcvad")  # imported lazily by audio/vad.py
+    + _submodules("soundcard")  # imported lazily for WASAPI loopback capture
 )
 
 # keyring's Linux Secret Service backend (GNOME Keyring / KWallet) is provided by
 # secretstorage + jeepney, which keyring only declares as dependencies on Linux.
-# collect_submodules("keyring") pulls in the SecretService backend module but not
+# _submodules("keyring") pulls in the SecretService backend module but not
 # those two external packages, so PyInstaller may miss them — leaving the frozen
 # Linux binary with no keyring backend, which makes every provider's key
 # session-only (nothing is persisted without a keychain, see utils/settings.py).
@@ -91,8 +118,8 @@ hiddenimports = (
 # platform; secretstorage's cryptography dependency rides along via the import
 # graph (PyInstaller ships a dedicated cryptography hook).
 if IS_LINUX:
-    hiddenimports += collect_submodules("secretstorage")
-    hiddenimports += collect_submodules("jeepney")
+    hiddenimports += _submodules("secretstorage")
+    hiddenimports += _submodules("jeepney")
 
 # Exclude the MASSIVE unused libraries
 excludes = [
