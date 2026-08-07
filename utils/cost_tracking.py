@@ -3,7 +3,7 @@
 The provider APIs report usage, not invoice totals.  This module applies a
 versioned snapshot of the public paid Standard USD list prices and therefore
 always exposes an *estimate*.  Provider worker threads only update memory;
-``flush_cost_history`` is called by the Tk thread so live subtitles never wait
+``flush_cost_history`` is called by the GUI thread so live subtitles never wait
 for disk I/O.
 
 Only counters, provider/model ids and timestamps are persisted.  Prompts,
@@ -198,15 +198,9 @@ class CostTracker:
         self._lock = threading.RLock()
         self._active: dict[str, Any] | None = None
         self._dirty = False
-        self._revision = 0
         self._seen_event_ids: set[str] = set()
         self._live_snapshots: dict[str, dict[str, int | float]] = {}
         self._recover_stale_sessions()
-
-    @property
-    def revision(self) -> int:
-        with self._lock:
-            return self._revision
 
     def begin_session(self) -> str:
         with self._lock:
@@ -230,7 +224,6 @@ class CostTracker:
             self._dirty = False
             self._seen_event_ids.clear()
             self._live_snapshots.clear()
-            self._revision += 1
             return session_id
 
     def cancel_session(self) -> None:
@@ -244,7 +237,6 @@ class CostTracker:
             self._dirty = False
             self._seen_event_ids.clear()
             self._live_snapshots.clear()
-            self._revision += 1
         try:
             if path.exists():
                 path.unlink()
@@ -264,7 +256,6 @@ class CostTracker:
             self._dirty = False
             self._seen_event_ids.clear()
             self._live_snapshots.clear()
-            self._revision += 1
             return result
         now = _now_iso()
         self._active["status"] = status
@@ -281,7 +272,6 @@ class CostTracker:
         self._dirty = False
         self._seen_event_ids.clear()
         self._live_snapshots.clear()
-        self._revision += 1
         return result
 
     def record_usage(
@@ -400,7 +390,6 @@ class CostTracker:
         )
         self._active["last_updated_at"] = _now_iso()
         self._dirty = True
-        self._revision += 1
 
     def snapshot(self) -> dict[str, Any] | None:
         with self._lock:
@@ -438,10 +427,6 @@ class CostTracker:
         return sorted(
             records.values(), key=lambda row: str(row.get("started_at", "")), reverse=True
         )
-
-    def latest_session(self) -> dict[str, Any] | None:
-        sessions = self.list_sessions(include_active=True)
-        return sessions[0] if sessions else None
 
     def delete_session(self, session_id: str) -> bool:
         deleted = False
@@ -516,24 +501,12 @@ def flush_cost_history() -> None:
     _tracker.flush()
 
 
-def active_cost_session() -> dict[str, Any] | None:
-    return _tracker.snapshot()
-
-
-def latest_cost_session() -> dict[str, Any] | None:
-    return _tracker.latest_session()
-
-
 def list_cost_sessions() -> list[dict[str, Any]]:
     return _tracker.list_sessions(include_active=True)
 
 
 def delete_cost_session(session_id: str) -> bool:
     return _tracker.delete_session(session_id)
-
-
-def cost_revision() -> int:
-    return _tracker.revision
 
 
 def format_usd(value: str | int | float | Decimal) -> str:

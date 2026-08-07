@@ -153,6 +153,17 @@ excludes = [
     "wheel",
 ]
 
+# Qt payload this app cannot reach. TWO layers are needed and the second is the
+# one that is easy to miss: PyInstaller's PySide6 hook collects Qt's native
+# libraries as *binaries*, so excluding PySide6.QtQuick here stops the Python
+# module shipping while Qt6Quick.dll still does. The a.binaries filter below is
+# the other half. gui/ imports QtCore, QtGui and QtWidgets only — QML was
+# rejected by decision (see the gui/subtitle_window.py module docstring).
+sys.path.insert(0, SPECPATH)
+from build_qt_excludes import QT_MODULE_EXCLUDES, drop_unused_qt_binaries, report
+
+excludes += QT_MODULE_EXCLUDES
+
 # Collect native binaries (DLLs) required by these packages.
 binaries = (
     collect_dynamic_libs("sounddevice")
@@ -236,6 +247,14 @@ a.datas = [
     for d in a.datas
     if not d[0].replace("\\", "/").endswith("data/embeddings/quran_embeddings.json")
 ]
+
+# The second half of the Qt exclusion (see QT_MODULE_EXCLUDES above): drop the
+# native Qt libraries the hook collected for modules we just excluded. Printed
+# rather than silent — a build that suddenly drops nothing means the hook or
+# the naming changed, and this is the only place that would show it.
+_kept, _dropped = report(a.binaries)
+print(f"Qt binaries: keeping {_kept}, dropping {_dropped} unused")
+a.binaries = drop_unused_qt_binaries(a.binaries)
 
 pyz = PYZ(a.pure)
 

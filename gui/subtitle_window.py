@@ -1828,9 +1828,6 @@ class SubtitleWindow(QWidget):
             # block's own — the same rule _paint_realtime stacks by.
             y -= self._block_gap(block)
 
-    def get_subtitle_mode(self) -> str:
-        return self._mode
-
     def set_side_by_side(self, enabled: bool) -> None:
         self._side_by_side = enabled
         if self._mode == SUBTITLE_MODE_CONTINUOUS:
@@ -1968,12 +1965,6 @@ class SubtitleWindow(QWidget):
         self._source_color = color or ""
         self.update()
 
-    def get_translation_text_color(self) -> str:
-        return self._translation_color or self._colors["text"]
-
-    def get_source_text_color(self) -> str:
-        return self._source_color or self._colors["muted"]
-
     # The base is a divisor, so "increase font" LOWERS it. Bounds match the Tk
     # version (20-80 for the translation, 20-120 for the original text).
     def increase_font(self) -> None:
@@ -2004,29 +1995,9 @@ class SubtitleWindow(QWidget):
             return
         self.update()
 
-    def increase_source_font(self) -> None:
-        self.set_source_font_size_base(self._source_font_size_base - 5.0)
-
-    def decrease_source_font(self) -> None:
-        self.set_source_font_size_base(self._source_font_size_base + 5.0)
-
-    def get_source_font_size_base(self) -> float:
-        return self._source_font_size_base
-
-    def get_current_source_font_size(self) -> int:
-        return self._source_px()
-
     def set_scroll_speed(self, speed: float) -> None:
         """Set the scroll speed directly (the settings stepper drives this)."""
         self._scroll_speed = max(0.25, min(5.0, float(speed)))
-
-    def increase_scroll_speed(self) -> float:
-        self._scroll_speed = min(5.0, self._scroll_speed + 0.25)
-        return self._scroll_speed
-
-    def decrease_scroll_speed(self) -> float:
-        self._scroll_speed = max(0.25, self._scroll_speed - 0.25)
-        return self._scroll_speed
 
     def set_adaptive_catchup(self, enabled: bool) -> None:
         self._adaptive_catchup = enabled

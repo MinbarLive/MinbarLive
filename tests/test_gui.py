@@ -2968,6 +2968,15 @@ class TestHistoryWindow:
         assert row_text(w, 0).startswith(hw.SUMMARY_MARK)
         assert not row_text(w, 1).startswith(hw.SUMMARY_MARK)
 
+    def test_the_summary_marker_says_what_it_means(self, history):
+        """📝 is a bare glyph. The Tk viewer and the first Qt one both explained
+        it in a tooltip; the four-tab rewrite dropped the only setToolTip call
+        in the window and left the marker unexplained."""
+        make, _ = history
+        w = make()
+        assert w.entry_list.item(0).toolTip()
+        assert not w.entry_list.item(1).toolTip()
+
     def test_delete_is_the_danger_button(self, history):
         # Deleting a record is irreversible; it must not read like Copy.
         make, _ = history
@@ -7917,3 +7926,114 @@ class TestAmpersandInACheckboxLabel:
                 assert not re.search(r"(?<!&)&(?!&)", text), (
                     f"{path}:{key} has an unescaped '&' — Qt paints it as nothing"
                 )
+
+
+class TestSettingChangesLeaveABreadcrumb:
+    """Changing a setting mid-session used to log NOTHING — six handlers, zero
+    log calls, while twelve unused ``log_*_changed`` translation keys described
+    the lines nobody ever emitted (2026-08-07). The log is hidden by default and
+    exists for exactly this: reconstructing what an operator touched before it
+    went wrong. English by decision — see gui/AGENTS.md."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(cp, "ensure_keys", lambda *a, **k: True)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_restart_pipeline_for_live_change", lambda self: None
+        )
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        yield p
+        p.close()
+
+    @staticmethod
+    def _lines(action) -> list[str]:
+        """Log lines emitted by ``action``, read off the real queue."""
+        from utils.logging import log_queue
+
+        while not log_queue.empty():
+            log_queue.get_nowait()
+        action()
+        out = []
+        while not log_queue.empty():
+            out.append(log_queue.get_nowait())
+        return out
+
+    def test_target_language_change_is_logged(self, panel):
+        lines = self._lines(lambda: panel._on_target_changed(0))
+        assert any("Target language changed to" in line for line in lines), lines
+
+    def test_source_language_change_is_logged(self, panel):
+        lines = self._lines(lambda: panel._on_source_changed(0))
+        assert any("Source language changed to" in line for line in lines), lines
+
+    def test_subtitle_mode_change_is_logged(self, panel):
+        lines = self._lines(lambda: panel._on_mode_changed(0))
+        assert any("Subtitle mode changed to" in line for line in lines), lines
+
+    def test_scroll_speed_change_is_logged(self, panel):
+        lines = self._lines(lambda: panel._step_speed(0.25))
+        assert any("Scroll speed changed to" in line for line in lines), lines
+
+    def test_transparent_toggle_is_logged_both_ways(self, panel):
+        on = self._lines(lambda: panel._on_transparent_changed(True))
+        off = self._lines(lambda: panel._on_transparent_changed(False))
+        assert any("Transparent mode: enabled" in line for line in on), on
+        assert any("Transparent mode: disabled" in line for line in off), off
+
+    def test_the_breadcrumbs_are_english_not_translated(self, panel):
+        """The panel is built with whatever gui_language settings.json carries.
+        A line that came back translated would still contain the English
+        substrings above only by accident, so assert the rule directly."""
+        panel.texts = {
+            "log_target_language_changed": "ÜBERSETZT: {language}",
+            "log_subtitle_mode_changed": "ÜBERSETZT: {mode}",
+        }
+        lines = self._lines(lambda: panel._on_target_changed(0))
+        assert lines and not any("ÜBERSETZT" in line for line in lines), lines
+
+
+class TestApiKeyDialogRefusesAnEmptyKey:
+    """OK on an empty field used to be indistinguishable from Cancel: both
+    callers treat "" as a cancel, and ensure_keys aborts the whole Start on it,
+    so the operator pressed OK and the session silently did not begin
+    (2026-08-07). The `dlg_key_empty` string existed for this and was never
+    wired up; disabling the button says it without a box to dismiss."""
+
+    @pytest.fixture
+    def dialog(self, qt_app):
+        from gui.api_keys import ApiKeyDialog
+
+        d = ApiKeyDialog("openai", {})
+        yield d
+        d.close()
+
+    def test_ok_is_disabled_while_the_field_is_empty(self, dialog):
+        assert not dialog._ok_button.isEnabled()
+
+    def test_ok_enables_once_a_key_is_typed(self, dialog):
+        dialog.edit.setText("sk-test-key")
+        assert dialog._ok_button.isEnabled()
+
+    def test_whitespace_alone_does_not_count_as_a_key(self, dialog):
+        # key() strips, so "   " would reach the caller as "" — the exact
+        # silent-cancel this guards against.
+        dialog.edit.setText("   ")
+        assert not dialog._ok_button.isEnabled()
+
+    def test_clearing_the_field_disables_ok_again(self, dialog):
+        dialog.edit.setText("sk-test-key")
+        dialog.edit.setText("")
+        assert not dialog._ok_button.isEnabled()
+
+    def test_cancel_is_always_available(self, dialog):
+        from PySide6.QtWidgets import QDialogButtonBox
+
+        box = dialog.findChild(QDialogButtonBox)
+        assert box.button(QDialogButtonBox.Cancel).isEnabled()

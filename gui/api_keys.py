@@ -91,6 +91,16 @@ class ApiKeyDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        # OK stays disabled until there is something to save. Both callers
+        # treat an empty key as a cancel — ensure_keys aborts the whole Start
+        # on one — so an enabled OK on an empty field is a button that silently
+        # does nothing, and in that path silently refuses to start a session.
+        self._ok_button = buttons.button(QDialogButtonBox.Ok)
+        self._ok_button.setEnabled(False)
+        self.edit.textChanged.connect(
+            lambda text: self._ok_button.setEnabled(bool(text.strip()))
+        )
+
     def key(self) -> str:
         return self.edit.text().strip()
 

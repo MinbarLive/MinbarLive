@@ -77,10 +77,11 @@ jobs:
           done
 
       # Handed to build-linux rather than letting that job run its own
-      # `git lfs pull`: the two matrices are ~182 MB and the free LFS
-      # allowance is 1 GB of bandwidth per month, so pulling them once per
-      # release instead of twice is the difference between five builds a
-      # month and two. compression-level 0 because .npz is already zipped.
+      # `git lfs pull`: the two matrices are ~182 MB, so pulling them once per
+      # release instead of twice halves what a release costs against the LFS
+      # bandwidth allowance (10 GB/month — an earlier note here said 1 GB and
+      # that figure was wrong). compression-level 0 because .npz is already
+      # zipped.
       - name: Share the matrices with the Linux job
         uses: actions/upload-artifact@v7
         with:

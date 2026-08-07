@@ -40,6 +40,15 @@ packaging section below for the shipped build.
   `gui/control_state.py`, `gui/device_list.py`, `gui/levels.py`, `gui/palette.py`,
   `gui/i18n.py` and `gui/subtitle_text.py` are the toolkit-free modules — keep them that
   way, they are what makes the rules testable headlessly.
+- **The debug log is English, never translated** (2026-08-07). Every `log()` call is a
+  plain f-string. It is not an audience-facing surface: the panel hides it by default, it
+  is the operator's diagnostic view, and the log FILE is what gets pasted into a GitHub
+  issue — a Turkish stack of breadcrumbs makes triage worse, not better. Three keys
+  (`log_started`, `log_stopped`, `log_gui_language_changed`) were the last translated
+  lines against 19 English ones; they were de-translated and their keys deleted rather
+  than the other 19 translated. A test asserts no `log_*` key comes back. This does NOT
+  weaken the localisation invariant in the root `AGENTS.md`, which is about the *subtitle
+  window* — that stays localized to the target language.
 - **Message boxes go through `gui/dialogs.py`**, never `QMessageBox` — the system box
   is unthemed, hard-codes English buttons and plays the Windows alert sound (the icon
   triggers it). A test fails if one reappears.

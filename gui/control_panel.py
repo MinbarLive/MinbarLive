@@ -1790,6 +1790,7 @@ class ControlPanel(QMainWindow):
         self.settings.scroll_speed = speed
         self.speed_stepper.set_value_text(f"{speed:.1f}x")
         save_settings(self.settings)
+        log(f"Scroll speed changed to: {speed:.1f}x")
         if self.subtitle_window:
             self.subtitle_window.set_scroll_speed(speed)
 
@@ -1799,6 +1800,7 @@ class ControlPanel(QMainWindow):
             self.source_combo.currentText()
         )
         save_settings(self.settings)
+        log(f"Source language changed to: {self.settings.source_language}")
         # Segmented mode re-reads the source per audio segment; a streaming
         # socket fixed it at connect and has to be reopened.
         self._restart_pipeline_for_live_change()
@@ -1808,6 +1810,7 @@ class ControlPanel(QMainWindow):
             self.target_combo.currentText()
         )
         save_settings(self.settings)
+        log(f"Target language changed to: {self.settings.target_language}")
         if self.subtitle_window:
             self.subtitle_window.set_language(self.settings.target_language)
 
@@ -1835,6 +1838,7 @@ class ControlPanel(QMainWindow):
     def _on_mode_changed(self, _index: int) -> None:
         self.settings.subtitle_mode = self._current_mode()
         save_settings(self.settings)
+        log(f"Subtitle mode changed to: {self.settings.subtitle_mode}")
         self._sync_mode_controls()
         if self.subtitle_window:
             self.subtitle_window.set_subtitle_mode(
@@ -1856,6 +1860,7 @@ class ControlPanel(QMainWindow):
     def _on_transparent_changed(self, checked: bool) -> None:
         self.settings.transparent_static = checked
         save_settings(self.settings)
+        log(f"Transparent mode: {'enabled' if checked else 'disabled'}")
         # It takes the window backdrop away, so the opacity slider below it
         # has nothing left to apply to.
         self._sync_display_sliders()
@@ -2321,11 +2326,7 @@ class ControlPanel(QMainWindow):
         geometry = self.saveGeometry()
         self._build()
         self.restoreGeometry(geometry)
-        log(
-            self._t("log_gui_language_changed", "GUI language changed to: {language}")
-            .format(language=code),
-            level="INFO",
-        )
+        log(f"GUI language changed to: {code}", level="INFO")
 
     # ── session ──────────────────────────────────────────────────────────
     def on_start(self) -> None:
@@ -2406,7 +2407,7 @@ class ControlPanel(QMainWindow):
         self._refresh_provider_combos()
         self._inactivity_timer.start()
         self._cost_flush_timer.start()
-        log(self._t("log_started", "Started."), level="INFO")
+        log("Started.", level="INFO")
         # Last, so the session is fully up before the capture thread is
         # replaced — and only when it really differs from what started.
         if pending is not None and pending != self._started_device:
@@ -2486,7 +2487,7 @@ class ControlPanel(QMainWindow):
         self._sync_running_state()
         self._refresh_provider_combos()
         self._apply_subtitle_hide_mode()
-        log(self._t("log_stopped", "Stopped."), level="INFO")
+        log("Stopped.", level="INFO")
 
     # ── session tracking (cost record + inactivity guard) ────────────────
     def _end_session_tracking(self, status: str) -> None:
@@ -2626,6 +2627,7 @@ class ControlPanel(QMainWindow):
         device = self._selected_device()
         if device is None:
             return
+        log(f"Input device changed to: {self.device_combo.currentText()}")
         if self._starting:
             # Start captured the device it began with before spawning its
             # worker, and it is connecting on that one right now. Swapping
