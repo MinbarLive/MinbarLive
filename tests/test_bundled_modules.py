@@ -17,6 +17,7 @@ Costs one spec evaluation (~10 s), shared across the module.
 """
 
 import ast
+import importlib
 import re
 import sys
 from pathlib import Path
@@ -82,12 +83,41 @@ def hiddenimports() -> list[str]:
     return names
 
 
+def _importable(package: str) -> bool:
+    """Whether this machine can import it at all.
+
+    ``collect_submodules`` IMPORTS a package to walk it, and when that fails it
+    only WARNS and returns nothing. So on a machine missing the system library
+    behind a binding the package is absent from the bundle for an environmental
+    reason rather than because the filter dropped it — `ubuntu-latest` has no
+    ``libpulse.so``, so ``soundcard`` collects as empty there while the real
+    Linux builder, which installs it, collects it in full.
+
+    That is the PyInstaller builder trap in miniature, and the reason
+    release.yml installs those libraries *before* PyInstaller runs. Asserting
+    on a package this machine cannot import would be asserting on the runner.
+    """
+    try:
+        importlib.import_module(package)
+    except Exception:  # noqa: BLE001 - any failure means it cannot be collected
+        return False
+    return True
+
+
 def test_every_lazily_imported_package_is_bundled(hiddenimports):
     """The whole point. Each of these is imported inside a function, so a
     dropped one ships silently and fails the first time a user picks that
     provider."""
-    missing = [pkg for pkg in LAZY_IMPORTS if pkg not in hiddenimports]
+    checked = [pkg for pkg in LAZY_IMPORTS if _importable(pkg)]
+    missing = [pkg for pkg in checked if pkg not in hiddenimports]
     assert not missing, f"not collected, so a lazy import would fail: {missing}"
+    # Without a floor this degenerates silently: a runner where nothing imports
+    # would check nothing and still pass green.
+    assert len(checked) >= len(LAZY_IMPORTS) - 2, (
+        f"only {len(checked)} of {len(LAZY_IMPORTS)} packages were importable "
+        f"here — this check proved almost nothing. Missing: "
+        f"{sorted(set(LAZY_IMPORTS) - set(checked))}"
+    )
 
 
 def test_no_test_code_is_bundled(hiddenimports):
@@ -109,6 +139,8 @@ def test_the_filter_drops_test_code_and_nothing_else(hiddenimports):
 
     bundled = set(hiddenimports)
     for package in ("google.genai", "scipy.io", "keyring", "soundcard"):
+        if not _importable(package):
+            continue  # collects as empty here; see _importable
         dropped = set(collect_submodules(package)) - bundled
         not_test_code = [
             name
