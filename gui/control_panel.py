@@ -214,6 +214,11 @@ class ControlPanel(QMainWindow):
         self._manual_translation: tuple[str, str] | None = None
         self._manual_transcription: tuple[str, str] | None = None
         self._log_collapsed = self.settings.log_panel_collapsed
+        # (width before opening the log, width it left the window at). Closing
+        # hands the first back while the second is still in force — a window
+        # the user dragged wider meanwhile is theirs, not ours to undo.
+        # Session-only: a stored geometry already records the size on exit.
+        self._log_widen: tuple[int, int] | None = None
         activate_stored_keys()
 
         self.bridge = PipelineBridge(controller, self)
@@ -1313,18 +1318,46 @@ class ControlPanel(QMainWindow):
         self.log_toggle.setText("▶" if self._log_collapsed else "◀")
         self.settings.log_panel_collapsed = self._log_collapsed
         save_settings(self.settings)
+        # Read BEFORE _apply_log_panel_widths(). That call raises the window's
+        # minimum width to fit the log, and setMinimumSize GROWS a window that
+        # is under the new floor there and then — so by the time it returns,
+        # the width the log has to give back is already gone. (Measured: a
+        # 702 px window is 840 px on the next line, without any resize() here.)
+        width_before = self.width()
         self._apply_log_panel_widths()
-        # The log opens INSIDE the current window; it only widens one that
-        # cannot hold both, which would otherwise give the log a column a
-        # character wide. Never past the screen it is on.
-        if not self._log_collapsed and not self.isMaximized():
-            screen = self.screen() or QGuiApplication.primaryScreen()
-            available = screen.availableGeometry().width() if screen else 0
-            wanted = _SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W
-            if available:
-                wanted = min(wanted, available)
-            if self.width() < wanted:
-                self.resize(wanted, self.height())
+        if not self._log_collapsed:
+            # The log opens INSIDE the current window; it only widens one that
+            # cannot hold both, which would otherwise give the log a column a
+            # character wide. Never past the screen it is on.
+            if not self.isMaximized():
+                screen = self.screen() or QGuiApplication.primaryScreen()
+                available = screen.availableGeometry().width() if screen else 0
+                wanted = _SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W
+                if available:
+                    wanted = min(wanted, available)
+                if self.width() < wanted:
+                    self.resize(wanted, self.height())
+            # What it cost, and what it grew to — measured here rather than
+            # assumed, since either the raised minimum or the resize above may
+            # have been the one that moved it. A window that was wide enough
+            # already records (w, w), which makes the restore below a no-op
+            # without needing a branch of its own.
+            self._log_widen = (width_before, self.width())
+        elif self._log_widen is not None:
+            # Closing hands back exactly what opening took, or every peek at
+            # the log leaves the window wider than the user left it — for good,
+            # since the geometry is stored on exit. _apply_log_panel_widths()
+            # has already dropped the minimum back to the cards' own, so the
+            # log's floor cannot clamp this.
+            before, widened_to = self._log_widen
+            if self.width() == widened_to:
+                # Exactly where opening left it, so the only thing that has
+                # touched the width since is us. ANY other value means the user
+                # resized the window while the log was up — wider OR narrower —
+                # and that size is a deliberate choice to leave alone. A "no
+                # wider than we made it" test gets the narrower case backwards
+                # and snaps a window the user shrank back up to its old size.
+                self.resize(before, self.height())
         self._relayout_columns()
 
     def _drain_logs(self) -> None:
@@ -1341,16 +1374,36 @@ class ControlPanel(QMainWindow):
 
     # ── responsive card grid ─────────────────────────────────────────────
     def _available_width(self) -> int:
-        """Width the card grid has to work with.
+        """Width the card grid has to work with, as if the scroll bar were
+        always showing.
 
         The viewport is authoritative once the window is on screen. Before
         that it still reports its default, so fall back to the window's own
         width minus whatever the log panel will claim — otherwise the first
         layout is computed against a placeholder size.
+
+        The bar is reserved whether or not it is up, and that is not a fudge —
+        it breaks a feedback loop. The viewport's width depends on whether the
+        vertical scroll bar is showing; the column count decides how tall the
+        content is; and the content height decides whether that bar shows. Feed
+        the live viewport width back into the column decision and the loop
+        closes on itself at any window width within the bar's own width of a
+        threshold: three columns pin the Advanced card open, the taller content
+        summons the bar, the bar takes the viewport back under _COL3_MIN_W, two
+        columns let the content shrink, the bar goes, and it starts again.
+        Measured before this: every width from 1030 to 1039 oscillated 3/2/3/2
+        without ever settling.
+
+        Reserving it unconditionally costs the layout the bar's width on the
+        rare screenful that would not have needed one, and matches
+        _cards_minimum_width(), which already assumes the bar is there.
         """
         viewport = self.card_area.viewport().width()
         if self.isVisible() and viewport > 1:
-            return viewport
+            bar = self.card_area.verticalScrollBar()
+            if not bar.isVisible():
+                viewport -= bar.sizeHint().width()
+            return max(0, viewport)
         return max(
             0, self.width() - (0 if self._log_collapsed else _SIDEBAR_W_WITH_LOG)
         )
