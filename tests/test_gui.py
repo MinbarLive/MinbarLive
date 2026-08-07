@@ -5221,6 +5221,35 @@ class TestLiveStreamRestart:
         assert controller.restarts
         assert p._running
 
+    def test_swapping_the_languages_reconnects_too(self, panel, qt_app):
+        """Reported live: the ⇄ button changed the SOURCE on a running stream
+        without reopening it, so the engine kept transcribing the previous
+        language — German speech came back written in Arabic script — while the
+        target, read per translation call, changed at once.
+
+        _on_source_changed cannot cover this: _refresh_source_combo blocks the
+        combo's signals across its repopulate, so the handler never runs.
+        """
+        p, controller = panel
+        p._running = True
+        p.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+        p.settings.source_language = "German"
+        p.settings.target_language = "English"
+        p._on_swap_languages()
+        self._drive(qt_app, controller, p)
+        assert p.settings.source_language == "English"
+        assert controller.restarts, "the swap left the stream on the old language"
+
+    def test_swapping_while_stopped_does_not_reconnect(self, panel):
+        p, controller = panel
+        p._running = False
+        p.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+        p.settings.source_language = "German"
+        p.settings.target_language = "English"
+        p._on_swap_languages()
+        assert p.settings.source_language == "English"  # the swap still happens
+        assert controller.restarts == []
+
     def test_segmented_session_does_not(self, panel):
         p, controller = panel
         p._running = True
