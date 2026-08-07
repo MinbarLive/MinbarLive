@@ -222,5 +222,30 @@ class TestWizardTranslationCoverage:
         assert "{version}" in data["update_available"]
 
 
+class TestTheDebugLogIsNotTranslated:
+    """The log is the operator's diagnostic view and the file people paste into
+    issues — it is English by decision (2026-08-07, gui/AGENTS.md). It used to
+    be three translated lines against nineteen English ones, which is the worst
+    of both. These two guard the whole rule from either end."""
+
+    @pytest.mark.parametrize("code", GUI_LANGUAGE_CODES)
+    def test_no_log_keys_come_back(self, code):
+        strays = [key for key in _load(code) if key.startswith("log_")]
+        assert not strays, (
+            f"{code}.json grew log strings again: {strays}. The debug log is "
+            f"English f-strings — see 'The debug log is English' in gui/AGENTS.md"
+        )
+
+    def test_no_log_call_looks_up_a_translation(self):
+        """The other half: a key can be absent while the call still asks for
+        one, which silently ships the English fallback and reads as a bug."""
+        source = (
+            Path(__file__).parent.parent / "gui" / "control_panel.py"
+        ).read_text(encoding="utf-8")
+        assert '_t("log_' not in source, (
+            "a log() call still routes through the translation table"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

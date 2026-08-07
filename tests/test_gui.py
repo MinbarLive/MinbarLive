@@ -7926,3 +7926,74 @@ class TestAmpersandInACheckboxLabel:
                 assert not re.search(r"(?<!&)&(?!&)", text), (
                     f"{path}:{key} has an unescaped '&' — Qt paints it as nothing"
                 )
+
+
+class TestSettingChangesLeaveABreadcrumb:
+    """Changing a setting mid-session used to log NOTHING — six handlers, zero
+    log calls, while twelve unused ``log_*_changed`` translation keys described
+    the lines nobody ever emitted (2026-08-07). The log is hidden by default and
+    exists for exactly this: reconstructing what an operator touched before it
+    went wrong. English by decision — see gui/AGENTS.md."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(cp, "ensure_keys", lambda *a, **k: True)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_restart_pipeline_for_live_change", lambda self: None
+        )
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        yield p
+        p.close()
+
+    @staticmethod
+    def _lines(action) -> list[str]:
+        """Log lines emitted by ``action``, read off the real queue."""
+        from utils.logging import log_queue
+
+        while not log_queue.empty():
+            log_queue.get_nowait()
+        action()
+        out = []
+        while not log_queue.empty():
+            out.append(log_queue.get_nowait())
+        return out
+
+    def test_target_language_change_is_logged(self, panel):
+        lines = self._lines(lambda: panel._on_target_changed(0))
+        assert any("Target language changed to" in line for line in lines), lines
+
+    def test_source_language_change_is_logged(self, panel):
+        lines = self._lines(lambda: panel._on_source_changed(0))
+        assert any("Source language changed to" in line for line in lines), lines
+
+    def test_subtitle_mode_change_is_logged(self, panel):
+        lines = self._lines(lambda: panel._on_mode_changed(0))
+        assert any("Subtitle mode changed to" in line for line in lines), lines
+
+    def test_scroll_speed_change_is_logged(self, panel):
+        lines = self._lines(lambda: panel._step_speed(0.25))
+        assert any("Scroll speed changed to" in line for line in lines), lines
+
+    def test_transparent_toggle_is_logged_both_ways(self, panel):
+        on = self._lines(lambda: panel._on_transparent_changed(True))
+        off = self._lines(lambda: panel._on_transparent_changed(False))
+        assert any("Transparent mode: enabled" in line for line in on), on
+        assert any("Transparent mode: disabled" in line for line in off), off
+
+    def test_the_breadcrumbs_are_english_not_translated(self, panel):
+        """The panel is built with whatever gui_language settings.json carries.
+        A line that came back translated would still contain the English
+        substrings above only by accident, so assert the rule directly."""
+        panel.texts = {
+            "log_target_language_changed": "ÜBERSETZT: {language}",
+            "log_subtitle_mode_changed": "ÜBERSETZT: {mode}",
+        }
+        lines = self._lines(lambda: panel._on_target_changed(0))
+        assert lines and not any("ÜBERSETZT" in line for line in lines), lines
