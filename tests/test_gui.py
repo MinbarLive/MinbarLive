@@ -1855,6 +1855,12 @@ class TestMinimumWindowWidth:
         # The regression a host-based measurement causes: at three columns the
         # host's minimum is all three columns added up, which pins the window
         # open at the width it happens to have.
+        #
+        # Driven to three columns rather than assumed to open there: the panel
+        # opens at whatever its default size gives, which on CI's 1024x768
+        # runner is two. Asserting the default was asserting the screen.
+        panel.resize(1400, 900)
+        _settle(qt_app)
         assert panel.card_grid.count == 3
         panel.resize(600, 900)
         _settle(qt_app)
@@ -5669,22 +5675,34 @@ class TestTransparentStaticGeometry:
         w = overlay(
             SUBTITLE_MODE_STATIC, bilingual_mode=True, transparent_static=False
         )
-        screen = w._screen().geometry()
-        for share in (0.12, 0.18, 0.25):
-            w.resize(screen.width(), int(screen.height() * share))
+        from gui.subtitle_window import _FIT_MIN_SCALE
+
+        # Absolute heights rather than a share of this machine's screen, so the
+        # band under test is the same on every box (see the sibling test).
+        checked = 0
+        for height in (92, 138, 192, 400):
+            w.resize(1024, height)
             block = _long_block()
             scale = w._static_fit_scale(block)
             if scale >= 1.0:
                 continue  # it already fits at the configured size
             available = w._content_height()
-            assert w._measure_at(block, scale) <= available, share
+            if w._measure_at(block, _FIT_MIN_SCALE) > available:
+                # Documented at _static_fit_scale: below the floor the shrink
+                # stops being a fix, so the floor is returned even though it
+                # does not fit. Nothing to assert about a largest size here.
+                assert scale == _FIT_MIN_SCALE, height
+                continue
+            checked += 1
+            assert w._measure_at(block, scale) <= available, height
             # Anything meaningfully larger must NOT fit, or a bigger size was
             # available and went unused.
             bigger = min(1.0, scale * 1.15)
             assert w._measure_at(block, bigger) > available, (
-                f"{share}: {scale:.2f} fits and so does {bigger:.2f} — "
+                f"{height}px: {scale:.2f} fits and so does {bigger:.2f} — "
                 f"the band was left {available - w._measure_at(block, scale)}px empty"
             )
+        assert checked, "every band skipped; this proves nothing about the search"
 
     def test_transparent_never_shrinks_because_it_never_has_to(self, overlay):
         # It has the whole monitor, so there is no band to fit anything into.
