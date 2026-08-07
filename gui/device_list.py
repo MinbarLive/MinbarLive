@@ -55,14 +55,48 @@ _SKIP_NAME_PREFIXES = (
 _LINUX_GENERIC_INPUTS = frozenset({"default", "pipewire", "pulse"})
 
 
+def _source_identifiers(mics) -> set[str]:
+    """Every string a sounddevice device name could match, for these sources.
+
+    Both fields go in, and that is the whole point. soundcard's ``name`` is
+    PulseAudio's *description* ("Built-in Audio Analog Stereo"); its ``id`` is
+    the *source name* ("alsa_input.pci-0000_00_05.0.analog-stereo").
+    sounddevice reports the source NAME, so collecting ``name`` alone compares
+    a description against a source name, never matches, and filters out the
+    only real microphone on the machine — while the loopback entries, which
+    are enumerated separately and never reach this filter, survive.
+
+    Split out of ``_linux_real_source_names`` so it is testable off Linux:
+    that function early-returns on any other platform, and faking
+    ``sys.platform`` is not done in this repo.
+    """
+    identifiers: set[str] = set()
+    for mic in mics:
+        for value in (getattr(mic, "name", ""), getattr(mic, "id", "")):
+            text = str(value).strip()
+            if text:
+                identifiers.add(text)
+    return identifiers
+
+
 def _linux_real_source_names() -> set[str] | None:
-    """Names of genuine PulseAudio/PipeWire capture sources, or None.
+    """Identifiers of genuine PulseAudio/PipeWire capture sources, or None.
 
     On Linux the JACK host API also lists output monitors, application streams
     and duplicate raw endpoints as input-capable devices; PulseAudio knows
     which are real microphones.  Returns None when that cannot be determined
     (soundcard missing, no PulseAudio) so the caller does no filtering and a
-    pure-ALSA machine still shows its raw devices."""
+    pure-ALSA machine still shows its raw devices.
+
+    **Both `name` and `id` go in, and that is the whole point.** soundcard's
+    ``name`` is PulseAudio's *description* ("Built-in Audio Analog Stereo");
+    its ``id`` is the *source name* ("alsa_input.pci-0000_00_05.0.analog-
+    stereo").  sounddevice reports the source NAME, so matching on ``name``
+    alone compares a description against a source name and never hits —
+    dropping the only real microphone on the machine while the separately
+    enumerated loopback entries, which never pass through this filter,
+    survived.  Reported from a VM (2026-08-07) as "loopback is listed but my
+    microphone is not"."""
     if not sys.platform.startswith("linux"):
         return None
     # No reachable PulseAudio server: calling soundcard would abort the process
@@ -74,12 +108,7 @@ def _linux_real_source_names() -> set[str] | None:
     try:
         import soundcard as sc  # noqa: PLC0415 (lazy import is intentional)
 
-        names = {
-            str(m.name).strip()
-            for m in sc.all_microphones(include_loopback=False)
-            if str(getattr(m, "name", "")).strip()
-        }
-        return names or None
+        return _source_identifiers(sc.all_microphones(include_loopback=False)) or None
     except Exception:
         return None
 

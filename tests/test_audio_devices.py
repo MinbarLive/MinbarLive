@@ -373,3 +373,103 @@ def test_no_loopback_devices_are_offered_without_a_pulse_server(monkeypatch):
     assert loopback_flags == [False]
     assert all(idx >= 0 for idx in indices)
     assert get_speaker(-1) is None
+
+
+# --- The Linux capture-source filter --------------------------------------
+#
+# Reported from an Ubuntu VM (2026-08-07): "the loopback exists but not my
+# microphone". Its two device lists are below, verbatim.
+#
+# sys.platform is never faked here (see the note further up), so the platform
+# gate inside _linux_real_source_names is sidestepped two ways: the extraction
+# it delegates to is tested directly, and the filter is driven by patching that
+# function as a module attribute — the same technique _LOOPBACK_SUPPORTED uses.
+
+_VM_SOUNDDEVICE_INPUTS = [
+    "Intel 82801AA-ICH: - (hw:0,0)",
+    "Intel 82801AA-ICH: MIC ADC (hw:0,1)",
+    "sysdefault",
+    "pipewire",
+    "default",
+    "Default Source",
+    "alsa_output.pci-0000_00_05.0.analog-stereo.monitor",
+    "alsa_input.pci-0000_00_05.0.analog-stereo",
+]
+_VM_REAL_MIC = "alsa_input.pci-0000_00_05.0.analog-stereo"
+_VM_MONITOR = "alsa_output.pci-0000_00_05.0.analog-stereo.monitor"
+_VM_PULSE_DESCRIPTION = "Built-in Audio Analog Stereo"
+
+
+def test_source_identifiers_take_the_source_name_as_well_as_the_description():
+    """The bug itself. PulseAudio's `name` is a DESCRIPTION and its `id` is the
+    source name; sounddevice reports the source name. Collecting only the
+    description means nothing ever matches."""
+    mics = [SimpleNamespace(name=_VM_PULSE_DESCRIPTION, id=_VM_REAL_MIC)]
+
+    assert device_list._source_identifiers(mics) == {
+        _VM_PULSE_DESCRIPTION,
+        _VM_REAL_MIC,
+    }
+
+
+def test_source_identifiers_skip_blanks_and_survive_a_missing_field():
+    """A backend that exposes no id must not put "" in the set — every
+    sounddevice entry would then have to be compared against it."""
+    mics = [SimpleNamespace(name="Real Mic", id=""), SimpleNamespace(name="  ")]
+
+    assert device_list._source_identifiers(mics) == {"Real Mic"}
+
+
+def _patch_vm_devices(monkeypatch, sources: set[str] | None) -> None:
+    monkeypatch.setattr(
+        device_list.sd,
+        "query_devices",
+        lambda: [
+            {"name": name, "hostapi": 0, "max_input_channels": 2}
+            for name in _VM_SOUNDDEVICE_INPUTS
+        ],
+    )
+    monkeypatch.setattr(device_list.sd, "query_hostapis", lambda: [{"name": "ALSA"}])
+    monkeypatch.setattr(device_list.sd, "check_input_settings", lambda **kwargs: None)
+    monkeypatch.setattr(device_list, "_LOOPBACK_SUPPORTED", False)
+    monkeypatch.setattr(device_list, "_linux_real_source_names", lambda: sources)
+
+
+def _vm_base_names(monkeypatch) -> list[str]:
+    """The VM's list as the FIXED extraction sees it."""
+    _patch_vm_devices(monkeypatch, {_VM_PULSE_DESCRIPTION, _VM_REAL_MIC})
+    return device_list.get_input_devices()[1]
+
+
+def test_the_real_microphone_reaches_the_dropdown(monkeypatch):
+    assert _VM_REAL_MIC in _vm_base_names(monkeypatch)
+
+
+def test_the_output_monitor_is_still_filtered_out(monkeypatch):
+    """The filter exists to hide these — a monitor is not a microphone, and it
+    reaches the list only as an explicit loopback entry."""
+    assert _VM_MONITOR not in _vm_base_names(monkeypatch)
+
+
+def test_the_raw_alsa_duplicates_are_still_filtered_out(monkeypatch):
+    """hw:0,0 and hw:0,1 are the same card PulseAudio already offers."""
+    assert not [n for n in _vm_base_names(monkeypatch) if n.startswith("Intel 8280")]
+
+
+def test_the_generic_routing_aliases_survive(monkeypatch):
+    """"default" and "pipewire" are how a user asks for whatever PulseAudio is
+    already using, and are in no source list."""
+    names = _vm_base_names(monkeypatch)
+    assert "default" in names
+    assert "pipewire" in names
+
+
+def test_nothing_is_filtered_when_pulseaudio_cannot_be_read(monkeypatch):
+    """None means "couldn't tell" — a pure-ALSA machine keeps its raw devices
+    rather than being left with an empty dropdown."""
+    _patch_vm_devices(monkeypatch, None)
+
+    names = device_list.get_input_devices()[1]
+
+    assert _VM_REAL_MIC in names
+    assert "Intel 82801AA-ICH: - (hw:0,0)" in names
