@@ -173,6 +173,30 @@ jobs:
               --notes-file notes.md \
               --generate-notes \
               "${visibility[@]}"
+
+            # --generate-notes ends every changelog line with
+            # " by @user in <pull request url>", and most subjects carry a
+            # trailing "(#nn)" on top of that. The subject already says what
+            # changed; the rest repeats the same handle down the whole list and
+            # doubles each line's length on the release page.
+            #
+            # Contributor credit is NOT lost by this: GitHub renders its own
+            # "Contributors" avatar row under the notes, built from the
+            # release's commits rather than from this markdown.
+            #
+            # Only a BARE trailing "(#nn)" goes — "(#48 seam 1)" and prose like
+            # "from PR #45" are part of the sentence and stay.
+            gh release view "$tag" --json body -q .body > generated.md
+            # NOTE the delimiters. The first expression uses # because its
+            # pattern contains slashes (the URL); the second must NOT, because
+            # its pattern contains a literal # — sed would end the expression
+            # there and rewrite the macOS heading instead.
+            sed -E -e 's# by @[A-Za-z0-9-]+ in https://github\.com/\S+$##' \
+                   -e 's/ \(#[0-9]+\)$//' \
+              generated.md > cleaned.md
+            if ! cmp -s generated.md cleaned.md; then
+              gh release edit "$tag" --notes-file cleaned.md
+            fi
           fi
 
           gh release upload "$tag" \
