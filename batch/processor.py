@@ -159,7 +159,16 @@ def is_ffmpeg_available() -> bool:
 
 def _extract_audio(input_path: str, wav_path: str) -> None:
     """Convert any audio/video file to 16 kHz mono WAV via ffmpeg."""
-    ffmpeg_path = _find_ffmpeg() or "ffmpeg"
+    # An absolute path, never the bare name: Windows' CreateProcess searches
+    # the working directory before PATH, so falling back to "ffmpeg" would let
+    # an ffmpeg.exe sitting beside a media file win. The caller checks
+    # is_ffmpeg_available() first — this covers the gap between that check and
+    # here.
+    ffmpeg_path = _find_ffmpeg()
+    if not ffmpeg_path:
+        raise FfmpegNotFoundError(
+            "ffmpeg is required to convert this file to 16 kHz WAV."
+        )
     cmd = [
         ffmpeg_path,
         "-y",
