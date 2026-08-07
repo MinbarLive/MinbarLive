@@ -157,6 +157,21 @@ pyinstaller MinbarLive.spec             # Windows EXE
 
 Qt work needs the venv — `./venv/Scripts/python.exe`, see [gui/AGENTS.md](gui/AGENTS.md).
 
+**Measure bundle size from a CI artifact, never from `site-packages`.** `requirements.txt`
+pins **`PySide6-Essentials`**, so PyInstaller never collects the QML/3D/WebEngine payload in
+the first place — `MinbarLive.spec`'s Qt binary filter drops 1 file on Windows and 0 on
+Linux/macOS, and the exclusion lists' real saving is ~7 MB from the Python-level `excludes`.
+A developer machine that also has **`PySide6-Addons`** installed measures a completely
+different tree, which is where two separate "we can save 35+ MB" figures came from. Both
+described a configuration nobody ships. The build prints
+`Qt binaries: keeping N, dropping M` — read it from the run, and note `M == 0` is normal on
+Linux/macOS rather than a broken filter.
+
+**CI smoke-launches all three binaries.** `release.yml` starts the Windows EXE detached and
+fails if it exits inside 30 s; Linux launches three ways (direct, AppImage without FUSE,
+AppImage with no xcb libraries installed); macOS once. A green build therefore does mean the
+binary opens — it does **not** mean any feature inside it works.
+
 **`bench/` is not part of the suite and costs money.** `python bench/run_bench.py` runs the
 real `translate_text` path (RAG + LLM) over a fixed Arabic corpus — 13 utterances × `-n`
 repeats of billed API calls. Use it to answer a latency question with numbers, then compare
@@ -217,6 +232,7 @@ Do not revisit without a new explicit decision.
 | **OpenAI is the default provider everywhere** (2026-07-22, `f0427e5`) | Measured, not preferred: Gemini Live realtime transcribes at 0.75x realtime and falls behind without recovering; OpenAI Realtime holds 1.00x on the identical sample. One OpenAI key covers translation, realtime STT and RAG. `PROVIDER_RANKING` openai > gemini > anthropic applies to fallback only, never overrides an explicit choice |
 | Streaming (`openai_realtime`) is the shipped transcription default | Same measurement. Chunk and semantic both stay as the *segmented* strategies (chunk is the segmented default; semantic's sentence heuristics are Arabic-tuned) — don't remove either |
 | **Streaming translates whole sentences out of a running turn — `openai_realtime` ONLY** (2026-08-07, #26) | A pauseless speaker is one server-VAD turn, so translating at turn end alone showed nothing for a minute and then a wall of text. `UtteranceSession(sentence_flush=True)` cuts finished sentences out of the interim and records the words, so the turn's final transcript contributes only its tail. **Each engine handles the long-turn problem in the layer that can see it, and they are not interchangeable:** OpenAI emits no final until the turn ends (`_COMPLETED_EVENT` carries the transcript *and* the utterance end), so only a session-level flush can act — safe because its deltas are append-only per conversation item. **Deepgram never had the bug**: `is_final` (endpointing) is separate from `speech_final`, so finals arrive mid-turn, `_parts` fills and `STREAMING_MAX_UTTERANCE_SECONDS` fires as designed — and its interims are revised hypotheses, so the word-prefix bookkeeping would not hold. **Gemini Live had the bug and already fixes it in the provider** (`_maybe_cut_turn`, measured live at 89 s in one turn); a cut anywhere else arrives a second time when the turn completes. Don't "unify" these three. Costs more, smaller translation calls — that is the trade the fix makes |
+| **Pre-release update notices are opt-in, default off** (2026-08-07, PR #79) | A pre-release is invisible to everyone by default: the update check and all six download buttons in `docs/index.html` read `/releases/latest`, which excludes pre-releases by definition. Ticking `include_prereleases` points **only the in-app check** at `RELEASE_LIST_API_URL` (the full list) and takes the **highest version**, not the first entry — the list arrives newest-*published* first, which is not the same ordering. The website buttons stay on `/releases/latest` on purpose: the landing page serves stable. **`_parse_version` must keep comparing suffix text** (`beta < rc`, `rc.1 < rc.2 < rc.10`, every pre-release below its final) — it previously discarded the suffix, which made `rc.1` and `rc.2` compare equal and would have made the whole feature a no-op. **Consequence for releases: re-pointing an existing pre-release tag notifies nobody**, because the version string is unchanged — an opted-in tester keeps the old bytes with no signal. Cut a new suffix instead of moving a published one |
 | **API keys are NEVER written to disk** (2026-07-29, PR #43) | Supersedes the earlier "OpenAI-only plaintext fallback" exception. No keychain ⇒ session-only for every provider; a legacy plaintext key is migrated into the keychain or deleted. `has_insecure_key_fallback()` was deleted — don't reintroduce a caller |
 | **`integrated` is the default window style, on every platform** (2026-08-04) | Maintainer's call after using the Qt panels. Applies to new installs only — `save_settings` writes `window_style` out, so an existing `settings.json` keeps its value. There is **no platform gate any more**: the Qt host reparents the panels into the control panel as child widgets and paints the dim into its own back buffer, so nothing is asked of the window manager (`gui/modal_host.py`). The Windows-only gate from PR #25 belonged to the Tk tree, which built them as borderless top-levels and needed per-window alpha — which X11 without a compositor ignores |
 | Window behaviour is two 3-way selectors, not four checkboxes (2026-07-24, PR #22) | `subtitle_hide_mode` (never/stopped/always) and `always_on_top_mode` (never/running/always) replace the old booleans; old values migrate on load |

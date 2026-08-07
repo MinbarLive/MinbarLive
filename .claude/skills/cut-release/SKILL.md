@@ -61,8 +61,18 @@ again.
 
 ## Re-tagging
 
-Moving an existing tag works and has been done before (`v1.0.0-beta` was moved twice), but
-it needs a force-push of the tag and it re-runs every platform. Prefer a new version.
+Moving an existing tag works and has been done before (`v1.0.0-beta` was moved twice,
+`v1.0.0-rc.1` once), but it needs a force-push of the tag and it re-runs every platform.
+Prefer a new version.
+
+**Delete the GitHub release FIRST — `gh release delete <tag> --yes`.** The publish step's
+already-exists path uploads assets but never re-runs `--generate-notes`, so reusing the
+release silently leaves every commit since the old target out of the changelog.
+
+**A moved pre-release tag notifies nobody.** The version string is unchanged, so
+`is_newer_version` is false even for a user who ticked `include_prereleases` — they keep
+the old bytes with no signal. Tell existing testers directly, or cut a new suffix
+(`_parse_version` orders `rc.1 < rc.2 < rc.10`).
 
 ## Known state
 
