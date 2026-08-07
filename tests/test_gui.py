@@ -5712,16 +5712,19 @@ class TestTransparentStaticGeometry:
         # bottom of the screen.
         from PySide6.QtGui import QPainter, QPixmap
 
-        screen = None
-        for percent in (5, 8, 12, 23, 40, 100):
+        # ABSOLUTE heights, never a share of this machine's screen: the band a
+        # given percentage produces depends on the monitor, so a screen-derived
+        # size asserts something different on every box. 38 px is 5% of the
+        # 768 px CI runner and is shorter than a bilingual block can ever be —
+        # the case that has to hold, not the one that happens to.
+        for percent, height in ((5, 38), (8, 61), (12, 92), (23, 176), (100, 768)):
             w = overlay(
                 SUBTITLE_MODE_STATIC,
                 bilingual_mode=True,
                 transparent_static=False,
                 window_height_percent=percent,
             )
-            screen = screen or w._screen().geometry()
-            w.resize(screen.width(), max(1, int(screen.height() * percent / 100)))
+            w.resize(1024, height)
             w.add_subtitle(_LONG_DE, _LONG_AR)
             drawn: list[tuple[int, int]] = []
 
@@ -5737,11 +5740,16 @@ class TestTransparentStaticGeometry:
             finally:
                 painter.end()
             top, height = drawn[0]
-            assert top >= 0, percent
+            # The bottom is the edge that matters: it is the one the disclaimer
+            # sits on and the one the monitor ends at. A block too tall for the
+            # band loses its opening lines off the TOP instead — top may go
+            # negative, and that is the deliberate direction (see _paint_static).
             assert top + height <= w.height(), (
                 f"{percent}%: text runs {top + height - w.height()}px past the "
                 f"bottom of a {w.height()}px overlay"
             )
+            if height <= w._content_height():
+                assert top >= 0, f"{percent}%: a block that FITS was cut off"
 
     def test_the_block_sits_above_the_footer_not_mid_screen(self, overlay):
         """Centring was invisible in a short band and wrong on a whole monitor.

@@ -1446,6 +1446,16 @@ class SubtitleWindow(QWidget):
 
         ``_static_lift`` then raises the whole arrangement off the bottom edge
         — the pills subtract the same figure, so the two move as one.
+
+        **A block too tall for the space loses its TOP, never its bottom.** The
+        anchor used to be clamped to y=0 so the opening lines could not be cut
+        off, but a clamp at the top pushes the foot down by the same amount:
+        on a 38 px band (5% of a 768 px screen, where a bilingual block bottoms
+        out at 50 px because both fonts have hit the 12 px floor) the last line
+        was drawn 12 px BELOW the overlay, off the monitor entirely and across
+        the disclaimer on its way. Overflowing upward keeps the newest words
+        and the pill on screen, and it is what the feed modes already do when
+        they run out of room.
         """
         if not self._blocks:
             return
@@ -1457,7 +1467,7 @@ class SubtitleWindow(QWidget):
         self._fit_scale = self._static_fit_scale(block)
         try:
             bottom = self._content_height() - self._static_lift()
-            self._draw_block(p, block, x, max(0, bottom - self._measure_block(block)))
+            self._draw_block(p, block, x, bottom - self._measure_block(block))
         finally:
             self._fit_scale = 1.0
 
