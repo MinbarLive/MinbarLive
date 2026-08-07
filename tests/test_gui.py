@@ -26,15 +26,20 @@ pytest.importorskip("PySide6", reason="PySide6 not installed")
 
 import shiboken6  # noqa: E402
 from PySide6.QtCore import QEvent  # noqa: E402
+from PySide6.QtGui import QColor  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from gui.subtitle_window import SubtitleWindow  # noqa: E402
 from utils.settings import (  # noqa: E402
     PIPELINE_MODE_STREAMING,
+    STATIC_LIFT_PERCENT_MAX,
+    STATIC_LIFT_PERCENT_MIN,
     SUBTITLE_MODE_CONTINUOUS,
     SUBTITLE_MODE_REALTIME,
     SUBTITLE_MODE_STATIC,
     SUBTITLE_MODES,
+    WINDOW_HEIGHT_PERCENT_MAX,
+    WINDOW_HEIGHT_PERCENT_MIN,
 )
 
 
@@ -58,6 +63,27 @@ PAIRS = [
     ("Alles Lob gebuehrt Allah ﷻ, dem Herrn der Welten.", "الحمد لله رب العالمين"),
     ("Gibt es einen Schoepfer ausser Allah?", "هل من خالق غير الله؟"),
 ]
+
+# Long enough to WRAP at the overlay's width, and with a short trailing line on
+# the source — which is the shape that exposed both static-mode bugs: the block
+# outgrew a lowered window, and the translation's backdrop landed on the
+# source's last line.
+_LONG_DE = (
+    "Alles Lob gebuehrt Allah, dem Herrn der Welten, und der Segen und Friede "
+    "seien auf dem Gesandten Allahs, seiner Familie und all seinen Gefaehrten, "
+    "und auf denen, die ihnen in Rechtschaffenheit folgen bis zum Tage des "
+    "Gerichts, und wir bitten Allah um Aufrichtigkeit im Wort und in der Tat."
+)
+_LONG_AR = (
+    "الحمد لله رب العالمين والصلاة والسلام على رسول الله وعلى آله وصحبه "
+    "أجمعين ومن تبعهم بإحسان إلى يوم الدين ونسأل الله الإخلاص في القول والعمل"
+)
+
+
+def _long_block(translation: str = _LONG_DE, source: str | None = _LONG_AR):
+    from gui.subtitle_window import Block
+
+    return Block(translation, source)
 
 
 @pytest.fixture(autouse=True)
@@ -324,6 +350,61 @@ class TestAdaptiveCatchup:
         for _ in range(80):
             speed = w._current_scroll_speed()
         assert speed == pytest.approx(1.0, abs=0.05)
+
+
+class TestStayingInFrontOfTheTaskbar:
+    """Always-on-top is a BAND, not a rank.
+
+    Windows keeps its taskbar in that same band and orders it by whoever was
+    raised last, so a click on the taskbar puts the shell in front of the
+    subtitles for good: the flag is still set, and the overlay is still behind
+    it. The overlay re-raises itself on a timer (_keep_on_top).
+    """
+
+    @staticmethod
+    def _windows(monkeypatch, value: bool) -> None:
+        # The module constant, never sys.platform: faking that for the whole
+        # process crashed a previous run and spawned real windows.
+        monkeypatch.setattr("gui.subtitle_window._WINDOWS", value)
+
+    def test_the_timer_runs_while_the_setting_is_on(self, overlay, monkeypatch):
+        self._windows(monkeypatch, True)
+        w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
+        assert w._restack_timer.isActive()
+
+    def test_turning_the_setting_off_disarms_it(self, overlay, monkeypatch):
+        self._windows(monkeypatch, True)
+        w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
+        w.set_always_on_top(False)
+        assert not w._restack_timer.isActive()
+
+    def test_nothing_restacks_on_the_other_platforms(self, overlay, monkeypatch):
+        """macOS floats below the Dock whatever it asks for, and on X11 the
+        stacking is the window manager's — re-raising every second there is a
+        client fighting its own desktop."""
+        self._windows(monkeypatch, False)
+        w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
+        assert not w._restack_timer.isActive()
+
+    def test_a_tick_raises_the_overlay(self, overlay, monkeypatch):
+        self._windows(monkeypatch, True)
+        w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
+        raised: list[bool] = []
+        monkeypatch.setattr(w, "raise_", lambda: raised.append(True))
+        monkeypatch.setattr(w, "isVisible", lambda: True)
+        w._keep_on_top()
+        assert raised == [True]
+
+    def test_a_hidden_overlay_is_left_alone(self, overlay, monkeypatch):
+        """Raising a window nobody is looking at is a pointless SetWindowPos
+        once a second for as long as the app is open."""
+        self._windows(monkeypatch, True)
+        w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
+        raised: list[bool] = []
+        monkeypatch.setattr(w, "raise_", lambda: raised.append(True))
+        monkeypatch.setattr(w, "isVisible", lambda: False)
+        w._keep_on_top()
+        assert raised == []
 
 
 class TestFooterReserve:
@@ -1475,6 +1556,130 @@ class TestStartStopFocus:
         assert QApplication.focusWidget() is panel.stop_btn
 
 
+class TestDisplaySlidersFollowTheMode:
+    """The two Display sliders track what the current mode gives them.
+
+    Height never greys out — it means something everywhere — but in transparent
+    static it stops being a height and becomes a lift, so its range, readout and
+    caption all swap. Neither does opacity: Transparent takes the WINDOW's
+    backdrop away and the slider moves to the card behind each line.
+    """
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        from gui.theme import apply_theme
+
+        apply_theme(qt_app, "dark")
+        p = _panel(monkeypatch)
+        yield p
+        p.close()
+
+    @staticmethod
+    def _set_mode(panel, mode: str) -> None:
+        """Put the panel in ``mode`` and re-sync, whether or not that moved it.
+
+        ``setCurrentIndex`` emits nothing when the index is unchanged, and the
+        panel opens in whatever mode the machine's own settings.json says — so
+        a test asking for the mode it is already in would otherwise assert
+        against a sync that never ran.
+        """
+        index = panel.mode_combo.findData(mode)
+        if index < 0:
+            pytest.skip(f"the current strategy offers no {mode} mode")
+        panel.mode_combo.setCurrentIndex(index)
+        panel._sync_mode_controls()
+
+    def _lift(self, panel) -> None:
+        self._set_mode(panel, SUBTITLE_MODE_STATIC)
+        panel.transparent_check.setChecked(True)
+        panel._sync_display_sliders()  # same reason as _set_mode
+
+    # ── height: two controls in one row ──────────────────────────────────
+    def test_the_height_row_is_never_greyed_out(self, panel):
+        for mode in (SUBTITLE_MODE_STATIC, SUBTITLE_MODE_REALTIME):
+            self._set_mode(panel, mode)
+            for transparent in (True, False):
+                panel.transparent_check.setChecked(transparent)
+                assert panel.height_row.isEnabled(), (mode, transparent)
+
+    def test_transparent_static_turns_it_into_a_capped_lift(self, panel):
+        self._lift(panel)
+        assert panel._lift_mode()
+        assert panel.height_slider.maximum() == STATIC_LIFT_PERCENT_MAX
+        assert panel.height_slider.minimum() == STATIC_LIFT_PERCENT_MIN
+        # A control whose meaning changed has to say so.
+        assert panel.height_caption.text() != panel._t("height", "Height:")
+        assert panel.height_row.toolTip()
+
+    def test_everything_else_keeps_it_a_height(self, panel):
+        self._lift(panel)
+        panel.transparent_check.setChecked(False)
+        assert not panel._lift_mode()
+        assert panel.height_slider.maximum() == WINDOW_HEIGHT_PERCENT_MAX
+        assert panel.height_slider.minimum() == WINDOW_HEIGHT_PERCENT_MIN
+        assert panel.height_caption.text() == panel._t("height", "Height:")
+        assert not panel.height_row.toolTip()
+
+    def test_each_meaning_comes_back_to_its_own_value(self, panel):
+        """The point of the two fields: toggling Transparent must hand the
+        slider what THAT meaning was last left at, not the other one's number
+        squeezed into its range."""
+        panel.settings.window_height_percent = WINDOW_HEIGHT_PERCENT_MAX
+        panel.settings.static_lift_percent = 0
+        self._lift(panel)
+        assert panel.height_slider.value() == 0, "the lift got the height's value"
+        panel.transparent_check.setChecked(False)
+        panel._sync_display_sliders()
+        assert panel.height_slider.value() == WINDOW_HEIGHT_PERCENT_MAX
+        # And neither write touched the other's field.
+        assert panel.settings.window_height_percent == WINDOW_HEIGHT_PERCENT_MAX
+        assert panel.settings.static_lift_percent == 0
+
+    def test_switching_modes_never_rewrites_the_stored_value(self, panel):
+        """setRange clamps and setValue moves, and both emit valueChanged — so
+        without blocking the signal, arriving in a mode would write ITS value
+        into the field of the mode just left."""
+        panel.settings.window_height_percent = WINDOW_HEIGHT_PERCENT_MAX
+        panel.settings.static_lift_percent = 30
+        self._lift(panel)
+        assert panel.settings.window_height_percent == WINDOW_HEIGHT_PERCENT_MAX
+        panel.transparent_check.setChecked(False)
+        panel._sync_display_sliders()
+        assert panel.settings.static_lift_percent == 30
+
+    def test_dragging_it_writes_the_meaning_in_force(self, panel):
+        self._lift(panel)
+        panel.height_slider.setValue(12)
+        assert panel.settings.static_lift_percent == 12
+        assert panel.settings.window_height_percent != 12, "wrote the wrong field"
+        assert panel.height_value.text() == "12%"
+
+        panel.transparent_check.setChecked(False)
+        panel._sync_display_sliders()
+        panel.height_slider.setValue(40)
+        assert panel.settings.window_height_percent == 40
+        assert panel.settings.static_lift_percent == 12, "the lift was overwritten"
+
+    def test_the_readout_follows_the_swap(self, panel):
+        panel.settings.window_height_percent = WINDOW_HEIGHT_PERCENT_MAX
+        panel.settings.static_lift_percent = STATIC_LIFT_PERCENT_MAX
+        self._lift(panel)
+        assert panel.height_value.text() == f"{STATIC_LIFT_PERCENT_MAX}%"
+
+    # ── opacity ──────────────────────────────────────────────────────────
+    def test_transparent_keeps_the_opacity_row_live(self, panel):
+        """It used to grey out, on the grounds that Transparent leaves nothing
+        to apply an opacity to. The mode still paints a card behind each line,
+        and that card is the only thing between the text and the video — so the
+        slider keeps its job and the tooltip says which backdrop it reaches."""
+        self._lift(panel)
+        assert panel.opacity_row.isEnabled()
+        assert panel.opacity_row.toolTip(), "nothing says what it now applies to"
+        panel.transparent_check.setChecked(False)
+        assert panel.opacity_row.isEnabled()
+        assert not panel.opacity_row.toolTip()
+
+
 class TestSlidersIgnoreTheWheel:
     """Both sliders drive the audience overlay live, so a stray wheel while
     scrolling the panel would resize or fade what the room is looking at."""
@@ -1650,6 +1855,12 @@ class TestMinimumWindowWidth:
         # The regression a host-based measurement causes: at three columns the
         # host's minimum is all three columns added up, which pins the window
         # open at the width it happens to have.
+        #
+        # Driven to three columns rather than assumed to open there: the panel
+        # opens at whatever its default size gives, which on CI's 1024x768
+        # runner is two. Asserting the default was asserting the screen.
+        panel.resize(1400, 900)
+        _settle(qt_app)
         assert panel.card_grid.count == 3
         panel.resize(600, 900)
         _settle(qt_app)
@@ -5342,6 +5553,533 @@ class TestPairInkGap:
         assert abs(self._ink_gap(w, block) - (PAIR_GAP + clearance)) <= 2
 
 
+class TestTransparentStaticGeometry:
+    """The height slider has two meanings, and transparent static is the one
+    where it stops being a height.
+
+    Static draws ONE block, sized to whatever was just said. A band shorter
+    than that block had nowhere to put the overflow — the first lines were cut
+    off at the top edge and the last ran under the disclaimer pill and off the
+    bottom of the screen — and only the feed modes shift as they fill, so
+    nothing rescued it. With no backdrop of its own to lose, transparent static
+    takes the whole monitor instead, and the slider moves the content up it.
+    """
+
+    @staticmethod
+    def _transparent(overlay, **kwargs):
+        kwargs.setdefault("bilingual_mode", True)
+        return overlay(SUBTITLE_MODE_STATIC, transparent_static=True, **kwargs)
+
+    def test_transparent_static_ignores_the_slider_as_a_height(self, overlay):
+        w = self._transparent(overlay, window_height_percent=23)
+        assert w._effective_height_percent() == 100
+
+    def test_opaque_static_is_still_a_band(self, overlay):
+        """Making THIS full height would wash the whole screen at the backdrop
+        opacity instead of the bottom strip the operator asked for."""
+        w = overlay(
+            SUBTITLE_MODE_STATIC, transparent_static=False, window_height_percent=23
+        )
+        assert w._effective_height_percent() == 23
+        assert w._static_lift() == 0, "a band has nothing to lift"
+
+    @pytest.mark.parametrize(
+        "mode", [SUBTITLE_MODE_REALTIME, SUBTITLE_MODE_CONTINUOUS]
+    )
+    def test_a_feed_mode_still_obeys_it(self, overlay, mode):
+        w = overlay(mode, window_height_percent=23, transparent_static=True)
+        assert w._effective_height_percent() == 23
+        assert w._static_lift() == 0
+
+    def test_the_lift_does_not_reach_the_band(self, overlay):
+        """The reported bug: dragging Abstand von unten to 0 and unticking
+        Transparent left a 0%-tall overlay — one pixel, subtitles and footer
+        gone, and only a drag of the height slider brought them back. The two
+        meanings had one stored field and do not even share a floor."""
+        w = self._transparent(
+            overlay, static_lift_percent=0, window_height_percent=40
+        )
+        assert w._static_lift() == 0, "this value is not the one that broke it"
+        w.set_transparent_static(False)
+        assert w._effective_height_percent() == 40
+
+    def test_a_band_is_never_thinner_than_it_can_hold(self, overlay):
+        """Still clamped where the number becomes pixels, although the lift can
+        no longer arrive here — a hand-edited settings.json is enough."""
+        w = overlay(SUBTITLE_MODE_STATIC, window_height_percent=0)
+        assert w._effective_height_percent() == WINDOW_HEIGHT_PERCENT_MIN
+
+    def test_the_setting_is_kept_for_when_the_mode_changes_back(self, overlay):
+        # Ignored, not overwritten: leaving transparent static has to restore
+        # the band the operator chose, not reset it to full screen.
+        w = self._transparent(overlay, window_height_percent=23)
+        w.set_subtitle_mode(SUBTITLE_MODE_REALTIME)
+        assert w._effective_height_percent() == 23
+
+    def test_the_window_is_re_placed_when_its_height_changes_meaning(self, overlay):
+        # The window height changes although the setting did not, so nothing
+        # else would have triggered the placement — by either route into it.
+        w = overlay(SUBTITLE_MODE_REALTIME, window_height_percent=23)
+        placed: list[str] = []
+        w._apply_geometry = lambda: placed.append(f"{w._mode}/{w._transparent_static}")
+        w.set_transparent_static(True)  # a feed mode: transparent means nothing
+        assert placed == []
+        w.set_subtitle_mode(SUBTITLE_MODE_STATIC)
+        assert placed == ["static/True"]
+        w.set_transparent_static(False)  # now it decides band vs whole monitor
+        assert placed == ["static/True", "static/False"]
+
+    def test_a_block_taller_than_the_band_no_longer_spills(self, overlay):
+        # The reported symptom, as geometry: at 23% a long bilingual block was
+        # taller than the whole content area.
+        w = self._transparent(overlay)
+        screen = w._screen().geometry()
+        w.resize(screen.width(), int(screen.height() * 23 / 100))
+        block = _long_block()
+        assert w._measure_block(block) > w._content_height(), "not a spilling case"
+        w.resize(screen.width(), screen.height())
+        assert w._measure_block(block) <= w._content_height()
+
+    # ── fitting the text to a band ───────────────────────────────────────
+    def test_room_enough_keeps_the_configured_size(self, overlay):
+        # The fit is a rescue, not a policy: whenever the block already fits,
+        # the operator's chosen font size is used untouched.
+        w = overlay(
+            SUBTITLE_MODE_STATIC,
+            bilingual_mode=True,
+            transparent_static=False,
+            window_height_percent=100,
+        )
+        block = _long_block()
+        assert w._measure_at(block, 1.0) <= w._content_height(), "not a fitting case"
+        assert w._static_fit_scale(block) == 1.0
+        assert w._fit_scale == 1.0, "the scale leaked out of the measurement"
+
+    def test_a_short_band_shrinks_the_text_into_it(self, overlay):
+        w = overlay(
+            SUBTITLE_MODE_STATIC, bilingual_mode=True, transparent_static=False
+        )
+        screen = w._screen().geometry()
+        w.resize(screen.width(), int(screen.height() * 0.2))
+        block = _long_block()
+        assert w._measure_at(block, 1.0) > w._content_height(), "not a fitting case"
+        scale = w._static_fit_scale(block)
+        assert scale < 1.0
+        assert w._measure_at(block, scale) <= w._content_height()
+
+    def test_it_finds_the_LARGEST_size_that_fits(self, overlay):
+        """A search that only ever shrinks stops at the first size that happens
+        to fit and leaves the band half empty — the linear estimate undershoots,
+        because wrapping moves in whole words. Text smaller than it needs to be
+        is a legibility bug, not a cosmetic one."""
+        w = overlay(
+            SUBTITLE_MODE_STATIC, bilingual_mode=True, transparent_static=False
+        )
+        from gui.subtitle_window import _FIT_MIN_SCALE
+
+        # Absolute heights rather than a share of this machine's screen, so the
+        # band under test is the same on every box (see the sibling test).
+        checked = 0
+        for height in (92, 138, 192, 400):
+            w.resize(1024, height)
+            block = _long_block()
+            scale = w._static_fit_scale(block)
+            if scale >= 1.0:
+                continue  # it already fits at the configured size
+            available = w._content_height()
+            if w._measure_at(block, _FIT_MIN_SCALE) > available:
+                # Documented at _static_fit_scale: below the floor the shrink
+                # stops being a fix, so the floor is returned even though it
+                # does not fit. Nothing to assert about a largest size here.
+                assert scale == _FIT_MIN_SCALE, height
+                continue
+            checked += 1
+            assert w._measure_at(block, scale) <= available, height
+            # Anything meaningfully larger must NOT fit, or a bigger size was
+            # available and went unused.
+            bigger = min(1.0, scale * 1.15)
+            assert w._measure_at(block, bigger) > available, (
+                f"{height}px: {scale:.2f} fits and so does {bigger:.2f} — "
+                f"the band was left {available - w._measure_at(block, scale)}px empty"
+            )
+        assert checked, "every band skipped; this proves nothing about the search"
+
+    def test_transparent_never_shrinks_because_it_never_has_to(self, overlay):
+        # It has the whole monitor, so there is no band to fit anything into.
+        w = self._transparent(overlay, window_height_percent=5)
+        assert w._static_fit_scale(_long_block()) == 1.0
+
+    def test_the_pills_never_claim_more_than_half_a_short_band(self, overlay):
+        """The pills are a fixed size and do not scale with the subtitle font,
+        so on a thin band they asked for more room than the window had: the
+        content area collapsed to one pixel and there was nothing left to fit
+        the text into."""
+        w = overlay(
+            SUBTITLE_MODE_STATIC, bilingual_mode=True, transparent_static=False
+        )
+        screen = w._screen().geometry()
+        for percent in (5, 8, 12, 40):
+            w.resize(screen.width(), max(1, int(screen.height() * percent / 100)))
+            assert w.reserved_bottom() <= max(1, w.height() // 2), percent
+            assert w._content_height() >= w.height() // 2, percent
+
+    def test_the_text_never_leaves_the_window_however_thin_the_band(
+        self, overlay
+    ):
+        # The reported symptom: at the slider's floor the block ran off the
+        # bottom of the screen.
+        from PySide6.QtGui import QPainter, QPixmap
+
+        # ABSOLUTE heights, never a share of this machine's screen: the band a
+        # given percentage produces depends on the monitor, so a screen-derived
+        # size asserts something different on every box. 38 px is 5% of the
+        # 768 px CI runner and is shorter than a bilingual block can ever be —
+        # the case that has to hold, not the one that happens to.
+        for percent, height in ((5, 38), (8, 61), (12, 92), (23, 176), (100, 768)):
+            w = overlay(
+                SUBTITLE_MODE_STATIC,
+                bilingual_mode=True,
+                transparent_static=False,
+                window_height_percent=percent,
+            )
+            w.resize(1024, height)
+            w.add_subtitle(_LONG_DE, _LONG_AR)
+            drawn: list[tuple[int, int]] = []
+
+            def record(p, block, x, y, newest=True, _w=w, _o=w._draw_block, _d=drawn):
+                _d.append((y, _w._measure_block(block)))
+                return _o(p, block, x, y, newest)
+
+            w._draw_block = record
+            pixmap = QPixmap(max(1, w.width()), max(1, w.height()))
+            painter = QPainter(pixmap)
+            try:
+                w._paint_static(painter)
+            finally:
+                painter.end()
+            top, height = drawn[0]
+            # The bottom is the edge that matters: it is the one the disclaimer
+            # sits on and the one the monitor ends at. A block too tall for the
+            # band loses its opening lines off the TOP instead — top may go
+            # negative, and that is the deliberate direction (see _paint_static).
+            assert top + height <= w.height(), (
+                f"{percent}%: text runs {top + height - w.height()}px past the "
+                f"bottom of a {w.height()}px overlay"
+            )
+            if height <= w._content_height():
+                assert top >= 0, f"{percent}%: a block that FITS was cut off"
+
+    def test_the_block_sits_above_the_footer_not_mid_screen(self, overlay):
+        """Centring was invisible in a short band and wrong on a whole monitor.
+
+        A subtitle belongs at the bottom of the picture, so the block is
+        anchored to the foot of the content area and grows upward.
+        """
+        from PySide6.QtGui import QPainter, QPixmap
+
+        w = self._transparent(overlay, window_height_percent=0)
+        w.add_subtitle(*reversed(PAIRS[0]))
+        tops: list[int] = []
+        w._draw_block = lambda p, block, x, y, newest=True: tops.append(y) or 0
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            w._paint_static(painter)
+        finally:
+            painter.end()
+        block_height = w._measure_block(w._blocks[-1])
+        assert tops == [w._content_height() - block_height]
+        # ...and clear of the disclaimer pill, which reserved_bottom holds back.
+        assert tops[0] + block_height <= w.height() - w.reserved_bottom()
+
+    # ── the lift ─────────────────────────────────────────────────────────
+    def test_the_slider_lifts_the_content_off_the_bottom(self, overlay):
+        w = self._transparent(overlay, static_lift_percent=0)
+        w.add_subtitle(*reversed(PAIRS[0]))
+        assert w._static_lift() == 0
+        w.set_static_lift_percent(20)
+        assert w._static_lift() == int(w.height() * 20 / 100)
+
+    def test_the_lift_is_capped_at_half_the_screen(self, overlay):
+        # Past halfway a subtitle is no longer at the bottom of the picture.
+        w = self._transparent(overlay, static_lift_percent=100)
+        w.add_subtitle(*reversed(PAIRS[0]))
+        assert w._static_lift() == int(w.height() * STATIC_LIFT_PERCENT_MAX / 100)
+
+    def test_the_lift_never_pushes_the_block_off_the_top(self, overlay):
+        # The same bug at the other end: it stops where the block runs out of
+        # room rather than walking the text off the top edge.
+        w = self._transparent(overlay, static_lift_percent=STATIC_LIFT_PERCENT_MAX)
+        w.add_subtitle(_LONG_DE, _LONG_AR)
+        w.resize(w.width(), 420)
+        assert w._static_lift() <= max(
+            0, w._content_height() - w._measure_block(w._blocks[-1])
+        )
+
+    def test_the_block_and_the_pills_move_by_the_same_amount(self, overlay):
+        """The whole point of the control: the disclaimer travels WITH the text
+        it belongs to instead of staying pinned to the bottom of the screen."""
+        from PySide6.QtGui import QPainter, QPixmap
+
+        def measure(percent):
+            w = self._transparent(overlay, static_lift_percent=percent)
+            w.add_subtitle(*reversed(PAIRS[0]))
+            tops: list[int] = []
+            pills: list[int] = []
+            w._draw_block = lambda p, b, x, y, newest=True: tops.append(y) or 0
+            w._pill = lambda p, text, bottom, fill, fg, **kw: (
+                pills.append(bottom) or bottom
+            )
+            pixmap = QPixmap(w.width(), w.height())
+            painter = QPainter(pixmap)
+            try:
+                w._paint_static(painter)
+                w._paint_pills(painter)
+            finally:
+                painter.end()
+            return tops[0], pills[0], w._static_lift()
+
+        low_block, low_pill, low_lift = measure(0)
+        high_block, high_pill, high_lift = measure(STATIC_LIFT_PERCENT_MAX)
+        assert high_lift > low_lift, "the lift did not take effect"
+        assert low_block - high_block == low_pill - high_pill == high_lift - low_lift
+
+    def test_a_feed_mode_leaves_the_pills_where_they_were(self, overlay):
+        from PySide6.QtGui import QPainter, QPixmap
+
+        from gui.subtitle_window import FOOTER_MARGIN
+
+        w = overlay(SUBTITLE_MODE_REALTIME, window_height_percent=40)
+        pills: list[int] = []
+        w._pill = lambda p, text, bottom, fill, fg, **kw: pills.append(bottom) or bottom
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            w._paint_pills(painter)
+        finally:
+            painter.end()
+        assert pills[0] == w.height() - FOOTER_MARGIN
+
+
+class TestTransparentStaticRibbon:
+    """The backdrop of transparent static mode: one box per RENDERED LINE.
+
+    Reported against two per-paragraph boxes, which failed in both directions —
+    a short sentence still got a box running the width of the screen, and the
+    pair's boxes overlapped so the translation's hid the source's last line.
+    """
+
+    def _runs(self, w, block):
+        """The block's paragraphs, laid out exactly as _draw_block lays them."""
+        import gui.subtitle_window as sw
+
+        trans_font, src_font = w._block_fonts(block)
+        runs = []
+        used = 0
+        if src_font is not None and block.source:
+            layout, height = w._layout_text(block.source, src_font)
+            runs.append(sw._Run(layout, 0, height))
+            used += height + w._pair_gap(block)
+        layout, height = w._layout_text(block.translation, trans_font)
+        runs.append(sw._Run(layout, used, height))
+        return runs
+
+    def _rects(self, w, block):
+        return w._ribbon_rects(self._runs(w, block), 0, w._content_width())
+
+    def test_a_short_line_gets_a_short_box(self, overlay):
+        from gui.subtitle_window import Block
+
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True)
+        rects = self._rects(w, Block("Ja."))
+        assert len(rects) == 1
+        assert rects[0].width() < w._content_width() // 2, (
+            "the box still runs to the window's edges"
+        )
+
+    def test_a_longer_line_gets_a_wider_box(self, overlay):
+        from gui.subtitle_window import Block
+
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True)
+        short = self._rects(w, Block("Ja."))[0]
+        longer = self._rects(w, Block("Ja, und zwar ganz genau so."))[0]
+        assert longer.width() > short.width(), "the box did not grow with the text"
+
+    def test_one_box_per_rendered_line_not_per_paragraph(self, overlay):
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True, bilingual_mode=True)
+        block = _long_block()
+        runs = self._runs(w, block)
+        lines = sum(run.layout.lineCount() for run in runs)
+        assert lines > 2, "this block does not wrap; it proves nothing"
+        assert len(w._ribbon_rects(runs, 0, w._content_width())) == lines
+
+    def test_a_wrapped_paragraph_hugs_each_line_separately(self, overlay):
+        # One box around a wrapped sentence is a rectangle at its LONGEST
+        # line's width, with ragged text inside it.
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True)
+        rects = self._rects(w, _long_block(source=None))
+        assert len({r.width() for r in rects}) > 1, "every line got the same box"
+
+    def test_the_boxes_tile_so_none_can_hide_a_line(self, overlay):
+        """The overlap bug, stated as geometry.
+
+        A block's source and its translation are pulled together until their
+        metric boxes overlap — _pair_gap is allowed to go negative and only the
+        INK is held apart — so two independent backdrops drew one on top of the
+        other. Every box has to reach the next one and no further.
+        """
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True, bilingual_mode=True)
+        rects = self._rects(w, _long_block())
+        for above, below in zip(rects, rects[1:], strict=False):
+            assert above.top() < below.top(), "the ribbon ran backwards"
+            assert above.bottom() >= below.top() - 1, "a gap opened in the ribbon"
+
+    def test_every_line_of_the_source_keeps_a_backdrop(self, overlay):
+        # The visible failure: the translation's box covered the source's last
+        # line, so half the Arabic was drawn on a box and half on the video.
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True, bilingual_mode=True)
+        block = _long_block()
+        runs = self._runs(w, block)
+        rects = w._ribbon_rects(runs, 0, w._content_width())
+        source = runs[0]
+        for i in range(source.layout.lineCount()):
+            line = source.layout.lineAt(i)
+            middle = source.top + line.position().y() + line.height() / 2
+            assert any(r.top() <= middle <= r.bottom() for r in rects), (
+                f"source line {i} has no backdrop under it"
+            )
+
+    def test_the_ribbon_is_drawn_before_any_text(self, overlay):
+        """Order is the other half of the fix: interleaved, a backdrop still
+        lands on the line above it however well the rects tile."""
+        from PySide6.QtGui import QPainter, QPixmap
+
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True, bilingual_mode=True)
+        events: list[str] = []
+        w._draw_ribbon = lambda p, rects: events.append("ribbon")
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            import gui.subtitle_window as sw
+
+            original = sw.QTextLayout.draw
+            sw.QTextLayout.draw = lambda self, *a: events.append("text")
+            try:
+                w._draw_block(painter, _long_block(), 0, 0)
+            finally:
+                sw.QTextLayout.draw = original
+        finally:
+            painter.end()
+        assert events.count("ribbon") == 1
+        assert events.index("ribbon") < events.index("text")
+
+    @pytest.mark.parametrize(
+        ("mode", "transparent"),
+        [
+            (SUBTITLE_MODE_STATIC, False),
+            # Transparent is a static-mode option; a feed mode keeps its
+            # window backdrop whatever the toggle says.
+            (SUBTITLE_MODE_REALTIME, True),
+        ],
+    )
+    def test_no_ribbon_when_the_window_carries_the_backdrop(
+        self, overlay, mode, transparent
+    ):
+        from PySide6.QtGui import QPainter, QPixmap
+
+        w = overlay(mode, bilingual_mode=True, transparent_static=transparent)
+        drawn: list = []
+        w._draw_ribbon = lambda p, rects: drawn.append(rects)
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            w._draw_block(painter, _long_block(), 0, 0)
+        finally:
+            painter.end()
+        assert drawn == [], "a ribbon was drawn over the window's own backdrop"
+
+    @pytest.mark.parametrize("theme", ["dark", "light"])
+    def test_the_card_contrasts_with_the_text_drawn_on_it(self, overlay, theme):
+        """The card was a fixed black while the text colour follows the
+        subtitle theme, so Untertitel-Modus "Hell" put near-black text on a
+        near-black box and the subtitles could not be read at all."""
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True, theme_mode=theme)
+        card = w._card_fill()
+        text = w._translation_qcolor()
+        assert abs(card.lightness() - text.lightness()) > 128, (
+            f"{theme}: card {card.lightness()} vs text {text.lightness()}"
+        )
+
+    def test_the_backdrop_opacity_reaches_the_card(self, overlay):
+        """The control the mode used to grey out. Asserted on the pixels the
+        ribbon is actually filled with, because the fill is the whole of what
+        the operator is setting here."""
+        from PySide6.QtGui import QImage, QPainter
+
+        def alpha_at(percent: int) -> int:
+            w = overlay(
+                SUBTITLE_MODE_STATIC,
+                transparent_static=True,
+                backdrop_opacity=percent,
+            )
+            image = QImage(w.width(), w.height(), QImage.Format_ARGB32)
+            image.fill(0)
+            painter = QPainter(image)
+            try:
+                w._draw_ribbon(painter, w._ribbon_rects(self._runs(w, _long_block()), 0, 400))
+            finally:
+                painter.end()
+            return max(
+                QColor.fromRgba(image.pixel(x, y)).alpha()
+                for y in range(0, image.height(), 4)
+                for x in range(0, image.width(), 4)
+            )
+
+        faint, solid = alpha_at(20), alpha_at(90)
+        assert faint < solid, "the slider does not reach the card"
+        assert faint > 0, "20% painted nothing at all"
+
+    @pytest.mark.parametrize("side_by_side", [False, True])
+    def test_the_card_keeps_its_clearance_from_the_disclaimer(
+        self, overlay, side_by_side
+    ):
+        """A card is drawn _CARD_PAD_Y BELOW the text it wraps, and holding
+        back only for the TEXT spent the clearance on that pad: the card's
+        bottom border came out flush against the pill, with the two touching.
+        The panel of the side-by-side layout keeps air there and so must this.
+        """
+        from PySide6.QtGui import QPainter, QPixmap
+
+        from gui.subtitle_window import PILL_CLEARANCE
+
+        w = overlay(
+            SUBTITLE_MODE_STATIC,
+            transparent_static=True,
+            bilingual_mode=True,
+            side_by_side=side_by_side,
+            show_footer=True,
+            window_height_percent=0,
+        )
+        w.add_subtitle(*reversed(PAIRS[0]))
+        cards: list = []
+        pill_tops: list[int] = []
+        w._draw_ribbon = lambda p, rects: cards.extend(rects)
+        w._pill = lambda p, text, bottom, fill, fg, **kw: (
+            pill_tops.append(bottom - w._pill_height()) or bottom - w._pill_height()
+        )
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            w._paint_static(painter)
+            w._paint_pills(painter)
+        finally:
+            painter.end()
+        assert cards, "nothing drew a card; this proves nothing"
+        assert pill_tops, "no pill was drawn; this proves nothing"
+        gap = min(pill_tops) - max(r.bottom() for r in cards)
+        assert gap >= PILL_CLEARANCE, f"only {gap} px between card and pill"
+
+
 class TestSideBySideLayout:
     """The two-column bilingual layout (issue #49).
 
@@ -5508,7 +6246,10 @@ class TestSideBySideLayout:
         assert w._column_panel_rects() is None, "the panels must give way"
 
         drawn: list = []
-        w._draw_card = lambda p, text, font, rect: drawn.append(rect)
+        # One ribbon per column, never one spanning both: the columns are side
+        # by side and share no vertical run, so tiling them together would put
+        # a backdrop across the gutter.
+        w._draw_ribbon = lambda p, rects: drawn.append(rects)
         pixmap = QPixmap(w.width(), w.height())
         painter = QPainter(pixmap)
         try:
@@ -5516,7 +6257,35 @@ class TestSideBySideLayout:
         finally:
             painter.end()
         assert len(drawn) == 2, "each column's sentence needs its own card"
-        assert drawn[0].x() != drawn[1].x(), "both cards landed in one column"
+        assert drawn[0] and drawn[1], "a column was given an empty ribbon"
+        assert drawn[0][0].x() != drawn[1][0].x(), "both cards landed in one column"
+
+    def test_a_latin_original_drops_the_italic_beside_its_translation(
+        self, overlay
+    ):
+        """Italic marks the original as subordinate, which it only is when it
+        is stacked ABOVE its translation. In a row of two equals it read as a
+        quotation beside a sentence rather than the same thing twice."""
+        w = self._overlay(overlay)
+        block = self._block(translation="This is the translated line.")
+        block.source = "Das ist die Originalzeile."
+        _trans, source = w._block_fonts(block)
+        assert source.bold(), "side by side draws the original bold"
+        assert not source.italic()
+
+    def test_stacked_keeps_it_italic(self, overlay):
+        w = self._overlay(overlay, side_by_side=False)
+        block = self._block(translation="This is the translated line.")
+        block.source = "Das ist die Originalzeile."
+        _trans, source = w._block_fonts(block)
+        assert source.italic() and not source.bold()
+
+    def test_arabic_is_upright_in_both_layouts(self, overlay):
+        # It has no italic face worth the name, and never had one here.
+        for side_by_side in (True, False):
+            w = self._overlay(overlay, side_by_side=side_by_side)
+            _trans, source = w._block_fonts(self._block())
+            assert not source.italic(), side_by_side
 
     def test_the_panels_stay_when_transparent_is_off(self, overlay):
         w = self._overlay(overlay, transparent_static=False)
@@ -5526,6 +6295,57 @@ class TestSideBySideLayout:
         w = self._overlay(overlay)
         left, _right = w._column_panel_rects()
         assert left.bottom() <= w.height() - w.reserved_bottom()
+
+    def test_the_panel_sits_in_an_even_frame_of_video(self, overlay):
+        """The panels ARE the backdrop here, so where they start IS the top of
+        the overlay. At the feed's own margin they began far enough down that
+        at 100% height a band of video stood above them and a hairline below —
+        the maintainer asked for one clearance at both ends."""
+        from gui.subtitle_window import FOOTER_MARGIN
+
+        w = self._overlay(overlay)
+        left, right = w._column_panel_rects()
+        assert left.top() == right.top()
+        pill_top = w.height() - FOOTER_MARGIN - w._pill_height()
+        above = left.top()
+        below = pill_top - (left.bottom() + 1)
+        assert above == below, f"{above} px of video above, {below} below"
+
+    def test_the_feed_starts_at_the_panels_own_inset(self, overlay):
+        """Measured from the PANEL, not from the window: a line held a share of
+        the height down from the window's edge would leave a band of empty
+        backdrop inside the top of the panel."""
+        from gui.subtitle_window import COLUMN_PANEL_PAD_Y
+
+        w = self._overlay(overlay, mode=SUBTITLE_MODE_REALTIME)
+        panel, _right = w._column_panel_rects()
+        assert self._first_block_top(w) == panel.top() + COLUMN_PANEL_PAD_Y
+
+    def test_the_stacked_layout_keeps_its_share_of_the_height(self, overlay):
+        """It has no panel to be inset from, so the line is held off the
+        window's edge by the same figure as before."""
+        from gui.subtitle_window import FEED_TOP_RATIO
+
+        w = self._overlay(overlay, mode=SUBTITLE_MODE_REALTIME, side_by_side=False)
+        expected = int(w.height() * FEED_TOP_RATIO)
+        assert expected > 0, "this window is too short to tell the two apart"
+        assert self._first_block_top(w) == expected
+
+    @staticmethod
+    def _first_block_top(w) -> int:
+        """The y the feed's first block is actually drawn at."""
+        from PySide6.QtGui import QPainter, QPixmap
+
+        w.add_subtitle(*reversed(PAIRS[0]))
+        tops: list[int] = []
+        w._draw_block = lambda p, block, x, y, newest=True: tops.append(y) or 0
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            w._paint_realtime(painter)
+        finally:
+            painter.end()
+        return tops[0]
 
     def test_no_panels_outside_the_layout(self, overlay):
         stacked = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, side_by_side=False)
@@ -6461,8 +7281,14 @@ class TestOverlayFitsTheScreen:
     HEIGHT_PERCENT = 30  # enough of the screen to be real, little enough to see past
 
     def _placed(self, qt_app, overlay):
-        """A shown overlay whose geometry the WM actually granted."""
-        w = overlay(SUBTITLE_MODE_STATIC, window_height_percent=self.HEIGHT_PERCENT)
+        """A shown overlay whose geometry the WM actually granted.
+
+        A FEED mode, because the height percent has to actually apply: static
+        ignores it and takes the whole monitor (_effective_height_percent), and
+        a full-height overlay is already at the position these tests move it
+        away from — every assertion would then hold trivially.
+        """
+        w = overlay(SUBTITLE_MODE_REALTIME, window_height_percent=self.HEIGHT_PERCENT)
         w.show()
         _settle(qt_app)
         g = w._screen().geometry()

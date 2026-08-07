@@ -60,16 +60,25 @@ from utils.settings import (
     BACKDROP_OPACITY_MAX,
     BACKDROP_OPACITY_MIN,
     DEFAULT_BACKDROP_OPACITY,
+    STATIC_LIFT_PERCENT_MAX,
+    STATIC_LIFT_PERCENT_MIN,
     SUBTITLE_MODE_CONTINUOUS,
     SUBTITLE_MODE_REALTIME,
     SUBTITLE_MODE_STATIC,
+    WINDOW_HEIGHT_PERCENT_MIN,
 )
 
 # Gap between the source line and its translation inside one block, ON TOP of
 # whatever _reclaim closes up. They are one utterance and have to read as one:
-# in the Tk overlay the Arabic sits almost on its translation, and anything
-# more here separated them into two unrelated lines.
-PAIR_GAP = 2
+# in the Tk overlay the Arabic sits almost on its translation.
+#
+# Raised from 2 to 10 on 2026-08-07 at the maintainer's request, after seeing
+# the per-line ribbon (_ribbon_rects) on a real screen: the backdrop made the
+# join visible in a way bare text never did, and at 2 the two boxes read as one
+# jammed-together slab. This is REAL ink distance — the reclaim and the
+# descent slack are both subtracted from it — so it is the whole of the gap the
+# eye actually sees, not a metrics figure.
+PAIR_GAP = 10
 
 # Ink that must remain between two stacked lines, so they never actually touch.
 # Tuned against the Tk overlay side by side: it is the only thing standing
@@ -118,6 +127,29 @@ COLUMN_PANEL_MARGIN_RATIO = 0.02
 COLUMN_PANEL_PAD_X = 30
 COLUMN_PANEL_PAD_Y = 18
 COLUMN_PANEL_RADIUS = 18
+# The per-line backdrop of transparent static mode (see _ribbon_rects and
+# _card_fill). It is a flat black or white rather than the theme's backdrop
+# colour: the whole point of the mode is that there is no window backdrop, so
+# this is the only thing between the text and arbitrary video, and only an
+# extreme works over a bright frame as well as a dark one.
+_CARD_PAD_X = 20
+_CARD_PAD_Y = 8
+_CARD_RADIUS = 14
+# Fitting a static block into a band too short for it (see _static_fit_scale).
+#
+# The REAL floor is the 12 px clamp in _translation_px / _source_px — text
+# nobody can read from the back of a hall is not an improvement on text that is
+# cut off. This constant only stops the refinement burning layouts below the
+# point where the clamp has taken over and further shrinking changes nothing.
+# It must stay under that point: at 0.35 it stopped one step early and a block
+# still ran 5 px past the bottom of a 5%-height overlay, where the clamped
+# minimum would have fitted with room to spare.
+_FIT_MIN_SCALE = 0.2
+# Bisection steps between that floor and 1.0. Eight brings the interval under
+# 0.4%, which is far finer than a whole pixel of font size, and the cost is one
+# re-layout of the block per step — paid once per utterance, since static mode
+# has no animation timer repainting behind it.
+_FIT_SEARCH_STEPS = 8
 # Where the realtime feed's first line sits, as a fraction of window height.
 FEED_TOP_RATIO = 0.06
 # Continuous mode advances by this many pixels per frame at speed 1.0.
@@ -159,6 +191,35 @@ FEED_ANIM_SNAP_PX = 1.0  # within this, land on the target and stop
 # rather than an inline check, so a test can drive the other platform's branch
 # without faking sys.platform for the whole process.
 _MACOS = sys.platform == "darwin"
+# Windows keeps its taskbar in the SAME topmost band as the overlay, and the
+# order inside that band is whoever was raised last — so a click on the taskbar
+# lifts the shell over the subtitles and nothing ever lowers it again. The
+# overlay puts itself back (_keep_on_top) on this interval. A module constant
+# for the same reason as _MACOS: a test drives the branch without faking
+# sys.platform for the whole process.
+_WINDOWS = sys.platform == "win32"
+# Slow on purpose. The fix is for a click that happened, not a race, and
+# raising a window already at the top of its band costs nothing — but a client
+# that restacks itself many times a second is one that fights every other
+# topmost window on the desktop.
+RESTACK_MS = 1000
+
+
+@dataclass
+class _Run:
+    """One laid-out paragraph, ready to draw and to measure a backdrop from.
+
+    Carries the layout rather than the text, because both the backdrop and the
+    glyphs have to come from the SAME layout: laying the paragraph out twice
+    invites the two to disagree about where a line broke. It also keeps the
+    layout referenced while its ``QTextLine``s are read — a line borrows from
+    its layout, and reading one whose layout has been collected takes the
+    process down with a heap error rather than an exception.
+    """
+
+    layout: QTextLayout
+    top: float
+    height: int
 
 
 @dataclass
@@ -189,6 +250,7 @@ class SubtitleWindow(QWidget):
         scroll_speed: float = 1.0,
         transparent_static: bool = False,
         window_height_percent: int = 100,
+        static_lift_percent: int = 0,
         backdrop_opacity: int = DEFAULT_BACKDROP_OPACITY,
         show_footer: bool = True,
         theme_mode: str = "dark",
@@ -207,6 +269,7 @@ class SubtitleWindow(QWidget):
         self._scroll_speed = scroll_speed
         self._transparent_static = transparent_static
         self._height_percent = window_height_percent
+        self._lift_percent = static_lift_percent
         self._backdrop_opacity = backdrop_opacity
         self._show_footer = show_footer
         self._theme_mode = theme_mode
@@ -229,6 +292,10 @@ class SubtitleWindow(QWidget):
         self._feed_target = 0.0
         self._adaptive_catchup = adaptive_catchup
         self._effective_scroll_speed = scroll_speed
+        # Live only while _paint_static is shrinking a block into a band too
+        # short for it (see _static_fit_scale). 1.0 everywhere else, so no
+        # other mode pays anything for it.
+        self._fit_scale = 1.0
 
         # A REAL window, not a Qt.Tool: a tool window is kept out of the
         # taskbar and the alt-tab list, and out of OBS's window-capture list
@@ -263,6 +330,11 @@ class SubtitleWindow(QWidget):
         self._fit_timer.setSingleShot(True)
         self._fit_timer.setInterval(GEOMETRY_FIT_MS)
         self._fit_timer.timeout.connect(self._fit_to_screen)
+        # Parented, so it dies with the window. Started and stopped by
+        # set_always_on_top, which runs on the next line.
+        self._restack_timer = QTimer(self)
+        self._restack_timer.setInterval(RESTACK_MS)
+        self._restack_timer.timeout.connect(self._keep_on_top)
         self.set_always_on_top(always_on_top)
 
         self._scroll_timer = QTimer(self)
@@ -324,6 +396,25 @@ class SubtitleWindow(QWidget):
         base.setAlpha(round(self._backdrop_opacity * 255 / 100))
         return base
 
+    def _card_fill(self) -> QColor:
+        """The per-line card's colour in transparent static mode.
+
+        **Black under the dark subtitle theme, white under the light one.** Not
+        the theme's own backdrop tone — over arbitrary video only the extremes
+        are a safe backing, which is the reason given at _CARD_PAD_X — but it
+        has to be the extreme the TEXT is not. The text colour comes from the
+        palette, so a card fixed at black put the light theme's near-black text
+        on a near-black box and the subtitles could not be read at all.
+
+        At the same opacity as every other backdrop: the mode takes the
+        window's backdrop away, it does not take away the operator's say in how
+        strongly the text sits on it. A fixed alpha left Hintergrund-Deckkraft
+        with nothing to do here, which is why the row used to grey out.
+        """
+        light = self._theme_mode == "light"
+        value = 255 if light else 0
+        return QColor(value, value, value, round(self._backdrop_opacity * 255 / 100))
+
     # ── geometry ─────────────────────────────────────────────────────────
     def _screen(self):
         screens = QGuiApplication.screens()
@@ -331,6 +422,64 @@ class SubtitleWindow(QWidget):
             return None
         idx = max(0, min(self._monitor_index, len(screens) - 1))
         return screens[idx]
+
+    def _effective_height_percent(self) -> int:
+        """Height the overlay actually takes, whatever the slider says.
+
+        **Transparent static takes the whole monitor.** It draws ONE block,
+        sized to whatever the speaker just said, and a band shorter than that
+        block has nowhere to put the overflow: the first lines were cut off at
+        the top edge and the last ran under the disclaimer pill and off the
+        bottom of the screen, with no scrolling to rescue it — the feed modes
+        shift as they fill, static does not. Nothing is lost by the full
+        height, because there the overlay has no backdrop of its own: the
+        contrast comes from a ribbon drawn around the text (_ribbon_rects), so
+        a full-height window paints exactly as much as the text needs and the
+        video shows through everywhere else. The slider becomes a LIFT there
+        instead — see _static_lift.
+
+        Everywhere else the overlay IS a band and the slider is its height,
+        including static with the backdrop on: making that full height would
+        wash the whole screen at the backdrop opacity instead of the bottom
+        strip the operator asked for.
+
+        Still clamped, although the lift now has a field of its own
+        (``_lift_percent``) and can no longer arrive here: a band thinner than
+        ``WINDOW_HEIGHT_PERCENT_MIN`` holds no text at all, and this is where
+        the number is turned into pixels. A hand-edited settings.json is enough
+        to reach it.
+        """
+        if self._transparent_static_active():
+            return 100
+        return max(WINDOW_HEIGHT_PERCENT_MIN, self._height_percent)
+
+    def _static_lift(self) -> int:
+        """Pixels the static content sits above the bottom edge.
+
+        The height slider's other meaning, and its own stored field (see
+        STATIC_LIFT_PERCENT_* in utils/settings). With no band to resize, it
+        moves the subtitles and the footer pill UP the screen together — both
+        are offset by this one figure, so the disclaimer keeps its place under
+        the text rather than the two drifting apart.
+
+        Zero everywhere else, so the feed modes and opaque static are untouched
+        and this costs them nothing.
+
+        Clamped to what the block can actually clear: lifting further would
+        push the text off the TOP while trying to move it away from the bottom,
+        which is the same bug at the other end. Both stop together, so the pill
+        never climbs past the text it belongs to.
+        """
+        if not self._transparent_static_active():
+            return 0
+        percent = max(
+            STATIC_LIFT_PERCENT_MIN, min(STATIC_LIFT_PERCENT_MAX, self._lift_percent)
+        )
+        lift = int(self.height() * percent / 100)
+        if self._blocks:
+            room = self._content_height() - self._measure_block(self._blocks[-1])
+            lift = min(lift, max(0, room))
+        return lift
 
     def _apply_geometry(self) -> None:
         """Occupy the bottom ``height_percent`` of the chosen screen.
@@ -358,7 +507,7 @@ class SubtitleWindow(QWidget):
             return
         over_the_taskbar = is_window_on_top(self) and not _MACOS
         g = screen.geometry() if over_the_taskbar else screen.availableGeometry()
-        h = max(1, int(g.height() * self._height_percent / 100))
+        h = max(1, int(g.height() * self._effective_height_percent() / 100))
         # Kept, because it is a REQUEST: _fit_to_screen compares it against what
         # the window manager actually did.
         self._requested = QRect(g.x(), g.y() + g.height() - h, g.width(), h)
@@ -438,15 +587,75 @@ class SubtitleWindow(QWidget):
     # ``font_size_base`` and ``source_font_size_base`` are DIVISORS, not pixel
     # sizes: the rendered size is the window width divided by the base, so text
     # keeps its proportion on any monitor. Smaller base => larger text.
+    #
+    # ``_fit_scale`` is applied on top, and is 1.0 except while static mode is
+    # shrinking a block into a band too short for it (see _static_fit_scale).
+    # It multiplies BOTH sizes, so the original keeps its proportion to its
+    # translation however far the pair has to shrink.
     def _translation_px(self) -> int:
         if not self.width():
             return 24
-        return max(12, min(120, int(self.width() / self._font_size_base)))
+        size = self.width() / self._font_size_base * self._fit_scale
+        return max(12, min(120, int(size)))
 
     def _source_px(self) -> int:
         if not self.width():
             return 17
-        return max(12, min(120, int(self.width() / self._source_font_size_base)))
+        size = self.width() / self._source_font_size_base * self._fit_scale
+        return max(12, min(120, int(size)))
+
+    def _measure_at(self, block: Block, scale: float) -> int:
+        """``block``'s height with the fonts scaled by ``scale``."""
+        previous = self._fit_scale
+        self._fit_scale = scale
+        try:
+            return self._measure_block(block)
+        finally:
+            self._fit_scale = previous
+
+    def _static_fit_scale(self, block: Block) -> float:
+        """Shrink factor that makes ``block`` fit the band it is drawn in.
+
+        Static draws one block and never scrolls, so a block taller than the
+        overlay simply loses its ends — the first lines cut off at the top, the
+        last under the disclaimer pill and off the screen. Where the overlay is
+        the whole monitor that cannot happen and this returns 1.0. Where it is a
+        BAND — static with the backdrop on, whose height is exactly what the
+        slider is for — the text is fitted to the band instead, which is what
+        the Tk overlay did (_static_fonts_for_content).
+
+        The answer is the LARGEST scale that fits, found by bisection, and it
+        has to be searched for in both directions. Height is only roughly
+        linear in font size — halve the size and each line is half as tall, but
+        twice as much text fits on it, so the line COUNT roughly halves too —
+        and "roughly" is the whole problem: wrapping moves in whole words, so
+        the linear estimate ``available / measured`` usually UNDERSHOOTS. A
+        search that only ever shrinks from it stops at the first size that
+        happens to fit and leaves the band visibly half empty (49 px of text in
+        a 66 px band, which is what this replaces).
+
+        Floored, because past a point shrinking stops being a fix — text nobody
+        can read from the back of a hall is not better than text that is cut
+        off, and ``_translation_px`` clamps at 12 px anyway. If even the floor
+        does not fit, it is returned regardless: it is the smallest this can
+        make the block, and the alternative is drawing it larger for no gain.
+        """
+        if self._transparent_static_active():
+            return 1.0
+        available = self._content_height()
+        if available <= 0 or self._measure_at(block, 1.0) <= available:
+            return 1.0
+        if self._measure_at(block, _FIT_MIN_SCALE) > available:
+            return _FIT_MIN_SCALE
+        # ``low`` always fits and ``high`` never does; the answer is between.
+        low, high = _FIT_MIN_SCALE, 1.0
+        for _ in range(_FIT_SEARCH_STEPS):
+            middle = (low + high) / 2
+            if self._measure_at(block, middle) <= available:
+                low = middle
+            else:
+                high = middle
+        return low
 
     @staticmethod
     def _ink(text: str, font: QFont) -> tuple[int, int]:
@@ -735,6 +944,22 @@ class SubtitleWindow(QWidget):
         """Width of one text column — a panel less its inset on both sides."""
         return max(1, self._panel_geometry()[2] - 2 * COLUMN_PANEL_PAD_X)
 
+    def _feed_top(self) -> int:
+        """Where the feed's first line sits below the overlay's top edge.
+
+        In the side-by-side layout it is measured from the PANEL, by the
+        panel's own inset: the panel is the container and now starts a
+        clearance below the top edge (_column_panel_rects), so a line held
+        FEED_TOP_RATIO down from that edge would leave a band of empty backdrop
+        above it three times the inset the same panel keeps at its sides.
+
+        Everywhere else there is no container, and the line is kept off the
+        edge by a share of the height instead.
+        """
+        if self._columns_active():
+            return PILL_CLEARANCE + COLUMN_PANEL_PAD_Y
+        return int(self.height() * FEED_TOP_RATIO)
+
     def _columns_active(self) -> bool:
         """Whether the overlay is in the side-by-side layout at all.
 
@@ -748,8 +973,17 @@ class SubtitleWindow(QWidget):
         """The two fixed panels behind the columns, or None outside the layout.
 
         Both the same size and in the same place every frame. They span the
-        content area — from above the feed's first line down to where the
-        footer pill's clearance begins.
+        content area, ``PILL_CLEARANCE`` below the overlay's top edge down to
+        where the footer pill's clearance begins.
+
+        The SAME figure at both ends, which is the point: the panels ARE the
+        backdrop here (see _backdrop), so the only thing marking the top of the
+        overlay is where they start, and at the feed's own margin they began
+        far enough down that at 100% height a band of video stood between them
+        and the monitor's upper border while a hairline stood below them. One
+        clearance, top and bottom, and the panel sits in an even frame. The
+        first line keeps its distance from the panel through the panel's own
+        inset instead — see _feed_top.
 
         None during an announcement: that renders large and centred across the
         whole window, and framing it in two columns it does not use would read
@@ -763,7 +997,7 @@ class SubtitleWindow(QWidget):
         ):
             return None
         left_x, right_x, width = self._panel_geometry()
-        top = max(0, int(self.height() * FEED_TOP_RATIO) - COLUMN_PANEL_PAD_Y)
+        top = PILL_CLEARANCE
         height = max(1, self._content_height() - top)
         return (
             QRect(left_x, top, width, height),
@@ -932,20 +1166,71 @@ class SubtitleWindow(QWidget):
             self._live_text or "", self._live_font()
         )
 
-    def _draw_card(self, p: QPainter, text: str, font: QFont, rect: QRect) -> None:
-        """Rounded backing card behind one line, sized to the text it holds.
+    def _ribbon_rects(self, runs: list[_Run], left: int, width: int) -> list[QRect]:
+        """One backdrop per RENDERED LINE, tiled into a single ribbon.
 
-        Only used when the backdrop is transparent: without it the subtitle
-        would have to compete with whatever video is underneath.
+        The shape a YouTube subtitle has, and the one asked for: each line gets
+        a box as wide as that line's own text, so a short line is a short box
+        and the backdrop grows and shrinks with what was said instead of always
+        running to the window's edges. Per LINE, not per paragraph — a
+        paragraph's width is its longest line, so one box around a wrapped
+        sentence is a rectangle with ragged text inside it.
+
+        Tiled, and that is also the fix for the overlap. A block's source line
+        and its translation are deliberately pulled together until their metric
+        BOXES overlap — ``_pair_gap`` is allowed to go negative and only the
+        INK is held apart — so two independent backdrops drew one on top of the
+        other and the second hid the last line of the first. Here each box ends
+        exactly where the next one begins, so none of them can cover anything.
+
+        Boxes are extended down by their own corner radius so the rounding does
+        not notch every join; the caller fills them as one winding path, which
+        is what keeps the overlap from painting the alpha twice.
         """
-        fm = QFontMetrics(font)
-        tw = min(fm.horizontalAdvance(text), rect.width())
-        pad_x, pad_y = 20, 8
-        cw = min(rect.width(), tw + pad_x * 2)
-        cx = rect.x() + (rect.width() - cw) // 2
+        tops: list[float] = []
+        widths: list[float] = []
+        bottom = 0.0
+        for run in runs:
+            for i in range(run.layout.lineCount()):
+                line = run.layout.lineAt(i)
+                tops.append(run.top + line.position().y())
+                widths.append(line.naturalTextWidth())
+            bottom = run.top + run.height
+        rects: list[QRect] = []
+        last = len(tops) - 1
+        for i, (top, text_width) in enumerate(zip(tops, widths, strict=True)):
+            box_top = top - _CARD_PAD_Y if i == 0 else top
+            if i == last:
+                box_bottom = bottom + _CARD_PAD_Y
+            else:
+                box_bottom = tops[i + 1] + _CARD_RADIUS
+            box_width = min(width, int(text_width) + 2 * _CARD_PAD_X)
+            rects.append(
+                QRect(
+                    left + (width - box_width) // 2,
+                    int(box_top),
+                    box_width,
+                    max(0, int(box_bottom - box_top)),
+                )
+            )
+        return rects
+
+    def _draw_ribbon(self, p: QPainter, rects: list[QRect]) -> None:
+        """Fill ``rects`` as one shape.
+
+        One path and one fill, with the WINDING rule: the boxes overlap by a
+        corner radius (see _ribbon_rects) and Qt's default odd-even rule would
+        punch that overlap out as a hole, while filling them one at a time
+        would composite the translucent black twice and leave a dark band
+        across every join.
+        """
+        if not rects:
+            return
         path = QPainterPath()
-        path.addRoundedRect(cx, rect.y() - pad_y, cw, rect.height() + pad_y * 2, 14, 14)
-        p.fillPath(path, QColor(0, 0, 0, 150))
+        path.setFillRule(Qt.WindingFill)
+        for rect in rects:
+            path.addRoundedRect(rect, _CARD_RADIUS, _CARD_RADIUS)
+        p.fillPath(path, self._card_fill())
 
     def _draw_block(
         self, p: QPainter, block: Block, x: int, y: int, newest: bool = True
@@ -955,6 +1240,11 @@ class SubtitleWindow(QWidget):
         ``newest`` carries the full translation colour; everything above it is
         history and drops to the muted tone, so the eye lands on the line
         being spoken now without having to search for it.
+
+        Every backdrop is drawn before any text, never interleaved: the source
+        and its translation are stacked close enough that their boxes overlap,
+        so a backdrop painted between them covers the line above (see
+        _ribbon_rects).
         """
         trans_font, src_font = self._block_fonts(block)
         w = self._content_width()
@@ -964,7 +1254,9 @@ class SubtitleWindow(QWidget):
             src_rect, trans_rect = rects
             # Cards only when the Transparent toggle has taken the panels away
             # — otherwise the panel already carries the text over video, and
-            # drawing both would stack a card inside a panel.
+            # drawing both would stack a card inside a panel. One ribbon per
+            # column, because the columns are side by side and share no run.
+            runs: list[tuple[_Run, QRect, QColor]] = []
             for text, font, rect, colour in (
                 (block.source, src_font, src_rect, self._column_source_qcolor(newest)),
                 (
@@ -974,25 +1266,37 @@ class SubtitleWindow(QWidget):
                     self._translation_qcolor() if newest else self._history_qcolor(),
                 ),
             ):
-                layout, _h = self._layout_text(text, font, width=rect.width())
-                if cards:
-                    self._draw_card(p, text, font, rect)
+                layout, height = self._layout_text(text, font, width=rect.width())
+                runs.append((_Run(layout, rect.y(), height), rect, colour))
+            if cards:
+                for run, rect, _colour in runs:
+                    self._draw_ribbon(
+                        p, self._ribbon_rects([run], rect.x(), rect.width())
+                    )
+            for run, rect, colour in runs:
                 p.setPen(colour)
-                layout.draw(p, QPointF(rect.x(), rect.y()))
+                run.layout.draw(p, QPointF(rect.x(), rect.y()))
             return max(src_rect.height(), trans_rect.height())
         used = 0
+        stacked: list[tuple[_Run, QColor]] = []
         if src_font is not None and block.source:
             layout, sh = self._layout_text(block.source, src_font)
-            if cards:
-                self._draw_card(p, block.source, src_font, QRect(x, y, w, sh))
-            p.setPen(self._source_qcolor())
-            layout.draw(p, QPointF(x, y))
+            stacked.append((_Run(layout, y, sh), self._source_qcolor()))
             used += sh + self._pair_gap(block)
         layout, th = self._layout_text(block.translation, trans_font)
+        stacked.append(
+            (
+                _Run(layout, y + used, th),
+                self._translation_qcolor() if newest else self._history_qcolor(),
+            )
+        )
         if cards:
-            self._draw_card(p, block.translation, trans_font, QRect(x, y + used, w, th))
-        p.setPen(self._translation_qcolor() if newest else self._history_qcolor())
-        layout.draw(p, QPointF(x, y + used))
+            self._draw_ribbon(
+                p, self._ribbon_rects([run for run, _c in stacked], x, w)
+            )
+        for run, colour in stacked:
+            p.setPen(colour)
+            run.layout.draw(p, QPointF(x, run.top))
         return used + th
 
     # ── painting ─────────────────────────────────────────────────────────
@@ -1037,7 +1341,7 @@ class SubtitleWindow(QWidget):
         slide back down, which would read as the text jumping around.
         """
         x = int(self.width() * SIDE_MARGIN_RATIO)
-        top = int(self.height() * FEED_TOP_RATIO)
+        top = self._feed_top()
         heights = [self._measure_block(b) for b in self._blocks]
         # The advance past each block: its own height plus the gap whatever
         # comes NEXT wants above it. One list, used by all three passes below,
@@ -1126,13 +1430,46 @@ class SubtitleWindow(QWidget):
         self._blocks = survivors
 
     def _paint_static(self, p: QPainter) -> None:
-        """Only the newest block, vertically centred."""
+        """Only the newest block, sitting just above the footer.
+
+        Anchored to the BOTTOM of the content area, not centred in it. Centring
+        was invisible while the overlay was a band at the bottom of the screen
+        — the band was barely taller than the block — but static now takes the
+        whole monitor (_effective_height_percent), and there it left the
+        subtitles floating in the middle of the picture. Where a subtitle
+        belongs is where the Tk overlay put it, an ink's distance off the
+        bottom edge (_create_outlined_text at canvas_height - 4).
+
+        ``_content_height`` already holds back the footer pill and its
+        clearance, so this lands the block just above the disclaimer and grows
+        UPWARD as the utterance gets longer.
+
+        ``_static_lift`` then raises the whole arrangement off the bottom edge
+        — the pills subtract the same figure, so the two move as one.
+
+        **A block too tall for the space loses its TOP, never its bottom.** The
+        anchor used to be clamped to y=0 so the opening lines could not be cut
+        off, but a clamp at the top pushes the foot down by the same amount:
+        on a 38 px band (5% of a 768 px screen, where a bilingual block bottoms
+        out at 50 px because both fonts have hit the 12 px floor) the last line
+        was drawn 12 px BELOW the overlay, off the monitor entirely and across
+        the disclaimer on its way. Overflowing upward keeps the newest words
+        and the pill on screen, and it is what the feed modes already do when
+        they run out of room.
+        """
         if not self._blocks:
             return
         block = self._blocks[-1]
         x = int(self.width() * SIDE_MARGIN_RATIO)
-        h = self._measure_block(block)
-        self._draw_block(p, block, x, max(0, (self._content_height() - h) // 2))
+        # Set for the whole of the measuring AND the drawing, so the two can
+        # never disagree about how big the text is; restored afterwards because
+        # the pills and every other mode read the same two size helpers.
+        self._fit_scale = self._static_fit_scale(block)
+        try:
+            bottom = self._content_height() - self._static_lift()
+            self._draw_block(p, block, x, bottom - self._measure_block(block))
+        finally:
+            self._fit_scale = 1.0
 
     def _live_font(self) -> QFont:
         """Font of the in-progress transcript line.
@@ -1232,7 +1569,25 @@ class SubtitleWindow(QWidget):
             r += self._pill_height() + PILL_GAP
         # Once, above whichever pill ends up topmost — and only when there is
         # one, so nothing is held back from an overlay that shows neither.
-        return r + PILL_CLEARANCE if r else 0
+        if not r:
+            return 0
+        r += PILL_CLEARANCE
+        if self._transparent_static_active():
+            # A card is drawn _CARD_PAD_Y BELOW the text it wraps
+            # (_ribbon_rects), and reserving for the text alone spent the
+            # clearance on that pad: the card's bottom border came out flush
+            # against the disclaimer with nothing between them. The panel of
+            # the side-by-side layout keeps PILL_CLEARANCE of air there, and a
+            # card is the same thing — a backdrop with an edge the eye reads.
+            r += _CARD_PAD_Y
+        # Never more than half a short overlay. The pills are a fixed size —
+        # they deliberately do not scale with the subtitle font — so on a band
+        # at the low end of the height slider they asked for more room than the
+        # whole window had: the content area collapsed to a single pixel, there
+        # was nothing left to fit the text into, and the pill itself was laid
+        # out from a bottom edge further up than its own height. Capped, the
+        # band keeps a usable content area and the text is fitted into THAT.
+        return min(r, max(1, self.height() // 2))
 
     def _content_height(self) -> int:
         return max(1, self.height() - self.reserved_bottom())
@@ -1294,8 +1649,14 @@ class SubtitleWindow(QWidget):
         return y
 
     def _paint_pills(self, p: QPainter) -> None:
-        """Footer last-but-one, stopped hint stacked directly above it."""
-        bottom = self.height() - FOOTER_MARGIN
+        """Footer last-but-one, stopped hint stacked directly above it.
+
+        Raised by ``_static_lift``, the same figure the block above them is
+        raised by, so the disclaimer travels with the text it belongs to rather
+        than staying pinned to the bottom of the screen while the subtitles
+        walk away from it. Zero outside transparent static.
+        """
+        bottom = self.height() - FOOTER_MARGIN - self._static_lift()
         if self._show_footer:
             bottom = self._pill(
                 p,
@@ -1421,9 +1782,15 @@ class SubtitleWindow(QWidget):
         self.update()
 
     def set_subtitle_mode(self, mode: str) -> None:
+        before = self._effective_height_percent()
         self._mode = mode
         self._scroll_offset = self._feed_target = 0.0
         self._feed_timer.stop()
+        # Transparent static takes the whole monitor whatever the slider says
+        # (_effective_height_percent), so entering or leaving it changes the
+        # window's height even though the setting did not.
+        if self._effective_height_percent() != before:
+            self._apply_geometry()
         if mode == SUBTITLE_MODE_CONTINUOUS:
             # Blocks carried over from another mode have no meaningful y yet:
             # re-stack them from the bottom so the newest stays visible.
@@ -1491,6 +1858,16 @@ class SubtitleWindow(QWidget):
         self._apply_geometry()
         self.update()
 
+    def set_static_lift_percent(self, percent: int) -> None:
+        """The transparent-static lift. Never a geometry change.
+
+        The overlay is already the whole monitor there (_effective_height_
+        percent), so this moves what is PAINTED inside it and nothing else —
+        unlike the height, which resizes the window itself.
+        """
+        self._lift_percent = percent
+        self.update()
+
     def set_always_on_top(self, enabled: bool) -> None:
         """Toggle the stays-on-top flag, and re-place the overlay for it.
 
@@ -1505,9 +1882,40 @@ class SubtitleWindow(QWidget):
         this window is re-mapped behind Qt's back by its own geometry repair.
         Skipping the call there left the panel obeying the setting while the
         overlay sat under the browser.
+
+        The flag alone does not keep it in front on Windows — see
+        _keep_on_top, which this arms and disarms.
         """
         set_window_on_top(self, enabled)
+        if enabled and _WINDOWS:
+            self._restack_timer.start()
+        else:
+            self._restack_timer.stop()
         self._apply_geometry()
+
+    def _keep_on_top(self) -> None:
+        """Put the overlay back at the top of the topmost band.
+
+        Always-on-top is not a rank, it is a band: Windows keeps its taskbar in
+        that same band, and inside it the order is whoever was raised last. So
+        clicking the taskbar lifts the shell over the subtitles for good — the
+        flag is still set, the overlay is still "always on top", and it is
+        still behind the taskbar. Re-raising is the only lever a client has.
+
+        ``raise_`` and not a re-placement: it restacks without activating
+        (SWP_NOACTIVATE on Windows), so the overlay still never takes focus off
+        the control panel — the property WA_ShowWithoutActivating exists to
+        protect. Skipped while hidden, so a stopped session costs nothing but
+        the timer tick.
+
+        Windows only, and armed only while the setting is on. macOS puts a
+        floating window below the Dock and the menu bar whatever it asks for
+        (see _apply_geometry), so there is nothing to win there; on X11 the
+        stacking belongs to the window manager and a client re-raising itself
+        every second would be fighting it.
+        """
+        if self.isVisible():
+            self.raise_()
 
     def set_backdrop_opacity(self, percent: int) -> None:
         """Set backdrop opacity 0-100. 0 leaves the video fully visible.
@@ -1524,7 +1932,13 @@ class SubtitleWindow(QWidget):
         return self._backdrop_opacity
 
     def set_transparent_static(self, enabled: bool) -> None:
+        # The toggle decides whether the overlay is a band or the whole monitor
+        # (_effective_height_percent), so in static mode it re-places the
+        # window as well as changing what is painted in it.
+        before = self._effective_height_percent()
         self._transparent_static = enabled
+        if self._effective_height_percent() != before:
+            self._apply_geometry()
         self.update()
 
     def set_translation_text_color(self, color: str | None) -> None:

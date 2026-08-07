@@ -148,6 +148,63 @@ still had it.
 - **Measure a content-sized window with `layout().totalHeightForWidth()`, not
   `adjustSize()`** — a word-wrapped label's sizeHint reserves a line it doesn't use, and
   the surplus inflates whatever in the column can stretch.
+- **The height slider means two different things, and each has its OWN stored field**
+  (`window_height_percent` 5–100, `static_lift_percent` 0–50). Everywhere except
+  transparent static it is a HEIGHT: the overlay is a band taking that share of the
+  screen. In **transparent static** the overlay has no backdrop of its own, so it
+  takes the whole monitor (`_effective_height_percent`) and the slider becomes a LIFT
+  (`_static_lift`) — how far the subtitles and the footer pill *together* sit above
+  the bottom edge. Both are offset by the one figure or the disclaimer drifts away
+  from its text.
+  - **Two fields since 2026-08-07; do not merge them back.** One carried both, on the
+    argument that the panel read it clamped and wrote only on a real drag. That
+    protects the number, not the setting: the ranges do not share a floor, so every
+    toggle of Transparent handed the other meaning a value off the wrong scale — a
+    lift of 0 came back as a 0%-tall band (a one-pixel overlay, subtitles gone) and
+    the loader's floor of 5 rewrote that lift on every restart.
+  - `set_static_lift_percent` must NOT re-place the window. The overlay is already
+    the whole monitor there; only what is painted inside it moves.
+  - The row **never greys out**; its range, VALUE, readout and caption swap instead.
+    Block the slider's signals around the swap — `setRange` clamps and `setValue`
+    moves, and **both** emit `valueChanged`, so arriving in a mode would write its
+    value into the field of the mode just left.
+  - Entering or leaving transparent static re-places the window, because the
+    window's height changes although the setting did not.
+- **Static never scrolls, so in a band the text is FITTED to it**
+  (`_static_fit_scale`), as the Tk overlay did (`_static_fonts_for_content`).
+  A rescue, not a policy: if the block already fits, the configured size is used
+  untouched. Otherwise the answer is the **largest** size that fits, by bisection —
+  search in both directions, because wrapping moves in whole words so the linear
+  estimate undershoots and a shrink-only search left 49 px of text in a 66 px band.
+- **`reserved_bottom` is capped at half a short overlay.** The pills are a fixed
+  size and deliberately do not scale with the subtitle font, so on a thin band they
+  asked for more room than the window had: the content area collapsed to one pixel
+  and the pill was laid out from a bottom edge above its own top.
+- **`reserved_bottom` holds back what a block DRAWS, not the height it measures.** In
+  transparent static a card extends `_CARD_PAD_Y` below its own text (`_ribbon_rects`),
+  the same 8 px as `PILL_CLEARANCE` — so reserving for the text alone put the card's
+  bottom border exactly on the disclaimer. The mode adds the pad to the reserve. Any
+  future decoration drawn outside a block's measured height belongs there too.
+- **The side-by-side panels keep the SAME clearance above them as below** (`PILL_CLEARANCE`
+  at both ends, `_column_panel_rects`). They are the backdrop in this layout — the window
+  paints none — so where they start IS the top of the overlay, and at the feed's own
+  `FEED_TOP_RATIO` inset a band of live video stood above them while a hairline stood
+  below: at 100% height the overlay visibly stopped short of the monitor's upper border.
+  Maintainer's choice of the three options offered, 2026-08-07. The first line follows the
+  panel and sits at its own `COLUMN_PANEL_PAD_Y` inside it (`_feed_top`) — don't put it
+  back on a share of the window height, which is what the other layouts still use.
+- **The transparent-static backdrop is one box per RENDERED LINE, tiled**
+  (`_ribbon_rects`). Per line, because a paragraph's width is its longest line, so
+  one box round a wrapped sentence is a rectangle with ragged text inside it. Tiled
+  — each box ending exactly where the next begins — because a block's source and
+  its translation are pulled together until their metric BOXES overlap (`_pair_gap`
+  goes negative on purpose; only the ink is held apart), so two independent
+  backdrops drew one on top of the other and the translation's hid the source's
+  last line. Draw every backdrop before any text for the same reason: interleaved,
+  a backdrop still lands on the line above however well the rects tile. Boxes
+  overlap by their own corner radius so the rounding does not notch each join, and
+  are filled as ONE `Qt.WindingFill` path — odd-even would punch the overlap out as
+  a hole, and filling them separately composites the translucent black twice.
 - **Subtitle lines are placed by their BASELINE, not by the top of their box.** A line's
   ascent is the tallest of the font engines that actually drew it, and a single glyph
   borrowed from a fallback family (the ﷺ/ﷻ honorifics on Linux) makes it far taller than

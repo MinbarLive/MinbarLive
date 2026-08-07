@@ -22,6 +22,8 @@
   "islamic_mode_off_confirm": "Islamischen Modus ausschalten? Koranvers-Erkennung, Athan-Erkennung und der islamische Übersetzungsstil werden deaktiviert — die App wird zum allgemeinen Übersetzer.",
   "font": "Schriftgröße:",
   "height": "Höhe:",
+  "height_offset": "Abstand von unten:",
+  "height_offset_hint": "Der transparente Modus nutzt den ganzen Bildschirm — dies verschiebt Untertitel und Fußzeile gemeinsam nach oben.",
   "display_routing": "Anzeige & Audio",
   "screen": "Aufnahme & Routing",
   "subtitle_screen": "Untertitel-Bildschirm:",
@@ -254,6 +256,7 @@
   "scroll_speed_label": "Scroll-Geschwindigkeit:",
   "adaptive_catchup": "Beschleunigen, wenn Untertitel zurückfallen",
   "backdrop_opacity": "Hintergrund-Deckkraft:",
+  "opacity_transparent_hint": "Der transparente Modus hat keinen eigenen Hintergrund – dies legt fest, wie dunkel die Box hinter jeder Zeile ist.",
   "history_summary_heading": "Zusammenfassung",
   "history_has_summary": "Zusammenfassung gespeichert",
   "history_read_error": "Diese Sitzung konnte nicht gelesen werden."

@@ -321,6 +321,13 @@ QLabel#section {{ font-size: 14px; font-weight: 700; }}
 QLabel#value {{ font-size: 17px; font-weight: 700; }}
 QLabel#warning_text {{ color: {c["warning"]}; font-weight: 600; }}
 QLabel#hero {{ font-size: 17px; font-weight: 700; }}
+/* A label inside a disabled row. Qt would normally grey this through the
+   palette, but the sheet's own `QWidget {{ color }}` outranks the palette and
+   the caption stayed at full contrast beside a greyed-out slider. Deliberately
+   NOT an id rule, so it applies to every caption and readout without each one
+   having to be named — and the id rules above set no colour, so none of them
+   outranks it. */
+QLabel:disabled {{ color: {c["muted"]}; }}
 /* Onboarding chrome: the centred welcome title, and the sub-lines/field
    captions inside each step card (a touch larger than the generic muted rule,
    matching the wizard the users already know). */
@@ -597,6 +604,14 @@ QSlider::handle:horizontal {{
     border-radius: 8px;
 }}
 QSlider::handle:horizontal:hover {{ background: {c["accent_hover"]}; }}
+/* A slider the current mode gives nothing to control (height in static mode,
+   backdrop opacity while Transparent is on). Without these it kept its accent
+   groove and handle and read as live — setEnabled greys a LABEL through the
+   palette, but a stylesheet-painted sub-control keeps whatever the sheet last
+   said. The captions and readouts beside it grey the ordinary way, so the
+   sub-controls are the only thing that has to be named here. */
+QSlider::sub-page:horizontal:disabled {{ background: {c["button"]}; }}
+QSlider::handle:horizontal:disabled {{ background: {c["muted"]}; }}
 
 QProgressBar {{
     background-color: {c["panel_soft"]};

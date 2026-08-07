@@ -314,6 +314,34 @@ DEFAULT_BACKDROP_OPACITY = 75
 BACKDROP_OPACITY_MIN = 0
 BACKDROP_OPACITY_MAX = 100
 
+# The overlay's height slider means two different things, and each has its own
+# stored field.
+#
+# ``window_height_percent`` is a HEIGHT: everywhere except transparent static
+# the overlay is a band occupying that share of the screen, measured from the
+# bottom. 5 is the floor because a band thinner than that holds no text at all.
+#
+# ``static_lift_percent`` is a LIFT. In transparent static the overlay takes the
+# whole monitor — it has no backdrop of its own there, so a full-height window
+# paints nothing extra and nothing can be clipped by a band too short for the
+# utterance — and the slider becomes how far the subtitles and the footer pill
+# together sit above the bottom edge. Capped at half the screen, because past
+# that a subtitle is no longer at the bottom of the picture. Its floor is 0:
+# resting on the bottom edge is the ordinary place for a subtitle.
+#
+# **Two fields, since 2026-08-07.** One carried both until then, on the grounds
+# that the panel read it clamped and wrote only on a real drag. That held the
+# number but not the SETTING: the two ranges do not even share a floor, so
+# every toggle of Transparent handed the other meaning a value from the wrong
+# scale — a lift of 0 came back as a 0%-tall band (a one-pixel overlay), and
+# the loader's floor of 5 silently rewrote that lift on every restart. Each
+# meaning now keeps its own value across the toggle, which is what the
+# maintainer asked for and what those two bugs were symptoms of.
+WINDOW_HEIGHT_PERCENT_MIN = 5
+WINDOW_HEIGHT_PERCENT_MAX = 100
+STATIC_LIFT_PERCENT_MIN = 0
+STATIC_LIFT_PERCENT_MAX = 50
+
 _HEX_COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}")
 
 
@@ -385,7 +413,8 @@ class Settings:
     subtitle_mode: str = SUBTITLE_MODE_REALTIME  # realtime, continuous, or static
     scroll_speed: float = 1.0  # Scroll speed for continuous mode (0.5 to 5.0)
     transparent_static: bool = False  # Transparent background for static mode
-    window_height_percent: int = 50  # Window height as % of screen (5-100)
+    window_height_percent: int = 50  # Band height as % of screen (5-100)
+    static_lift_percent: int = 0  # Transparent-static lift off the bottom (0-50)
     # Opacity of the subtitle window's backdrop, 0-100. Qt composites real
     # per-pixel alpha in every display mode, so this is adjustable; Tk could
     # only ever do all-or-nothing transparency in static mode via a chroma
@@ -654,7 +683,17 @@ def load_settings(use_cache: bool = True) -> Settings:
             scroll_speed=data.get("scroll_speed", 1.0),
             transparent_static=data.get("transparent_static", False),
             window_height_percent=max(
-                5, min(100, data.get("window_height_percent", 50))
+                WINDOW_HEIGHT_PERCENT_MIN,
+                min(WINDOW_HEIGHT_PERCENT_MAX, data.get("window_height_percent", 50)),
+            ),
+            # Absent from a file written before the split, and defaulted rather
+            # than migrated from window_height_percent: that field's value is
+            # whichever meaning was written LAST, so reading it as a lift would
+            # give anyone who left the slider on a band height a lift of up to
+            # 50% they never asked for. One drag to set, once.
+            static_lift_percent=max(
+                STATIC_LIFT_PERCENT_MIN,
+                min(STATIC_LIFT_PERCENT_MAX, data.get("static_lift_percent", 0)),
             ),
             subtitle_backdrop_opacity=max(
                 BACKDROP_OPACITY_MIN,
@@ -749,6 +788,7 @@ def save_settings(settings: Settings) -> None:
         "scroll_speed": settings.scroll_speed,
         "transparent_static": settings.transparent_static,
         "window_height_percent": settings.window_height_percent,
+        "static_lift_percent": settings.static_lift_percent,
         "subtitle_backdrop_opacity": settings.subtitle_backdrop_opacity,
         "translation_model": settings.translation_model,
         "transcription_model": settings.transcription_model,

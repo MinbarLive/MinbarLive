@@ -103,10 +103,14 @@ from utils.settings import (
     SOURCE_FONT_SIZE_BASE_MAX,
     SOURCE_FONT_SIZE_BASE_MIN,
     SOURCE_LANGUAGES,
+    STATIC_LIFT_PERCENT_MAX,
+    STATIC_LIFT_PERCENT_MIN,
     STREAMING_TRANSCRIPTION_PROVIDERS,
     SUBTITLE_HIDE_MODES,
     TARGET_LANGUAGE_DISPLAY_NAMES,
     TARGET_LANGUAGE_NAMES,
+    WINDOW_HEIGHT_PERCENT_MAX,
+    WINDOW_HEIGHT_PERCENT_MIN,
     language_canonical_name,
     language_display_name,
     load_settings,
@@ -664,14 +668,17 @@ class ControlPanel(QMainWindow):
         return frame, slider, readout
 
     def _height_panel(self) -> QFrame:
+        # Range and caption are both provisional: _sync_display_sliders swaps
+        # them for the lift's when the mode calls for it.
         frame, self.height_slider, self.height_value = self._slider_panel(
             self._t("height", "Window height"),
-            5,
-            100,
+            WINDOW_HEIGHT_PERCENT_MIN,
+            WINDOW_HEIGHT_PERCENT_MAX,
             self.settings.window_height_percent,
             self._on_height_changed,
         )
         self.height_caption = frame.caption
+        self.height_row = frame
         return frame
 
     def _opacity_panel(self) -> QFrame:
@@ -688,6 +695,7 @@ class ControlPanel(QMainWindow):
             self._on_opacity_changed,
         )
         self.opacity_caption = frame.caption
+        self.opacity_row = frame
         return frame
 
     # ── subtitle appearance (collapsible) ────────────────────────────────
@@ -1523,9 +1531,80 @@ class ControlPanel(QMainWindow):
         self.mode_controls.setVisible(mode == "continuous")
         self.catchup_check.setVisible(mode == "continuous")
         self.interim_check.setVisible(mode == "realtime")
+        self._sync_display_sliders()
         # Showing or hiding a row changes the translation card's height, and
         # with it what the two columns need to end level.
         self._level_two_column_bottoms()
+
+    def _lift_mode(self) -> bool:
+        """Whether the height slider is currently a LIFT rather than a height.
+
+        Transparent static only: there the overlay has no backdrop of its own,
+        so it takes the whole monitor and the slider moves the subtitles and
+        the footer up the screen together instead of resizing a band.
+        """
+        return self._current_mode() == "static" and self.transparent_check.isChecked()
+
+    def _sync_display_sliders(self) -> None:
+        """Point the two Display sliders at what the current mode gives them.
+
+        **Height** never greys out — it means something in every mode — but it
+        means two different things, so its range, its value, its readout and its
+        caption all swap with ``_lift_mode``. The two meanings have a stored
+        field each (``window_height_percent`` and ``static_lift_percent``), so
+        toggling Transparent hands the slider the value that meaning was last
+        left at rather than the other one's — see WINDOW_HEIGHT_PERCENT_* in
+        utils/settings for what one shared field cost.
+
+        The swap is made with the slider's signals blocked, and that is
+        load-bearing rather than tidy: ``setRange`` clamps the current value and
+        ``setValue`` moves it, and both emit ``valueChanged`` — so merely
+        switching modes would write the mode you just LEFT the value belonging
+        to the one you arrived in.
+
+        **Backdrop opacity** stays live in every mode. It used to grey out
+        under Transparent, on the grounds that the toggle sets the window
+        backdrop to fully transparent and leaves nothing to apply it to — but
+        the mode still paints a card behind each line (``_ribbon_rects``), and
+        that card is the only thing between the text and the video. So the
+        slider keeps its job and sets the card's opacity instead; only the
+        tooltip says which backdrop it is reaching.
+        """
+        lift = self._lift_mode()
+        slider = self.height_slider
+        blocked = slider.blockSignals(True)
+        if lift:
+            slider.setRange(STATIC_LIFT_PERCENT_MIN, STATIC_LIFT_PERCENT_MAX)
+            slider.setValue(self.settings.static_lift_percent)
+        else:
+            slider.setRange(WINDOW_HEIGHT_PERCENT_MIN, WINDOW_HEIGHT_PERCENT_MAX)
+            slider.setValue(self.settings.window_height_percent)
+        slider.blockSignals(blocked)
+        self.height_value.setText(f"{slider.value()}%")
+        self.height_caption.setText(
+            self._t("height_offset", "Distance from bottom:")
+            if lift
+            else self._t("height", "Height:")
+        )
+        self.height_row.setToolTip(
+            self._t(
+                "height_offset_hint",
+                "Transparent mode uses the whole screen, so this moves the "
+                "subtitles and the footer up together.",
+            )
+            if lift
+            else ""
+        )
+
+        self.opacity_row.setToolTip(
+            self._t(
+                "opacity_transparent_hint",
+                "Transparent mode has no background of its own, so this sets "
+                "how dark the box behind each line is.",
+            )
+            if lift
+            else ""
+        )
 
     def _sync_running_state(self) -> None:
         # Captured BEFORE the buttons change: Qt moves focus out of a widget
@@ -1587,11 +1666,23 @@ class ControlPanel(QMainWindow):
             self.subtitle_window.set_monitor(index)
 
     def _on_height_changed(self, value: int) -> None:
-        self.settings.window_height_percent = value
+        """One slider, two settings — whichever meaning is in force right now.
+
+        The mode decides where the number goes, so the other meaning keeps the
+        value the operator last left it at and Transparent can be toggled back
+        and forth without either drifting.
+        """
+        if self._lift_mode():
+            self.settings.static_lift_percent = value
+        else:
+            self.settings.window_height_percent = value
         self.height_value.setText(f"{value}%")
         save_settings(self.settings)
         if self.subtitle_window:
-            self.subtitle_window.set_window_height_percent(value)
+            if self._lift_mode():
+                self.subtitle_window.set_static_lift_percent(value)
+            else:
+                self.subtitle_window.set_window_height_percent(value)
 
     def _on_opacity_changed(self, value: int) -> None:
         self.settings.subtitle_backdrop_opacity = value
@@ -1702,6 +1793,9 @@ class ControlPanel(QMainWindow):
     def _on_transparent_changed(self, checked: bool) -> None:
         self.settings.transparent_static = checked
         save_settings(self.settings)
+        # It takes the window backdrop away, so the opacity slider below it
+        # has nothing left to apply to.
+        self._sync_display_sliders()
         if self.subtitle_window:
             self.subtitle_window.set_transparent_static(checked)
 
@@ -2544,6 +2638,7 @@ class ControlPanel(QMainWindow):
             scroll_speed=s.scroll_speed,
             transparent_static=s.transparent_static,
             window_height_percent=s.window_height_percent,
+            static_lift_percent=s.static_lift_percent,
             backdrop_opacity=s.subtitle_backdrop_opacity,
             show_footer=s.show_footer,
             theme_mode=s.subtitle_theme_mode,
