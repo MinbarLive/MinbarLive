@@ -900,6 +900,22 @@ class SubtitleWindow(QWidget):
         """Width of one text column — a panel less its inset on both sides."""
         return max(1, self._panel_geometry()[2] - 2 * COLUMN_PANEL_PAD_X)
 
+    def _feed_top(self) -> int:
+        """Where the feed's first line sits below the overlay's top edge.
+
+        In the side-by-side layout it is measured from the PANEL, by the
+        panel's own inset: the panel is the container and now starts a
+        clearance below the top edge (_column_panel_rects), so a line held
+        FEED_TOP_RATIO down from that edge would leave a band of empty backdrop
+        above it three times the inset the same panel keeps at its sides.
+
+        Everywhere else there is no container, and the line is kept off the
+        edge by a share of the height instead.
+        """
+        if self._columns_active():
+            return PILL_CLEARANCE + COLUMN_PANEL_PAD_Y
+        return int(self.height() * FEED_TOP_RATIO)
+
     def _columns_active(self) -> bool:
         """Whether the overlay is in the side-by-side layout at all.
 
@@ -913,8 +929,17 @@ class SubtitleWindow(QWidget):
         """The two fixed panels behind the columns, or None outside the layout.
 
         Both the same size and in the same place every frame. They span the
-        content area — from above the feed's first line down to where the
-        footer pill's clearance begins.
+        content area, ``PILL_CLEARANCE`` below the overlay's top edge down to
+        where the footer pill's clearance begins.
+
+        The SAME figure at both ends, which is the point: the panels ARE the
+        backdrop here (see _backdrop), so the only thing marking the top of the
+        overlay is where they start, and at the feed's own margin they began
+        far enough down that at 100% height a band of video stood between them
+        and the monitor's upper border while a hairline stood below them. One
+        clearance, top and bottom, and the panel sits in an even frame. The
+        first line keeps its distance from the panel through the panel's own
+        inset instead — see _feed_top.
 
         None during an announcement: that renders large and centred across the
         whole window, and framing it in two columns it does not use would read
@@ -928,7 +953,7 @@ class SubtitleWindow(QWidget):
         ):
             return None
         left_x, right_x, width = self._panel_geometry()
-        top = max(0, int(self.height() * FEED_TOP_RATIO) - COLUMN_PANEL_PAD_Y)
+        top = PILL_CLEARANCE
         height = max(1, self._content_height() - top)
         return (
             QRect(left_x, top, width, height),
@@ -1272,7 +1297,7 @@ class SubtitleWindow(QWidget):
         slide back down, which would read as the text jumping around.
         """
         x = int(self.width() * SIDE_MARGIN_RATIO)
-        top = int(self.height() * FEED_TOP_RATIO)
+        top = self._feed_top()
         heights = [self._measure_block(b) for b in self._blocks]
         # The advance past each block: its own height plus the gap whatever
         # comes NEXT wants above it. One list, used by all three passes below,

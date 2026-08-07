@@ -6131,6 +6131,57 @@ class TestSideBySideLayout:
         left, _right = w._column_panel_rects()
         assert left.bottom() <= w.height() - w.reserved_bottom()
 
+    def test_the_panel_sits_in_an_even_frame_of_video(self, overlay):
+        """The panels ARE the backdrop here, so where they start IS the top of
+        the overlay. At the feed's own margin they began far enough down that
+        at 100% height a band of video stood above them and a hairline below —
+        the maintainer asked for one clearance at both ends."""
+        from gui.subtitle_window import FOOTER_MARGIN
+
+        w = self._overlay(overlay)
+        left, right = w._column_panel_rects()
+        assert left.top() == right.top()
+        pill_top = w.height() - FOOTER_MARGIN - w._pill_height()
+        above = left.top()
+        below = pill_top - (left.bottom() + 1)
+        assert above == below, f"{above} px of video above, {below} below"
+
+    def test_the_feed_starts_at_the_panels_own_inset(self, overlay):
+        """Measured from the PANEL, not from the window: a line held a share of
+        the height down from the window's edge would leave a band of empty
+        backdrop inside the top of the panel."""
+        from gui.subtitle_window import COLUMN_PANEL_PAD_Y
+
+        w = self._overlay(overlay, mode=SUBTITLE_MODE_REALTIME)
+        panel, _right = w._column_panel_rects()
+        assert self._first_block_top(w) == panel.top() + COLUMN_PANEL_PAD_Y
+
+    def test_the_stacked_layout_keeps_its_share_of_the_height(self, overlay):
+        """It has no panel to be inset from, so the line is held off the
+        window's edge by the same figure as before."""
+        from gui.subtitle_window import FEED_TOP_RATIO
+
+        w = self._overlay(overlay, mode=SUBTITLE_MODE_REALTIME, side_by_side=False)
+        expected = int(w.height() * FEED_TOP_RATIO)
+        assert expected > 0, "this window is too short to tell the two apart"
+        assert self._first_block_top(w) == expected
+
+    @staticmethod
+    def _first_block_top(w) -> int:
+        """The y the feed's first block is actually drawn at."""
+        from PySide6.QtGui import QPainter, QPixmap
+
+        w.add_subtitle(*reversed(PAIRS[0]))
+        tops: list[int] = []
+        w._draw_block = lambda p, block, x, y, newest=True: tops.append(y) or 0
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            w._paint_realtime(painter)
+        finally:
+            painter.end()
+        return tops[0]
+
     def test_no_panels_outside_the_layout(self, overlay):
         stacked = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, side_by_side=False)
         assert stacked._column_panel_rects() is None
