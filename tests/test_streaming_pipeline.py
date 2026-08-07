@@ -255,6 +255,142 @@ class TestSessionLiveText:
         assert s.get_live_state() == ("", False)
 
 
+class TestIntraTurnSentenceFlush:
+    """Issue #26: a pauseless speaker produces one very long server-VAD turn,
+    and translating only at its end shows nothing for a minute and then a wall
+    of text. With ``sentence_flush`` on, finished sentences leave the running
+    interim; the turn's final transcript then contributes only its tail.
+    """
+
+    @staticmethod
+    def _session() -> UtteranceSession:
+        return UtteranceSession(sentence_flush=True)
+
+    def test_off_by_default_so_the_other_engines_are_unaffected(self):
+        """Deepgram gets finals mid-turn (the 12 s cap already works) and its
+        interims are revised hypotheses; Gemini Live cuts long turns in the
+        provider. Neither may take this path."""
+        s = UtteranceSession()
+        assert s.set_interim("erster Satz. zweiter")[0] == ""
+        s.add_final("erster Satz. zweiter Satz.")
+        assert s.take_and_reset()[0] == "erster Satz. zweiter Satz."
+
+    def test_only_openai_realtime_enables_it(self):
+        assert "openai_realtime" in streaming_session_module._SENTENCE_FLUSH_PROVIDERS
+        assert "deepgram" not in streaming_session_module._SENTENCE_FLUSH_PROVIDERS
+        assert (
+            "gemini_realtime" not in streaming_session_module._SENTENCE_FLUSH_PROVIDERS
+        )
+
+    def test_unfinished_interim_flushes_nothing(self):
+        s = self._session()
+        assert s.set_interim("der Redner spricht noch")[0] == ""
+
+    def test_sentence_end_flushes_that_sentence_only(self):
+        s = self._session()
+        ready, _rev = s.set_interim("erster Satz. zweiter Sa")
+        assert ready == "erster Satz."
+
+    def test_arabic_question_mark_ends_a_sentence(self):
+        s = self._session()
+        ready, _rev = s.set_interim("أين الكتاب؟ وقال")
+        assert ready == "أين الكتاب؟"
+
+    def test_flush_cuts_at_the_last_terminator_not_the_first(self):
+        """Several sentences arriving between two checks leave as one call."""
+        s = self._session()
+        ready, _rev = s.set_interim("eins. zwei. drei un")
+        assert ready == "eins. zwei."
+
+    def test_a_sentence_is_never_flushed_twice(self):
+        s = self._session()
+        s.set_interim("erster Satz. zweiter")
+        assert s.set_interim("erster Satz. zweiter Satz noch")[0] == ""
+        assert s.set_interim("erster Satz. zweiter Satz.")[0] == "zweiter Satz."
+
+    def test_final_contributes_only_the_untranslated_tail(self):
+        s = self._session()
+        assert s.set_interim("erster Satz. der Rest")[0] == "erster Satz."
+        s.add_final("erster Satz. der Rest davon")
+        assert s.take_and_reset()[0] == "der Rest davon"
+
+    def test_fully_flushed_turn_contributes_no_final(self):
+        s = self._session()
+        assert s.set_interim("alles gesagt.")[0] == "alles gesagt."
+        s.add_final("alles gesagt.")
+        assert s.take_and_reset()[0] == ""
+
+    def test_fully_flushed_turn_leaves_the_settled_line_up(self):
+        """Its last translation is still in flight — blanking the source here
+        would take it off screen a second before the subtitle arrives."""
+        s = self._session()
+        _ready, rev = s.set_interim("alles gesagt.")
+        s.add_final("alles gesagt.")
+        s.take_and_reset()
+        assert s.get_live_state() == ("alles gesagt.", True)
+        s.clear_live_if_unchanged(rev)
+        assert s.get_live_state() == ("", False)
+
+    def test_next_turn_starts_from_zero(self):
+        s = self._session()
+        s.set_interim("erster Satz.")
+        s.add_final("erster Satz.")
+        s.take_and_reset()
+        assert s.set_interim("zweiter Satz.")[0] == "zweiter Satz."
+
+    def test_next_turn_may_repeat_the_previous_words(self):
+        """A khutbah repeats phrases. Unless the emitted record is cleared at
+        the turn boundary the repeat reads as a continuation of the last turn
+        and its words are swallowed — the prefix guard cannot catch this one,
+        because the text really does continue the prefix."""
+        s = self._session()
+        assert s.set_interim("الحمد لله.")[0] == "الحمد لله."
+        s.add_final("الحمد لله.")
+        s.take_and_reset()
+        assert s.set_interim("الحمد لله. وبعد")[0] == "الحمد لله."
+
+    def test_unpunctuated_speech_flushes_on_the_word_count_rule(self):
+        """gpt-4o-transcribe usually punctuates; when it does not, the turn
+        must not still grow without bound."""
+        s = self._session()
+        assert s.set_interim(" ".join(f"w{i}" for i in range(17)))[0] == ""
+        long_text = " ".join(f"w{i}" for i in range(18))
+        assert s.set_interim(long_text)[0] == long_text
+
+    def test_word_count_rule_measures_the_untranslated_remainder(self):
+        """Not the whole turn — otherwise every interim after the first flush
+        would re-fire it and cut mid-clause."""
+        s = self._session()
+        assert s.set_interim("kurzer Satz.")[0] == "kurzer Satz."
+        continued = "kurzer Satz. " + " ".join(f"w{i}" for i in range(5))
+        assert s.set_interim(continued)[0] == ""
+
+    def test_text_that_stops_continuing_the_prefix_is_translated_whole(self):
+        """A new conversation item can open before the old one completes, and a
+        completed transcript need not be the verbatim concatenation of its
+        deltas. Losing a sentence is worse than repeating one."""
+        s = self._session()
+        assert s.set_interim("erster Satz. zweiter")[0] == "erster Satz."
+        s.add_final("etwas ganz anderes")
+        assert s.take_and_reset()[0] == "etwas ganz anderes"
+
+    def test_live_line_keeps_the_whole_turn_while_it_runs(self):
+        """It renders only its last wrapped row, so trimming the flushed part
+        would show the same words and risk a blank row."""
+        s = self._session()
+        s.set_interim("erster Satz. zweiter Sa")
+        assert s.get_live_state() == ("erster Satz. zweiter Sa", False)
+
+    def test_flush_revision_loses_compare_and_clear_to_newer_speech(self):
+        """The speaker talks on while the flushed sentence is translated: its
+        clear must not blank the live line."""
+        s = self._session()
+        _ready, rev = s.set_interim("erster Satz. zwei")
+        s.set_interim("erster Satz. zweiter Satz noch")
+        s.clear_live_if_unchanged(rev)
+        assert s.get_live_state() == ("erster Satz. zweiter Satz noch", False)
+
+
 class TestStreamingStartValidation:
     def test_automatic_source_rejected_before_side_effects(self, streaming_env):
         streaming_env.settings.source_language = "Automatic"
@@ -930,11 +1066,11 @@ class _CountingHandle:
             self._closed.append(self)
 
 
-def _bare_session() -> StreamingSession:
+def _bare_session(provider_id: str = "fake") -> StreamingSession:
     """A StreamingSession with no controller behind it, for the lock tests."""
     return StreamingSession(
         FakeStreamingProvider(),
-        provider_id="fake",
+        provider_id=provider_id,
         model="fake-model",
         language="ar",
         capture_rate=16000,
@@ -945,6 +1081,30 @@ def _bare_session() -> StreamingSession:
         translate=lambda text: None,
         on_activity=lambda: None,
     )
+
+
+class TestIntraTurnFlushReachesTheQueue:
+    """The session end of issue #26: an interim that finishes a sentence has to
+    reach the same queue an ended utterance does, or nothing translates it."""
+
+    def test_openai_session_queues_a_sentence_mid_turn(self):
+        """The whole point of #26: a translation without an utterance end."""
+        session = _bare_session(provider_id="openai_realtime")
+        session._on_transcript("erster Satz. zweiter Sa", False)
+        assert session._utterance_queue.get_nowait()[0] == "erster Satz."
+
+    def test_deepgram_session_queues_nothing_mid_turn(self):
+        session = _bare_session(provider_id="deepgram")
+        session._on_transcript("erster Satz. zweiter Sa", False)
+        assert session._utterance_queue.empty()
+
+    def test_the_turn_end_still_queues_the_tail(self):
+        session = _bare_session(provider_id="openai_realtime")
+        session._on_transcript("erster Satz. der Rest", False)
+        assert session._utterance_queue.get_nowait()[0] == "erster Satz."
+        session._on_transcript("erster Satz. der Rest davon", True)
+        session._on_utterance_end()
+        assert session._utterance_queue.get_nowait()[0] == "der Rest davon"
 
 
 class TestStreamingConnectionRaces:

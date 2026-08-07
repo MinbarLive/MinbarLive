@@ -37,6 +37,7 @@ from config import (
     STREAMING_STALL_TIMEOUT_SECONDS,
 )
 from providers.base import StreamHandle, StreamingTranscriptionProvider
+from translation.buffering import SENTENCE_ENDINGS, looks_semantically_complete
 from translation.stt import has_min_letters
 from utils.logging import log
 from utils.settings import load_settings
@@ -49,6 +50,40 @@ from utils.user_messages import classify_error, get_user_message
 # first connection of the next session would answer to the previous session's
 # generation 1, so the counter deliberately lives on the module.
 _GENERATIONS = itertools.count(1)
+
+# Streaming providers whose interim transcript may be translated *before* the
+# turn ends (issue #26). OpenAI Realtime is the only one that needs it AND the
+# only one where it is safe:
+#
+# - It emits no final at all until the turn ends (``_COMPLETED_EVENT`` carries
+#   the final transcript and the utterance-end signal together), so nothing
+#   downstream can act mid-turn. Its deltas are append-only per conversation
+#   item, so a sentence read out of an interim is already final text.
+# - **Deepgram never had the bug.** ``is_final`` (endpointing) is a separate
+#   signal from ``speech_final``/``UtteranceEnd``, so finals arrive during a
+#   turn, ``_parts`` fills and STREAMING_MAX_UTTERANCE_SECONDS fires as
+#   designed. Its interims are also revised hypotheses (``set_interim``
+#   replaces rather than appends), so the word-prefix bookkeeping below would
+#   not hold.
+# - **Gemini Live had the bug and already fixes it in the provider** —
+#   ``providers/gemini/realtime.py::_maybe_cut_turn``, measured live at 89 s
+#   of speech in one turn. It cuts on the same 12 s cap at a sentence
+#   boundary, and has to do so there: a cut anywhere else arrives a second
+#   time when the turn finally completes.
+_SENTENCE_FLUSH_PROVIDERS = frozenset({"openai_realtime"})
+
+
+def _cut_complete_sentence(text: str) -> str:
+    """The leading run of ``text`` ending on a sentence terminator, or ``""``.
+
+    Cuts at the LAST terminator rather than the first, so several sentences
+    that arrived between two checks leave as one translation call.
+    """
+    stripped = text.rstrip()
+    end = max(stripped.rfind(mark) for mark in SENTENCE_ENDINGS)
+    if end < 0:
+        return ""
+    return stripped[: end + 1].strip()
 
 
 class UtteranceSession:
@@ -67,9 +102,18 @@ class UtteranceSession:
     never blanked. A *settled* flag marks the moment the utterance is
     flushed for translation: the GUI recolors the live line in place
     ("finished") instead of it disappearing and reappearing.
+
+    With ``sentence_flush`` on, the session also cuts finished *sentences* out
+    of the running interim and hands them to translation without waiting for
+    the turn to end (issue #26). A speaker with no pauses produces one very
+    long server-VAD turn, and translating only at its end showed the audience
+    nothing for a minute and then a wall of text. Every word that leaves this
+    way is recorded, so the turn's final transcript contributes only its
+    not-yet-translated tail. Only providers in ``_SENTENCE_FLUSH_PROVIDERS``
+    may enable it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, sentence_flush: bool = False) -> None:
         self._lock = threading.Lock()
         self._parts: list[str] = []
         self._first_part_time: float | None = None
@@ -77,6 +121,11 @@ class UtteranceSession:
         self._live_text = ""
         self._live_settled = False
         self._live_rev = 0
+        self._sentence_flush = sentence_flush
+        # Words of the CURRENT turn already handed to translation by an
+        # intra-turn flush. The words themselves, not a count, so the next
+        # text can be checked for actually continuing them.
+        self._emitted: list[str] = []
 
     def _publish_live_locked(self) -> None:
         pieces = [p for p in self._parts if p.strip()]
@@ -86,18 +135,76 @@ class UtteranceSession:
         self._live_settled = False  # new speech: the line is in progress again
         self._live_rev += 1
 
+    def _remainder_locked(self, text: str) -> str:
+        """The words of the current turn not yet handed to translation."""
+        words = text.split()
+        if words[: len(self._emitted)] != self._emitted:
+            # Not a continuation of what already went out: the engine opened a
+            # new conversation item before the old one completed, or a
+            # completed transcript is not the verbatim concatenation of its
+            # deltas. Start the turn over rather than cut the wrong prefix off
+            # — a duplicated sentence is recoverable, a missing one is a hole
+            # in the khutbah.
+            log(
+                "STREAMING intra-turn flush: text no longer continues the "
+                "flushed prefix — translating it whole",
+                level="DEBUG",
+            )
+            self._emitted = []
+        return " ".join(words[len(self._emitted) :])
+
+    def _cut_flushable_locked(self, text: str) -> str:
+        """The next chunk of the running turn worth translating, or ``""``.
+
+        Records it as emitted, so neither a later interim nor the turn's final
+        transcript hands the same words to the translator a second time.
+        """
+        remainder = self._remainder_locked(text)
+        ready = _cut_complete_sentence(remainder)
+        if not ready and looks_semantically_complete(remainder):
+            # No terminator, but this much unpunctuated speech is already a
+            # wall of text — the same word-count rule the segmented buffer
+            # flushes on.
+            ready = remainder
+        if ready:
+            self._emitted.extend(ready.split())
+        return ready
+
     def add_final(self, text: str) -> None:
         with self._lock:
+            if self._sentence_flush:
+                remainder = self._remainder_locked(text)
+                if not remainder:
+                    # Every word of this turn already left sentence by
+                    # sentence. Publish nothing: the live line must keep its
+                    # revision so the last flush's compare-and-clear still
+                    # takes it down when that translation lands.
+                    self._interim = ""
+                    return
+                text = remainder
             if not self._parts:
                 self._first_part_time = time.time()
             self._parts.append(text)
             self._interim = ""  # this hypothesis window just finalized
             self._publish_live_locked()
 
-    def set_interim(self, text: str) -> None:
+    def set_interim(self, text: str) -> tuple[str, int]:
+        """Record the newest interim; returns (flushable text, live revision).
+
+        The flushable text is a finished sentence cut out of the still-running
+        turn, and is ``""`` unless ``sentence_flush`` is on and the turn has
+        produced one. The caller queues it for translation exactly the way it
+        queues an ended utterance. The live line is deliberately left carrying
+        the whole turn: it renders only its last wrapped row
+        (``REALTIME_LIVE_MAX_ROWS``), so trimming the flushed part would show
+        the same newest words while risking a blank row between a flush and
+        its translation arriving.
+        """
         with self._lock:
             self._interim = text
             self._publish_live_locked()
+            ready = self._cut_flushable_locked(text) if self._sentence_flush else ""
+            return ready, self._live_rev
 
     def take_and_reset(self) -> tuple[str, int]:
         """Flush the utterance; returns (text, live revision at flush time).
@@ -113,7 +220,7 @@ class UtteranceSession:
             self._parts = []
             self._interim = ""
             self._first_part_time = None
-            if not text:
+            if not text and not self._emitted:
                 # Nothing will be translated (only a never-finalized interim
                 # got here) — clear the live text now or it would linger.
                 self._live_text = ""
@@ -121,7 +228,12 @@ class UtteranceSession:
                 self._live_rev += 1
             else:
                 # No rev bump: newer speech must still win compare-and-clear.
+                # An empty text with words already emitted is the intra-turn
+                # case — the turn is fully translated but its last call is
+                # still in flight, so the settled line stays up for that
+                # call's compare-and-clear rather than being blanked here.
                 self._live_settled = True
+            self._emitted = []  # the turn is over
             return text, self._live_rev
 
     def get_live_state(self) -> tuple[str, bool]:
@@ -217,7 +329,9 @@ class StreamingSession:
         # Items are (utterance_text, live revision at flush time) — the rev
         # lets the processor compare-and-clear the live transcript afterwards.
         self._utterance_queue: queue.Queue[tuple[str, int]] = queue.Queue()
-        self._utterances = UtteranceSession()
+        self._utterances = UtteranceSession(
+            sentence_flush=provider_id in _SENTENCE_FLUSH_PROVIDERS
+        )
 
         self._handle: StreamHandle | None = None
         # Serialises every mutation of the streaming connection handle. The
@@ -369,7 +483,14 @@ class StreamingSession:
         if is_final:
             self._utterances.add_final(text)
         else:
-            self._utterances.set_interim(text)
+            ready, live_rev = self._utterances.set_interim(text)
+            if ready:
+                # A finished sentence inside a turn that is still running:
+                # translate it now instead of waiting for the speaker to pause
+                # (issue #26). Same queue as an ended utterance, so the
+                # coalescing, the letter check and the block splitting
+                # downstream all apply to it unchanged.
+                self._utterance_queue.put((ready, live_rev))
 
     def _on_utterance_end(self) -> None:
         text, live_rev = self._utterances.take_and_reset()

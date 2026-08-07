@@ -11,6 +11,27 @@ _WHITESPACE_RE = re.compile(r"\s+")
 # Split a flushed buffer into subtitles at sentence ends only — never mid
 # sentence, so no fragment is ever handed to the translator.
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.؟!…])\s+")
+# Sentence terminators, Arabic ؟ included.
+SENTENCE_ENDINGS = ("؟", ".", "!", "…")
+# A run of speech this long with no terminator in it already reads as a wall
+# of text: flush it rather than keep waiting for punctuation that the speaker
+# (or the STT) may never produce.
+SEMANTIC_COMPLETE_MIN_WORDS = 18
+
+
+def looks_semantically_complete(text: str) -> bool:
+    """True when ``text`` reads as a finished thought.
+
+    Module-level rather than a method because streaming's intra-turn flush
+    applies the same rule to a *partial* turn — see
+    ``streaming_session.UtteranceSession``.
+    """
+    text = text.strip()
+    if not text:
+        return False
+    if text.endswith(SENTENCE_ENDINGS):
+        return True
+    return len(text.split()) >= SEMANTIC_COMPLETE_MIN_WORDS
 
 
 def _split_for_display(text: str, max_words: int = SEMANTIC_MAX_WORDS) -> list[str]:
@@ -107,20 +128,6 @@ class SemanticBufferingStrategy(ProcessingStrategy):
         self.start_time = None
         log("Semantic buffer reset", level="DEBUG")
 
-    def _looks_semantically_complete(self, text: str) -> bool:
-
-        text = text.strip()
-        if not text:
-            return False
-
-        # Check for sentence endings (Arabic punctuation)
-        if text.endswith(("؟", ".", "!", "…")):
-            return True
-
-        # Check for minimum word count
-        word_count = len(text.split())
-        return word_count >= 18
-
     def _buffer_text(self) -> str:
         """Non-silent transcriptions joined into one whitespace-clean string.
 
@@ -156,7 +163,7 @@ class SemanticBufferingStrategy(ProcessingStrategy):
             return True
 
         # Check semantic completeness
-        if self._looks_semantically_complete(self._buffer_text()):
+        if looks_semantically_complete(self._buffer_text()):
             log("Semantic buffer: text looks complete", level="DEBUG")
             return True
 
