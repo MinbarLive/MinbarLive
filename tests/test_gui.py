@@ -1161,6 +1161,61 @@ class TestControlPanelLayout:
         assert panel.width() > narrow
         panel._log_collapsed = True  # leave the fixture as we found it
 
+    def test_the_layout_width_does_not_move_when_the_scroll_bar_appears(
+        self, panel, qt_app
+    ):
+        """The invariant behind the flap below, and the one that is screen
+        independent. The column count decides the content height, which decides
+        whether the vertical bar shows, which changes the viewport — so the
+        width the columns are chosen from must not depend on the bar."""
+        from PySide6.QtCore import Qt
+
+        self._shown(panel, qt_app, 1000)
+        area = panel.card_area
+        area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        qt_app.processEvents()
+        with_bar = panel._available_width()
+        area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        qt_app.processEvents()
+        without_bar = panel._available_width()
+        area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        assert with_bar == without_bar
+
+    def test_the_column_count_settles_at_the_three_column_threshold(
+        self, panel, qt_app
+    ):
+        """Reported live: the window "bugs around", unable to decide whether to
+        go a grid bigger or smaller.
+
+        _COL3_MIN_W sits inside the scroll bar's own width, so every window
+        width in that band closed the loop: 3 columns -> Advanced card pinned
+        open -> content taller -> bar appears -> viewport under the threshold ->
+        2 columns -> content shorter -> bar goes -> 3 columns. Measured before
+        the fix: 3/2/3/2 forever at all ten widths, at 720 and 800 px tall.
+        """
+        from PySide6.QtGui import QGuiApplication
+
+        threshold = card_grid_module()._COL3_MIN_W
+        bar = panel.card_area.verticalScrollBar().sizeHint().width()
+        screen = panel.screen() or QGuiApplication.primaryScreen()
+        if screen and screen.availableGeometry().width() < threshold + bar:
+            pytest.skip("display is narrower than the three-column threshold")
+
+        panel.show()
+        qt_app.processEvents()
+        for width in range(threshold, threshold + bar + 1):
+            panel.resize(width, 720)
+            for _ in range(8):
+                qt_app.processEvents()
+            seen = set()
+            for _ in range(14):
+                qt_app.processEvents()
+                seen.add(panel.card_grid.count)
+            assert len(seen) == 1, (
+                f"{width}px never settled — oscillated between "
+                f"{sorted(seen)} columns"
+            )
+
     def test_advanced_opens_only_when_it_has_a_column_to_itself(self, panel):
         panel.resize(1200, 800)
         panel._relayout_columns()

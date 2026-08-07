@@ -134,6 +134,17 @@ still had it.
   widest single column, which is what the reflow can actually collapse to. And
   measure it before the first show and you get 50 px, because a card's padding,
   border and font all come from the stylesheet and Qt applies that at polish time.
+- **`_available_width()` reserves the vertical scroll bar whether or not it is up, and that
+  is load-bearing.** The viewport's width depends on the bar; the column count decides how
+  tall the content is; the content height decides whether the bar shows. Feeding the live
+  viewport width back into the column decision closes that loop at any window width within
+  the bar's width of a threshold — three columns pin the Advanced card open, the taller
+  content summons the bar, the bar drops the viewport back under `_COL3_MIN_W`, two columns
+  let the content shrink, the bar goes. Measured: widths **1030–1039 oscillated 3/2/3/2
+  forever** at 720 and 800 px tall. Reserving it unconditionally breaks the loop and matches
+  `_cards_minimum_width()`, which already assumes the bar is there. It moves the effective
+  thresholds by the bar's width — that is the price, not a bug. **Don't "use the real
+  viewport width" here.**
 - **`setMinimumSize` RESIZES a window that is under the new floor** — synchronously, on the
   spot. So raising a minimum is a layout change *and* a resize, and any code that wants the
   size a widget had before must read it **before** the call, not after. This is what widens

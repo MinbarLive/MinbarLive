@@ -1374,16 +1374,36 @@ class ControlPanel(QMainWindow):
 
     # ── responsive card grid ─────────────────────────────────────────────
     def _available_width(self) -> int:
-        """Width the card grid has to work with.
+        """Width the card grid has to work with, as if the scroll bar were
+        always showing.
 
         The viewport is authoritative once the window is on screen. Before
         that it still reports its default, so fall back to the window's own
         width minus whatever the log panel will claim — otherwise the first
         layout is computed against a placeholder size.
+
+        The bar is reserved whether or not it is up, and that is not a fudge —
+        it breaks a feedback loop. The viewport's width depends on whether the
+        vertical scroll bar is showing; the column count decides how tall the
+        content is; and the content height decides whether that bar shows. Feed
+        the live viewport width back into the column decision and the loop
+        closes on itself at any window width within the bar's own width of a
+        threshold: three columns pin the Advanced card open, the taller content
+        summons the bar, the bar takes the viewport back under _COL3_MIN_W, two
+        columns let the content shrink, the bar goes, and it starts again.
+        Measured before this: every width from 1030 to 1039 oscillated 3/2/3/2
+        without ever settling.
+
+        Reserving it unconditionally costs the layout the bar's width on the
+        rare screenful that would not have needed one, and matches
+        _cards_minimum_width(), which already assumes the bar is there.
         """
         viewport = self.card_area.viewport().width()
         if self.isVisible() and viewport > 1:
-            return viewport
+            bar = self.card_area.verticalScrollBar()
+            if not bar.isVisible():
+                viewport -= bar.sizeHint().width()
+            return max(0, viewport)
         return max(
             0, self.width() - (0 if self._log_collapsed else _SIDEBAR_W_WITH_LOG)
         )
