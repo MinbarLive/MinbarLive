@@ -253,5 +253,10 @@
   "dlg_stop_before_reset": "Stop the app before resetting.",
   "reset_retry": "Try again",
   "reset_close": "Close MinbarLive",
-  "skip_this_version": "Skip this version"
+  "skip_this_version": "Skip this version",
+  "review_prompt": "Enjoying MinbarLive? Tell us what you think — click to open the form",
+  "review_never": "Never show again",
+  "feedback_section": "Feedback",
+  "feedback_hint": "Tell us what works and what does not — anonymous, no account needed. It opens in your browser.",
+  "feedback_button": "Give feedback"
 }

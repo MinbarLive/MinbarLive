@@ -244,5 +244,10 @@
   "dlg_stop_before_reset": "Zaustavite aplikaciju prije vraćanja na početno.",
   "reset_retry": "Pokušaj ponovo",
   "reset_close": "Zatvori MinbarLive",
-  "skip_this_version": "Preskoči ovu verziju"
+  "skip_this_version": "Preskoči ovu verziju",
+  "review_prompt": "Kako vam se čini MinbarLive? Recite nam — kliknite za otvaranje obrasca",
+  "review_never": "Ne prikazuj više",
+  "feedback_section": "Povratne informacije",
+  "feedback_hint": "Recite nam šta radi dobro a šta ne — anonimno, bez računa. Otvara se u vašem pregledniku.",
+  "feedback_button": "Pošalji povratnu informaciju"
 }

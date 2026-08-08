@@ -253,5 +253,10 @@
   "dlg_stop_before_reset": "Stoppen Sie die App, bevor Sie zurücksetzen.",
   "reset_retry": "Erneut versuchen",
   "reset_close": "MinbarLive schließen",
-  "skip_this_version": "Diese Version überspringen"
+  "skip_this_version": "Diese Version überspringen",
+  "review_prompt": "Wie gefällt Ihnen MinbarLive? Sagen Sie es uns — zum Öffnen des Formulars klicken",
+  "review_never": "Nicht mehr anzeigen",
+  "feedback_section": "Feedback",
+  "feedback_hint": "Sagen Sie uns, was gut läuft und was nicht — anonym, ohne Konto. Öffnet sich im Browser.",
+  "feedback_button": "Feedback geben"
 }

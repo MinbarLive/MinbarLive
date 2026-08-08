@@ -26,7 +26,7 @@ import pytest
 pytest.importorskip("PySide6", reason="PySide6 not installed")
 
 import shiboken6  # noqa: E402
-from PySide6.QtCore import QEvent  # noqa: E402
+from PySide6.QtCore import QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QColor  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -178,6 +178,29 @@ def overlay(qt_app):
     yield _make
     for w in made:
         w.destroy()
+
+
+def _click(widget) -> None:
+    """A left-click release on the widget itself.
+
+    Sent rather than posted, and straight at the widget, because what is under
+    test is the widget's own ``mouseReleaseEvent`` — a banner's bar opening a
+    URL. A child button would consume a real click before it got there, which is
+    the behaviour those tests rely on and must not simulate away.
+    """
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QMouseEvent
+
+    center = QPointF(widget.rect().center())
+    event = QMouseEvent(
+        QEvent.MouseButtonRelease,
+        center,
+        widget.mapToGlobal(center),
+        Qt.LeftButton,
+        Qt.NoButton,
+        Qt.NoModifier,
+    )
+    QApplication.sendEvent(widget, event)
 
 
 def _settle(app, rounds: int = 5) -> None:
@@ -3467,7 +3490,7 @@ class TestSkippingAnUpdate:
         made, skipped, _ub = banner
         made.start_check(True)
         _wait_for(qt_app, lambda: not made.isHidden())
-        made.skip_btn.click()
+        made.action_btn.click()
         assert made.isHidden()
         # Reported out rather than written here: the banner knows nothing about
         # where preferences live.
@@ -3525,6 +3548,172 @@ class TestSkippingAnUpdate:
         finally:
             p.settings.skipped_update_version = ""
             p.close()
+
+
+class TestReviewPrompt:
+    """"How are you finding MinbarLive?", asked after three completed sessions.
+
+    Three ways out, each meaning something different: clicking through to the
+    form settles it for good, "Never show again" settles it for good without the
+    form, and the ✕ is "not this time" — the counter resets and the question
+    comes back after another three. So the only way to be asked twice is to keep
+    saying "not now".
+    """
+
+    @pytest.fixture
+    def review(self, qt_app):
+        import gui.review_banner as rb
+
+        decisions: list[tuple[int, bool]] = []
+        made = rb.ReviewBanner(
+            lambda key, fallback="": fallback,
+            on_decision=lambda sessions, disabled: decisions.append(
+                (sessions, disabled)
+            ),
+        )
+        yield made, decisions, rb
+        made.close()
+
+    def test_it_stays_down_below_the_threshold(self, review):
+        made, _decisions, rb = review
+        for sessions in range(rb.PROMPT_AFTER_SESSIONS):
+            made.maybe_show(sessions, False)
+            assert made.isHidden(), f"showed after {sessions} sessions"
+
+    def test_it_appears_on_the_third_completed_session(self, review):
+        made, _decisions, rb = review
+        made.maybe_show(rb.PROMPT_AFTER_SESSIONS, False)
+        assert not made.isHidden()
+        assert made.label.text()
+
+    def test_disabled_means_never(self, review):
+        made, _decisions, rb = review
+        made.maybe_show(rb.PROMPT_AFTER_SESSIONS * 10, True)
+        assert made.isHidden()
+
+    def test_never_show_again_settles_it(self, review):
+        made, decisions, rb = review
+        made.maybe_show(rb.PROMPT_AFTER_SESSIONS, False)
+        made.action_btn.click()
+        assert made.isHidden()
+        assert decisions == [(0, True)]
+
+    def test_the_close_button_only_resets_the_counter(self, review):
+        # The whole difference from "Never show again": ✕ is "not this time".
+        made, decisions, rb = review
+        made.maybe_show(rb.PROMPT_AFTER_SESSIONS, False)
+        made.close_btn.click()
+        assert made.isHidden()
+        assert decisions == [(0, False)]
+        # …and it really comes back, after another run of sessions.
+        made.maybe_show(rb.PROMPT_AFTER_SESSIONS, False)
+        assert not made.isHidden()
+
+    def test_the_counter_is_reset_not_left_at_the_threshold(self, review):
+        # Left where it was, the prompt would be due again at the very next stop
+        # — and a notice that reappears immediately is the one people learn to
+        # turn off.
+        made, decisions, rb = review
+        made.maybe_show(rb.PROMPT_AFTER_SESSIONS, False)
+        made.close_btn.click()
+        sessions, _disabled = decisions[0]
+        assert sessions == 0
+
+    def test_clicking_through_to_the_form_settles_it_too(self, review, monkeypatch):
+        # Asking again after somebody has answered is the rude case.
+        made, decisions, rb = review
+        opened: list[str] = []
+        monkeypatch.setattr(
+            "gui.notice_banner.webbrowser.open", lambda url: opened.append(url)
+        )
+        made.maybe_show(rb.PROMPT_AFTER_SESSIONS, False)
+        _click(made)
+        assert opened == [rb.FEEDBACK_FORM_URL]
+        assert decisions == [(0, True)]
+        assert made.isHidden()
+
+    def test_the_form_is_the_one_the_docs_link(self):
+        # One form, one place to read the answers. If this ever diverges, half
+        # the responses land somewhere nobody checks.
+        from pathlib import Path
+
+        import gui.review_banner as rb
+
+        root = Path(__file__).parent.parent
+        for name in ("README.md", "CONTRIBUTING.md", "docs/index.html"):
+            text = (root / name).read_text(encoding="utf-8")
+            assert rb.FEEDBACK_FORM_URL in text, f"{name} links a different form"
+
+
+class TestThePanelCountsSessionsForTheReviewPrompt:
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui.control_panel as cp
+
+        p = _panel(monkeypatch)
+        saved: list[tuple[int, bool]] = []
+        monkeypatch.setattr(
+            cp,
+            "save_settings",
+            lambda s: saved.append(
+                (s.sessions_since_review_prompt, s.review_prompt_disabled)
+            ),
+        )
+        p.settings.sessions_since_review_prompt = 0
+        p.settings.review_prompt_disabled = False
+        yield p, saved
+        p.settings.sessions_since_review_prompt = 0
+        p.settings.review_prompt_disabled = False
+        p.close()
+
+    def test_each_completed_session_counts_and_is_persisted(self, panel):
+        p, saved = panel
+        p._maybe_ask_for_a_review()
+        assert p.settings.sessions_since_review_prompt == 1
+        assert saved == [(1, False)]
+
+    def test_the_prompt_appears_once_the_count_is_reached(self, panel, qt_app):
+        from gui.review_banner import PROMPT_AFTER_SESSIONS
+
+        p, _saved = panel
+        for _ in range(PROMPT_AFTER_SESSIONS):
+            p._maybe_ask_for_a_review()
+        assert not p.review_banner.isHidden()
+
+    def test_a_disabled_prompt_stops_even_the_counting(self, panel):
+        # Nothing to count towards, so no pointless write on every stop.
+        p, saved = panel
+        p.settings.review_prompt_disabled = True
+        p._maybe_ask_for_a_review()
+        assert p.settings.sessions_since_review_prompt == 0
+        assert saved == []
+
+    def test_it_never_stacks_under_the_update_notice(self, panel, qt_app):
+        # Two accent-soft strips above the cards read as a wall of nagging, and
+        # the update offer is the one the user may act on today.
+        from gui.review_banner import PROMPT_AFTER_SESSIONS
+
+        p, _saved = panel
+        p.show()
+        p.update_banner.show_notice("Version 9.9.9", "https://example.invalid", "skip")
+        _settle(qt_app)
+        assert p.update_banner.isVisible()
+        for _ in range(PROMPT_AFTER_SESSIONS):
+            p._maybe_ask_for_a_review()
+        assert p.review_banner.isHidden()
+        # The count is kept rather than reset, so the question lands after the
+        # next session instead of being lost. That is why the due test is >=.
+        assert p.settings.sessions_since_review_prompt == PROMPT_AFTER_SESSIONS
+        p.update_banner.hide_notice()
+        p._maybe_ask_for_a_review()
+        assert not p.review_banner.isHidden()
+
+    def test_the_decision_is_written_through(self, panel):
+        p, saved = panel
+        p._on_review_decision(0, True)
+        assert p.settings.review_prompt_disabled is True
+        assert p.settings.sessions_since_review_prompt == 0
+        assert saved == [(0, True)]
 
 
 class TestBatchWindow:

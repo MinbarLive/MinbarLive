@@ -392,10 +392,17 @@ class ControlPanel(QMainWindow):
 
         # Between the header and the cards, as in the Tk panel. Hidden unless
         # the check finds a release newer than the running version.
+        from gui.review_banner import ReviewBanner
         from gui.update_banner import UpdateBanner
 
         self.update_banner = UpdateBanner(self._t, on_skip=self._on_update_skipped)
         side.addWidget(self.update_banner)
+        # Below the update notice, and never at the same time as it — see
+        # _maybe_ask_for_a_review. Both are hidden until they have something to
+        # say, and a hidden banner takes no room (its spacing is a stylesheet
+        # margin, not this layout's).
+        self.review_banner = ReviewBanner(self._t, on_decision=self._on_review_decision)
+        side.addWidget(self.review_banner)
 
         self.card_area = QScrollArea()
         self.card_area.setWidgetResizable(True)
@@ -2490,6 +2497,8 @@ class ControlPanel(QMainWindow):
         self._refresh_provider_combos()
         self._apply_subtitle_hide_mode()
         log("Stopped.", level="INFO")
+        # Last, and only on this path: a session the operator ran to the end.
+        self._maybe_ask_for_a_review()
 
     # ── session tracking (cost record + inactivity guard) ────────────────
     def _end_session_tracking(self, status: str) -> None:
@@ -2773,6 +2782,35 @@ class ControlPanel(QMainWindow):
             self.subtitle_window.set_live_text(text, settled)
 
     # ── persistence / shutdown ───────────────────────────────────────────
+    def _maybe_ask_for_a_review(self) -> None:
+        """Count a completed session and put the review question if it is due.
+
+        Called from ``_finish_stop`` only, so what is counted is a session the
+        operator ran to the end — not a launch, and not a start that failed.
+
+        **Never while the update notice is up.** Two accent-soft strips stacked
+        above the cards read as a wall of nagging, and the update offer is the
+        one with something the user may act on today. The counter is left where
+        it is rather than reset, so the question simply lands after the next
+        session instead — which is why the due test is ``>=`` and not ``==``.
+        """
+        if self.settings.review_prompt_disabled:
+            return
+        self.settings.sessions_since_review_prompt += 1
+        save_settings(self.settings)
+        if self.update_banner.isVisible():
+            return
+        self.review_banner.maybe_show(
+            self.settings.sessions_since_review_prompt,
+            self.settings.review_prompt_disabled,
+        )
+
+    def _on_review_decision(self, sessions: int, disabled: bool) -> None:
+        """Persist the answer to the review question, whatever it was."""
+        self.settings.sessions_since_review_prompt = sessions
+        self.settings.review_prompt_disabled = disabled
+        save_settings(self.settings)
+
     def _on_update_skipped(self, version: str) -> None:
         """Remember a release the user chose to pass over.
 
