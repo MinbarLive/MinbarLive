@@ -1102,6 +1102,15 @@ class TestControlPanelLayout:
         class FakeController:
             pass
 
+        # Restored afterwards, and that is not tidiness. setStyleSheet is
+        # GLOBAL, so a theme left applied here re-measures every card for every
+        # test that runs after this one — which is how the first version of this
+        # test broke test_a_column_is_never_narrower_than_its_cards_need on the
+        # Linux runner (themed cards need 869 px there against _COL2_MIN_W's
+        # 800; unthemed they fit). That is a real finding about _COL2_MIN_W and
+        # is left alone here: it is not what this PR is about, and hiding it
+        # again by leaking the theme would be worse than either.
+        previous_sheet = qt_app.styleSheet()
         apply_theme(qt_app, "light")
         p = cp.ControlPanel(FakeController())
         try:
@@ -1130,6 +1139,7 @@ class TestControlPanelLayout:
             assert not area.verticalScrollBar().isVisible()
         finally:
             p.close()
+            qt_app.setStyleSheet(previous_sheet)
 
     def test_the_opening_size_never_exceeds_the_screen(self, panel):
         """The height is chosen from the CONTENT, and content does not shrink to
