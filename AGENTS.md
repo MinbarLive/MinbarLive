@@ -105,7 +105,9 @@ with inline comments. Read them there — they are not duplicated in this file.
 | `utils/context_manager.py` | Adaptive rolling + hourly async summarization |
 | `utils/user_messages.py` | Audience-facing status messages in the target language |
 | `utils/logging.py` | Thread-safe logging — use this, not `print` |
-| `utils/` (rest) | `app_paths`, `cleanup`, `history`, `json_helpers`, `retry`, `icons`, `update_check` |
+| `utils/cost_tracking.py` | Provider usage metering + per-session cost records (`cost_history/`); `utils/cost_display.py` formats them for the Costs tab |
+| `utils/factory_reset.py` | "Delete everything": the keychain entries, then the whole app-data folder. **Nothing may write that folder afterwards** — see the invariant below |
+| `utils/` (rest) | `app_paths`, `cleanup`, `history`, `json_helpers`, `retry`, `icons`, `update_check`, `session_summary`, `ffmpeg_download`, `windows_dpi` (unused at runtime) |
 
 ---
 
@@ -140,8 +142,13 @@ data/
 | macOS | `~/Library/Application Support/MinbarLive/` |
 | Linux | `~/.local/share/MinbarLive/` |
 
-Contents: `history/`, `logs/`, `recordings/`, `settings.json`.
+Contents: `history/`, `logs/`, `recordings/`, `batch/`, `cost_history/`, `bin/`
+(a downloaded ffmpeg, Windows only), `settings.json`.
 **API keys live in the OS keychain and are never written to any file.**
+
+⚙ Settings → **Delete everything** (`utils/factory_reset.py`) removes this folder
+*and* every provider's keychain entry. Deleting the folder by hand does not touch
+the keychain; that is the whole reason the button exists.
 
 ---
 
@@ -180,7 +187,7 @@ committed latency figure is a claim nobody can reproduce.
 
 Test conventions:
 
-- **There is no `conftest.py`.** Each of the 35 test files is self-contained. Keep it that
+- **There is no `conftest.py`.** Each of the 38 test files is self-contained. Keep it that
   way — a shared fixture file would couple the window-building layer to the headless one.
 - **Platform-specific tests use `pytest.mark.skipif(sys.platform != "...")`.** Never patch
   `sys.platform` globally: it applies to code that has already imported it, and it has
@@ -211,6 +218,15 @@ Break these and something ships broken:
   model selection moves the ~$0.50/hr running cost. Say so in the change description.
 - **Providers stay behind the Protocols in `providers/base.py`.** SDK imports belong in
   `providers/<id>/` and nowhere else.
+- **After a factory reset, nothing may recreate the app-data folder.** `save_settings`
+  mkdirs its parent, and the control panel persists its window geometry on close — so
+  the app used to put a `settings.json` back on the way out, with
+  `onboarding_completed` still set, which turned the reset into "your history is gone
+  and the wizard still does not run". A successful reset calls
+  `utils.settings.block_writes()`. The other half is already true and must stay true:
+  `utils/logging._write_to_file` opens in `"a"` mode and **creates no directory**, so
+  lines logged after the delete reach the panel's log view and are dropped on disk.
+  Adding a `mkdir` there would silently undo the feature.
 
 ---
 
@@ -238,10 +254,13 @@ Do not revisit without a new explicit decision.
 | Window behaviour is two 3-way selectors, not four checkboxes (2026-07-24, PR #22) | `subtitle_hide_mode` (never/stopped/always) and `always_on_top_mode` (never/running/always) replace the old booleans; old values migrate on load |
 | Qt migration uses QtWidgets only — no QML (2026-07-30, #44) | The Phase 0 spike hit 60 fps, per-pixel alpha and correct Arabic with plain `QWidget`/`QPainter`. QtQuick needs `PySide6-Addons` (634 MB) and is a second language for contributors |
 | Qt keeps the Tk control arrangement (2026-07-30, #44) | Segmented buttons for themes and both 3-way selectors, −/+ steppers for font size and scroll speed, slider only for height. Don't swap in dropdowns |
-| **Static mode splits on the Transparent toggle** (2026-08-07) | *Transparent* static has no backdrop of its own, so it takes the whole monitor and its backdrop is a per-line ribbon hugging the text (`gui/subtitle_window.py _ribbon_rects`) — a full-height window then paints only as much as the text needs. The height slider becomes a **lift** there: subtitles and footer pill move up together, capped at 50%. *Opaque* static stays a band, because full height would wash the whole screen at the backdrop opacity; there the **text is fitted into the band** rather than overflowing it, at the largest size that fits. One stored field (`window_height_percent`) carries both meanings: read clamped, written only when the slider is dragged, so neither mode rewrites the other's value |
+| **Static mode splits on the Transparent toggle** (2026-08-07) | *Transparent* static has no backdrop of its own, so it takes the whole monitor and its backdrop is a per-line ribbon hugging the text (`gui/subtitle_window.py _ribbon_rects`) — a full-height window then paints only as much as the text needs. The height slider becomes a **lift** there: subtitles and footer pill move up together, capped at 50%. *Opaque* static stays a band, because full height would wash the whole screen at the backdrop opacity; there the **text is fitted into the band** rather than overflowing it, at the largest size that fits. **The two meanings are two stored fields** — `window_height_percent` (5–100) and `static_lift_percent` (0–50). One field carried both for a day, on the argument that the panel read it clamped and wrote only on a real drag; that protects the number and not the setting, because the ranges do not share a floor, so every toggle of Transparent handed the other meaning a value off the wrong scale (a lift of 0 came back as a 0%-tall band — subtitles gone — and the loader's floor of 5 rewrote that lift on every restart). Don't merge them back |
 | **Side by side draws the original bold AND upright** (2026-08-07) | Weight was decided in #49; the upright face follows for the same reason. Italic marks the original as subordinate to its translation, which it only is when stacked above one — in a row of two equals it read as a quotation beside a sentence. Stacked keeps italic; Arabic was never italic anywhere |
 | Qt subtitle backdrop defaults to opacity 75 (alpha 190/255) (2026-07-30, #44) | Reviewed against live video and chosen. Adjustable 0–100; a test pins the default. The control exists to adjust it, not to replace the decision |
 | **The Qt tree asks for X11 (xcb) before Wayland on Linux** (2026-08-04, #44) | A Wayland client cannot position its own windows and has no always-on-top protocol — the subtitle overlay is exactly those two things, and under Wayland the compositor centred it and the always-on-top setting did nothing. `gui/platform_setup.py` sets `QT_QPA_PLATFORM=xcb;wayland` (fallback kept, so a session without XWayland still starts); an explicit `QT_QPA_PLATFORM` always wins. The plugin that loaded is logged at startup |
 | **Arabic source lines stay regular weight — in the stacked layout** (2026-08-05) | They were bold in the Tk overlay and are regular in Qt. Maintainer's call after seeing both: keep the Qt weight. Don't "restore parity" here. **Narrowed 2026-08-06 (#49):** the side-by-side layout draws the original bold, because there it is the other half of the row rather than a subordinate line under its translation |
 | **Closing the batch window asks, it does not decide** (2026-08-05) | Qt cancels the run on close; Tk let it finish. Neither is right silently — closing a window is not a statement about the job. A dialog on close offers *cancel the run* or *keep it running in the background*. Not implemented yet |
+| **The factory reset takes the folder and the keychain, and nothing else** (2026-08-08, PR #81) | Deleting the binary is not uninstalling, and one provider at a time was the only way to clear the keychain. Keychain entries go **first**: a reset that drops the keys and then fails on the folder leaves a mess the user can clear by hand, while the reverse leaves credentials behind with no GUI left to remove them with. Every step is verified rather than assumed (`clear_api_key` swallows the keychain's refusal; a partial `rmtree` leaves the tree standing), so the report names what really went. **An `.env` beside the app is deliberately not deleted** — MinbarLive never wrote it and cannot know what else is in it. On failure the dialog offers *Try again*; the app closes either way, because every key is gone by then. See the app-data invariant above for why `block_writes` exists |
+| **The review prompt asks after three COMPLETED sessions, and the ✕ is not the off switch** (2026-08-08, PR #83) | Counted in `_finish_stop`, so a launch does not count and neither does a failed start — three finished khutbahs is somebody with an opinion. Clicking through to the form and *Never show again* both settle it for good; the **✕ resets the counter**, so the question returns after another three. Reset rather than left at the threshold on purpose: left alone it would be due again at the very next stop, and a notice that reappears immediately is the one people learn to ignore. It never shows while the update notice is up (two accent-soft strips read as a wall of nagging) and the count is kept, not spent — hence `>=`, not `==`. The settings window carries a permanent **Feedback** card because answering the question once would otherwise remove the only route to the form. **One URL**, the same anonymous form README/CONTRIBUTING/`docs/index.html` link; a test asserts they have not diverged |
+| **Both control-panel notices are one widget** (2026-08-08, PR #83) | `gui/notice_banner.py` — frame, accent-soft styling, word-wrapped label, named action button, ✕, click-to-open-a-URL, and the two Qt rules that are easy to get wrong (hidden at construction *after* being parented; outer spacing as a stylesheet margin so a hidden banner takes no room). Subclasses say only when to appear and what the buttons mean. Don't build a third banner from scratch |
 | **Don't cut over to Qt before Linux/macOS verification** (2026-07-30, #44) — satisfied | The migration exists to fix issues #35/#39, which are Linux/macOS bugs, so deleting the working Tk tree before Qt had run there would have been reckless. Both platforms ran the Qt tree first; the cut-over followed on 2026-08-04 |

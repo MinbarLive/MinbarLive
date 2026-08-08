@@ -39,6 +39,10 @@ These settings are configurable from the control panel / settings window and sav
 | Auto cleanup (logs)    | On                   | Purge old log files at startup (see retention below)                    |
 | Auto cleanup (content) | Off                  | Purge old history + batch files at startup; your own content, so opt-in |
 | Check for updates      | On                   | One anonymous GitHub releases request at startup                        |
+| Also offer beta and test versions | Off       | Widens that check to release candidates. The website's download buttons always serve the stable release, whatever this says |
+| Skip this version      | —                    | On the update notice itself. Silences it for that release for good (the next release brings it back); the notice's ✕ only hides it until the next launch |
+| Feedback               | —                    | Opens the anonymous feedback form in your browser. The same question appears once by itself, after three completed sessions — its ✕ asks again after another three, "Never show again" does not |
+| Delete everything      | —                    | Removes the app-data folder **and** every provider's keychain entry, reports what went, then closes the app. For leaving, not for updating — to update, replace the program file and everything is kept |
 
 A **first-run wizard** (interface language & appearance → languages → microphone → provider & API key → disclaimer) sets the essentials on the first launch.
 
