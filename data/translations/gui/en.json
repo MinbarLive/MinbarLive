@@ -241,5 +241,17 @@
   "history_summary_heading": "Summary",
   "history_has_summary": "Has a saved summary",
   "history_read_error": "Could not read this session.",
+  "reset_section": "Delete Everything",
+  "reset_hint": "Removes every trace of MinbarLive from this computer: settings, session history, batch transcripts, logs and the API keys in your system keychain. Only do this if you no longer want to use MinbarLive. Moving to a newer version? It is enough to replace the program file — your settings are kept.",
+  "reset_button": "Delete everything and reset",
+  "reset_confirm_text": "Are you sure you want to remove everything — all history, batch transcripts, logs, settings and your API keys?\n\nThis cannot be undone.\n\nWe only recommend this if you no longer want to use MinbarLive at all and want to leave nothing behind. If you are moving to a newer version of MinbarLive, we recommend keeping everything as it is and deleting only the program file (.exe / .app / .AppImage) — then all your settings are kept and you can carry straight on.",
+  "reset_confirm_yes": "Delete everything",
+  "reset_done_text": "Successfully deleted:\n{path}\n\nAPI keys removed: {keys}\n\nMinbarLive will now close. The next start begins with the setup wizard, as on a new installation.",
+  "reset_done_no_keys": "none were stored",
+  "reset_failed_title": "Reset Incomplete",
+  "reset_failed_text": "Not everything could be removed:\n{errors}\n\nYou can try again, or close MinbarLive and delete this folder by hand:\n{path}",
+  "dlg_stop_before_reset": "Stop the app before resetting.",
+  "reset_retry": "Try again",
+  "reset_close": "Close MinbarLive",
   "skip_this_version": "Skip this version"
 }

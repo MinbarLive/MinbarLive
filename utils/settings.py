@@ -552,6 +552,25 @@ def _settings_path() -> Path:
 # In-memory cache to avoid repeated disk reads during translation
 _cached_settings: Settings | None = None
 
+# Set once by the factory reset (utils/factory_reset.py). save_settings creates
+# the app-data directory, so after that directory has been deleted any write
+# puts a settings.json back — with onboarding_completed still true, which would
+# send the next launch straight past the wizard and make the whole reset a
+# deletion of the user's history for nothing. The panel's closeEvent persists
+# its geometry, so this is not hypothetical.
+_writes_blocked = False
+
+
+def block_writes(blocked: bool = True) -> None:
+    """Make save_settings a no-op for the rest of the process.
+
+    Pass ``False`` to lift it again — only tests need that, and they need it
+    badly: the flag is process-wide, so a test that leaves it set silently
+    turns every later save_settings into a no-op.
+    """
+    global _writes_blocked
+    _writes_blocked = blocked
+
 
 def load_settings(use_cache: bool = True) -> Settings:
     """
@@ -790,8 +809,14 @@ def load_settings(use_cache: bool = True) -> Settings:
 
 
 def save_settings(settings: Settings) -> None:
-    """Save settings to disk and update the cache."""
+    """Save settings to disk and update the cache.
+
+    A no-op after :func:`block_writes` — see it for why.
+    """
     global _cached_settings
+
+    if _writes_blocked:
+        return
 
     dir_path = _settings_path().parent
     dir_path.mkdir(parents=True, exist_ok=True)
