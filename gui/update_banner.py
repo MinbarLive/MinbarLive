@@ -1,9 +1,17 @@
 """The "a newer release exists" strip.
 
 It sits between the panel header and the cards, appears only when the check
-finds a release newer than the running version, opens the release page when
-clicked and can be dismissed for the session. Without it the
-``check_for_updates`` setting would have a checkbox and nothing behind it.
+finds a release newer than the running version, and opens the release page when
+clicked. Without it the ``check_for_updates`` setting would have a checkbox and
+nothing behind it.
+
+**Two ways to make it go away, and they are not the same thing.** The ✕ hides it
+for this run of the app and it is back on the next launch — "not now". *Skip
+this version* records that release in ``skipped_update_version`` and the notice
+stays quiet for it permanently, coming back only for the release after it —
+"not this one". A user who is deliberately staying on their build needs the
+second; without it the only way to stop being asked is to turn the whole update
+check off, which then also hides the release they *would* want.
 
 The check itself is ``utils/update_check.py``: one anonymous request to the
 GitHub releases API, which never raises.
@@ -13,12 +21,13 @@ from __future__ import annotations
 
 import threading
 import webbrowser
+from collections.abc import Callable
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton
 
 from utils.logging import log
-from utils.update_check import UpdateInfo, check_for_update
+from utils.update_check import UpdateInfo, check_for_update, is_newer_version
 
 # One request per process. A GUI-language switch rebuilds the panel, and a
 # fresh request per rebuild would be pure waste — the answer cannot change in
@@ -59,10 +68,19 @@ class _Check(QObject):
 class UpdateBanner(QFrame):
     """Hidden until a newer release is confirmed."""
 
-    def __init__(self, translate, parent=None):
+    def __init__(
+        self,
+        translate,
+        parent=None,
+        on_skip: Callable[[str], None] | None = None,
+    ):
         super().__init__(parent)
         self._t = translate
         self._info: UpdateInfo | None = None
+        # Set per check rather than read from settings here: this widget is
+        # built by the panel and knows nothing about where preferences live.
+        self._skipped = ""
+        self._on_skip = on_skip
         self.setObjectName("update_banner")
         self.setCursor(Qt.PointingHandCursor)
 
@@ -73,6 +91,11 @@ class UpdateBanner(QFrame):
         self.label.setObjectName("update_text")
         self.label.setWordWrap(True)
         row.addWidget(self.label, 1)
+        self.skip_btn = QPushButton(self._t("skip_this_version", "Skip this version"))
+        self.skip_btn.setObjectName("banner_skip")
+        self.skip_btn.setCursor(Qt.PointingHandCursor)
+        self.skip_btn.clicked.connect(self._on_skip_clicked)
+        row.addWidget(self.skip_btn)
         self.close_btn = QPushButton("✕")
         self.close_btn.setObjectName("banner_close")
         self.close_btn.setFixedSize(28, 28)
@@ -86,8 +109,19 @@ class UpdateBanner(QFrame):
         # top-level window, and hiding is the safe half of the same rule.
         self.setVisible(False)
 
-    def start_check(self, enabled: bool, include_prereleases: bool = False) -> None:
-        """Ask GitHub whether a newer release exists, unless opted out."""
+    def start_check(
+        self,
+        enabled: bool,
+        include_prereleases: bool = False,
+        skipped_version: str = "",
+    ) -> None:
+        """Ask GitHub whether a newer release exists, unless opted out.
+
+        ``skipped_version`` filters the ANSWER, not the request: the cached
+        result stays the true state of the world, so a rebuild after a skip and
+        a later release both do the right thing.
+        """
+        self._skipped = skipped_version or ""
         if not enabled:
             return
         global _checked_with
@@ -98,6 +132,29 @@ class UpdateBanner(QFrame):
         _checked_with = include_prereleases
         self._check.start(include_prereleases)
 
+    def _is_skipped(self, version: str) -> bool:
+        """True when ``version`` is the one the user passed over, or older.
+
+        Not an equality test: "skip 1.2.0" means "stop telling me about 1.2.0",
+        and a check that later answers with something no newer than that — a
+        patch published on an older branch, or the same tag re-pointed — is the
+        same news again. ``is_newer_version`` is reused rather than restated so
+        the suffix ordering (``rc.1 < rc.2 < 1.2.0``) holds here too.
+        """
+        if not self._skipped:
+            return False
+        return not is_newer_version(version, self._skipped)
+
+    def _on_skip_clicked(self) -> None:
+        if self._info is None:
+            return
+        version = self._info.version
+        self._skipped = version
+        log(f"Update v{version} skipped at the user's request.")
+        if self._on_skip is not None:
+            self._on_skip(version)
+        self.hide()
+
     def _on_result(self, info: UpdateInfo | None) -> None:
         global _result
         _result = info
@@ -107,7 +164,7 @@ class UpdateBanner(QFrame):
 
     def _apply(self, info: UpdateInfo | None) -> None:
         self._info = info
-        if info is None:
+        if info is None or self._is_skipped(info.version):
             self.setVisible(False)
             return
         template = self._t(

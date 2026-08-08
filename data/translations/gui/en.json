@@ -252,5 +252,6 @@
   "reset_failed_text": "Not everything could be removed:\n{errors}\n\nYou can try again, or close MinbarLive and delete this folder by hand:\n{path}",
   "dlg_stop_before_reset": "Stop the app before resetting.",
   "reset_retry": "Try again",
-  "reset_close": "Close MinbarLive"
+  "reset_close": "Close MinbarLive",
+  "skip_this_version": "Skip this version"
 }

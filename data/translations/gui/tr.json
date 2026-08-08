@@ -243,5 +243,6 @@
   "reset_failed_text": "Her şey kaldırılamadı:\n{errors}\n\nTekrar deneyebilir ya da MinbarLive'ı kapatıp bu klasörü elle silebilirsiniz:\n{path}",
   "dlg_stop_before_reset": "Sıfırlamadan önce uygulamayı durdurun.",
   "reset_retry": "Tekrar dene",
-  "reset_close": "MinbarLive'ı kapat"
+  "reset_close": "MinbarLive'ı kapat",
+  "skip_this_version": "Bu sürümü atla"
 }

@@ -243,5 +243,6 @@
   "reset_failed_text": "Nije bilo moguće ukloniti sve:\n{errors}\n\nMožete pokušati ponovo ili zatvoriti MinbarLive i ručno izbrisati ovaj folder:\n{path}",
   "dlg_stop_before_reset": "Zaustavite aplikaciju prije vraćanja na početno.",
   "reset_retry": "Pokušaj ponovo",
-  "reset_close": "Zatvori MinbarLive"
+  "reset_close": "Zatvori MinbarLive",
+  "skip_this_version": "Preskoči ovu verziju"
 }

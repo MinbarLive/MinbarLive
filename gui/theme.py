@@ -352,6 +352,18 @@ QPushButton#banner_close {{
     padding: 0;
 }}
 QPushButton#banner_close:hover {{ background-color: {c["accent"]}; color: #ffffff; }}
+/* "Skip this version", beside that ✕. Quieter than the banner's own text — it
+   is the way out, not the offer — and sized to its label rather than fixed,
+   because the six GUI languages disagree about how long that label is. */
+QPushButton#banner_skip {{
+    background: transparent;
+    color: {c["accent"]};
+    border-radius: 12px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}}
+QPushButton#banner_skip:hover {{ background-color: {c["accent"]}; color: #ffffff; }}
 
 /* Warning callout: bordered, warning-coloured — the wizard's provider caveats
    and the AI-accuracy disclaimer, which must not read as another grey note. */

@@ -243,5 +243,6 @@
   "reset_failed_text": "لم تُزَل كل الأشياء:\n{errors}\n\nيمكنك المحاولة مرة أخرى أو إغلاق MinbarLive وحذف هذا المجلد يدويًا:\n{path}",
   "dlg_stop_before_reset": "أوقف التطبيق قبل إعادة التعيين.",
   "reset_retry": "حاول مرة أخرى",
-  "reset_close": "إغلاق MinbarLive"
+  "reset_close": "إغلاق MinbarLive",
+  "skip_this_version": "تخطّي هذا الإصدار"
 }

@@ -308,6 +308,58 @@ class TestPipelineMode:
             settings_module._cached_settings = None
 
 
+class TestSkippedUpdateVersion:
+    """A release the user passed over on the update notice."""
+
+    def test_nothing_is_skipped_by_default(self):
+        assert Settings().skipped_update_version == ""
+
+    def test_round_trip(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            settings_module, "_settings_path", lambda: tmp_path / "settings.json"
+        )
+        settings_module._cached_settings = None
+        save_settings(Settings(skipped_update_version="1.2.0"))
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).skipped_update_version == "1.2.0"
+        finally:
+            settings_module._cached_settings = None
+
+    @pytest.mark.parametrize("stored", [None, 123, True, ["1.0.0"], {}])
+    def test_a_non_string_never_reaches_the_comparison(
+        self, tmp_path, monkeypatch, stored
+    ):
+        # It is compared against a GitHub tag. A junk value out of a hand-edited
+        # file must not silence the update notice with nothing on screen to say
+        # why.
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"skipped_update_version": stored}), encoding="utf-8"
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).skipped_update_version == ""
+        finally:
+            settings_module._cached_settings = None
+
+    def test_a_stored_value_is_length_capped(self, tmp_path, monkeypatch):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"skipped_update_version": " " + "9" * 500 + " "}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False).skipped_update_version
+            assert len(loaded) == 64
+            assert loaded == "9" * 64  # stripped before capping
+        finally:
+            settings_module._cached_settings = None
+
+
 class TestSubtitleHideMode:
     def test_default_is_never(self):
         assert Settings().subtitle_hide_mode == "never"

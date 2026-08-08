@@ -371,6 +371,17 @@ def _load_source_font_size_base(value: object, font_size_base: object) -> float:
     return max(SOURCE_FONT_SIZE_BASE_MIN, min(SOURCE_FONT_SIZE_BASE_MAX, source_base))
 
 
+def _load_skipped_version(value: object) -> str:
+    """Accept only a plausible version string for ``skipped_update_version``.
+
+    It is compared against a tag GitHub hands back, and a non-string (or a wild
+    one out of a hand-edited file) would silence the update notice for good
+    with nothing on screen to explain it. Length-capped for the same reason a
+    colour is regex-matched: this field is only ever written by the app.
+    """
+    return value.strip()[:64] if isinstance(value, str) else ""
+
+
 def _load_subtitle_text_color(value: object) -> str:
     """Accept only an exact CSS-style ``#RRGGBB`` override; else theme default."""
     if isinstance(value, str) and _HEX_COLOR_RE.fullmatch(value):
@@ -502,6 +513,11 @@ class Settings:
     # Widen that check to release candidates and betas. Off by default: the
     # notice is for everyone, and untested builds are not.
     include_prereleases: bool = False
+    # A version the user chose to pass over ("Skip this version" on the update
+    # notice). The notice stays quiet for it and for anything not newer than
+    # it, and comes back for the next release — unlike the banner's ✕, which
+    # only hides it until the app is restarted. Empty means nothing skipped.
+    skipped_update_version: str = ""
     ai_provider: str = DEFAULT_AI_PROVIDER  # Translation provider (providers/ pkg)
     transcription_provider: str = (
         DEFAULT_TRANSCRIPTION_PROVIDER  # STT engine (streaming ones => streaming)
@@ -770,6 +786,9 @@ def load_settings(use_cache: bool = True) -> Settings:
             auto_stop_inactivity=data.get("auto_stop_inactivity", True),
             check_for_updates=data.get("check_for_updates", True),
             include_prereleases=bool(data.get("include_prereleases", False)),
+            skipped_update_version=_load_skipped_version(
+                data.get("skipped_update_version")
+            ),
             ai_provider=ai_provider,
             transcription_provider=transcription_provider,
             onboarding_completed=data.get("onboarding_completed", False),
@@ -850,6 +869,7 @@ def save_settings(settings: Settings) -> None:
         "auto_stop_inactivity": settings.auto_stop_inactivity,
         "check_for_updates": settings.check_for_updates,
         "include_prereleases": settings.include_prereleases,
+        "skipped_update_version": settings.skipped_update_version,
         "ai_provider": settings.ai_provider,
         "transcription_provider": settings.transcription_provider,
         "onboarding_completed": settings.onboarding_completed,

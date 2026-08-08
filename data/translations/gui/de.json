@@ -252,5 +252,6 @@
   "reset_failed_text": "Es konnte nicht alles entfernt werden:\n{errors}\n\nSie können es erneut versuchen oder MinbarLive schließen und diesen Ordner von Hand löschen:\n{path}",
   "dlg_stop_before_reset": "Stoppen Sie die App, bevor Sie zurücksetzen.",
   "reset_retry": "Erneut versuchen",
-  "reset_close": "MinbarLive schließen"
+  "reset_close": "MinbarLive schließen",
+  "skip_this_version": "Diese Version überspringen"
 }
