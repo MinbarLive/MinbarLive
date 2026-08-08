@@ -30,8 +30,11 @@ SECONDARY_WINDOW_W = 520
 # grow the window at all — it would only ever add a scrollbar.
 SECONDARY_MAX_H = 760
 
-# …and never more than this share of a short screen either.
-_MAX_SCREEN_SHARE = 0.92
+# …and never more than this share of a short screen either. Public because the
+# control panel's own opening size applies the same rule (gui/control_panel.py
+# _default_size) — one number, so the app never has two ideas of "too tall for
+# this screen".
+MAX_SCREEN_SHARE = 0.92
 
 
 def content_size(window: QWidget, natural_height: int) -> QSize:
@@ -45,7 +48,7 @@ def content_size(window: QWidget, natural_height: int) -> QSize:
     screen = window.screen()
     if screen is not None:
         height = min(
-            height, int(screen.availableGeometry().height() * _MAX_SCREEN_SHARE)
+            height, int(screen.availableGeometry().height() * MAX_SCREEN_SHARE)
         )
     room: QSize | None = getattr(window, "host_max_size", None)
     if room is not None:

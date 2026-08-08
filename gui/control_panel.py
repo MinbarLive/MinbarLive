@@ -81,6 +81,7 @@ from gui.widgets import (
     set_titlebar_dark,
     set_window_on_top,
 )
+from gui.window_size import MAX_SCREEN_SHARE
 from providers import (
     PROVIDER_CHOICES,
     TRANSCRIPTION_PROVIDER_CHOICES,
@@ -150,10 +151,24 @@ _SOURCE_FONT_STEP = 5.0
 # The shipped font_size_base, i.e. the 100% the size stepper counts from.
 _FONT_SIZE_BASE_DEFAULT = 40
 
-# Opening size when nothing is stored. Wide enough for the two-column grid
-# without the sidebar scrollbar; the log adds its own width on top.
-_DEFAULT_W = 880
-_DEFAULT_H = 640
+# Opening size when nothing is stored, both measured rather than chosen.
+#
+# WIDTH: two columns with room to spare. The 2→3 threshold is a window width of
+# **1040** (CardGrid._COL3_MIN_W is 1030 and _available_width reserves the scroll
+# bar), and three columns pins the Advanced card open — a different, denser panel
+# than the one people are shown in the setup videos. 1000 leaves 40 px of margin
+# before that, so a theme or font change cannot tip a fresh install into it.
+#
+# HEIGHT: the two-column card stack needs a **659 px** window to fit without the
+# card area's vertical scroll bar — identical in all six GUI languages, measured
+# on a real panel. The old default was 640, nineteen pixels short, so every
+# first launch opened already scrolled. 780 clears it with headroom for a card
+# that grows later.
+#
+# Both are clamped to the screen by _default_size: a figure that suits a 2048px
+# monitor must not open off the bottom of a 1366x768 laptop.
+_DEFAULT_W = 1000
+_DEFAULT_H = 780
 # Height floor. Small enough that the panel can be dragged down to a corner of
 # the screen; everything above it scrolls. The WIDTH floor is not a constant —
 # it is measured from the cards, see _apply_minimum_size.
@@ -233,12 +248,7 @@ class ControlPanel(QMainWindow):
         # clamped against a stale minimum.
         self._build()
         if not self._restore_window_geometry():
-            self.resize(
-                max(_DEFAULT_W, _SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W)
-                if not self._log_collapsed
-                else _DEFAULT_W,
-                _DEFAULT_H,
-            )
+            self.resize(self._default_size())
         self._restore_maximized_state()
         # _build() laid the grid out against the pre-resize size; redo it now
         # that the window has its real width, so the first paint is already
@@ -294,6 +304,34 @@ class ControlPanel(QMainWindow):
         return text or fallback
 
     # ── window geometry ──────────────────────────────────────────────────
+    def _default_size(self) -> QSize:
+        """Opening size when nothing is stored, clamped to this screen.
+
+        The clamp is the point. `_DEFAULT_H` is picked so the cards fit without
+        a scroll bar, which makes it a figure about the CONTENT — and content
+        does not shrink to suit a 768 px laptop. Without the clamp a default
+        chosen on a tall monitor opens partly below the taskbar on a short one,
+        where the window cannot even be dragged up to reach its own title bar.
+        Scrolling on a small screen is the correct outcome; an unreachable
+        window is not.
+
+        The share is `window_size.MAX_SCREEN_SHARE`, the same one the secondary
+        windows cap their height with, so the app has one idea of "too big for
+        this screen".
+        """
+        width = _DEFAULT_W
+        if not self._log_collapsed:
+            # The log panel claims its own width beside the sidebar; without
+            # this the cards would open narrower than one column.
+            width = max(width, _SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W)
+        height = _DEFAULT_H
+        screen = self.screen()
+        if screen is not None:
+            room = screen.availableGeometry()
+            width = min(width, int(room.width() * MAX_SCREEN_SHARE))
+            height = min(height, int(room.height() * MAX_SCREEN_SHARE))
+        return QSize(width, height)
+
     def _restore_window_geometry(self) -> bool:
         """Reopen at the size and place the panel was closed at.
 

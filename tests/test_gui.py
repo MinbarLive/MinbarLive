@@ -1062,6 +1062,105 @@ class TestControlPanelLayout:
         yield p
         p.close()
 
+    def test_the_default_height_clears_the_themed_card_stack(
+        self, qt_app, monkeypatch
+    ):
+        """A fresh install must not open already scrolled.
+
+        The old default was 880x640 against a card stack needing a 659 px
+        window — nineteen pixels short, so every first launch showed a scroll
+        bar, and nothing failed.
+
+        **The theme is the whole test.** Card padding, borders and fonts all come
+        from the stylesheet, applied at polish time, so an unthemed panel
+        measures ~50 px shorter than the one a user sees — 550 against 599. The
+        first version of this test skipped `apply_theme`, measured the short
+        panel, and passed with the height put back to 640. `gui/AGENTS.md`
+        warns about exactly this; it costs a wrong pass here rather than a
+        wrong pixel.
+
+        And the requirement is compared against the CONSTANT, not against a
+        figure read off the same window: a test that measures both sides of its
+        own assertion cannot fail in the direction that matters.
+        """
+        import gui.control_panel as cp
+        from gui.theme import apply_theme
+        from utils.settings import load_settings
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+        # Cleared BEFORE construction: __init__ is where a stored geometry is
+        # read, and it wins over the default. (The autouse pinned_window_settings
+        # fixture already blanks it; this states the dependency rather than
+        # relying on it.)
+        settings = load_settings()
+        settings.window_geometry, settings.window_maximized = "", False
+
+        class FakeController:
+            pass
+
+        apply_theme(qt_app, "light")
+        p = cp.ControlPanel(FakeController())
+        try:
+            if not p._log_collapsed:
+                p._toggle_log_panel()
+            # Opened tall on purpose, so the measurement is of the content and
+            # not of whatever the default happens to be. The window chrome is
+            # the difference between the two.
+            p.resize(cp._DEFAULT_W, 900)
+            p.show()
+            _settle(qt_app, rounds=14)
+            area = p.card_area
+            content = area.widget().sizeHint().height()
+            chrome = p.height() - area.viewport().height()
+            assert cp._DEFAULT_H >= content + chrome, (
+                f"the cards need a {content + chrome}px window at "
+                f"{cp._DEFAULT_W}px wide and _DEFAULT_H is {cp._DEFAULT_H} — a "
+                f"fresh install opens already scrolled"
+            )
+            # …and the default width keeps the two-column arrangement the setup
+            # videos show. Three columns pins the Advanced card open, which is a
+            # denser panel than a first-time user should be handed.
+            p.resize(cp._DEFAULT_W, cp._DEFAULT_H)
+            _settle(qt_app, rounds=14)
+            assert p.card_grid.count == 2
+            assert not area.verticalScrollBar().isVisible()
+        finally:
+            p.close()
+
+    def test_the_opening_size_never_exceeds_the_screen(self, panel):
+        """The height is chosen from the CONTENT, and content does not shrink to
+        suit a 768px laptop — so it is clamped. Without this a default picked on
+        a tall monitor opens partly under the taskbar, where the window cannot be
+        dragged up to reach its own title bar."""
+        from gui.window_size import MAX_SCREEN_SHARE
+
+        class FakeRect:
+            def __init__(self, w, h):
+                self._w, self._h = w, h
+
+            def width(self):
+                return self._w
+
+            def height(self):
+                return self._h
+
+        class FakeScreen:
+            def __init__(self, w, h):
+                self._r = FakeRect(w, h)
+
+            def availableGeometry(self):
+                return self._r
+
+        for width, height in ((2048, 1104), (1366, 728), (1280, 680), (1024, 600)):
+            panel.screen = lambda w=width, h=height: FakeScreen(w, h)
+            size = panel._default_size()
+            assert size.width() <= int(width * MAX_SCREEN_SHARE)
+            assert size.height() <= int(height * MAX_SCREEN_SHARE)
+
     def test_card_grid_reflows_with_the_window(self, panel, qt_app):
         # 1 / 2 / 3 columns, at the same thresholds the Tk panel uses.
         # A hidden widget never receives resizeEvent, so the reflow is driven
