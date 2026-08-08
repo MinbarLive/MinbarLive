@@ -1404,7 +1404,10 @@ class ControlPanel(QMainWindow):
         if screen is not None:
             room = int(screen.availableGeometry().height() * MAX_SCREEN_SHARE)
             wanted = min(wanted, room)
-        wanted = max(wanted, _MIN_WINDOW_H)
+        # No _MIN_WINDOW_H floor here on purpose: _apply_minimum_size has
+        # already set it as the window's minimum, two lines earlier in the same
+        # showEvent, and Qt clamps resize() to that. A floor here would be a
+        # second copy of the rule that could disagree with the first.
         if wanted != self.height():
             self.resize(self.width(), wanted)
 
