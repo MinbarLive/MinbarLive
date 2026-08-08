@@ -52,6 +52,19 @@ packaging section below for the shipped build.
 - **Message boxes go through `gui/dialogs.py`**, never `QMessageBox` — the system box
   is unthemed, hard-codes English buttons and plays the Windows alert sound (the icon
   triggers it). A test fails if one reappears.
+  - **A confirm that deletes something passes `destructive=True`** and names its two
+    actions with `yes_text`/`no_text`. `#accent` is the app's green "go", so without
+    the flag the accepting button marks *delete everything* as the recommended half
+    of the choice; with it the button wears the same warning red as every other
+    destructive control. Pair it with `default_yes=False` so Return cannot press it.
+- **Both notices above the cards are `gui/notice_banner.py`.** The update offer and
+  the review prompt share the class *and* the object names (`update_banner`,
+  `update_text`, `banner_skip`, `banner_close`), so the sheet has one set of rules.
+  Subclass it rather than building a third bar: it already carries the two Qt rules
+  that are easy to get wrong — **hidden at construction, after being parented** (a
+  parentless widget made visible is a top-level window), and **outer spacing as a
+  stylesheet margin, not a layout's**, so a hidden banner takes no room instead of
+  leaving a gap above the cards.
 - **Always-on-top goes through `widgets.set_window_on_top`**, never `setWindowFlag` —
   that recreates the native window (white flash; it used to make the overlay vanish).
   Read state with `is_window_on_top`; `QWidget.windowFlags()` is deliberately stale.

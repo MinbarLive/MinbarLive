@@ -47,8 +47,10 @@
 │
 ├── gui/                     # User interface — PySide6/Qt, the only GUI (see gui/AGENTS.md)
 │   ├── app.py               # Qt application bootstrap (QApplication, wizard or panel)
-│   ├── control_panel.py     # Control panel core (reflowing card grid, start/stop,
-│   │                        #   theming, input-level meter, collapsible log panel)
+│   ├── control_panel.py     # Control panel core (start/stop, theming, input-level
+│   │                        #   meter, collapsible log panel)
+│   ├── card_grid.py         # The panel's reflowing card grid (column count, levelling,
+│   │                        #   minimum width — measured, never a constant)
 │   ├── control_state.py     # Settings-derived rules (key/mode/strategy), toolkit-free, unit-tested
 │   ├── pipeline_bridge.py   # Controller → GUI handoff as Qt signals (no polling loop)
 │   ├── subtitle_window.py   # Full-screen subtitle overlay (realtime/continuous/static)
@@ -72,7 +74,11 @@
 │   │                        #   backdrop, clamping/centering, modal stack
 │   ├── window_size.py       # One size rule for the content-sized secondary windows
 │   ├── platform_setup.py    # QT_QPA_PLATFORM / logging rules, set before QApplication
-│   ├── update_banner.py     # "A newer release exists" strip in the control panel
+│   ├── notice_banner.py     # The dismissible strip above the cards, shared by the two
+│   │                        #   notices below (label + named action + ✕ + click-to-open)
+│   ├── update_banner.py     # "A newer release exists" + "Skip this version"
+│   ├── review_banner.py     # "How are you finding MinbarLive?" after 3 completed
+│   │                        #   sessions + the feedback-form URL the docs also link
 │   └── device_list.py       # Audio input device enumeration (mics + WASAPI loopback)
 │
 ├── utils/                   # Utilities
@@ -81,6 +87,8 @@
 │   ├── context_manager.py   # Adaptive context with async summarization
 │   ├── cost_display.py      # Formatting/grouping of cost sessions for the GUI
 │   ├── cost_tracking.py     # Provider usage metering + per-session cost history
+│   ├── factory_reset.py     # "Delete everything": the keychain entries, then the whole
+│   │                        #   app-data folder, with a per-step report
 │   ├── ffmpeg_download.py   # One-time ffmpeg download (Windows) + install command elsewhere
 │   ├── history.py           # Transcription/translation logging + history parsing
 │   ├── icons.py             # Icon paths + logo mark drawing (gui/icons.py builds the QIcon)
@@ -108,6 +116,11 @@
 │       ├── footer_translations.json # Subtitle disclaimer footer
 │       └── status_messages.json     # Audience-facing status/error messages
 │
+├── bench/                   # Translation-latency harness. Makes real, PAID API calls —
+│   │                        #   not a test, not in CI, never run by pytest
+│   ├── run_bench.py         # Runs the real translate_text path over a fixed corpus
+│   └── latency_corpus.py    # The 13 Arabic utterances it measures against
+│
 ├── notebooks/               # Development notebooks & scripts
 │   ├── Build_Quran_EmbeddingSpace.ipynb  # Generate raw verse embeddings (JSON)
 │   ├── build_embeddings_npz.py           # Convert/re-embed into the .npz the app loads
@@ -116,7 +129,7 @@
 │
 ├── docs/                    # This documentation + the GitHub Pages landing page (index.html)
 │
-└── tests/                   # Pytest suite (1148 tests), see docs/testing.md
+└── tests/                   # Pytest suite (1468 tests), see docs/testing.md
 ```
 
 ## Runtime Files
@@ -138,3 +151,13 @@ Contents:
 - `settings.json` - All user preferences (NOT the API keys)
 
 > **Note:** API keys are stored in your OS keychain, never in settings.json. On a machine with no keychain backend at all they are kept for the running session only; see [providers.md](providers.md#api-keys).
+
+### Removing all of it
+
+⚙ Settings → **Delete everything** removes this whole folder *and* the keychain
+entries for every provider, reports what went, and closes the app; the next launch
+starts at the setup wizard as on a new installation. Deleting the folder by hand
+leaves the keychain entries behind — that is the difference between the two.
+
+**Updating is not this.** Replace the `.exe` / `.app` / `.AppImage` and everything
+above is kept, which is what the confirmation dialog says before it asks again.

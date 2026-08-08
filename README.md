@@ -216,14 +216,28 @@ Runtime files are written to a per-user app data folder:
 
 API keys live in the **OS keychain** and are **never written to `settings.json`**. On a machine with no keychain backend at all (typically Linux without GNOME Keyring/KWallet) nothing is persisted: the key applies to that session only and must be entered again after a restart — the app tells you when this happens. Set up a keychain, or use an environment variable or `.env`, to avoid re-entering it. See [docs/providers.md](docs/providers.md#api-keys).
 
+**Updating:** replace the program file (`.exe` / `.app` / `.AppImage`). Everything above is kept and you carry straight on.
+
+**Removing everything:** ⚙ Settings → **Delete everything** deletes that whole folder *and* the keychain entries for every provider, tells you what went, and closes the app; the next start begins at the setup wizard. Deleting the folder by hand leaves the keychain entries behind, which is why the button exists.
+
 <br>
 
 ## Update Check
 
 At startup the app makes one anonymous request to the GitHub releases API to
-see if a newer version exists. If so, a dismissible notice appears in the
-control panel. No data about you or your installation is sent (GitHub sees
-only the request itself), and you can turn the check off in ⚙ Settings.
+see if a newer version exists. If so, a notice appears in the control panel and
+opens the release page when clicked. No data about you or your installation is
+sent (GitHub sees only the request itself), and you can turn the check off in
+⚙ Settings.
+
+Two ways to put the notice away, and they differ: **✕** hides it until the next
+launch, while **Skip this version** silences it for that release for good — the
+next release brings it back. So staying on your current build does not mean
+turning the whole check off.
+
+By default only finished releases count. **Also offer beta and test versions** in
+⚙ Settings widens the check to release candidates, for testers who want them; the
+download buttons on the website always point at the stable release.
 
 <br>
 

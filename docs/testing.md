@@ -1,6 +1,6 @@
 # Testing
 
-The project includes a test suite of 1148 tests using pytest. Provider tests run against faked SDK connections; no API keys or network access needed.
+The project includes a test suite of 1468 tests using pytest. Provider tests run against faked SDK connections; no API keys or network access needed.
 
 ## Running Tests
 
@@ -26,14 +26,17 @@ python -m pytest --cov=.
 | `test_audio_level.py`        | Input-level meter: dBFS mapping and controller routing           |
 | `test_batch.py`              | Batch mode: segmentation, SRT output, ffmpeg handling, cancel    |
 | `test_buffering.py`          | Chunk/semantic buffering strategies, stale-buffer flush          |
+| `test_bundled_modules.py`    | `MinbarLive.spec`: the Qt binaries the exclusion filter must keep, and that the spec really applies it |
+| `test_card_grid.py`          | The control panel's reflowing card grid: column count, levelling, minimum width |
 | `test_cleanup.py`            | Log/history/batch file retention                                 |
 | `test_context_manager.py`    | Adaptive context management                                      |
 | `test_control_state.py`      | Settings-derived control-panel rules (headless, no display)      |
 | `test_cost_display.py`       | Cost formatting/grouping for the history viewer's Costs tab      |
 | `test_cost_tracking.py`      | Usage metering, price table, per-session cost history files      |
 | `test_dictionary.py`         | Arabic normalization, Athan fuzzy matching                       |
+| `test_factory_reset.py`      | "Delete everything": the app-data wipe, the keychain wipe, and that nothing writes the folder back |
 | `test_ffmpeg_download.py`    | One-time ffmpeg download/extraction                              |
-| `test_gui.py`                | The whole Qt tree on real windows — see below (345 tests)        |
+| `test_gui.py`                | The whole Qt tree on real windows — see below (525 tests)        |
 | `test_gui_translations.py`   | GUI translation files: all keys present in all 6 languages       |
 | `test_history.py`            | History parsing, session listing, writer→reader roundtrip        |
 | `test_json_helpers.py`       | JSON loading, edge cases                                         |
@@ -60,6 +63,13 @@ python -m pytest --cov=.
 
 **There is no `conftest.py`.** Every file is self-contained, deliberately: a shared
 fixture file would couple the headless layer to the one that builds real windows.
+
+> **`test_factory_reset.py` drives code whose job is to delete your app-data folder
+> and your keychain entries.** Its autouse `app_data_root` fixture redirects
+> `get_app_data_dir` **in both modules that imported the name** — `utils.factory_reset`
+> and `utils.settings` — because patching one leaves the other aimed at the real
+> directory. Read that fixture before adding a test there. Patching only one of them
+> once overwrote a real `settings.json` with defaults during a mutation check.
 
 ## GUI Tests
 

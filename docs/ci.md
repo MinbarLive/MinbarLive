@@ -12,7 +12,7 @@ on every push to `main`. The workflow lives in
 
 `test` runs on Windows because that is the primary target: it is where the
 system-audio loopback path, the ffmpeg download offer and the DPI manifest live,
-and roughly 30 % of the suite (`tests/test_gui.py`, 345 tests) builds real Qt
+and roughly a third of the suite (`tests/test_gui.py`, 525 tests) builds real Qt
 windows. `lint` has no such constraint and runs on Linux, which starts faster.
 
 `linux-smoke` exists because Linux users do run MinbarLive from source, and
