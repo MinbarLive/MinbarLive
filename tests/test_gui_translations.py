@@ -148,6 +148,7 @@ WIZARD_KEYS = [
     "api_key_status_none",
     "api_key_select_provider",
     "update_available",
+    "skip_this_version",
     "check_updates_on_launch",
     "integrated_windows_hint",
     "window_style_label",

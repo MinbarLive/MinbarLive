@@ -3431,6 +3431,101 @@ class TestUpdateBanner:
             second.close()
 
 
+class TestSkippingAnUpdate:
+    """"Skip this version" — the permanent half of dismissing the notice.
+
+    The ✕ beside it hides the banner until the next launch ("not now"); this
+    records the release and stays quiet for it for good ("not this one"). A user
+    deliberately staying on their build had only one way to stop being asked
+    before this: turn the whole check off, which then also hides the release
+    they would have wanted.
+    """
+
+    @pytest.fixture
+    def banner(self, qt_app, monkeypatch):
+        import gui.update_banner as ub
+        from utils.update_check import UpdateInfo
+
+        ub.reset_cache()
+        monkeypatch.setattr(
+            ub,
+            "check_for_update",
+            lambda include_prereleases=False: UpdateInfo(
+                version="2.0.0", url="https://example.invalid/r"
+            ),
+        )
+        skipped: list[str] = []
+        made = ub.UpdateBanner(
+            lambda key, fallback="": fallback, on_skip=skipped.append
+        )
+        yield made, skipped, ub
+        made.close()
+        ub.reset_cache()
+
+    def test_skipping_hides_it_and_reports_the_version(self, banner, qt_app):
+        made, skipped, _ub = banner
+        made.start_check(True)
+        _wait_for(qt_app, lambda: not made.isHidden())
+        made.skip_btn.click()
+        assert made.isHidden()
+        # Reported out rather than written here: the banner knows nothing about
+        # where preferences live.
+        assert skipped == ["2.0.0"]
+
+    def test_a_skipped_version_never_appears_again(self, banner, qt_app):
+        made, _skipped, ub = banner
+        # A fresh launch: same answer from GitHub, with the stored skip.
+        ub.reset_cache()
+        made.start_check(True, False, "2.0.0")
+        _settle(qt_app)
+        assert made.isHidden()
+
+    def test_a_newer_release_still_gets_through(self, banner, qt_app):
+        # Skipping 1.5.0 must not silence the update notice for good — that is
+        # what turning the check off is for.
+        made, _skipped, ub = banner
+        ub.reset_cache()
+        made.start_check(True, False, "1.5.0")
+        _wait_for(qt_app, lambda: not made.isHidden())
+        assert "2.0.0" in made.label.text()
+
+    def test_an_older_release_than_the_skipped_one_stays_quiet(self, banner, qt_app):
+        # Not an equality test: a patch published on an older branch, or the
+        # same tag re-pointed, is the same news again.
+        made, _skipped, ub = banner
+        ub.reset_cache()
+        made.start_check(True, False, "2.1.0")
+        _settle(qt_app)
+        assert made.isHidden()
+
+    def test_nothing_is_skipped_by_default(self, banner, qt_app):
+        # The guard that matters: is_newer_version(x, "") is False, so treating
+        # an empty setting as a version would hide the banner from everyone.
+        made, _skipped, _ub = banner
+        made.start_check(True, False, "")
+        _wait_for(qt_app, lambda: not made.isHidden())
+        assert "2.0.0" in made.label.text()
+
+    def test_the_panel_writes_the_skip_through_at_once(self, qt_app, monkeypatch):
+        # Not deferred to the next _persist: the point of skipping is that the
+        # notice is gone for good, and a panel that never gets round to
+        # persisting would ask again on the next launch.
+        import gui.control_panel as cp
+
+        saved: list[str] = []
+        p = _panel(monkeypatch)
+        try:
+            monkeypatch.setattr(
+                cp, "save_settings", lambda s: saved.append(s.skipped_update_version)
+            )
+            p._on_update_skipped("3.1.4")
+            assert p.settings.skipped_update_version == "3.1.4"
+            assert saved == ["3.1.4"]
+        finally:
+            p.settings.skipped_update_version = ""
+            p.close()
+
+
 class TestBatchWindow:
     """The pipeline is batch/processor.py; these cover the window around it."""
 

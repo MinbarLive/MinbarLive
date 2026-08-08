@@ -231,5 +231,6 @@
   "cost_estimate_note": "Tahmin — genel liste fiyatları",
   "cost_unpriced": "fiyatsız",
   "cost_requests": "istek",
-  "cost_last_30_days": "Son 30 gün: {total} · {count} oturum"
+  "cost_last_30_days": "Son 30 gün: {total} · {count} oturum",
+  "skip_this_version": "Bu sürümü atla"
 }

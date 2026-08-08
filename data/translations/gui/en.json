@@ -240,5 +240,6 @@
   "opacity_transparent_hint": "Transparent mode has no background of its own, so this sets how dark the box behind each line is.",
   "history_summary_heading": "Summary",
   "history_has_summary": "Has a saved summary",
-  "history_read_error": "Could not read this session."
+  "history_read_error": "Could not read this session.",
+  "skip_this_version": "Skip this version"
 }

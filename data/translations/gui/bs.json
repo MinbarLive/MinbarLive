@@ -231,5 +231,6 @@
   "cost_estimate_note": "Procjena — javne cijene",
   "cost_unpriced": "bez cijene",
   "cost_requests": "zahtjeva",
-  "cost_last_30_days": "Zadnjih 30 dana: {total} · {count} sesija"
+  "cost_last_30_days": "Zadnjih 30 dana: {total} · {count} sesija",
+  "skip_this_version": "Preskoči ovu verziju"
 }

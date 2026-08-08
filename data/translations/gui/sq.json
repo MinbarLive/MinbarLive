@@ -231,5 +231,6 @@
   "cost_estimate_note": "Vlerësim — çmime publike",
   "cost_unpriced": "pa çmim",
   "cost_requests": "kërkesa",
-  "cost_last_30_days": "30 ditët e fundit: {total} · {count} sesione"
+  "cost_last_30_days": "30 ditët e fundit: {total} · {count} sesione",
+  "skip_this_version": "Kapërce këtë version"
 }

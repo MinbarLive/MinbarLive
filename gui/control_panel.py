@@ -263,7 +263,9 @@ class ControlPanel(QMainWindow):
         # One anonymous request to the GitHub releases API, off the GUI thread;
         # the banner appears only if it answers with a newer version.
         self.update_banner.start_check(
-            self.settings.check_for_updates, self.settings.include_prereleases
+            self.settings.check_for_updates,
+            self.settings.include_prereleases,
+            self.settings.skipped_update_version,
         )
 
         # With hide mode "never" (the default) the overlay is open even while
@@ -392,7 +394,7 @@ class ControlPanel(QMainWindow):
         # the check finds a release newer than the running version.
         from gui.update_banner import UpdateBanner
 
-        self.update_banner = UpdateBanner(self._t)
+        self.update_banner = UpdateBanner(self._t, on_skip=self._on_update_skipped)
         side.addWidget(self.update_banner)
 
         self.card_area = QScrollArea()
@@ -2771,6 +2773,17 @@ class ControlPanel(QMainWindow):
             self.subtitle_window.set_live_text(text, settled)
 
     # ── persistence / shutdown ───────────────────────────────────────────
+    def _on_update_skipped(self, version: str) -> None:
+        """Remember a release the user chose to pass over.
+
+        Written through at once rather than at the next ``_persist``: the point
+        of skipping is that the notice is gone for good, and a panel that never
+        gets round to persisting (a crash, a kill) would ask again on the next
+        launch.
+        """
+        self.settings.skipped_update_version = version
+        save_settings(self.settings)
+
     def _persist(self) -> None:
         self.settings.source_language = language_canonical_name(
             self.source_combo.currentText()
