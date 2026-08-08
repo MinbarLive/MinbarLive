@@ -19,6 +19,7 @@ from __future__ import annotations
 import queue
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -4059,6 +4060,23 @@ class TestThemedDialogs:
         assert not dialog.yes_btn.isDefault()
         dialog.close()
 
+    def test_a_destructive_confirm_is_not_painted_in_the_go_colour(
+        self, qt_app, texts
+    ):
+        # #accent is the app's green "go": on a button that deletes something it
+        # reads as the safe, recommended half of the choice. Opt-in, so the
+        # ordinary confirms around it are unchanged.
+        from gui.dialogs import MessageDialog
+
+        ordinary = MessageDialog(None, "T", "M", confirm=True, translate=texts)
+        assert ordinary.yes_btn.objectName() == "accent"
+        deleting = MessageDialog(
+            None, "T", "M", confirm=True, destructive=True, translate=texts
+        )
+        assert deleting.yes_btn.objectName() == "danger"
+        for w in (ordinary, deleting):
+            w.close()
+
     def test_the_severity_decides_the_glyph_colour(self, qt_app):
         from PySide6.QtWidgets import QLabel
 
@@ -4735,6 +4753,235 @@ class TestSettingsWindowKeys:
         self._select(win, "openai")
         assert win.key_status.text() != "—"
         assert win.remove_key_btn.isEnabled()
+
+
+# A path on no real drive: every reset test reports it back, and nothing here
+# may be tempted to touch a real one.
+_RESET_DIR = Path("X:/nowhere/MinbarLive")
+
+
+def _reset_ok(keys=("openai",)):
+    from utils.factory_reset import ResetResult
+
+    return ResetResult(
+        data_dir=_RESET_DIR, data_dir_removed=True, keys_removed=list(keys)
+    )
+
+
+def _reset_failed(errors=("openai: the key is still in the keychain",)):
+    from utils.factory_reset import ResetResult
+
+    return ResetResult(
+        data_dir=_RESET_DIR, data_dir_removed=False, errors=list(errors)
+    )
+
+
+class TestSettingsWindowFactoryReset:
+    """The one irreversible control in the app.
+
+    Nothing here calls the real ``factory_reset`` — it deletes the developer's
+    own app-data folder and keychain entries. ``utils.factory_reset`` is tested
+    on its own in tests/test_factory_reset.py; this covers the window around it.
+    """
+
+    @pytest.fixture
+    def reset_win(self, qt_app, monkeypatch):
+        """The window, plus a recorder. Two queues drive the handler's loop:
+
+        ``answers`` is what each dialog returns and ``results`` what each
+        ``factory_reset()`` call hands back. Both keep repeating their last
+        entry once exhausted, so a test states only the turns it cares about
+        and an unexpected extra round cannot hang the run.
+        """
+        import gui.settings_window as sw
+
+        monkeypatch.setattr(sw, "save_settings", lambda s: None)
+        p = _panel(monkeypatch)
+        p.open_settings()
+        win = p._settings_window
+
+        calls = {
+            "reset": 0,
+            "quit": 0,
+            "messages": [],
+            "asked": [],
+            "answers": [False],
+            "results": [_reset_ok()],
+        }
+
+        def _next(queue):
+            return queue.pop(0) if len(queue) > 1 else queue[0]
+
+        def fake_reset():
+            calls["reset"] += 1
+            return _next(calls["results"])
+
+        # Patched on utils.factory_reset, because the handler imports it inside
+        # the function — the name is looked up at call time, not at import.
+        import utils.factory_reset as fr
+
+        monkeypatch.setattr(fr, "factory_reset", fake_reset)
+        monkeypatch.setattr(
+            sw,
+            "show_message",
+            lambda parent, title, message, **kw: calls["messages"].append(
+                (title, message)
+            ),
+        )
+
+        def fake_ask(parent, title, message, **kw):
+            calls["asked"].append((title, message, kw))
+            return _next(calls["answers"])
+
+        monkeypatch.setattr(sw, "ask_yes_no", fake_ask)
+
+        class FakeApp:
+            @staticmethod
+            def quit():
+                calls["quit"] += 1
+
+            @staticmethod
+            def sendPostedEvents(*_a):  # noqa: N802 - mirrors the Qt API
+                pass
+
+        monkeypatch.setattr(sw, "QApplication", FakeApp)
+
+        yield win, calls
+        p.close_secondary_windows()
+        p.close()
+
+    def test_the_button_is_painted_as_destructive(self, reset_win):
+        win, _ = reset_win
+        # #danger, so it does not read as the next ordinary button in a column
+        # of them. The sheet already carries the rule.
+        assert win.reset_btn.objectName() == "danger"
+
+    def test_a_running_session_blocks_it_before_anything_is_asked(
+        self, reset_win
+    ):
+        # A live pipeline is writing history and holds the recordings directory
+        # open, so rmtree would fail halfway through.
+        win, calls = reset_win
+        win._panel._running = True
+        win._on_factory_reset()
+        assert calls["reset"] == 0
+        assert calls["asked"] == []
+        assert calls["quit"] == 0
+        assert len(calls["messages"]) == 1
+
+    def test_connecting_blocks_it_too(self, reset_win):
+        # _starting, not only _running: the session is coming up and the
+        # provider handshake is already writing.
+        win, calls = reset_win
+        win._panel._running = False
+        win._panel._starting = True
+        win._on_factory_reset()
+        assert calls["reset"] == 0
+
+    def test_declining_the_confirmation_deletes_nothing(self, reset_win):
+        win, calls = reset_win
+        calls["answers"] = [False]
+        win._on_factory_reset()
+        assert calls["reset"] == 0
+        assert calls["quit"] == 0
+
+    def test_the_confirmation_cannot_be_deleted_away_with_return(self, reset_win):
+        # default_yes=False and named buttons: on an irreversible delete,
+        # Return must not press the destructive one and "Yes"/"No" makes the
+        # user guess which button loses their data (gui/dialogs.py).
+        win, calls = reset_win
+        calls["answers"] = [False]
+        win._on_factory_reset()
+        _title, _msg, kw = calls["asked"][0]
+        assert kw["default_yes"] is False
+        assert kw["yes_text"] and kw["no_text"]
+        assert kw["yes_text"] != kw["no_text"]
+        # …and it is not painted in the accent green, which would mark deleting
+        # everything as the recommended half of the choice.
+        assert kw["destructive"] is True
+
+    def test_accepting_resets_reports_the_path_and_quits(self, reset_win):
+        win, calls = reset_win
+        calls["answers"] = [True]
+        win._on_factory_reset()
+        assert calls["reset"] == 1
+        assert calls["quit"] == 1
+        _title, message = calls["messages"][0]
+        # The report names what went — that is the whole point of showing one.
+        # str(Path), not the literal: on Windows it comes back backslashed.
+        assert str(_RESET_DIR) in message
+        assert "openai" in message
+
+    def test_a_reset_with_no_stored_keys_says_so(self, reset_win):
+        win, calls = reset_win
+        calls["answers"] = [True]
+        calls["results"] = [_reset_ok(keys=())]
+        win._on_factory_reset()
+        _title, message = calls["messages"][0]
+        # Not an empty gap where the provider list belongs — a blank there
+        # reads as a truncated message. Asserted through the window's own
+        # translation: the suite runs in whatever GUI language the machine is
+        # set to, so an English literal here only passes on an English box.
+        assert win._t("reset_done_no_keys", "none were stored") in message
+        assert str(_RESET_DIR) in message
+
+    def test_a_failed_reset_names_the_error_and_offers_another_go(self, reset_win):
+        win, calls = reset_win
+        # Confirm, then "Close MinbarLive" at the failure dialog.
+        calls["answers"] = [True, False]
+        calls["results"] = [_reset_failed()]
+        win._on_factory_reset()
+        _title, message, kw = calls["asked"][-1]
+        assert "still in the keychain" in message
+        assert str(_RESET_DIR) in message
+        # The retry is the offer, and it is the default — the destructive
+        # decision was already made at the confirmation, this is the recovery.
+        assert kw["default_yes"] is True
+        assert not kw.get("destructive")
+        assert kw["yes_text"] != kw["no_text"]
+        # Quits once the user gives up: every provider key is already gone, so
+        # what is left running is an install whose storage was pulled out from
+        # under it.
+        assert calls["quit"] == 1
+
+    def test_try_again_really_runs_the_reset_again(self, reset_win):
+        win, calls = reset_win
+        # Confirm, then Try again; the second attempt succeeds.
+        calls["answers"] = [True, True]
+        calls["results"] = [_reset_failed(), _reset_ok()]
+        win._on_factory_reset()
+        assert calls["reset"] == 2
+        assert calls["quit"] == 1
+        # The second run succeeded, so the last thing shown is the report and
+        # not another failure dialog.
+        assert len(calls["asked"]) == 2
+        _title, message = calls["messages"][-1]
+        assert str(_RESET_DIR) in message
+
+    def test_the_retry_loop_ends_when_the_user_stops_retrying(self, reset_win):
+        # Guards the shape of the loop itself: it is a `while True`, so a
+        # failure path that never consults the user again is an app that cannot
+        # be closed.
+        win, calls = reset_win
+        calls["answers"] = [True, True, True, False]
+        calls["results"] = [_reset_failed()]
+        win._on_factory_reset()
+        # The confirmation, then two "Try again"s, then "Close MinbarLive".
+        assert calls["reset"] == 3
+        assert calls["quit"] == 1
+
+    def test_a_translation_with_a_broken_placeholder_still_reports(
+        self, reset_win, monkeypatch
+    ):
+        win, calls = reset_win
+        calls["answers"] = [True]
+        # A translator who wrote {pfad} instead of {path}: the message must
+        # still name the folder rather than raising inside the handler. Set on
+        # the panel's table, which is what _t reads.
+        win._panel.texts["reset_done_text"] = "Deleted: {pfad}"
+        win._on_factory_reset()
+        _title, message = calls["messages"][0]
+        assert str(_RESET_DIR) in message
 
 
 class TestIntegratedWindows:

@@ -240,5 +240,17 @@
   "opacity_transparent_hint": "Der transparente Modus hat keinen eigenen Hintergrund – dies legt fest, wie dunkel die Box hinter jeder Zeile ist.",
   "history_summary_heading": "Zusammenfassung",
   "history_has_summary": "Zusammenfassung gespeichert",
-  "history_read_error": "Diese Sitzung konnte nicht gelesen werden."
+  "history_read_error": "Diese Sitzung konnte nicht gelesen werden.",
+  "reset_section": "Alles löschen",
+  "reset_hint": "Entfernt alle Spuren von MinbarLive auf diesem Computer: Einstellungen, Sitzungsverlauf, Stapel-Transkripte, Protokolle und die API-Schlüssel im Schlüsselspeicher des Systems. Nur sinnvoll, wenn Sie MinbarLive nicht mehr verwenden möchten. Beim Umstieg auf eine neuere Version genügt es, die Programmdatei zu ersetzen — die Einstellungen bleiben erhalten.",
+  "reset_button": "Alles löschen und zurücksetzen",
+  "reset_confirm_text": "Möchten Sie wirklich alles entfernen — den gesamten Verlauf, Stapel-Transkripte, Protokolle, Einstellungen und Ihre API-Schlüssel?\n\nDas kann nicht rückgängig gemacht werden.\n\nWir empfehlen das nur, wenn Sie MinbarLive gar nicht mehr nutzen und keine Rückstände hinterlassen möchten. Wenn Sie auf eine neuere Version von MinbarLive umsteigen, empfehlen wir, alles so zu lassen und nur die Programmdatei (.exe / .app / .AppImage) zu löschen — dann bleiben alle Einstellungen erhalten und Sie können direkt weiterarbeiten.",
+  "reset_confirm_yes": "Alles löschen",
+  "reset_done_text": "Erfolgreich gelöscht:\n{path}\n\nEntfernte API-Schlüssel: {keys}\n\nMinbarLive wird jetzt geschlossen. Beim nächsten Start beginnt der Einrichtungsassistent wie bei einer Neuinstallation.",
+  "reset_done_no_keys": "keine gespeichert",
+  "reset_failed_title": "Zurücksetzen unvollständig",
+  "reset_failed_text": "Es konnte nicht alles entfernt werden:\n{errors}\n\nSie können es erneut versuchen oder MinbarLive schließen und diesen Ordner von Hand löschen:\n{path}",
+  "dlg_stop_before_reset": "Stoppen Sie die App, bevor Sie zurücksetzen.",
+  "reset_retry": "Erneut versuchen",
+  "reset_close": "MinbarLive schließen"
 }

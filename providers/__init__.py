@@ -571,7 +571,11 @@ def get_default_model(provider: str, capability: str) -> str:
 # SDKs inside stay lazily imported. OpenAI is the exception: its persistence
 # goes through utils.settings, which also cleans up the plaintext key older
 # versions wrote when no keyring backend existed.
-_KEYED_PROVIDERS = ("openai", "gemini", "anthropic", "deepgram")
+#
+# Public, because it is also the answer to "which keychain entries does this
+# app own?" — utils/factory_reset.py needs exactly that list, and a second copy
+# of it is a list that goes stale the day a fifth provider is added.
+KEYED_PROVIDERS = ("openai", "gemini", "anthropic", "deepgram")
 
 # Env vars each provider's key lookup falls back to (get_stored_api_key above,
 # and each providers/<id>/client._load_stored_key). load_dotenv() bakes these
@@ -600,7 +604,7 @@ def get_stored_api_key(provider: str) -> str | None:
         from utils.settings import get_saved_api_key
 
         key = get_saved_api_key() or os.getenv("OPENAI_API_KEY")
-    elif provider in _KEYED_PROVIDERS:
+    elif provider in KEYED_PROVIDERS:
         key = _client_module(provider)._load_stored_key()
     else:
         return None
@@ -609,7 +613,7 @@ def get_stored_api_key(provider: str) -> str | None:
 
 def has_usable_key(provider: str) -> bool:
     """True if the provider has a key available (in memory or stored)."""
-    if provider not in _KEYED_PROVIDERS:
+    if provider not in KEYED_PROVIDERS:
         return False
     module = _client_module(provider)
     return module.has_api_key() or get_stored_api_key(provider) is not None
@@ -627,7 +631,7 @@ def has_configured_key(provider: str) -> bool:
     not evidence the user configured that provider in MinbarLive, so it must
     not count for provider-selection decisions (resolve_provider_by_keys).
     """
-    if provider not in _KEYED_PROVIDERS:
+    if provider not in KEYED_PROVIDERS:
         return False
     if provider == "openai":
         from utils.settings import get_saved_api_key
@@ -646,7 +650,7 @@ def save_api_key(provider: str, key: str) -> bool:
         which makes the key session-only — it is never written to disk.
     """
     key = (key or "").strip()
-    if not key or provider not in _KEYED_PROVIDERS:
+    if not key or provider not in KEYED_PROVIDERS:
         return False
 
     if provider == "openai":
@@ -669,7 +673,7 @@ def save_api_key(provider: str, key: str) -> bool:
 
 def clear_api_key(provider: str) -> None:
     """Delete a provider's stored key and deactivate it for the session."""
-    if provider not in _KEYED_PROVIDERS:
+    if provider not in KEYED_PROVIDERS:
         return
 
     if provider == "openai":

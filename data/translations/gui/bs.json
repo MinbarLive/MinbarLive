@@ -231,5 +231,17 @@
   "cost_estimate_note": "Procjena — javne cijene",
   "cost_unpriced": "bez cijene",
   "cost_requests": "zahtjeva",
-  "cost_last_30_days": "Zadnjih 30 dana: {total} · {count} sesija"
+  "cost_last_30_days": "Zadnjih 30 dana: {total} · {count} sesija",
+  "reset_section": "Izbriši sve",
+  "reset_hint": "Uklanja svaki trag MinbarLive s ovog računara: postavke, historiju sesija, transkripte serijske obrade, zapisnike i API ključeve iz sistemskog spremnika ključeva. Učinite to samo ako više ne želite koristiti MinbarLive. Ako prelazite na noviju verziju, dovoljno je zamijeniti programsku datoteku — postavke ostaju sačuvane.",
+  "reset_button": "Izbriši sve i vrati na početno",
+  "reset_confirm_text": "Jeste li sigurni da želite ukloniti sve — cijelu historiju, transkripte serijske obrade, zapisnike, postavke i vaše API ključeve?\n\nOvo se ne može poništiti.\n\nPreporučujemo to samo ako više uopšte ne želite koristiti MinbarLive i ne želite ostaviti nikakve ostatke. Ako prelazite na noviju verziju MinbarLive, preporučujemo da sve ostavite kako je i izbrišete samo programsku datoteku (.exe / .app / .AppImage) — tada sve postavke ostaju sačuvane i možete odmah nastaviti.",
+  "reset_confirm_yes": "Izbriši sve",
+  "reset_done_text": "Uspješno izbrisano:\n{path}\n\nUklonjeni API ključevi: {keys}\n\nMinbarLive će se sada zatvoriti. Pri sljedećem pokretanju počinje čarobnjak za postavljanje, kao kod nove instalacije.",
+  "reset_done_no_keys": "nijedan nije bio sačuvan",
+  "reset_failed_title": "Vraćanje nije dovršeno",
+  "reset_failed_text": "Nije bilo moguće ukloniti sve:\n{errors}\n\nMožete pokušati ponovo ili zatvoriti MinbarLive i ručno izbrisati ovaj folder:\n{path}",
+  "dlg_stop_before_reset": "Zaustavite aplikaciju prije vraćanja na početno.",
+  "reset_retry": "Pokušaj ponovo",
+  "reset_close": "Zatvori MinbarLive"
 }

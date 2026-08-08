@@ -101,6 +101,10 @@ class SettingsWindow(QDialog):
         layout.addWidget(self._appearance_card())
         layout.addWidget(self._islamic_card())
         layout.addWidget(self._api_key_card())
+        # Last, below the keys it also deletes: the one irreversible control in
+        # the app belongs at the bottom of the scroll, not next to something
+        # somebody reaches for often.
+        layout.addWidget(self._reset_card())
         layout.addStretch(1)
 
         self.scroll.setWidget(self.body)
@@ -285,6 +289,29 @@ class SettingsWindow(QDialog):
         self._refresh_key_status()
         return card
 
+    def _reset_card(self) -> QFrame:
+        card, box = self._card("⚠", self._t("reset_section", "Delete everything"))
+        box.addWidget(
+            self._hint(
+                self._t(
+                    "reset_hint",
+                    "Removes every trace of MinbarLive from this computer. Only "
+                    "do this if you are done with it — for an update it is "
+                    "enough to replace the program file.",
+                )
+            )
+        )
+        self.reset_btn = QPushButton(
+            "✕  " + self._t("reset_button", "Delete everything and reset")
+        )
+        # #danger, not #accent: the sheet paints it in the warning red the
+        # history viewer's Delete already uses, so it does not read as the next
+        # ordinary button in a column of them.
+        self.reset_btn.setObjectName("danger")
+        self.reset_btn.clicked.connect(self._on_factory_reset)
+        box.addWidget(self.reset_btn)
+        return card
+
     @staticmethod
     def _theme_index(mode: str) -> int:
         return THEME_MODES.index(mode) if mode in THEME_MODES else 0
@@ -449,3 +476,114 @@ class SettingsWindow(QDialog):
             translate=self._t,
         )
         self._refresh_key_status()
+
+    # ── factory reset ────────────────────────────────────────────────────
+    def _on_factory_reset(self) -> None:
+        """Delete the app-data folder and the keychain entries, then quit.
+
+        The app is closed either way, success or not: what is left running is a
+        control panel whose storage has just been pulled out from under it —
+        every provider key is gone, and on success so is the settings file it
+        would write on close.
+        """
+        if self._panel._running or self._panel._starting:
+            # Same rule as changing or removing a key, and for a stronger
+            # reason: a live pipeline is writing history and holding the
+            # recordings directory open, so rmtree would fail halfway.
+            show_message(
+                self,
+                self._t("reset_section", "Delete everything"),
+                self._t(
+                    "dlg_stop_before_reset", "Stop the session before resetting."
+                ),
+                kind="info",
+                translate=self._t,
+            )
+            return
+        if not ask_yes_no(
+            self,
+            self._t("reset_section", "Delete everything"),
+            self._t(
+                "reset_confirm_text",
+                "Really remove everything — all history, batch transcripts, "
+                "logs, settings and your API keys? This cannot be undone.",
+            ),
+            kind="error",
+            # Named actions, No is the default, and the accepting button wears
+            # the warning red: on an irreversible delete, "Yes"/"No" makes the
+            # user guess which button loses their data, Return must not press
+            # the destructive one, and the accent green would mark it as the
+            # recommended half of the choice (see gui/dialogs.py).
+            default_yes=False,
+            destructive=True,
+            yes_text=self._t("reset_confirm_yes", "Delete everything"),
+            no_text=self._t("dlg_cancel", "Cancel"),
+            translate=self._t,
+        ):
+            return
+
+        from utils.factory_reset import factory_reset
+
+        while True:
+            result = factory_reset()
+            if result.ok:
+                keys = ", ".join(result.keys_removed) or self._t(
+                    "reset_done_no_keys", "none were stored"
+                )
+                show_message(
+                    self,
+                    "MinbarLive",
+                    self._format(
+                        "reset_done_text",
+                        "Successfully deleted:\n\n{path}\n\nAPI keys removed: "
+                        "{keys}\n\nMinbarLive will now close.",
+                        path=str(result.data_dir),
+                        keys=keys,
+                    ),
+                    kind="info",
+                    translate=self._t,
+                )
+                break
+            # A failure is usually transient — a log file still open, a locked
+            # keychain — so the answer is another attempt, not a dead end. The
+            # retry is the default and keeps the accent colour: the destructive
+            # decision was made at the confirmation, and this is the recovery.
+            if not ask_yes_no(
+                self,
+                self._t("reset_failed_title", "Reset incomplete"),
+                self._format(
+                    "reset_failed_text",
+                    "Not everything could be removed:\n\n{errors}\n\nYou can "
+                    "try again, or close MinbarLive and delete this folder by "
+                    "hand:\n{path}",
+                    errors="\n".join(result.errors) or "—",
+                    path=str(result.data_dir),
+                ),
+                kind="error",
+                default_yes=True,
+                yes_text=self._t("reset_retry", "Try again"),
+                no_text=self._t("reset_close", "Close MinbarLive"),
+                translate=self._t,
+            ):
+                break
+        # quit(), not close(): the panel's closeEvent persists its geometry,
+        # which recreates the folder that was just deleted. save_settings is
+        # blocked as well (utils.settings.block_writes) — belt and braces,
+        # because the reset must not depend on which of the two runs first.
+        #
+        # Reached from both branches. Every provider key is gone by now, so a
+        # panel left open is an install that cannot translate and whose storage
+        # is missing — closing is the honest end of both paths.
+        QApplication.quit()
+
+    def _format(self, key: str, fallback: str, **values: str) -> str:
+        """A translated template with ``values`` substituted.
+
+        A translation that lost or mangled a placeholder must not take the
+        message down with it — the update banner learned this the same way.
+        """
+        template = self._t(key, fallback)
+        try:
+            return template.format(**values)
+        except (KeyError, IndexError):
+            return fallback.format(**values)

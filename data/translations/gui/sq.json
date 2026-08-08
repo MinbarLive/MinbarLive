@@ -231,5 +231,17 @@
   "cost_estimate_note": "Vlerësim — çmime publike",
   "cost_unpriced": "pa çmim",
   "cost_requests": "kërkesa",
-  "cost_last_30_days": "30 ditët e fundit: {total} · {count} sesione"
+  "cost_last_30_days": "30 ditët e fundit: {total} · {count} sesione",
+  "reset_section": "Fshi çdo gjë",
+  "reset_hint": "Heq çdo gjurmë të MinbarLive nga ky kompjuter: cilësimet, historikun e sesioneve, transkriptet e përpunimit në grup, regjistrat dhe kyçet API në depon e kyçeve të sistemit. Bëjeni këtë vetëm nëse nuk doni më të përdorni MinbarLive. Nëse kaloni në një version më të re, mjafton të zëvendësoni skedarin e programit — cilësimet ruhen.",
+  "reset_button": "Fshi çdo gjë dhe rivendos",
+  "reset_confirm_text": "Jeni i sigurt që doni të hiqni çdo gjë — të gjithë historikun, transkriptet e përpunimit në grup, regjistrat, cilësimet dhe kyçet API?\n\nKjo nuk mund të zhbëhet.\n\nE rekomandojmë vetëm nëse nuk doni më fare të përdorni MinbarLive dhe nuk doni të lini mbetje. Nëse kaloni në një version më të re të MinbarLive, rekomandojmë të lini çdo gjë siç është dhe të fshini vetëm skedarin e programit (.exe / .app / .AppImage) — atëherë të gjitha cilësimet ruhen dhe mund të vazhdoni drejtpërdrejt.",
+  "reset_confirm_yes": "Fshi çdo gjë",
+  "reset_done_text": "U fshi me sukses:\n{path}\n\nKyçet API të hequr: {keys}\n\nMinbarLive do të mbyllet tani. Në nisjen e radhës fillon udhëzuesi i konfigurimit, si në një instalim të re.",
+  "reset_done_no_keys": "nuk ishte ruajtur asnjë",
+  "reset_failed_title": "Rivendosja e papërfunduar",
+  "reset_failed_text": "Nuk u hoq çdo gjë:\n{errors}\n\nMund të provoni përsëri ose të mbyllni MinbarLive dhe të fshini këtë dosje me dorë:\n{path}",
+  "dlg_stop_before_reset": "Ndalni aplikacionin përpara rivendosjes.",
+  "reset_retry": "Provo përsëri",
+  "reset_close": "Mbyll MinbarLive"
 }
