@@ -1085,6 +1085,7 @@ class TestControlPanelLayout:
         """
         import gui.control_panel as cp
         from gui.theme import apply_theme
+        from gui.window_size import MAX_SCREEN_SHARE
         from utils.settings import load_settings
 
         monkeypatch.setattr(cp, "save_settings", lambda s: None)
@@ -1119,27 +1120,132 @@ class TestControlPanelLayout:
             # Opened tall on purpose, so the measurement is of the content and
             # not of whatever the default happens to be. The window chrome is
             # the difference between the two.
-            p.resize(cp._DEFAULT_W, 900)
             p.show()
             _settle(qt_app, rounds=14)
             area = p.card_area
             content = area.widget().sizeHint().height()
             chrome = p.height() - area.viewport().height()
-            assert cp._DEFAULT_H >= content + chrome, (
-                f"the cards need a {content + chrome}px window at "
-                f"{cp._DEFAULT_W}px wide and _DEFAULT_H is {cp._DEFAULT_H} — a "
-                f"fresh install opens already scrolled"
+            # The RULE, not the outcome on this machine's screen. A test that
+            # asserts "no scroll bar, no slack" is asserting the screen it runs
+            # on: at a 2.0 scale factor this display reports a 1024x552 logical
+            # screen, the 92% clamp binds, and a scroll bar is then the correct
+            # answer — there is no window that fits 599 px of cards into 507.
+            # (Measured at scale 1 / 1.25 / 1.5 / 2 / 2.5.) The overlay tests
+            # made this exact mistake in s44 and only held on the taller box.
+            room = int(
+                p.screen().availableGeometry().height() * MAX_SCREEN_SHARE
             )
-            # …and the default width keeps the two-column arrangement the setup
-            # videos show. Three columns pins the Advanced card open, which is a
-            # denser panel than a first-time user should be handed.
-            p.resize(cp._DEFAULT_W, cp._DEFAULT_H)
-            _settle(qt_app, rounds=14)
-            assert p.card_grid.count == 2
-            assert not area.verticalScrollBar().isVisible()
+            expected = max(cp._MIN_WINDOW_H, min(content + chrome, room))
+            assert p.height() == expected, (
+                f"the cards need {content + chrome}px, the screen allows {room}px "
+                f"and the floor is {cp._MIN_WINDOW_H}px, so the window should be "
+                f"{expected}px tall — it opened {p.height()}px"
+            )
+            if content + chrome <= room:
+                # Room to obey the rule, so both failures are visible here:
+                # 640 was 19 px short and opened scrolled, 780 overshot by 121
+                # and opened half empty.
+                assert area.viewport().height() == content, (
+                    f"{area.viewport().height() - content}px of empty space "
+                    f"below the cards — the opening height should be exactly "
+                    f"what they need"
+                )
+                assert not area.verticalScrollBar().isVisible()
+                # …and the default width keeps the two-column arrangement the
+                # setup videos show. Three columns pins the Advanced card open,
+                # which is a denser panel than a first-time user should be
+                # handed. Only meaningful when the width was not clamped either.
+                if p.width() == cp._DEFAULT_W:
+                    assert p.card_grid.count == 2
         finally:
             p.close()
             qt_app.setStyleSheet(previous_sheet)
+
+    def test_the_fit_never_grows_past_the_screen(self, panel, qt_app):
+        """A screen too short for the cards gets a scroll bar, not a window
+        hanging off the bottom of it.
+
+        Driven with a faked screen rather than by resizing this one: the clamp
+        only binds when 92 % of the available height is below what the cards
+        need, which on a 1104 px desktop never happens. It is reachable for real
+        at a 2.0 scale factor (a 552 px logical screen), and that is where the
+        mutation check for this line has to run — but a test that only guards on
+        a machine scaled to 200 % guards nothing on CI.
+        """
+        from gui.window_size import MAX_SCREEN_SHARE
+
+        class FakeRect:
+            def __init__(self, h):
+                self._h = h
+
+            def width(self):
+                return 1920
+
+            def height(self):
+                return self._h
+
+        class FakeScreen:
+            def __init__(self, h):
+                self._r = FakeRect(h)
+
+            def availableGeometry(self):
+                return self._r
+
+        panel.show()
+        _settle(qt_app, rounds=10)
+        for short in (600, 500):
+            panel.screen = lambda h=short: FakeScreen(h)
+            panel._fit_height_to_cards()
+            _settle(qt_app, rounds=6)
+            allowed = int(short * MAX_SCREEN_SHARE)
+            assert panel.height() <= allowed, (
+                f"a {short}px screen allows {allowed}px and the fit opened "
+                f"{panel.height()}px — the window hangs off the bottom"
+            )
+
+    def test_the_fit_leaves_a_restored_geometry_alone(self, qt_app, monkeypatch):
+        """The fit is for a first launch only.
+
+        A user who has sized the panel to suit their desk gets that size back;
+        re-fitting on every show would quietly undo it, and the height they chose
+        is exactly the kind of preference the panel already persists.
+
+        Asserted as "the fit never ran", not as "the window is 900 px tall".
+        ``setGeometry`` is a request: at a 1.5 scale factor this display reports a
+        736 px logical screen, so a stored 900 px height simply is not granted and
+        a pixel assertion here would be asserting the window manager rather than
+        the panel.
+        """
+        import gui.control_panel as cp
+        from utils.settings import load_settings
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+        fitted: list[int] = []
+        monkeypatch.setattr(
+            cp.ControlPanel,
+            "_fit_height_to_cards",
+            lambda self: fitted.append(self.height()),
+        )
+        settings = load_settings()
+        settings.window_geometry = "1180x900+80+60"
+        settings.window_maximized = False
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        try:
+            assert p._fit_height_on_show is False
+            p.show()
+            _settle(qt_app, rounds=10)
+            assert fitted == [], "the stored geometry was re-fitted away"
+        finally:
+            p.close()
+            settings.window_geometry, settings.window_maximized = "", False
 
     def test_the_opening_size_never_exceeds_the_screen(self, panel):
         """The height is chosen from the CONTENT, and content does not shrink to

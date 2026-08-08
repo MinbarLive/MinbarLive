@@ -151,7 +151,7 @@ _SOURCE_FONT_STEP = 5.0
 # The shipped font_size_base, i.e. the 100% the size stepper counts from.
 _FONT_SIZE_BASE_DEFAULT = 40
 
-# Opening size when nothing is stored, both measured rather than chosen.
+# Opening size when nothing is stored.
 #
 # WIDTH: two columns with room to spare. The 2→3 threshold is a window width of
 # **1040** (CardGrid._COL3_MIN_W is 1030 and _available_width reserves the scroll
@@ -159,16 +159,21 @@ _FONT_SIZE_BASE_DEFAULT = 40
 # than the one people are shown in the setup videos. 1000 leaves 40 px of margin
 # before that, so a theme or font change cannot tip a fresh install into it.
 #
-# HEIGHT: the two-column card stack needs a **659 px** window to fit without the
-# card area's vertical scroll bar — identical in all six GUI languages, measured
-# on a real panel. The old default was 640, nineteen pixels short, so every
-# first launch opened already scrolled. 780 clears it with headroom for a card
-# that grows later.
+# HEIGHT: exactly what the cards need and not a pixel more — the window should
+# be the smallest that shows everything without the card area scrolling.
+# 640 was nineteen pixels short, so every first launch opened already scrolled;
+# 780 overshot by 121 and opened a visibly half-empty window. So this constant
+# is only the height the window is BUILT at, and _fit_height_to_cards() replaces
+# it with the measured figure on the first show.
 #
-# Both are clamped to the screen by _default_size: a figure that suits a 2048px
-# monitor must not open off the bottom of a 1366x768 laptop.
+# It has to be measured there rather than settled here: card padding, borders
+# and fonts all come from the stylesheet, which Qt applies at polish time, so
+# before the first show the cards report a height that is not theirs. The value
+# below is this machine's answer, which keeps the built window the right size
+# for the frame or two before the fit and stands in if the measurement cannot be
+# taken at all.
 _DEFAULT_W = 1000
-_DEFAULT_H = 780
+_DEFAULT_H = 660
 # Height floor. Small enough that the panel can be dragged down to a corner of
 # the screen; everything above it scrolls. The WIDTH floor is not a constant —
 # it is measured from the cards, see _apply_minimum_size.
@@ -247,7 +252,10 @@ class ControlPanel(QMainWindow):
         # minimum — before any geometry is applied, so a stored size is never
         # clamped against a stale minimum.
         self._build()
-        if not self._restore_window_geometry():
+        # No stored geometry: open at the default and, once the cards have been
+        # styled and can be measured, shrink to exactly the height they need.
+        self._fit_height_on_show = not self._restore_window_geometry()
+        if self._fit_height_on_show:
             self.resize(self._default_size())
         self._restore_maximized_state()
         # _build() laid the grid out against the pre-resize size; redo it now
@@ -1360,6 +1368,48 @@ class ControlPanel(QMainWindow):
         # …and the first point at which there is an HWND to theme. The panel is
         # built AFTER apply_theme ran, so the sweep there never saw it.
         set_titlebar_dark(self, self.settings.theme_mode != "light")
+        # Same reason as the minimum above: the cards' real height only exists
+        # once the stylesheet has been applied to them. Once only, and only when
+        # this launch had no geometry to restore.
+        if self._fit_height_on_show:
+            self._fit_height_on_show = False
+            self._fit_height_to_cards()
+
+    def _fit_height_to_cards(self) -> None:
+        """Shrink the window to exactly the height the card column needs.
+
+        "As small as it can be without a scroll bar" is the whole rule, and it
+        cannot be a constant: the figure moves with the display's scaling, the
+        platform's fonts and the GUI language, and being 19 px under it opens the
+        panel already scrolled while being 121 px over it opens one that looks
+        half empty. Both of those shipped.
+
+        Only the height. The width decides the column count, and the column count
+        decides this measurement — so changing it here would invalidate the
+        number being measured.
+        """
+        # The log panel gives the cards a single column, which is several times
+        # taller than the two-column arrangement. Fitting to that would open a
+        # screen-tall window on a machine whose only stored preference is that
+        # the log was left open, so the built-in height stands there.
+        if not self._log_collapsed:
+            return
+        QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
+        area = self.card_area
+        # Chrome is everything the window spends on something other than the
+        # card viewport: the header, the banners, the frame's own margins.
+        chrome = self.height() - area.viewport().height()
+        wanted = area.widget().sizeHint().height() + chrome
+        screen = self.screen()
+        if screen is not None:
+            room = int(screen.availableGeometry().height() * MAX_SCREEN_SHARE)
+            wanted = min(wanted, room)
+        # No _MIN_WINDOW_H floor here on purpose: _apply_minimum_size has
+        # already set it as the window's minimum, two lines earlier in the same
+        # showEvent, and Qt clamps resize() to that. A floor here would be a
+        # second copy of the rule that could disagree with the first.
+        if wanted != self.height():
+            self.resize(self.width(), wanted)
 
     def _toggle_log_panel(self) -> None:
         self._log_collapsed = not self._log_collapsed
