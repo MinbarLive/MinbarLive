@@ -50,6 +50,7 @@ class MessageDialog(QDialog):
         kind: str = "warn",
         confirm: bool = False,
         default_yes: bool = True,
+        destructive: bool = False,
         yes_text: str | None = None,
         no_text: str | None = None,
         translate: Callable[[str, str], str] | None = None,
@@ -110,7 +111,11 @@ class MessageDialog(QDialog):
             self.no_btn.setMinimumHeight(38)
             self.no_btn.clicked.connect(self._answer_no)
             self.yes_btn = QPushButton(yes_text or t("dlg_yes", "Yes"))
-            self.yes_btn.setObjectName("accent")
+            # #accent is the app's green "go" colour, which is the wrong signal
+            # on a button that destroys something: it reads as the safe,
+            # recommended half of the choice. #danger paints it in the same red
+            # the sheet gives every other destructive control.
+            self.yes_btn.setObjectName("danger" if destructive else "accent")
             self.yes_btn.setMinimumHeight(38)
             self.yes_btn.clicked.connect(self._answer_yes)
             buttons.addWidget(self.no_btn)
@@ -170,12 +175,15 @@ def ask_yes_no(
     *,
     kind: str = "warn",
     default_yes: bool = True,
+    destructive: bool = False,
     yes_text: str | None = None,
     no_text: str | None = None,
     translate: Callable[[str, str], str] | None = None,
 ) -> bool:
     """True for the accepting button. Pass ``yes_text``/``no_text`` to name the
-    two actions when "Yes"/"No" would not tell the user what each one does.
+    two actions when "Yes"/"No" would not tell the user what each one does, and
+    ``destructive`` when the accepting button deletes something — it then wears
+    the warning red instead of the accent green.
 
     Dismissing the dialog counts as No. Use :func:`ask_yes_no_or_dismiss` where
     that is wrong — where "never mind" has to leave everything as it was.
@@ -187,6 +195,7 @@ def ask_yes_no(
             message,
             kind=kind,
             default_yes=default_yes,
+            destructive=destructive,
             yes_text=yes_text,
             no_text=no_text,
             translate=translate,
@@ -202,6 +211,7 @@ def ask_yes_no_or_dismiss(
     *,
     kind: str = "warn",
     default_yes: bool = True,
+    destructive: bool = False,
     yes_text: str | None = None,
     no_text: str | None = None,
     translate: Callable[[str, str], str] | None = None,
@@ -221,6 +231,7 @@ def ask_yes_no_or_dismiss(
         kind=kind,
         confirm=True,
         default_yes=default_yes,
+        destructive=destructive,
         yes_text=yes_text,
         no_text=no_text,
         translate=translate,

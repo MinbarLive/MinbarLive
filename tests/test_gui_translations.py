@@ -182,6 +182,22 @@ WIZARD_KEYS = [
     "announce_stop",
     "announce_stop_on_live_stop",
     "connecting",
+    # Factory reset (settings window). Translated in all six languages rather
+    # than de/en only, unlike the hint strings around them: it is the one
+    # irreversible action in the app, and an English confirmation in front of a
+    # Turkish operator is a button pressed without being read.
+    "reset_section",
+    "reset_hint",
+    "reset_button",
+    "reset_confirm_text",
+    "reset_confirm_yes",
+    "reset_done_text",
+    "reset_done_no_keys",
+    "reset_failed_title",
+    "reset_failed_text",
+    "reset_retry",
+    "reset_close",
+    "dlg_stop_before_reset",
 ]
 
 
@@ -220,6 +236,12 @@ class TestWizardTranslationCoverage:
         assert "{seconds}" in data["history_seconds"]
         assert "{error}" in data["summary_failed"]
         assert "{version}" in data["update_available"]
+        # The reset report's whole job is naming what went: a translation that
+        # drops {path} tells the user "successfully deleted" and nothing else.
+        assert "{path}" in data["reset_done_text"]
+        assert "{keys}" in data["reset_done_text"]
+        assert "{path}" in data["reset_failed_text"]
+        assert "{errors}" in data["reset_failed_text"]
 
 
 class TestTheDebugLogIsNotTranslated:

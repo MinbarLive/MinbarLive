@@ -231,5 +231,17 @@
   "cost_estimate_note": "Tahmin — genel liste fiyatları",
   "cost_unpriced": "fiyatsız",
   "cost_requests": "istek",
-  "cost_last_30_days": "Son 30 gün: {total} · {count} oturum"
+  "cost_last_30_days": "Son 30 gün: {total} · {count} oturum",
+  "reset_section": "Her Şeyi Sil",
+  "reset_hint": "MinbarLive'ın bu bilgisayardaki tüm izlerini kaldırır: ayarlar, oturum geçmişi, toplu iş dökümleri, günlükler ve sistem anahtar zincirindeki API anahtarları. Bunu yalnızca MinbarLive'ı artık kullanmak istemiyorsanız yapın. Daha yeni bir sürüme geçiyorsanız yalnızca program dosyasını değiştirmeniz yeterlidir — ayarlarınız korunur.",
+  "reset_button": "Her şeyi sil ve sıfırla",
+  "reset_confirm_text": "Her şeyi kaldırmak istediğinizden emin misiniz — tüm geçmiş, toplu iş dökümleri, günlükler, ayarlar ve API anahtarlarınız?\n\nBu işlem geri alınamaz.\n\nBunu yalnızca MinbarLive'ı artık hiç kullanmak istemiyorsanız ve hiçbir kalıntı bırakmak istemiyorsanız öneririz. MinbarLive'ın daha yeni bir sürümüne geçiyorsanız her şeyi olduğu gibi bırakıp yalnızca program dosyasını (.exe / .app / .AppImage) silmenizi öneririz — böylece tüm ayarlarınız korunur ve doğrudan devam edebilirsiniz.",
+  "reset_confirm_yes": "Her şeyi sil",
+  "reset_done_text": "Başarıyla silindi:\n{path}\n\nKaldırılan API anahtarları: {keys}\n\nMinbarLive şimdi kapanacak. Sonraki açılışta kurulum sihirbazı yeni bir kurulumda olduğu gibi başlar.",
+  "reset_done_no_keys": "kayıtlı anahtar yoktu",
+  "reset_failed_title": "Sıfırlama Tamamlanmadı",
+  "reset_failed_text": "Her şey kaldırılamadı:\n{errors}\n\nTekrar deneyebilir ya da MinbarLive'ı kapatıp bu klasörü elle silebilirsiniz:\n{path}",
+  "dlg_stop_before_reset": "Sıfırlamadan önce uygulamayı durdurun.",
+  "reset_retry": "Tekrar dene",
+  "reset_close": "MinbarLive'ı kapat"
 }
