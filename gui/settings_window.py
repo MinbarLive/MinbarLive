@@ -11,6 +11,8 @@ the live overlay where it can.
 
 from __future__ import annotations
 
+import webbrowser
+
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.dialogs import ask_yes_no, show_message
+from gui.review_banner import FEEDBACK_FORM_URL
 from gui.widgets import Dropdown, SegmentedControl
 from gui.window_size import SECONDARY_WINDOW_W, apply_content_size
 from providers import (
@@ -101,6 +104,10 @@ class SettingsWindow(QDialog):
         layout.addWidget(self._appearance_card())
         layout.addWidget(self._islamic_card())
         layout.addWidget(self._api_key_card())
+        # Directly above "delete everything", which is not an accident: the
+        # person about to wipe the app is the one whose reasons are worth most,
+        # and this is the last thing they pass on the way there.
+        layout.addWidget(self._feedback_card())
         # Last, below the keys it also deletes: the one irreversible control in
         # the app belongs at the bottom of the scroll, not next to something
         # somebody reaches for often.
@@ -288,6 +295,39 @@ class SettingsWindow(QDialog):
         box.addLayout(buttons)
         self._refresh_key_status()
         return card
+
+    def _feedback_card(self) -> QFrame:
+        """A permanent way to the feedback form.
+
+        The review notice that appears after three sessions can be turned off
+        for good, and clicking through it turns it off too — so without this the
+        act of answering the question once would remove the only route to the
+        form. Somebody who has since found a bug needs a door that is still
+        there.
+        """
+        # ✎ and not 💭: the card glyphs in this window are monochrome symbols,
+        # and an emoji among them renders in full colour and reads as a
+        # different kind of thing. (The website's Feedback button does use 💭 —
+        # there it sits among other emoji.)
+        card, box = self._card("✎", self._t("feedback_section", "Feedback"))
+        box.addWidget(
+            self._hint(
+                self._t(
+                    "feedback_hint",
+                    "Tell us what works and what does not — anonymous, no "
+                    "account needed. It opens in your browser.",
+                )
+            )
+        )
+        self.feedback_btn = QPushButton(
+            "→  " + self._t("feedback_button", "Give feedback")
+        )
+        self.feedback_btn.clicked.connect(self._on_feedback)
+        box.addWidget(self.feedback_btn)
+        return card
+
+    def _on_feedback(self) -> None:
+        webbrowser.open(FEEDBACK_FORM_URL)
 
     def _reset_card(self) -> QFrame:
         card, box = self._card("⚠", self._t("reset_section", "Delete everything"))

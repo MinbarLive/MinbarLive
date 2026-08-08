@@ -360,6 +360,54 @@ class TestSkippedUpdateVersion:
             settings_module._cached_settings = None
 
 
+class TestReviewPromptSettings:
+    """The session counter and the permanent off switch behind the review
+    prompt (gui/review_banner.py)."""
+
+    def test_defaults(self):
+        assert Settings().sessions_since_review_prompt == 0
+        assert Settings().review_prompt_disabled is False
+
+    def test_round_trip(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            settings_module, "_settings_path", lambda: tmp_path / "settings.json"
+        )
+        settings_module._cached_settings = None
+        save_settings(
+            Settings(sessions_since_review_prompt=2, review_prompt_disabled=True)
+        )
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.sessions_since_review_prompt == 2
+            assert loaded.review_prompt_disabled is True
+        finally:
+            settings_module._cached_settings = None
+
+    @pytest.mark.parametrize(
+        ("stored", "expected"),
+        [
+            (-5, 0),  # clamped: a negative count would push the prompt out
+            (True, 0),  # bool is an int in Python, and is not a count
+            ("3", 0),
+            (None, 0),
+            (7, 7),  # already past the threshold stays past it
+        ],
+    )
+    def test_the_counter_is_validated(self, tmp_path, monkeypatch, stored, expected):
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"sessions_since_review_prompt": stored}), encoding="utf-8"
+        )
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            loaded = load_settings(use_cache=False)
+            assert loaded.sessions_since_review_prompt == expected
+        finally:
+            settings_module._cached_settings = None
+
+
 class TestSubtitleHideMode:
     def test_default_is_never(self):
         assert Settings().subtitle_hide_mode == "never"

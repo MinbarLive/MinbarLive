@@ -244,5 +244,10 @@
   "dlg_stop_before_reset": "Sıfırlamadan önce uygulamayı durdurun.",
   "reset_retry": "Tekrar dene",
   "reset_close": "MinbarLive'ı kapat",
-  "skip_this_version": "Bu sürümü atla"
+  "skip_this_version": "Bu sürümü atla",
+  "review_prompt": "MinbarLive'ı beğendiniz mi? Görüşünüzü bize bildirin — formu açmak için tıklayın",
+  "review_never": "Bir daha gösterme",
+  "feedback_section": "Geri bildirim",
+  "feedback_hint": "Neyin iyi çalıştığını, neyin çalışmadığını bize bildirin — anonim, hesap gerekmez. Tarayıcınızda açılır.",
+  "feedback_button": "Geri bildirim ver"
 }

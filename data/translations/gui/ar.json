@@ -244,5 +244,10 @@
   "dlg_stop_before_reset": "أوقف التطبيق قبل إعادة التعيين.",
   "reset_retry": "حاول مرة أخرى",
   "reset_close": "إغلاق MinbarLive",
-  "skip_this_version": "تخطّي هذا الإصدار"
+  "skip_this_version": "تخطّي هذا الإصدار",
+  "review_prompt": "ما رأيك في MinbarLive؟ شاركنا رأيك — انقر لفتح الاستمارة",
+  "review_never": "لا تُظهر هذا مرة أخرى",
+  "feedback_section": "ملاحظاتك",
+  "feedback_hint": "أخبرنا بما يعمل جيدًا وبما لا يعمل — بشكل مجهول ودون حساب. تُفتح في المتصفح.",
+  "feedback_button": "إرسال ملاحظة"
 }

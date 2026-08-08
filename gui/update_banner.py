@@ -13,19 +13,19 @@ stays quiet for it permanently, coming back only for the release after it —
 second; without it the only way to stop being asked is to turn the whole update
 check off, which then also hides the release they *would* want.
 
-The check itself is ``utils/update_check.py``: one anonymous request to the
-GitHub releases API, which never raises.
+The bar itself is ``gui/notice_banner.py``, shared with the review prompt. The
+check is ``utils/update_check.py``: one anonymous request to the GitHub releases
+API, which never raises.
 """
 
 from __future__ import annotations
 
 import threading
-import webbrowser
 from collections.abc import Callable
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton
+from PySide6.QtCore import QObject, Signal
 
+from gui.notice_banner import NoticeBanner
 from utils.logging import log
 from utils.update_check import UpdateInfo, check_for_update, is_newer_version
 
@@ -65,7 +65,7 @@ class _Check(QObject):
         threading.Thread(target=_run, daemon=True, name="qt-update-check").start()
 
 
-class UpdateBanner(QFrame):
+class UpdateBanner(NoticeBanner):
     """Hidden until a newer release is confirmed."""
 
     def __init__(
@@ -74,40 +74,14 @@ class UpdateBanner(QFrame):
         parent=None,
         on_skip: Callable[[str], None] | None = None,
     ):
-        super().__init__(parent)
-        self._t = translate
+        super().__init__(translate, parent)
         self._info: UpdateInfo | None = None
         # Set per check rather than read from settings here: this widget is
         # built by the panel and knows nothing about where preferences live.
         self._skipped = ""
         self._on_skip = on_skip
-        self.setObjectName("update_banner")
-        self.setCursor(Qt.PointingHandCursor)
-
-        row = QHBoxLayout(self)
-        row.setContentsMargins(14, 8, 8, 8)
-        row.setSpacing(8)
-        self.label = QLabel("")
-        self.label.setObjectName("update_text")
-        self.label.setWordWrap(True)
-        row.addWidget(self.label, 1)
-        self.skip_btn = QPushButton(self._t("skip_this_version", "Skip this version"))
-        self.skip_btn.setObjectName("banner_skip")
-        self.skip_btn.setCursor(Qt.PointingHandCursor)
-        self.skip_btn.clicked.connect(self._on_skip_clicked)
-        row.addWidget(self.skip_btn)
-        self.close_btn = QPushButton("✕")
-        self.close_btn.setObjectName("banner_close")
-        self.close_btn.setFixedSize(28, 28)
-        self.close_btn.setCursor(Qt.PointingHandCursor)
-        self.close_btn.clicked.connect(self.hide)
-        row.addWidget(self.close_btn)
-
         self._check = _Check(self)
         self._check.done.connect(self._on_result)
-        # Parented before being hidden — a parentless widget made visible is a
-        # top-level window, and hiding is the safe half of the same rule.
-        self.setVisible(False)
 
     def start_check(
         self,
@@ -145,7 +119,8 @@ class UpdateBanner(QFrame):
             return False
         return not is_newer_version(version, self._skipped)
 
-    def _on_skip_clicked(self) -> None:
+    def on_action(self) -> None:
+        """Skip this version."""
         if self._info is None:
             return
         version = self._info.version
@@ -153,7 +128,7 @@ class UpdateBanner(QFrame):
         log(f"Update v{version} skipped at the user's request.")
         if self._on_skip is not None:
             self._on_skip(version)
-        self.hide()
+        self.hide_notice()
 
     def _on_result(self, info: UpdateInfo | None) -> None:
         global _result
@@ -165,18 +140,14 @@ class UpdateBanner(QFrame):
     def _apply(self, info: UpdateInfo | None) -> None:
         self._info = info
         if info is None or self._is_skipped(info.version):
-            self.setVisible(False)
+            self.hide_notice()
             return
-        template = self._t(
-            "update_available", "Version {version} available — click to download"
+        self.show_notice(
+            self.fill(
+                "update_available",
+                "Version {version} available — click to download",
+                version=info.version,
+            ),
+            info.url,
+            self._t("skip_this_version", "Skip this version"),
         )
-        try:
-            self.label.setText(template.format(version=info.version))
-        except (KeyError, IndexError):  # a translation with a broken placeholder
-            self.label.setText(template)
-        self.setVisible(True)
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt API
-        if event.button() == Qt.LeftButton and self._info is not None:
-            webbrowser.open(self._info.url)
-        super().mouseReleaseEvent(event)

@@ -244,5 +244,10 @@
   "dlg_stop_before_reset": "Ndalni aplikacionin përpara rivendosjes.",
   "reset_retry": "Provo përsëri",
   "reset_close": "Mbyll MinbarLive",
-  "skip_this_version": "Kapërce këtë version"
+  "skip_this_version": "Kapërce këtë version",
+  "review_prompt": "Si po ju duket MinbarLive? Thoni fjalën tuaj — klikoni për ta hapur formularin",
+  "review_never": "Mos e shfaq më",
+  "feedback_section": "Reagime",
+  "feedback_hint": "Thoni çfarë funksionon dhe çfarë nuk funksionon — anonim, pa llogari. Hapet në shfletuesin tuaj.",
+  "feedback_button": "Dërgo reagim"
 }

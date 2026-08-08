@@ -371,6 +371,14 @@ def _load_source_font_size_base(value: object, font_size_base: object) -> float:
     return max(SOURCE_FONT_SIZE_BASE_MIN, min(SOURCE_FONT_SIZE_BASE_MAX, source_base))
 
 
+def _int_or(value: object, default: int) -> int:
+    """A real int from JSON, or ``default``. Rejects bool (it is an int in
+    Python) and anything that is not a whole number."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value
+
+
 def _load_skipped_version(value: object) -> str:
     """Accept only a plausible version string for ``skipped_update_version``.
 
@@ -518,6 +526,15 @@ class Settings:
     # it, and comes back for the next release — unlike the banner's ✕, which
     # only hides it until the app is restarted. Empty means nothing skipped.
     skipped_update_version: str = ""
+    # Live sessions completed since the review prompt was last put (or since
+    # install). Counted at Stop, not at launch: three finished khutbahs is
+    # somebody with an opinion, three launches is somebody still setting up.
+    # Reset to 0 whenever the prompt is answered in any way.
+    sessions_since_review_prompt: int = 0
+    # The review prompt is off for good — the user either gave feedback or asked
+    # not to be asked again. Distinct from the banner's ✕, which only resets the
+    # counter above.
+    review_prompt_disabled: bool = False
     ai_provider: str = DEFAULT_AI_PROVIDER  # Translation provider (providers/ pkg)
     transcription_provider: str = (
         DEFAULT_TRANSCRIPTION_PROVIDER  # STT engine (streaming ones => streaming)
@@ -789,6 +806,12 @@ def load_settings(use_cache: bool = True) -> Settings:
             skipped_update_version=_load_skipped_version(
                 data.get("skipped_update_version")
             ),
+            # Clamped at zero: a negative count out of a hand-edited file would
+            # push the prompt out by that many extra sessions, invisibly.
+            sessions_since_review_prompt=max(
+                0, _int_or(data.get("sessions_since_review_prompt"), 0)
+            ),
+            review_prompt_disabled=bool(data.get("review_prompt_disabled", False)),
             ai_provider=ai_provider,
             transcription_provider=transcription_provider,
             onboarding_completed=data.get("onboarding_completed", False),
@@ -870,6 +893,8 @@ def save_settings(settings: Settings) -> None:
         "check_for_updates": settings.check_for_updates,
         "include_prereleases": settings.include_prereleases,
         "skipped_update_version": settings.skipped_update_version,
+        "sessions_since_review_prompt": settings.sessions_since_review_prompt,
+        "review_prompt_disabled": settings.review_prompt_disabled,
         "ai_provider": settings.ai_provider,
         "transcription_provider": settings.transcription_provider,
         "onboarding_completed": settings.onboarding_completed,

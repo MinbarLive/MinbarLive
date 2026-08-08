@@ -150,6 +150,12 @@ WIZARD_KEYS = [
     "update_available",
     "skip_this_version",
     "check_updates_on_launch",
+    # The review prompt and the permanent door to the same form
+    "review_prompt",
+    "review_never",
+    "feedback_section",
+    "feedback_hint",
+    "feedback_button",
     "integrated_windows_hint",
     "window_style_label",
     "window_style_integrated",
