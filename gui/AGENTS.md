@@ -144,6 +144,11 @@ still had it.
 - **A window floor is always clamped to the screen.** `setMinimumSize` is honoured
   whatever the display can show, so the excess hangs off the edge and cannot be dragged
   back. Any new arrangement with a floor of its own gets the same clamp.
+- **The sidebar beside the log is a FIXED width, never a min/max range.** The log
+  stretches and the sidebar does not, so a sidebar given a range gets its floor and the
+  log takes every spare pixel — it stops honouring `_SIDEBAR_W_WITH_LOG` on *every*
+  screen. `_log_share()` picks the number to fix it at, measured against the **screen**
+  rather than the current width so a resize cannot feed back into itself.
 - **Onboarding:** step heading stays inside the card, the meter has no auto-stop, the
   Dark|Light control stays segmented.
 - **Secondary windows:** history viewer, batch and the three popups (already-running,

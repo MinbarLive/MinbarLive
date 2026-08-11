@@ -184,7 +184,8 @@ maximized in `window_maximized`.
 | `_COL2_MIN_W`             | 800       | Card-grid width from which two columns are used — a *floor*, raised at run time to what the columns measure |
 | `_COL3_MIN_W`             | 1030      | …and three columns (a maximized window shows everything at once) |
 | `_SIDEBAR_W_WITH_LOG`     | 500       | Width the card sidebar keeps when the log panel is open          |
-| `_LOG_PANEL_MIN_W`        | 340       | Minimum width of the log panel; the window widens only if both cannot fit |
+| `_LOG_PANEL_MIN_W`        | 340       | Width the log panel opens at; the window widens only if both cannot fit |
+| `_LOG_PANEL_HARD_MIN_W`   | 260       | Narrowest the log is allowed to get before the sidebar gives up any of its own width |
 
 The column thresholds are measured from what the columns actually need. The
 horizontal scrollbar is off, so a threshold that lets a column drop below its
@@ -203,6 +204,12 @@ The window's own floor is clamped to the screen. A minimum larger than the
 display cannot be dragged back into view, and the log arrangement's
 `_SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W` = 840 exceeds the ~819 logical pixels a
 300 %-scaled display reports.
+
+On a screen too narrow even for `_SIDEBAR_W_WITH_LOG + _LOG_PANEL_HARD_MIN_W`,
+`_log_share()` divides what there is: the cards yield first, down to their own
+measured minimum, and the log only below that. A narrow log is legible and a
+clipped card is not. This has no effect on any ordinary display — the sidebar
+takes its full 500 whenever the screen can afford it.
 
 ### Announcements (config.py)
 

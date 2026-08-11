@@ -1264,6 +1264,56 @@ class TestControlPanelLayout:
         assert panel.minimumWidth() == cp._SIDEBAR_W_WITH_LOG + cp._LOG_PANEL_MIN_W
         assert panel.minimumHeight() == cp._MIN_WINDOW_H
 
+    def test_a_screen_too_narrow_for_both_halves_shrinks_the_cards_first(
+        self, panel, qt_app
+    ):
+        """Something has to give, and a layout that cannot shrink overflows.
+
+        The log used to be drawn straight over a sidebar still insisting on its
+        500 px, with Stop and both Display dropdowns cut off underneath it. The
+        cards yield first and the log only once they are at their own minimum: a
+        narrow log is legible, a clipped card is not.
+        """
+        from PySide6.QtCore import QRect
+
+        class FakeScreen:
+            def __init__(self, w):
+                self._r = QRect(0, 0, w, 900)
+
+            def availableGeometry(self):
+                return self._r
+
+        cp = cp_module()
+        panel.show()
+        _settle(qt_app)
+        cards = panel._cards_minimum_width()
+        roomy = cp._SIDEBAR_W_WITH_LOG + cp._LOG_PANEL_HARD_MIN_W
+
+        for room in (2048, roomy, roomy - 1, cards + cp._LOG_PANEL_HARD_MIN_W, 600):
+            panel.screen = lambda r=room: FakeScreen(r)
+            sidebar, log = panel._log_share()
+            assert sidebar + log <= room, f"{sidebar}+{log} overflows a {room}px screen"
+            assert sidebar <= cp._SIDEBAR_W_WITH_LOG
+            # The cards keep everything they can, and never less than their own
+            # minimum until the screen is too small even for that.
+            assert sidebar == min(
+                cp._SIDEBAR_W_WITH_LOG, max(cards, room - cp._LOG_PANEL_HARD_MIN_W)
+            )
+
+        # Anything roomy enough leaves both halves exactly as they were.
+        for room in (2048, roomy):
+            panel.screen = lambda r=room: FakeScreen(r)
+            assert panel._log_share() == (
+                cp._SIDEBAR_W_WITH_LOG,
+                cp._LOG_PANEL_HARD_MIN_W,
+            )
+
+        # …and the cards are the half that survives a squeeze intact.
+        panel.screen = lambda: FakeScreen(cards + cp._LOG_PANEL_HARD_MIN_W - 40)
+        sidebar, log = panel._log_share()
+        assert sidebar == cards, "the cards gave up width the log should have"
+        assert log < cp._LOG_PANEL_HARD_MIN_W
+
     def test_opening_the_log_gives_the_cards_one_column(self, panel):
         assert panel._log_collapsed
         panel.resize(1200, 800)
