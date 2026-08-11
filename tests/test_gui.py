@@ -2528,7 +2528,7 @@ class TestEqualColumnHeights:
     def test_two_columns_stack_the_right_column_tightly(self, panel, qt_app):
         # Levelling the bottoms here means padding Advanced away from the card
         # above it — a gap that grows every time column A does.
-        panel.resize(900, 900)
+        panel.resize(max(900, self._two_column_width(panel)), 900)
         qt_app.processEvents()
         if panel.height() < 900:
             # The levelling this measures depends on how much height the
@@ -2551,10 +2551,28 @@ class TestEqualColumnHeights:
         host = card.window().cards_host
         return card.mapTo(host, card.rect().bottomLeft()).y()
 
+    @staticmethod
+    def _two_column_width(panel):
+        """A window width that affords two columns for the cards AS THEY ARE.
+
+        Not a constant, because the threshold is measured from the cards: it
+        moves with the platform's fonts, with the GUI language, and by ~104 px
+        with the subtitle-appearance section, which widens its column from 291
+        to 395. A hard-coded 900 was really "Windows, German, section closed" —
+        it gave one column on the Linux runner once the section was open, and
+        the two tests below then measured a stacked layout while asserting
+        things about a side-by-side one.
+
+        Set the section to the state under test BEFORE calling this.
+        """
+        chrome = panel.width() - panel._available_width()
+        return panel.card_grid.two_column_min_width() + chrome
+
     def test_two_columns_end_on_one_line(self, panel, qt_app):
         # A few pixels apart reads as a mistake, so the shorter column's last
         # card takes the difference.
-        for size in ((900, 900), (900, 700), (900, 1400)):
+        width = max(900, self._two_column_width(panel))
+        for size in ((width, 900), (width, 700), (width, 1400)):
             panel.resize(*size)
             _settle(qt_app)
             assert panel.card_grid.count == 2, size
@@ -2564,10 +2582,24 @@ class TestEqualColumnHeights:
     def test_an_opened_appearance_section_is_not_absorbed(self, panel, qt_app):
         # Levelling THAT much would inflate a collapsed header into an empty
         # box; the columns simply end where they end instead.
+        #
+        # Sized for the section OPEN, which is the state the assertions are
+        # about — an open section needs a wider window to keep two columns.
+        # Measured from two columns, not from the fixture's 1400: three columns
+        # pin Advanced open and move the collapse one level in.
         panel.resize(900, 900)
         _settle(qt_app)
         panel.typography.set_expanded(True)
         _settle(qt_app)
+        width = max(900, self._two_column_width(panel))
+        panel.typography.set_expanded(False)
+        _settle(qt_app)
+        panel.resize(width, 900)
+        _settle(qt_app)
+        assert panel.card_grid.count == 2
+        panel.typography.set_expanded(True)
+        _settle(qt_app)
+        assert panel.card_grid.count == 2, "the section pushed it out of two columns"
         advanced = panel.advanced_card
         assert advanced.height() == advanced.sizeHint().height()
         panel.typography.set_expanded(False)
@@ -2583,7 +2615,7 @@ class TestEqualColumnHeights:
         # which is the one thing collapsing it is for. The spacer above it takes
         # the slack now, so the strip keeps its height and the bottoms still
         # line up (the rule three columns already used).
-        panel.resize(900, 900)
+        panel.resize(max(900, self._two_column_width(panel)), 900)
         _settle(qt_app)
         assert panel.card_grid.count == 2
         advanced = panel.advanced_card
@@ -2605,12 +2637,29 @@ class TestEqualColumnHeights:
         # a collapsed card is padded from above rather than inflated, keeping
         # the two columns on one line IS a change of its top edge. What must
         # never happen is it travelling by the section's own height.
+        # Sized so that BOTH states keep two columns — the section is ~104px
+        # wider than the collapsed card, so a window that only clears the
+        # closed threshold reflows to one column when it opens, and the drift
+        # measured below would then be a stacked layout, not a slide.
+        #
+        # Into two columns BEFORE measuring: the fixture opens at 1400, where
+        # three columns pin Advanced open and make the group inside it the
+        # collapsible one instead, so a section toggled there is toggled
+        # against a different card.
         panel.resize(900, 900)
+        _settle(qt_app)
+        panel.typography.set_expanded(True)
+        _settle(qt_app)
+        width = max(900, self._two_column_width(panel))
+        panel.typography.set_expanded(False)
+        _settle(qt_app)
+        panel.resize(width, 900)
         _settle(qt_app)
         assert panel.card_grid.count == 2
         before = self._top(panel.advanced_card)
         panel.typography.set_expanded(True)
         _settle(qt_app)
+        assert panel.card_grid.count == 2, "the section pushed it out of two columns"
         drift = abs(self._top(panel.advanced_card) - before)
         assert drift <= card_grid_module()._LEVEL_FILL_MAX_PX, f"slid {drift}px"
         panel.typography.set_expanded(False)
