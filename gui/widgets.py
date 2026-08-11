@@ -122,10 +122,28 @@ def set_window_on_top(window: QWidget, on_top: bool) -> None:
             # first and the panel last, so the panel still ends up in front.
             window.raise_()
         return
-    flags = handle.flags()
-    handle.setFlags(
-        flags | Qt.WindowStaysOnTopHint if on_top else flags & ~Qt.WindowStaysOnTopHint
-    )
+    handle.setFlags(_with_on_top(handle.flags(), on_top))
+
+
+def _with_on_top(flags: Qt.WindowType, on_top: bool) -> Qt.WindowType:
+    """``flags`` with the always-on-top bit set or cleared, and nothing else.
+
+    **Clearing it goes through plain integers on purpose.** ``~`` on a PySide6
+    flag enum does not invert all 32 bits: it complements within the enum's
+    declared range, and ``~Qt.WindowStaysOnTopHint`` is ``0x01fbffff``. Anding
+    with that silently drops every window flag above ``0x01ffffff`` —
+    ``WindowCloseButtonHint`` (0x08000000) first among them. A window without
+    that hint keeps its ✕ and Windows draws it **greyed out and inert**, on a
+    focused window, for the rest of the process.
+
+    That is the "sometimes the ✕ is greyed out" report, and it was never
+    random: ``always_on_top_mode`` defaults to *When running*, so the first
+    Stop of every session cleared the flag and took the close button with it.
+    Setting the flag again does not bring it back — ``|`` only adds.
+    """
+    if on_top:
+        return flags | Qt.WindowStaysOnTopHint
+    return Qt.WindowType(int(flags) & ~int(Qt.WindowStaysOnTopHint))
 
 
 # Windows paints a title bar from the SYSTEM light/dark preference and from

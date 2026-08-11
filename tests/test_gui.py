@@ -28,7 +28,7 @@ pytest.importorskip("PySide6", reason="PySide6 not installed")
 import shiboken6  # noqa: E402
 from PySide6.QtCore import QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QColor  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 from gui.subtitle_window import SubtitleWindow  # noqa: E402
 from utils.settings import (  # noqa: E402
@@ -2292,6 +2292,62 @@ class TestNoStrayTopLevelWindows:
         assert card.symbol_label.parentWidget() is not None
         assert card.arrow_label.parentWidget() is not None
         card.deleteLater()
+
+
+class TestAlwaysOnTopKeepsTheCloseButton:
+    """Turning the setting OFF used to take ``WindowCloseButtonHint`` with it,
+    and Windows draws a window that lacks that hint with a **greyed, inert ✕**
+    — on a focused window, for the rest of the process.
+
+    Reported twice as "the X is sometimes greyed out" and written off once as
+    DWM dimming an inactive window. It was never random: ``always_on_top_mode``
+    defaults to *When running*, so the first Stop of any session cleared the
+    flag. The cause is that ``~`` on a PySide6 flag enum complements within the
+    enum's declared range only — ``~Qt.WindowStaysOnTopHint`` is 0x01fbffff,
+    which drops every window flag above it."""
+
+    def test_clearing_the_flag_keeps_every_other_one(self):
+        from gui.widgets import _with_on_top
+
+        flags = (
+            Qt.Window
+            | Qt.WindowTitleHint
+            | Qt.WindowSystemMenuHint
+            | Qt.WindowMinMaxButtonsHint
+            | Qt.WindowCloseButtonHint
+            | Qt.WindowStaysOnTopHint
+        )
+        cleared = _with_on_top(flags, False)
+        assert not (int(cleared) & int(Qt.WindowStaysOnTopHint))
+        assert int(cleared) == int(flags) & ~int(Qt.WindowStaysOnTopHint)
+        # Spelled out, because the close button is the one that was lost and
+        # the one whose absence is invisible until a user tries to close.
+        assert int(cleared) & int(Qt.WindowCloseButtonHint)
+
+    def test_the_enum_complement_that_caused_it(self):
+        """Locks in WHY, so nobody reinstates the tidier-looking expression."""
+        assert int(~Qt.WindowStaysOnTopHint) & int(Qt.WindowCloseButtonHint) == 0
+
+    def test_a_real_window_keeps_its_close_button_through_a_session(self, qt_app):
+        from gui.widgets import is_window_on_top, set_window_on_top
+
+        w = QWidget()
+        w.setWindowTitle("MinbarLive")
+        w.resize(320, 120)
+        w.show()
+        qt_app.processEvents()
+        assert w.windowFlags() & Qt.WindowCloseButtonHint, "nothing to lose"
+        # Start, stop, start, stop — _apply_always_on_top runs on both edges.
+        for on_top in (True, False, True, False):
+            set_window_on_top(w, on_top)
+            qt_app.processEvents()
+            assert is_window_on_top(w) is on_top
+            handle = w.windowHandle()
+            flags = handle.flags() if handle is not None else w.windowFlags()
+            assert int(flags) & int(Qt.WindowCloseButtonHint), (
+                f"the ✕ was disabled by set_window_on_top({on_top})"
+            )
+        w.close()
 
 
 class TestCardPadding:

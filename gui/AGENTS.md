@@ -71,6 +71,14 @@ packaging section below for the shipped build.
   On X11 the cheap path does not exist: the flag is the `_NET_WM_STATE_ABOVE` property
   and Qt's xcb plugin only writes it while the window is unmapped, so `set_window_on_top`
   re-creates and re-shows there. That is why the setting did nothing at all on Linux.
+- **Never clear a window flag with `~` on the enum.** `~Qt.WindowStaysOnTopHint` is
+  `0x01fbffff` — PySide6 complements within the enum's *declared range*, so `flags & ~x`
+  silently drops every window flag above it, `WindowCloseButtonHint` (0x08000000) first.
+  A window without that hint keeps its ✕ and Windows draws it **greyed out and inert**,
+  on a focused window, for the rest of the process. That is the "the X is sometimes
+  greyed out" report, twice; it was never random — `always_on_top_mode` defaults to
+  *When running*, so the first Stop of every session did it. Use plain ints:
+  `Qt.WindowType(int(flags) & ~int(flag))`, as `widgets._with_on_top` does.
 - **The native title bar goes through `widgets.set_titlebar_dark`**, never the
   stylesheet — a caption bar is the window manager's, not a widget. On Windows it
   follows the SYSTEM light/dark preference and nothing the app asks for, so a
