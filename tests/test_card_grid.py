@@ -98,6 +98,71 @@ class TestColumnCount:
         assert grid(100, 100, 100).column_count(0, log_open=False) == 2
 
 
+class TestTwoColumnFloor:
+    """``_COL2_MIN_W`` is a floor, not the answer.
+
+    The cards' minimums come from the font engine, so the same panel needs
+    658 px in Arabic, 758 in German and 869 on the Linux runner — against one
+    constant of 800. In the band above the constant and below the need the grid
+    used to go two-column into a space that could not hold two columns, and the
+    card area scrolls vertically only, so the overflow was cut off with no way
+    to reach it.
+    """
+
+    @staticmethod
+    def _widen(g, pixels: int) -> None:
+        """Give every card a real minimum width, as a themed card has."""
+        for _box, card in g.tails:
+            card.setMinimumWidth(pixels)
+
+    def test_cards_wider_than_the_constant_raise_the_threshold(self, grid, qt_app):
+        # 390 + 390 + 36 of margin + 18 of spacing = 834, above the constant and
+        # still below _COL3_MIN_W so the three-column branch stays out of it.
+        g = grid(100, 100, 100)
+        self._widen(g, 390)
+        qt_app.processEvents()
+        assert g.two_column_min_width() == 834
+        assert g.column_count(833, log_open=False) == 1
+        assert g.column_count(834, log_open=False) == 2
+
+    def test_narrow_cards_never_lower_it(self, grid, qt_app):
+        # The other direction, and the reason this is a max: cards that fit in
+        # less than the constant must not drop the threshold to meet them. The
+        # constant is also what a pre-show panel falls back to, where the cards
+        # are unpolished and hint at ~50 px against a real 449.
+        g = grid(100, 100, 100)
+        self._widen(g, 120)
+        qt_app.processEvents()
+        assert g.two_column_min_width() == _COL2_MIN_W
+
+    def test_the_widest_of_the_stacked_columns_decides(self, grid, qt_app):
+        # Two columns put B above C, so column 1 has to hold the WIDER of them.
+        # Reading B alone lets a wide Advanced card clip. Both candidate answers
+        # have to clear the floor or the max() hides the difference: C decides at
+        # 954 px, B alone would say 854, and the constant is 800.
+        g = grid(100, 100, 100)
+        self._widen(g, 400)
+        g.tails[2][1].setMinimumWidth(500)
+        qt_app.processEvents()
+        assert g.two_column_min_width() == 400 + 500 + 36 + 18
+
+    def test_the_threshold_does_not_move_with_the_arrangement(self, grid, qt_app):
+        # A threshold measured from the layout it produces oscillates: the grid
+        # widens into the next arrangement, re-measures bigger, falls back, and
+        # re-measures smaller. Column C is the one that really does move (three
+        # columns pin the Advanced card open, worth ~11 px), which is why
+        # _COL3_MIN_W stays a plain constant and only this one is measured.
+        g = grid(100, 100, 100)
+        self._widen(g, 390)
+        qt_app.processEvents()
+        seen = set()
+        for width in (1400, 900, 520):
+            g.relayout(width, log_open=False)
+            qt_app.processEvents()
+            seen.add(g.two_column_min_width())
+        assert len(seen) == 1, f"the threshold moved with the arrangement: {seen}"
+
+
 class TestRelayout:
     def test_it_reports_the_count_only_when_it_changes(self, grid):
         g = grid(100, 100, 100)

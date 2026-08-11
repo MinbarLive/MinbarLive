@@ -1197,12 +1197,122 @@ class TestControlPanelLayout:
             assert panel.card_grid.count == expected, f"{width}px should give {expected}"
 
     def test_a_column_is_never_narrower_than_its_cards_need(self, panel):
-        # The horizontal scrollbar is off, so a threshold that lets a column
-        # below its minimum clips the card instead of scrolling it.
-        needs = [c.minimumSizeHint().width() for c in (panel.card_grid.col_a, panel.card_grid.col_b)]
-        margins = panel.card_grid.grid.contentsMargins()
-        chrome = margins.left() + margins.right() + panel.card_grid.grid.horizontalSpacing()
-        assert card_grid_module()._COL2_MIN_W >= sum(needs) + chrome
+        """The horizontal scrollbar is off, so a threshold that lets a column
+        below its minimum clips the card instead of scrolling it.
+
+        Against the EFFECTIVE threshold, not `_COL2_MIN_W`, which is only its
+        floor. Asserting the constant covers the cards made this a claim about
+        the font engine: it held for the unthemed cards this fixture builds and
+        for themed cards on Windows (758 px), and went red on the Linux runner
+        the one time a test leaked a theme into it (869 px against 800).
+
+        Weak on Windows by construction — the constant wins there, so the
+        measured branch never runs and this cannot fail. Its teeth are in
+        `tests/test_card_grid.py::TestTwoColumnFloor`, which drives the cards
+        past the floor; this one holds the panel's real wiring to the same rule.
+        """
+        grid = panel.card_grid
+        # Two columns stack B above C, so column 1 must hold the wider of them.
+        need = (
+            grid.col_a.minimumSizeHint().width()
+            + max(c.minimumSizeHint().width() for c in (grid.col_b, grid.col_c))
+            + grid.grid.contentsMargins().left()
+            + grid.grid.contentsMargins().right()
+            + grid.grid.horizontalSpacing()
+        )
+        assert grid.two_column_min_width() >= need
+        assert grid.column_count(need - 1, log_open=False) == 1
+
+    def test_the_window_floor_never_exceeds_the_screen(self, panel, qt_app):
+        """A floor bigger than the display cannot be dragged back into view.
+
+        Qt honours `setMinimumSize` whatever the screen can show, so the excess
+        hangs off the edge and stays there. The log arrangement is where this
+        bit: its floor is a constant `_SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W` =
+        840, and a display scaled to 300 % reports about 819 logical px.
+        """
+        from PySide6.QtCore import QRect
+
+        class FakeScreen:
+            def __init__(self, w, h):
+                self._r = QRect(0, 0, w, h)
+
+            def availableGeometry(self):
+                return self._r
+
+        cp = cp_module()
+        panel.show()
+        _settle(qt_app)
+        for width, height in ((819, 464), (640, 360), (1024, 600)):
+            panel.screen = lambda w=width, h=height: FakeScreen(w, h)
+            for collapsed in (True, False):
+                if panel._log_collapsed != collapsed:
+                    panel._toggle_log_panel()
+                panel._apply_minimum_size()
+                assert panel.minimumWidth() <= width, (
+                    f"floor {panel.minimumWidth()}px on a {width}px screen, "
+                    f"log {'closed' if collapsed else 'open'}"
+                )
+                assert panel.minimumHeight() <= height
+
+        # …and the clamp only ever clamps: a screen with room to spare must
+        # leave the arrangement's real floor alone.
+        panel.screen = lambda: FakeScreen(2560, 1440)
+        if panel._log_collapsed:
+            panel._toggle_log_panel()
+        panel._apply_minimum_size()
+        assert panel.minimumWidth() == cp._SIDEBAR_W_WITH_LOG + cp._LOG_PANEL_MIN_W
+        assert panel.minimumHeight() == cp._MIN_WINDOW_H
+
+    def test_a_screen_too_narrow_for_both_halves_shrinks_the_cards_first(
+        self, panel, qt_app
+    ):
+        """Something has to give, and a layout that cannot shrink overflows.
+
+        The log used to be drawn straight over a sidebar still insisting on its
+        500 px, with Stop and both Display dropdowns cut off underneath it. The
+        cards yield first and the log only once they are at their own minimum: a
+        narrow log is legible, a clipped card is not.
+        """
+        from PySide6.QtCore import QRect
+
+        class FakeScreen:
+            def __init__(self, w):
+                self._r = QRect(0, 0, w, 900)
+
+            def availableGeometry(self):
+                return self._r
+
+        cp = cp_module()
+        panel.show()
+        _settle(qt_app)
+        cards = panel._cards_minimum_width()
+        roomy = cp._SIDEBAR_W_WITH_LOG + cp._LOG_PANEL_HARD_MIN_W
+
+        for room in (2048, roomy, roomy - 1, cards + cp._LOG_PANEL_HARD_MIN_W, 600):
+            panel.screen = lambda r=room: FakeScreen(r)
+            sidebar, log = panel._log_share()
+            assert sidebar + log <= room, f"{sidebar}+{log} overflows a {room}px screen"
+            assert sidebar <= cp._SIDEBAR_W_WITH_LOG
+            # The cards keep everything they can, and never less than their own
+            # minimum until the screen is too small even for that.
+            assert sidebar == min(
+                cp._SIDEBAR_W_WITH_LOG, max(cards, room - cp._LOG_PANEL_HARD_MIN_W)
+            )
+
+        # Anything roomy enough leaves both halves exactly as they were.
+        for room in (2048, roomy):
+            panel.screen = lambda r=room: FakeScreen(r)
+            assert panel._log_share() == (
+                cp._SIDEBAR_W_WITH_LOG,
+                cp._LOG_PANEL_HARD_MIN_W,
+            )
+
+        # …and the cards are the half that survives a squeeze intact.
+        panel.screen = lambda: FakeScreen(cards + cp._LOG_PANEL_HARD_MIN_W - 40)
+        sidebar, log = panel._log_share()
+        assert sidebar == cards, "the cards gave up width the log should have"
+        assert log < cp._LOG_PANEL_HARD_MIN_W
 
     def test_opening_the_log_gives_the_cards_one_column(self, panel):
         assert panel._log_collapsed
@@ -2418,7 +2528,7 @@ class TestEqualColumnHeights:
     def test_two_columns_stack_the_right_column_tightly(self, panel, qt_app):
         # Levelling the bottoms here means padding Advanced away from the card
         # above it — a gap that grows every time column A does.
-        panel.resize(900, 900)
+        panel.resize(max(900, self._two_column_width(panel)), 900)
         qt_app.processEvents()
         if panel.height() < 900:
             # The levelling this measures depends on how much height the
@@ -2441,10 +2551,28 @@ class TestEqualColumnHeights:
         host = card.window().cards_host
         return card.mapTo(host, card.rect().bottomLeft()).y()
 
+    @staticmethod
+    def _two_column_width(panel):
+        """A window width that affords two columns for the cards AS THEY ARE.
+
+        Not a constant, because the threshold is measured from the cards: it
+        moves with the platform's fonts, with the GUI language, and by ~104 px
+        with the subtitle-appearance section, which widens its column from 291
+        to 395. A hard-coded 900 was really "Windows, German, section closed" —
+        it gave one column on the Linux runner once the section was open, and
+        the two tests below then measured a stacked layout while asserting
+        things about a side-by-side one.
+
+        Set the section to the state under test BEFORE calling this.
+        """
+        chrome = panel.width() - panel._available_width()
+        return panel.card_grid.two_column_min_width() + chrome
+
     def test_two_columns_end_on_one_line(self, panel, qt_app):
         # A few pixels apart reads as a mistake, so the shorter column's last
         # card takes the difference.
-        for size in ((900, 900), (900, 700), (900, 1400)):
+        width = max(900, self._two_column_width(panel))
+        for size in ((width, 900), (width, 700), (width, 1400)):
             panel.resize(*size)
             _settle(qt_app)
             assert panel.card_grid.count == 2, size
@@ -2454,10 +2582,24 @@ class TestEqualColumnHeights:
     def test_an_opened_appearance_section_is_not_absorbed(self, panel, qt_app):
         # Levelling THAT much would inflate a collapsed header into an empty
         # box; the columns simply end where they end instead.
+        #
+        # Sized for the section OPEN, which is the state the assertions are
+        # about — an open section needs a wider window to keep two columns.
+        # Measured from two columns, not from the fixture's 1400: three columns
+        # pin Advanced open and move the collapse one level in.
         panel.resize(900, 900)
         _settle(qt_app)
         panel.typography.set_expanded(True)
         _settle(qt_app)
+        width = max(900, self._two_column_width(panel))
+        panel.typography.set_expanded(False)
+        _settle(qt_app)
+        panel.resize(width, 900)
+        _settle(qt_app)
+        assert panel.card_grid.count == 2
+        panel.typography.set_expanded(True)
+        _settle(qt_app)
+        assert panel.card_grid.count == 2, "the section pushed it out of two columns"
         advanced = panel.advanced_card
         assert advanced.height() == advanced.sizeHint().height()
         panel.typography.set_expanded(False)
@@ -2473,7 +2615,7 @@ class TestEqualColumnHeights:
         # which is the one thing collapsing it is for. The spacer above it takes
         # the slack now, so the strip keeps its height and the bottoms still
         # line up (the rule three columns already used).
-        panel.resize(900, 900)
+        panel.resize(max(900, self._two_column_width(panel)), 900)
         _settle(qt_app)
         assert panel.card_grid.count == 2
         advanced = panel.advanced_card
@@ -2495,12 +2637,29 @@ class TestEqualColumnHeights:
         # a collapsed card is padded from above rather than inflated, keeping
         # the two columns on one line IS a change of its top edge. What must
         # never happen is it travelling by the section's own height.
+        # Sized so that BOTH states keep two columns — the section is ~104px
+        # wider than the collapsed card, so a window that only clears the
+        # closed threshold reflows to one column when it opens, and the drift
+        # measured below would then be a stacked layout, not a slide.
+        #
+        # Into two columns BEFORE measuring: the fixture opens at 1400, where
+        # three columns pin Advanced open and make the group inside it the
+        # collapsible one instead, so a section toggled there is toggled
+        # against a different card.
         panel.resize(900, 900)
+        _settle(qt_app)
+        panel.typography.set_expanded(True)
+        _settle(qt_app)
+        width = max(900, self._two_column_width(panel))
+        panel.typography.set_expanded(False)
+        _settle(qt_app)
+        panel.resize(width, 900)
         _settle(qt_app)
         assert panel.card_grid.count == 2
         before = self._top(panel.advanced_card)
         panel.typography.set_expanded(True)
         _settle(qt_app)
+        assert panel.card_grid.count == 2, "the section pushed it out of two columns"
         drift = abs(self._top(panel.advanced_card) - before)
         assert drift <= card_grid_module()._LEVEL_FILL_MAX_PX, f"slid {drift}px"
         panel.typography.set_expanded(False)

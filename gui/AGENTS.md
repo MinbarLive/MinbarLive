@@ -135,7 +135,20 @@ still had it.
   the three stacked Display rows (font / height / backdrop opacity), the
   subtitle-appearance expander, the level meter, and the log panel that *shares* the
   window rather than widening it. `_COL2_MIN_W`/`_COL3_MIN_W` are measured from the
-  columns' real minimums — don't lower them to the Tk numbers.
+  columns' real minimums — don't lower them to the Tk numbers. `_COL2_MIN_W` is only
+  the **floor**: `two_column_min_width()` raises it to what the columns in front of it
+  measure, because that figure comes from the font engine (658 px in Arabic, 758 in
+  German, 869 on Linux) and no single constant is right everywhere. Leave `_COL3_MIN_W`
+  a constant — column C's minimum moves with the arrangement, so measuring it would
+  oscillate.
+- **A window floor is always clamped to the screen.** `setMinimumSize` is honoured
+  whatever the display can show, so the excess hangs off the edge and cannot be dragged
+  back. Any new arrangement with a floor of its own gets the same clamp.
+- **The sidebar beside the log is a FIXED width, never a min/max range.** The log
+  stretches and the sidebar does not, so a sidebar given a range gets its floor and the
+  log takes every spare pixel — it stops honouring `_SIDEBAR_W_WITH_LOG` on *every*
+  screen. `_log_share()` picks the number to fix it at, measured against the **screen**
+  rather than the current width so a resize cannot feed back into itself.
 - **Onboarding:** step heading stays inside the card, the meter has no auto-stop, the
   Dark|Light control stays segmented.
 - **Secondary windows:** history viewer, batch and the three popups (already-running,

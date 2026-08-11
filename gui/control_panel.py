@@ -131,6 +131,10 @@ _SECONDARY_WINDOWS = (
 # the Tk arrangement. The window is only widened when it cannot hold both.
 _SIDEBAR_W_WITH_LOG = 500
 _LOG_PANEL_MIN_W = 340
+# The narrowest the log is still worth reading, and so the width it is allowed
+# to shrink to before the sidebar has to give any of its own up. _LOG_PANEL_MIN_W
+# is what the log OPENS at; this is what it survives on.
+_LOG_PANEL_HARD_MIN_W = 260
 # How often a running session is checked for inactivity, and how often its
 # in-progress cost record is written to disk. Both are the Tk panel's numbers:
 # the check is cheap, and 30 s bounds what a crash can lose.
@@ -1275,7 +1279,7 @@ class ControlPanel(QMainWindow):
     # ── log panel ────────────────────────────────────────────────────────
     def _log_panel(self) -> QWidget:
         panel = QWidget()
-        panel.setMinimumWidth(260)
+        panel.setMinimumWidth(_LOG_PANEL_HARD_MIN_W)
         box = QVBoxLayout(panel)
         # Left margin matches the right: the row layout has no spacing, so at 0
         # the log box sat directly against the card area's scroll bar with
@@ -1307,15 +1311,52 @@ class ControlPanel(QMainWindow):
         whatever is left — the Tk arrangement, and the reason the card grid
         drops to a single column while the log is up. Closed, the sidebar takes
         the whole width back.
+
+        A FIXED width, not a range. Given a minimum and a maximum the sidebar
+        stops taking 500 at all: the log stretches and the sidebar does not, so
+        the layout hands the sidebar its floor and every spare pixel to the log.
+        The width to fix it AT is the question — see ``_log_share``.
         """
         if self._log_collapsed:
             self.sidebar.setMinimumWidth(0)
             self.sidebar.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX
             self._row_layout.setStretch(0, 1)
         else:
-            self.sidebar.setFixedWidth(_SIDEBAR_W_WITH_LOG)
+            sidebar, log = self._log_share()
+            self.sidebar.setFixedWidth(sidebar)
+            self.log_panel.setMinimumWidth(log)
             self._row_layout.setStretch(0, 0)
         self._apply_minimum_size()
+
+    def _log_share(self) -> tuple[int, int]:
+        """How the two halves divide a screen that may be too small for both.
+
+        Returns ``(sidebar width, log minimum)``. On any ordinary display that
+        is ``(_SIDEBAR_W_WITH_LOG, _LOG_PANEL_HARD_MIN_W)`` and nothing here has
+        any effect — the window is wider than the pair needs and the log takes
+        the surplus, so it opens at `_LOG_PANEL_MIN_W` or better.
+
+        It only does something once the SCREEN cannot hold both at their
+        preferred widths, and then something has to give or the layout overflows
+        rather than shrinking: the log was drawn over a sidebar still insisting
+        on its 500 px, with Stop and both Display dropdowns cut off underneath.
+        The cards yield first, down to their own measured minimum, and the log
+        only below that — a narrow log is legible, a clipped card is not, and
+        the cards are the application.
+
+        Measured against the SCREEN and not the current width, deliberately.
+        The screen does not change while a window is being dragged, so a resize
+        cannot feed back into the width it is resizing.
+        """
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        room = screen.availableGeometry().width() if screen is not None else 0
+        if not room:
+            return _SIDEBAR_W_WITH_LOG, _LOG_PANEL_HARD_MIN_W
+        sidebar = min(
+            _SIDEBAR_W_WITH_LOG,
+            max(self._cards_minimum_width(), room - _LOG_PANEL_HARD_MIN_W),
+        )
+        return sidebar, min(_LOG_PANEL_HARD_MIN_W, max(0, room - sidebar))
 
     def _cards_minimum_width(self) -> int:
         """Narrowest the card area may get without clipping a card.
@@ -1349,6 +1390,15 @@ class ControlPanel(QMainWindow):
         the widget is polished — so a pre-show ``minimumSizeHint`` describes
         unstyled widgets and came out at 50 px against the real 449. Until then
         the floor is the height alone, and ``showEvent`` re-runs this.
+
+        Clamped to the screen, because a floor bigger than the display is worse
+        than a cramped window: Qt honours setMinimumSize whatever the screen can
+        show, so the excess goes off the edge and stays there — the window cannot
+        be dragged back. The log arrangement is where this bites. Its floor is a
+        constant 840, and a display scaled to 300 % reports about 819 logical px,
+        so opening the log there pushed the window past the edge of the monitor.
+        The resize in ``_toggle_log_panel`` already clamps the same way; this is
+        the other half of it, and it holds for the measured card floor too.
         """
         if not self.isVisible():
             self.setMinimumSize(QSize(0, _MIN_WINDOW_H))
@@ -1357,13 +1407,21 @@ class ControlPanel(QMainWindow):
             width = self._cards_minimum_width()
         else:
             width = _SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W
-        self.setMinimumSize(QSize(width, _MIN_WINDOW_H))
+        floor = QSize(width, _MIN_WINDOW_H)
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is not None:
+            floor = floor.boundedTo(screen.availableGeometry().size())
+        self.setMinimumSize(floor)
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt API
         super().showEvent(event)
         # First point at which the cards have been styled, and so the first
-        # point at which their minimum width is a real number.
-        self._apply_minimum_size()
+        # point at which their minimum width is a real number. Through
+        # _apply_log_panel_widths, which ends in _apply_minimum_size: how much
+        # of a narrow screen the sidebar may keep is measured from the cards
+        # too, and _build() had to decide it before there was anything to
+        # measure.
+        self._apply_log_panel_widths()
         # …and the first point at which there is an HWND to theme. The panel is
         # built AFTER apply_theme ran, so the sweep there never saw it.
         set_titlebar_dark(self, self.settings.theme_mode != "light")
