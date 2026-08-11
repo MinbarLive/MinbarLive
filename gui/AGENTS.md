@@ -135,7 +135,12 @@ still had it.
   the three stacked Display rows (font / height / backdrop opacity), the
   subtitle-appearance expander, the level meter, and the log panel that *shares* the
   window rather than widening it. `_COL2_MIN_W`/`_COL3_MIN_W` are measured from the
-  columns' real minimums — don't lower them to the Tk numbers.
+  columns' real minimums — don't lower them to the Tk numbers. `_COL2_MIN_W` is only
+  the **floor**: `two_column_min_width()` raises it to what the columns in front of it
+  measure, because that figure comes from the font engine (658 px in Arabic, 758 in
+  German, 869 on Linux) and no single constant is right everywhere. Leave `_COL3_MIN_W`
+  a constant — column C's minimum moves with the arrangement, so measuring it would
+  oscillate.
 - **Onboarding:** step heading stays inside the card, the meter has no auto-stop, the
   Dark|Light control stays segmented.
 - **Secondary windows:** history viewer, batch and the three popups (already-running,

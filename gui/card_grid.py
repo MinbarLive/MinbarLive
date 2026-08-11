@@ -28,9 +28,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Width thresholds for the second and third column. Measured against what the
-# cards actually need: test_a_column_is_never_narrower_than_its_cards_need
-# holds _COL2_MIN_W above two columns' minimum hints plus the grid's chrome.
+# Width thresholds for the second and third column. Both are FLOORS, not the
+# whole answer for the second: see two_column_min_width, which raises _COL2_MIN_W
+# to whatever the cards in front of it actually need.
 _COL2_MIN_W = 800
 _COL3_MIN_W = 1030
 
@@ -122,6 +122,39 @@ class CardGrid(QObject):
         )
         return widest + margins.left() + margins.right()
 
+    def two_column_min_width(self) -> int:
+        """Narrowest the host may go to two columns without clipping a card.
+
+        ``_COL2_MIN_W`` raised, never lowered, to what the two columns in front
+        of us measure — because the constant cannot be right everywhere. The
+        cards' minimums come from the font engine, so the same panel needs 658 px
+        in Arabic, 758 in German and (on the CI runner) 869 on Linux, all against
+        a constant of 800. A window in the band above the constant and below the
+        need switches to two columns that do not fit, and the card area scrolls
+        vertically only — so the overflow is cut off with no way to reach it.
+
+        Raising the constant to the widest case instead would take the
+        two-column layout away from every narrower case to fix the widest one.
+
+        The floor is what makes this safe to call at any time: before the first
+        show the cards are unpolished and hint at nonsense (~50 px against a real
+        449), and ``max`` throws that away. See ``_apply_minimum_size``.
+
+        Column 1 holds B above C, so it is the WIDER of the two that has to fit.
+        Both of the columns this reads are stable under the reflow, which is what
+        keeps the threshold from oscillating — unlike C alone, whose minimum moves
+        by ~11 px when three columns pin the Advanced card open. That is why
+        ``_COL3_MIN_W`` is left a plain constant.
+        """
+        margins = self.grid.contentsMargins()
+        first = self.columns[0].minimumSizeHint().width()
+        second = max(
+            (widget.minimumSizeHint().width() for widget in self.columns[1:]),
+            default=0,
+        )
+        chrome = margins.left() + margins.right() + self.grid.horizontalSpacing()
+        return max(_COL2_MIN_W, first + second + chrome)
+
     # ── the reflow ───────────────────────────────────────────────────────
     def column_count(self, width: int, log_open: bool) -> int:
         """How many columns ``width`` affords."""
@@ -133,7 +166,7 @@ class CardGrid(QObject):
             return 2  # nothing to measure yet; the default window shows two
         if width >= _COL3_MIN_W:
             return 3
-        if width >= _COL2_MIN_W:
+        if width >= self.two_column_min_width():
             return 2
         return 1
 

@@ -181,7 +181,7 @@ maximized in `window_maximized`.
 | ------------------------- | --------- | -------------------------------------------------------------- |
 | `_DEFAULT_W`/`_DEFAULT_H` | 880/640   | Size the window opens at on a fresh install (logical units)     |
 | minimum size              | 420×420   | Floor the window may be dragged down to (`setMinimumSize`)      |
-| `_COL2_MIN_W`             | 800       | Card-grid width from which two columns are used                 |
+| `_COL2_MIN_W`             | 800       | Card-grid width from which two columns are used — a *floor*, raised at run time to what the columns measure |
 | `_COL3_MIN_W`             | 1030      | …and three columns (a maximized window shows everything at once) |
 | `_SIDEBAR_W_WITH_LOG`     | 500       | Width the card sidebar keeps when the log panel is open          |
 | `_LOG_PANEL_MIN_W`        | 340       | Minimum width of the log panel; the window widens only if both cannot fit |
@@ -189,6 +189,15 @@ maximized in `window_maximized`.
 The column thresholds are measured from what the columns actually need. The
 horizontal scrollbar is off, so a threshold that lets a column drop below its
 minimum does not scroll — it clips.
+
+`_COL2_MIN_W` alone cannot state that need, because it comes from the font
+engine: the same panel measures 658 px in Arabic, 758 in German and 869 on
+Linux. `CardGrid.two_column_min_width()` therefore takes the larger of the
+constant and the two columns in front of it, so the constant governs where it is
+already big enough (all of Windows) and the measurement takes over where it is
+not. `_COL3_MIN_W` stays a plain constant on purpose: three columns pin the
+Advanced card open, which moves column C's minimum by ~11 px, and a threshold
+that moves with the arrangement it produces oscillates.
 
 ### Announcements (config.py)
 

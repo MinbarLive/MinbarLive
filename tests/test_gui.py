@@ -1197,12 +1197,31 @@ class TestControlPanelLayout:
             assert panel.card_grid.count == expected, f"{width}px should give {expected}"
 
     def test_a_column_is_never_narrower_than_its_cards_need(self, panel):
-        # The horizontal scrollbar is off, so a threshold that lets a column
-        # below its minimum clips the card instead of scrolling it.
-        needs = [c.minimumSizeHint().width() for c in (panel.card_grid.col_a, panel.card_grid.col_b)]
-        margins = panel.card_grid.grid.contentsMargins()
-        chrome = margins.left() + margins.right() + panel.card_grid.grid.horizontalSpacing()
-        assert card_grid_module()._COL2_MIN_W >= sum(needs) + chrome
+        """The horizontal scrollbar is off, so a threshold that lets a column
+        below its minimum clips the card instead of scrolling it.
+
+        Against the EFFECTIVE threshold, not `_COL2_MIN_W`, which is only its
+        floor. Asserting the constant covers the cards made this a claim about
+        the font engine: it held for the unthemed cards this fixture builds and
+        for themed cards on Windows (758 px), and went red on the Linux runner
+        the one time a test leaked a theme into it (869 px against 800).
+
+        Weak on Windows by construction — the constant wins there, so the
+        measured branch never runs and this cannot fail. Its teeth are in
+        `tests/test_card_grid.py::TestTwoColumnFloor`, which drives the cards
+        past the floor; this one holds the panel's real wiring to the same rule.
+        """
+        grid = panel.card_grid
+        # Two columns stack B above C, so column 1 must hold the wider of them.
+        need = (
+            grid.col_a.minimumSizeHint().width()
+            + max(c.minimumSizeHint().width() for c in (grid.col_b, grid.col_c))
+            + grid.grid.contentsMargins().left()
+            + grid.grid.contentsMargins().right()
+            + grid.grid.horizontalSpacing()
+        )
+        assert grid.two_column_min_width() >= need
+        assert grid.column_count(need - 1, log_open=False) == 1
 
     def test_opening_the_log_gives_the_cards_one_column(self, panel):
         assert panel._log_collapsed
