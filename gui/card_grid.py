@@ -113,8 +113,12 @@ class CardGrid(QObject):
         because it is three columns wide. One column is the narrowest the
         reflow can produce, so this is the figure that always holds.
 
-        A column's own minimum does not depend on where the grid put it, so
-        this may be asked at any time.
+        Safe to ask at any time, but not because a column's minimum is
+        independent of the arrangement — column C's is not. Three columns pin
+        the Advanced card open, which is worth ~11 px to it (215 against 204).
+        This reads the WIDEST column and C is never that, so the answer holds
+        whichever arrangement is in force. ``two_column_min_width`` leans on the
+        same fact about columns A and B, which really do not move.
         """
         margins = self.grid.contentsMargins()
         widest = max(
