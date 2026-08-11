@@ -160,15 +160,22 @@ _FONT_SIZE_BASE_DEFAULT = 40
 # before that, so a theme or font change cannot tip a fresh install into it.
 #
 # HEIGHT: the two-column card stack needs a **659 px** window to fit without the
-# card area's vertical scroll bar — identical in all six GUI languages, measured
-# on a real panel. The old default was 640, nineteen pixels short, so every
-# first launch opened already scrolled. 780 clears it with headroom for a card
-# that grows later.
+# card area's vertical scroll bar, so this is that plus one. 640 was nineteen
+# pixels short and opened every first launch already scrolled; 780 overshot by
+# 121 and opened a visibly half-empty window. The right answer is the smallest
+# window that shows everything.
+#
+# It is a constant and not a measurement taken at run time, which was tried and
+# thrown away: 599 px of cards is what the panel reports at scale 1, 1.25 and
+# 1.5 and in all six GUI languages — Qt lays out in logical pixels, so the
+# figure does not move with the display's scaling, and measuring it live bought
+# nothing for a good deal of machinery. Re-measure it here if a card gains a
+# row; the test below prints the number when it stops matching.
 #
 # Both are clamped to the screen by _default_size: a figure that suits a 2048px
 # monitor must not open off the bottom of a 1366x768 laptop.
 _DEFAULT_W = 1000
-_DEFAULT_H = 780
+_DEFAULT_H = 660
 # Height floor. Small enough that the panel can be dragged down to a corner of
 # the screen; everything above it scrolls. The WIDTH floor is not a constant —
 # it is measured from the cards, see _apply_minimum_size.

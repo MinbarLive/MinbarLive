@@ -1252,7 +1252,13 @@ class SubtitleWindow(QWidget):
         p.fillPath(path, self._card_fill())
 
     def _draw_block(
-        self, p: QPainter, block: Block, x: int, y: int, newest: bool = True
+        self,
+        p: QPainter,
+        block: Block,
+        x: int,
+        y: int,
+        newest: bool = True,
+        force_cards: bool = False,
     ) -> int:
         """Draw ``block`` with its top edge at ``y``; return the height used.
 
@@ -1267,7 +1273,7 @@ class SubtitleWindow(QWidget):
         """
         trans_font, src_font = self._block_fonts(block)
         w = self._content_width()
-        cards = self._transparent_static_active()
+        cards = force_cards or self._transparent_static_active()
         rects = self._column_rects(block, y)
         if rects is not None:
             src_rect, trans_rect = rects
@@ -1696,10 +1702,30 @@ class SubtitleWindow(QWidget):
             )
 
     def _paint_announcement(self, p: QPainter) -> None:
+        """Centred across the whole window, over its own card when it needs one.
+
+        An announcement is the one thing here that belongs to no layout: it is
+        not a subtitle block, and in the side-by-side layout it deliberately
+        does not use the two column panels (``_column_panel_rects`` returns
+        None while one is up). So in that layout it had nothing behind it at
+        all — the window backdrop is fully transparent there *because* the
+        panels are the background, and the announcement does not get one. White
+        text straight onto the picture, unreadable over anything bright.
+
+        The rule is therefore about what is actually behind it rather than about
+        the mode: if the window paints no backdrop, the announcement brings its
+        own card, exactly as transparent static already did.
+        """
         block = Block(self._announcement or "")
         x = int(self.width() * SIDE_MARGIN_RATIO)
         h = self._measure_block(block)
-        self._draw_block(p, block, x, max(0, (self._content_height() - h) // 2))
+        self._draw_block(
+            p,
+            block,
+            x,
+            max(0, (self._content_height() - h) // 2),
+            force_cards=self._backdrop().alpha() == 0,
+        )
 
     # ── scrolling ────────────────────────────────────────────────────────
     def _sync_scroll_timer(self) -> None:
