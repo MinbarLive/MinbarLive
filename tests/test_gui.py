@@ -1082,6 +1082,12 @@ class TestControlPanelLayout:
         And the requirement is compared against the CONSTANT, not against a
         figure read off the same window: a test that measures both sides of its
         own assertion cannot fail in the direction that matters.
+
+        Both directions, because both have now shipped: 640 was 19 px short and
+        opened scrolled, 780 overshot by 121 and opened visibly half empty. The
+        failure message carries the measured figure, which is what makes the
+        constant maintainable — a card that gains a row fails here and says by
+        how much.
         """
         import gui.control_panel as cp
         from gui.theme import apply_theme
@@ -1125,10 +1131,19 @@ class TestControlPanelLayout:
             area = p.card_area
             content = area.widget().sizeHint().height()
             chrome = p.height() - area.viewport().height()
-            assert cp._DEFAULT_H >= content + chrome, (
-                f"the cards need a {content + chrome}px window at "
-                f"{cp._DEFAULT_W}px wide and _DEFAULT_H is {cp._DEFAULT_H} — a "
-                f"fresh install opens already scrolled"
+            needed = content + chrome
+            assert cp._DEFAULT_H >= needed, (
+                f"the cards need a {needed}px window at {cp._DEFAULT_W}px wide "
+                f"and _DEFAULT_H is {cp._DEFAULT_H} — a fresh install opens "
+                f"already scrolled"
+            )
+            # The slack allowance is one card's inner padding, not a round
+            # number: enough that a stylesheet tweak of a pixel or two does not
+            # fail this, far short of the 121 px of dead space 780 produced.
+            assert cp._DEFAULT_H <= needed + 24, (
+                f"the cards need a {needed}px window and _DEFAULT_H is "
+                f"{cp._DEFAULT_H} — {cp._DEFAULT_H - needed}px of empty space "
+                f"below the last card"
             )
             # …and the default width keeps the two-column arrangement the setup
             # videos show. Three columns pins the Advanced card open, which is a
@@ -7045,6 +7060,63 @@ class TestTransparentStaticRibbon:
         assert pill_tops, "no pill was drawn; this proves nothing"
         gap = min(pill_tops) - max(r.bottom() for r in cards)
         assert gap >= PILL_CLEARANCE, f"only {gap} px between card and pill"
+
+
+class TestAnnouncementBackdrop:
+    """An announcement belongs to no layout, so it has to carry its own.
+
+    It is not a subtitle block, and in the side-by-side layout it deliberately
+    does not use the two column panels (`_column_panel_rects` returns None while
+    one is up). That left it with nothing behind it there: the window backdrop
+    is fully transparent in that layout *because* the panels are the background.
+    White text straight onto the picture — reported from a real session.
+    """
+
+    @staticmethod
+    def _ribbons(w) -> list:
+        from PySide6.QtGui import QPainter, QPixmap
+
+        drawn: list = []
+        w._draw_ribbon = lambda p, rects: drawn.extend(rects)
+        w.set_announcement("Das Gebet beginnt in 5 Minuten")
+        pixmap = QPixmap(w.width(), w.height())
+        painter = QPainter(pixmap)
+        try:
+            w._paint_announcement(painter)
+        finally:
+            painter.end()
+        return drawn
+
+    def test_side_by_side_gives_the_announcement_a_card(self, overlay):
+        w = overlay(
+            SUBTITLE_MODE_REALTIME, side_by_side=True, bilingual_mode=True
+        )
+        assert w._backdrop().alpha() == 0, "premise: the window paints nothing"
+        assert self._ribbons(w), "the announcement had no backdrop at all"
+
+    def test_transparent_static_still_does(self, overlay):
+        # The look the side-by-side case was asked to match; unchanged.
+        w = overlay(
+            SUBTITLE_MODE_STATIC, transparent_static=True, bilingual_mode=True
+        )
+        assert self._ribbons(w)
+
+    @pytest.mark.parametrize(
+        ("mode", "kwargs"),
+        [
+            (SUBTITLE_MODE_REALTIME, {}),
+            (SUBTITLE_MODE_CONTINUOUS, {}),
+            (SUBTITLE_MODE_STATIC, {"transparent_static": False}),
+        ],
+    )
+    def test_a_mode_that_paints_its_own_backdrop_gets_no_card(
+        self, overlay, mode, kwargs
+    ):
+        # The other half: where the window already paints a backdrop, a card
+        # would be a second, darker box inside it.
+        w = overlay(mode, bilingual_mode=True, **kwargs)
+        assert w._backdrop().alpha() > 0, "premise: the window paints a backdrop"
+        assert self._ribbons(w) == []
 
 
 class TestSideBySideLayout:
