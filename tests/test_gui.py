@@ -1223,6 +1223,47 @@ class TestControlPanelLayout:
         assert grid.two_column_min_width() >= need
         assert grid.column_count(need - 1, log_open=False) == 1
 
+    def test_the_window_floor_never_exceeds_the_screen(self, panel, qt_app):
+        """A floor bigger than the display cannot be dragged back into view.
+
+        Qt honours `setMinimumSize` whatever the screen can show, so the excess
+        hangs off the edge and stays there. The log arrangement is where this
+        bit: its floor is a constant `_SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W` =
+        840, and a display scaled to 300 % reports about 819 logical px.
+        """
+        from PySide6.QtCore import QRect
+
+        class FakeScreen:
+            def __init__(self, w, h):
+                self._r = QRect(0, 0, w, h)
+
+            def availableGeometry(self):
+                return self._r
+
+        cp = cp_module()
+        panel.show()
+        _settle(qt_app)
+        for width, height in ((819, 464), (640, 360), (1024, 600)):
+            panel.screen = lambda w=width, h=height: FakeScreen(w, h)
+            for collapsed in (True, False):
+                if panel._log_collapsed != collapsed:
+                    panel._toggle_log_panel()
+                panel._apply_minimum_size()
+                assert panel.minimumWidth() <= width, (
+                    f"floor {panel.minimumWidth()}px on a {width}px screen, "
+                    f"log {'closed' if collapsed else 'open'}"
+                )
+                assert panel.minimumHeight() <= height
+
+        # …and the clamp only ever clamps: a screen with room to spare must
+        # leave the arrangement's real floor alone.
+        panel.screen = lambda: FakeScreen(2560, 1440)
+        if panel._log_collapsed:
+            panel._toggle_log_panel()
+        panel._apply_minimum_size()
+        assert panel.minimumWidth() == cp._SIDEBAR_W_WITH_LOG + cp._LOG_PANEL_MIN_W
+        assert panel.minimumHeight() == cp._MIN_WINDOW_H
+
     def test_opening_the_log_gives_the_cards_one_column(self, panel):
         assert panel._log_collapsed
         panel.resize(1200, 800)

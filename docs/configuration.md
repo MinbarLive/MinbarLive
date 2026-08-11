@@ -199,6 +199,11 @@ not. `_COL3_MIN_W` stays a plain constant on purpose: three columns pin the
 Advanced card open, which moves column C's minimum by ~11 px, and a threshold
 that moves with the arrangement it produces oscillates.
 
+The window's own floor is clamped to the screen. A minimum larger than the
+display cannot be dragged back into view, and the log arrangement's
+`_SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W` = 840 exceeds the ~819 logical pixels a
+300 %-scaled display reports.
+
 ### Announcements (config.py)
 
 | Parameter                       | Default            | Description                                            |

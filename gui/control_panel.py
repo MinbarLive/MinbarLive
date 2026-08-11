@@ -1307,6 +1307,11 @@ class ControlPanel(QMainWindow):
         whatever is left — the Tk arrangement, and the reason the card grid
         drops to a single column while the log is up. Closed, the sidebar takes
         the whole width back.
+
+        The pin holds because ``_apply_minimum_size`` never lets the window go
+        below what the pair needs. Give the sidebar a range instead and it stops
+        taking 500 at all: with the log stretching and the sidebar not, the
+        layout hands the sidebar its floor and every spare pixel to the log.
         """
         if self._log_collapsed:
             self.sidebar.setMinimumWidth(0)
@@ -1349,6 +1354,15 @@ class ControlPanel(QMainWindow):
         the widget is polished — so a pre-show ``minimumSizeHint`` describes
         unstyled widgets and came out at 50 px against the real 449. Until then
         the floor is the height alone, and ``showEvent`` re-runs this.
+
+        Clamped to the screen, because a floor bigger than the display is worse
+        than a cramped window: Qt honours setMinimumSize whatever the screen can
+        show, so the excess goes off the edge and stays there — the window cannot
+        be dragged back. The log arrangement is where this bites. Its floor is a
+        constant 840, and a display scaled to 300 % reports about 819 logical px,
+        so opening the log there pushed the window past the edge of the monitor.
+        The resize in ``_toggle_log_panel`` already clamps the same way; this is
+        the other half of it, and it holds for the measured card floor too.
         """
         if not self.isVisible():
             self.setMinimumSize(QSize(0, _MIN_WINDOW_H))
@@ -1357,7 +1371,11 @@ class ControlPanel(QMainWindow):
             width = self._cards_minimum_width()
         else:
             width = _SIDEBAR_W_WITH_LOG + _LOG_PANEL_MIN_W
-        self.setMinimumSize(QSize(width, _MIN_WINDOW_H))
+        floor = QSize(width, _MIN_WINDOW_H)
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is not None:
+            floor = floor.boundedTo(screen.availableGeometry().size())
+        self.setMinimumSize(floor)
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt API
         super().showEvent(event)

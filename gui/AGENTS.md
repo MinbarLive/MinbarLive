@@ -141,6 +141,9 @@ still had it.
   German, 869 on Linux) and no single constant is right everywhere. Leave `_COL3_MIN_W`
   a constant — column C's minimum moves with the arrangement, so measuring it would
   oscillate.
+- **A window floor is always clamped to the screen.** `setMinimumSize` is honoured
+  whatever the display can show, so the excess hangs off the edge and cannot be dragged
+  back. Any new arrangement with a floor of its own gets the same clamp.
 - **Onboarding:** step heading stays inside the card, the meter has no auto-stop, the
   Dark|Light control stays segmented.
 - **Secondary windows:** history viewer, batch and the three popups (already-running,
