@@ -29,18 +29,27 @@ LATEST_RELEASE_API_URL = (
 # non-prerelease, non-draft release — this one does include pre-releases.
 # Only pre-release builds read it. Anonymous requests never see drafts.
 RELEASE_LIST_API_URL = "https://api.github.com/repos/MinbarLive/MinbarLive/releases"
-RELEASES_PAGE_URL = "https://github.com/MinbarLive/MinbarLive/releases/latest"
 
-# Any html_url we are willing to open in the user's browser must start with
-# this — see fetch_latest_release.
-_RELEASE_URL_PREFIX = "https://github.com/MinbarLive/MinbarLive/releases/"
+# Where the notice sends the user. The project's own page, not the GitHub
+# release it came from: its download buttons are per platform and named, where
+# the release page asks a non-technical user to expand "Assets" and pick the
+# right file out of a list that includes an AppImage and two source archives.
+#
+# A constant, and never a URL out of the response body — the browser is opened
+# with it, so the answer must not be something the network gets to choose.
+# **The page's buttons read ``/releases/latest``**, which by GitHub's own
+# definition excludes pre-releases: someone on the pre-release channel
+# (``include_prereleases``) is told about an rc and offered the stable build
+# when they get there. Opt-in, and testers are handed the tag directly, so it
+# is left as the cost of one destination for everyone.
+DOWNLOAD_PAGE_URL = "https://minbarlive.info/"
 
 _TIMEOUT_SECONDS = 10
 
 
 class UpdateInfo(NamedTuple):
     version: str  # display version, without the leading "v"
-    url: str  # release page to open in the browser
+    url: str  # the page to open in the browser
 
 
 def _strip_v(version: str) -> str:
@@ -108,26 +117,16 @@ def _fetch_json(url: str):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _release_from(entry: object) -> tuple[str, str] | None:
-    """``(tag_name, html_url)`` out of one release object, None if unusable.
-
-    The banner hands the URL straight to webbrowser.open(), so only accept a
-    real release page on github.com — never an arbitrary scheme or host out
-    of the response body.
-    """
+def _tag_of(entry: object) -> str | None:
+    """``tag_name`` out of one release object, None if unusable."""
     if not isinstance(entry, dict):
         return None
     tag = entry.get("tag_name")
-    if not isinstance(tag, str) or not tag:
-        return None
-    url = entry.get("html_url")
-    if not isinstance(url, str) or not url.startswith(_RELEASE_URL_PREFIX):
-        url = RELEASES_PAGE_URL
-    return tag, url
+    return tag if isinstance(tag, str) and tag else None
 
 
-def fetch_latest_release(include_prereleases: bool = False) -> tuple[str, str] | None:
-    """``(tag_name, html_url)`` of the newest release GitHub offers.
+def fetch_latest_release(include_prereleases: bool = False) -> str | None:
+    """The ``tag_name`` of the newest release GitHub offers.
 
     Default is ``/releases/latest``, the newest final release. With
     ``include_prereleases`` the full list is read instead and the highest
@@ -136,22 +135,22 @@ def fetch_latest_release(include_prereleases: bool = False) -> tuple[str, str] |
     Raises on network errors; returns None on a malformed response.
     """
     if not include_prereleases:
-        return _release_from(_fetch_json(LATEST_RELEASE_API_URL))
+        return _tag_of(_fetch_json(LATEST_RELEASE_API_URL))
 
     data = _fetch_json(RELEASE_LIST_API_URL)
     if not isinstance(data, list):
         return None
-    best: tuple[str, str] | None = None
+    best: str | None = None
     best_key = None
     for entry in data:
-        found = _release_from(entry)
-        if found is None:
+        tag = _tag_of(entry)
+        if tag is None:
             continue
-        key = _parse_version(found[0])
+        key = _parse_version(tag)
         # The list arrives newest-published first, which is not the same as
         # newest version — a patch on an older branch can be published later.
         if key is not None and (best_key is None or key > best_key):
-            best, best_key = found, key
+            best, best_key = tag, key
     return best
 
 
@@ -165,12 +164,11 @@ def check_for_update(include_prereleases: bool = False) -> UpdateInfo | None:
     startup.
     """
     try:
-        fetched = fetch_latest_release(include_prereleases)
-        if fetched is None:
+        tag = fetch_latest_release(include_prereleases)
+        if tag is None:
             return None
-        tag, url = fetched
         if is_newer_version(tag, __version__):
-            return UpdateInfo(version=_strip_v(tag), url=url)
+            return UpdateInfo(version=_strip_v(tag), url=DOWNLOAD_PAGE_URL)
         return None
     except Exception as exc:
         log(f"Update check skipped: {exc}", level="DEBUG")

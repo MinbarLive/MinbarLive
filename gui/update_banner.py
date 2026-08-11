@@ -1,9 +1,10 @@
 """The "a newer release exists" strip.
 
 It sits between the panel header and the cards, appears only when the check
-finds a release newer than the running version, and opens the release page when
-clicked. Without it the ``check_for_updates`` setting would have a checkbox and
-nothing behind it.
+finds a release newer than the running version, and opens the download page —
+``update_check.DOWNLOAD_PAGE_URL``, the project's own site — when clicked.
+Without it the ``check_for_updates`` setting would have a checkbox and nothing
+behind it.
 
 **Two ways to make it go away, and they are not the same thing.** The ✕ hides it
 for this run of the app and it is back on the next launch — "not now". *Skip
