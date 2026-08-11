@@ -1,15 +1,17 @@
 """The window icon every Qt window carries.
 
-The shipped ``MinbarLive.ico`` holds the full vertical lockup — mark above
-"MinbarLive" above the tagline — in *every* one of its sizes, 16x16 included.
-Windows draws the taskbar button at 24-32px, where the wordmark and the
-tagline are a few dozen unreadable grey pixels: the pale smudge that reads as
-"the logo is broken" next to neighbouring icons that are all compact marks.
+The logo artwork is a vertical lockup — mark above "MinbarLive" above the
+tagline. Windows draws the taskbar button at 24-32px, where the wordmark and
+the tagline are a few dozen unreadable grey pixels: the pale smudge that reads
+as "the logo is broken" next to neighbouring icons that are all compact marks.
 
 So the runtime icon is built from the mark alone, which ``utils.icons`` already
-extracts for the panel header, at the sizes Windows actually asks for. The .ico
-stays as the fallback, and stays what the EXE and the desktop shortcut use —
-a wordmark belongs on a file icon, not on a 24px button.
+extracts for the panel header, at the sizes Windows actually asks for. The
+shipped ``MinbarLive.ico`` — the fallback here, and what the EXE and the
+desktop shortcut use — is now the same mark at the same sizes, written by
+``packaging/make_windows_icon.py``. It used to be the lockup, on the grounds
+that a wordmark belongs on a file icon; the desktop shortcut sitting next to a
+taskbar button showing something else settled that the other way.
 
 The white-outlined artwork is the source: the taskbar and title bar follow the
 system theme, and the plain navy mark disappears against a dark one while the

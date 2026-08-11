@@ -71,6 +71,33 @@ packaging section below for the shipped build.
   On X11 the cheap path does not exist: the flag is the `_NET_WM_STATE_ABOVE` property
   and Qt's xcb plugin only writes it while the window is unmapped, so `set_window_on_top`
   re-creates and re-shows there. That is why the setting did nothing at all on Linux.
+- **Never clear a window flag with `~` on the enum, and never test what `~` does.**
+  On some interpreters `~Qt.WindowStaysOnTopHint` is `0x01fbffff` — CPython's
+  `Flag.__invert__` complements within the enum's *declared range* — so `flags & ~x`
+  silently drops every window flag above it, `WindowCloseButtonHint` (0x08000000) first.
+  A window without that hint keeps its ✕ and Windows draws it **greyed out and inert**,
+  on a focused window, for the rest of the process. That is the "the X is sometimes
+  greyed out" report, twice. The trigger was never random (`always_on_top_mode` defaults
+  to *When running*, so the first Stop of every session did it) but **which builds carry
+  it is**: on identical PySide6 6.11.1, CPython 3.12.6 and 3.12.10 mask and 3.12.13
+  inverts fully, and `setup-python` resolves `"3.12"` at build time — rc.1's Windows EXE
+  was built on 3.12.10 and had it, the AppImage on 3.12.13 and did not. Use plain ints:
+  `Qt.WindowType(int(flags) & ~int(flag))`, as `widgets._with_on_top` does. A test
+  asserting the masking behaviour passes on Windows CI and **fails on `linux-smoke`** —
+  that is how this was found.
+- **Always-on-top is a band, not a rank, and the app has several windows in it.**
+  Inside the band the order is whoever was raised last, so `subtitle_window._keep_on_top`
+  — the once-a-second restack that keeps the overlay above a clicked taskbar — buried
+  the control panel with it: the panel came forward when clicked and sank again within
+  the second. The fix is a standing position for the overlay, **not** repeatedly lifting
+  the panel: `widgets.place_window_behind` puts the overlay directly under the window
+  passed as `stay_under`, so the panel is never restacked at all. A window that keeps
+  forcing itself forward is its own defect — the maintainer rejected that shape
+  explicitly. It falls back to `raise_()` off Windows, with no panel, or when the panel
+  is minimized or not itself topmost (each of those would strand the overlay at the
+  bottom of the stack). **Known cost:** a click on the taskbar puts the shell above both
+  windows, and the overlay only comes back over it when the panel next does — clicking
+  the panel fixes it. Beating the taskbar without moving the panel is not possible.
 - **The native title bar goes through `widgets.set_titlebar_dark`**, never the
   stylesheet — a caption bar is the window manager's, not a widget. On Windows it
   follows the SYSTEM light/dark preference and nothing the app asks for, so a

@@ -26,9 +26,9 @@ import pytest
 pytest.importorskip("PySide6", reason="PySide6 not installed")
 
 import shiboken6  # noqa: E402
-from PySide6.QtCore import QEvent, Qt  # noqa: E402
+from PySide6.QtCore import QEvent, QObject, Qt  # noqa: E402
 from PySide6.QtGui import QColor  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 from gui.subtitle_window import SubtitleWindow  # noqa: E402
 from utils.settings import (  # noqa: E402
@@ -178,6 +178,24 @@ def overlay(qt_app):
     yield _make
     for w in made:
         w.destroy()
+
+
+class _ZOrderWatch(QObject):
+    """Appends ``name`` to ``order`` every time the watched widget is raised.
+
+    ``QWidget.raise_`` sends itself a ZOrderChange event, which is the only
+    way to observe the call from outside: the method belongs to a Shiboken
+    type and cannot be patched. Parented, so it outlives the caller's frame.
+    """
+
+    def __init__(self, name: str, order: list, parent):
+        super().__init__(parent)
+        self._name, self._order = name, order
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt API
+        if event.type() == QEvent.ZOrderChange:
+            self._order.append(self._name)
+        return False
 
 
 def _click(widget) -> None:
@@ -708,8 +726,9 @@ class TestLifecycle:
 
 
 class TestWindowIcon:
-    """The taskbar button drew a pale smudge: the shipped .ico carries the full
-    vertical lockup — mark, wordmark and tagline — at every one of its sizes."""
+    """The taskbar button drew a pale smudge: the .ico used to carry the full
+    vertical lockup — mark, wordmark and tagline — at every one of its sizes.
+    Both it and the runtime icon are the mark alone now."""
 
     def test_the_icon_covers_the_sizes_windows_asks_for(self, qt_app):
         from gui.icons import ICON_SIZES, app_icon
@@ -747,6 +766,35 @@ class TestWindowIcon:
             assert box is not None, "nothing drawn"
             above, below = box[1], square.height - box[3]
             assert abs(above - below) <= 1, f"not vertically centred: {box}"
+
+    def test_the_shipped_ico_holds_the_same_mark(self):
+        """The EXE icon — and so the desktop shortcut's and Explorer's — comes
+        from the .ico, not from ``app_icon``. It carried the lockup while the
+        taskbar button beside it carried the mark, which is two logos for one
+        app. Regenerate with ``packaging/make_windows_icon.py``."""
+        from PIL import Image, ImageChops
+
+        from config import ICON_PATH, ICON_PATH_PNG_ON_DARK
+        from gui.icons import ICON_SIZES
+        from utils.icons import square_marks
+
+        ico = Image.open(ICON_PATH)
+        assert {(size, size) for size in ICON_SIZES} <= set(ico.info["sizes"])
+        squares = dict(
+            zip(
+                ICON_SIZES,
+                square_marks(ICON_PATH_PNG_ON_DARK, ICON_SIZES),
+                strict=True,
+            )
+        )
+        # The ends and the taskbar size; comparing all eight buys nothing and
+        # every frame comes out of the same call.
+        for size in (16, 32, 256):
+            ico.size = (size, size)
+            frame = ico.convert("RGBA")
+            assert ImageChops.difference(frame, squares[size]).getbbox() is None, (
+                f"the {size}px frame is not the mark the app draws"
+            )
 
     def test_utils_icons_does_not_pull_tk_into_the_process(self):
         # gui/control_panel.py and gui/icons.py both call logo_mark, and
@@ -2292,6 +2340,152 @@ class TestNoStrayTopLevelWindows:
         assert card.symbol_label.parentWidget() is not None
         assert card.arrow_label.parentWidget() is not None
         card.deleteLater()
+
+
+class TestTheOverlayStaysUnderThePanel:
+    """While a session runs the overlay and the panel are both always-on-top,
+    and inside that band the order is whoever was raised last — so the
+    overlay's once-a-second restack buried the panel a second after every
+    click on it (maintainer, from a live run).
+
+    The overlay is given one standing position instead: directly under the
+    panel. **The panel is never restacked** — the maintainer rejected lifting
+    it back over and over, and a window that keeps forcing itself forward is
+    its own defect."""
+
+    class _FakeOverlay:
+        """Records how the panel built it; every method is a no-op."""
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: None
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        # The overlay is faked rather than suppressed: what is under test is
+        # the wiring between the two, and a real one would put a fullscreen
+        # always-on-top window over the test run.
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(cp, "SubtitleWindow", self._FakeOverlay)
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        yield p
+        p.close()
+
+    def test_the_panel_tells_the_overlay_to_stay_under_it(self, panel):
+        assert panel.subtitle_window is not None, "no overlay was built"
+        assert panel.subtitle_window.kwargs["stay_under"] is panel
+
+    def test_a_hidden_overlay_restacks_nothing(self, overlay, qt_app):
+        order: list[str] = []
+        w = overlay(SUBTITLE_MODE_CONTINUOUS)
+        w.installEventFilter(_ZOrderWatch("overlay", order, w))
+        w._keep_on_top()
+        assert order == []
+
+    def test_without_a_panel_it_falls_back_to_raising(self, overlay, qt_app):
+        """What shipped before, and still the answer off Windows and while the
+        panel is minimized — see widgets.place_window_behind."""
+        order: list[str] = []
+        w = overlay(SUBTITLE_MODE_CONTINUOUS)
+        w.installEventFilter(_ZOrderWatch("overlay", order, w))
+        w.show()
+        qt_app.processEvents()
+        w._keep_on_top()
+        w.hide()
+        assert order == ["overlay"]
+
+    @pytest.mark.parametrize(
+        ("visible", "minimized", "on_top", "why"),
+        [
+            (False, False, True, "a hidden target has no useful z-order"),
+            (True, True, True, "Windows parks a minimized window at the bottom"),
+            (True, False, False, "inserting behind it would demote the overlay"),
+        ],
+    )
+    def test_it_refuses_a_target_that_would_do_damage(
+        self, visible, minimized, on_top, why, qt_app
+    ):
+        from gui.widgets import place_window_behind
+
+        class FakeTarget:
+            def isVisible(self):  # noqa: N802 - Qt API
+                return visible
+
+            def isMinimized(self):  # noqa: N802 - Qt API
+                return minimized
+
+            def windowHandle(self):  # noqa: N802 - Qt API
+                return None
+
+        import gui.widgets as widgets
+
+        original = widgets.is_window_on_top
+        widgets.is_window_on_top = lambda _w: on_top
+        try:
+            assert place_window_behind(QWidget(), FakeTarget()) is False, why
+        finally:
+            widgets.is_window_on_top = original
+
+
+class TestAlwaysOnTopKeepsTheCloseButton:
+    """Turning the setting OFF used to take ``WindowCloseButtonHint`` with it,
+    and Windows draws a window that lacks that hint with a **greyed, inert ✕**
+    — on a focused window, for the rest of the process.
+
+    Reported twice as "the X is sometimes greyed out" and written off once as
+    DWM dimming an inactive window. The trigger was never random —
+    ``always_on_top_mode`` defaults to *When running*, so the first Stop of any
+    session cleared the flag — but **which builds carry it is**, and that is
+    the other half of the story: see ``widgets._with_on_top``. Nothing here may
+    assert what ``~`` does on this interpreter; only that the helper does not
+    depend on it."""
+
+    def test_clearing_the_flag_keeps_every_other_one(self):
+        from gui.widgets import _with_on_top
+
+        flags = (
+            Qt.Window
+            | Qt.WindowTitleHint
+            | Qt.WindowSystemMenuHint
+            | Qt.WindowMinMaxButtonsHint
+            | Qt.WindowCloseButtonHint
+            | Qt.WindowStaysOnTopHint
+        )
+        cleared = _with_on_top(flags, False)
+        assert not (int(cleared) & int(Qt.WindowStaysOnTopHint))
+        assert int(cleared) == int(flags) & ~int(Qt.WindowStaysOnTopHint)
+        # Spelled out, because the close button is the one that was lost and
+        # the one whose absence is invisible until a user tries to close.
+        assert int(cleared) & int(Qt.WindowCloseButtonHint)
+
+    def test_a_real_window_keeps_its_close_button_through_a_session(self, qt_app):
+        from gui.widgets import is_window_on_top, set_window_on_top
+
+        w = QWidget()
+        w.setWindowTitle("MinbarLive")
+        w.resize(320, 120)
+        w.show()
+        qt_app.processEvents()
+        assert w.windowFlags() & Qt.WindowCloseButtonHint, "nothing to lose"
+        # Start, stop, start, stop — _apply_always_on_top runs on both edges.
+        for on_top in (True, False, True, False):
+            set_window_on_top(w, on_top)
+            qt_app.processEvents()
+            assert is_window_on_top(w) is on_top
+            handle = w.windowHandle()
+            flags = handle.flags() if handle is not None else w.windowFlags()
+            assert int(flags) & int(Qt.WindowCloseButtonHint), (
+                f"the ✕ was disabled by set_window_on_top({on_top})"
+            )
+        w.close()
 
 
 class TestCardPadding:

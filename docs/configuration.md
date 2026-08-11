@@ -31,7 +31,7 @@ These settings are configurable from the control panel / settings window and sav
 | Subtitle Screen        | Monitor 1            | Monitor for subtitle display                                            |
 | Hide subtitle window   | Never                | 3-way: **Never** (always shown) / **When stopped** / **Always** (no overlay at all — transcription and translation still run to history) |
 | Show footer            | On                   | AI-disclaimer pill on the subtitle window                               |
-| Windows on top         | When running         | 3-way: **Never** / **When running** / **Always**. The control panel is only ever topmost while a subtitle overlay is open |
+| Windows on top         | When running         | 3-way: **Never** / **When running** / **Always**. The control panel is only ever topmost while a subtitle overlay is open, and it stays **above** that overlay — the subtitles are for the audience screen, the panel is for you |
 | Window style           | Integrated           | **Integrated** = secondary windows open inside the control panel over a dim overlay; **Windows** = separate OS windows (see below) |
 | Hide announcement when stopped | On           | Clears an "until stopped" announcement when the session is stopped      |
 | Auto start             | Off                  | Start translating as soon as the app launches                           |

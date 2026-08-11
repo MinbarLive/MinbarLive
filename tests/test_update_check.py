@@ -95,7 +95,7 @@ def _fake_urlopen(payload, monkeypatch):
 
 
 class TestFetchLatestRelease:
-    def test_returns_tag_and_url(self, monkeypatch):
+    def test_returns_the_tag(self, monkeypatch):
         captured = _fake_urlopen(
             {
                 "tag_name": "v9.9.9",
@@ -103,10 +103,7 @@ class TestFetchLatestRelease:
             },
             monkeypatch,
         )
-        assert fetch_latest_release() == (
-            "v9.9.9",
-            "https://github.com/MinbarLive/MinbarLive/releases/tag/v9.9.9",
-        )
+        assert fetch_latest_release() == "v9.9.9"
         assert captured["url"] == update_check.LATEST_RELEASE_API_URL
         # GitHub's API rejects requests without a User-Agent.
         assert any(k.lower() == "user-agent" for k in captured["headers"])
@@ -114,10 +111,6 @@ class TestFetchLatestRelease:
     def test_missing_tag_returns_none(self, monkeypatch):
         _fake_urlopen({"html_url": "https://example.com"}, monkeypatch)
         assert fetch_latest_release() is None
-
-    def test_missing_url_falls_back_to_releases_page(self, monkeypatch):
-        _fake_urlopen({"tag_name": "v9.9.9"}, monkeypatch)
-        assert fetch_latest_release() == ("v9.9.9", update_check.RELEASES_PAGE_URL)
 
     @pytest.mark.parametrize(
         "hostile_url",
@@ -129,24 +122,29 @@ class TestFetchLatestRelease:
             "http://github.com/MinbarLive/MinbarLive/releases/tag/v9",  # not https
         ],
     )
-    def test_non_release_url_falls_back_to_releases_page(
+    def test_the_response_can_never_choose_what_the_browser_opens(
         self, hostile_url, monkeypatch
     ):
-        """The banner opens this URL in a browser, so anything that is not a
-        real release page must never be handed through."""
-        _fake_urlopen({"tag_name": "v9.9.9", "html_url": hostile_url}, monkeypatch)
-        assert fetch_latest_release() == ("v9.9.9", update_check.RELEASES_PAGE_URL)
+        """The notice opens a browser at this URL. It used to be the release's
+        own ``html_url``, validated against a github.com prefix; it is now the
+        project's download page, a constant, so the body has no say at all."""
+        _fake_urlopen({"tag_name": "v999.0.0", "html_url": hostile_url}, monkeypatch)
+        assert check_for_update().url == update_check.DOWNLOAD_PAGE_URL
 
 
 class TestCheckForUpdate:
     def test_newer_release_returns_info(self, monkeypatch):
-        release_url = "https://github.com/MinbarLive/MinbarLive/releases/tag/v999.0.0"
         _fake_urlopen(
-            {"tag_name": "v999.0.0", "html_url": release_url},
+            {
+                "tag_name": "v999.0.0",
+                "html_url": "https://github.com/MinbarLive/MinbarLive/releases/tag/v999.0.0",
+            },
             monkeypatch,
         )
         info = check_for_update()
-        assert info == UpdateInfo(version="999.0.0", url=release_url)
+        assert info == UpdateInfo(
+            version="999.0.0", url=update_check.DOWNLOAD_PAGE_URL
+        )
 
     def test_current_release_returns_none(self, monkeypatch):
         from version import __version__
@@ -181,10 +179,7 @@ class TestFetchPrereleases:
             [{"tag_name": "v1.0.0-rc.1", "html_url": _tag_url("v1.0.0-rc.1")}],
             monkeypatch,
         )
-        assert fetch_latest_release(include_prereleases=True) == (
-            "v1.0.0-rc.1",
-            _tag_url("v1.0.0-rc.1"),
-        )
+        assert fetch_latest_release(include_prereleases=True) == "v1.0.0-rc.1"
         assert captured["url"] == update_check.RELEASE_LIST_API_URL
 
     def test_highest_version_wins_not_first_entry(self, monkeypatch):
@@ -198,10 +193,7 @@ class TestFetchPrereleases:
             ],
             monkeypatch,
         )
-        assert fetch_latest_release(include_prereleases=True) == (
-            "v1.0.0-rc.2",
-            _tag_url("v1.0.0-rc.2"),
-        )
+        assert fetch_latest_release(include_prereleases=True) == "v1.0.0-rc.2"
 
     def test_unparseable_tags_are_skipped(self, monkeypatch):
         _fake_urlopen(
@@ -211,10 +203,7 @@ class TestFetchPrereleases:
             ],
             monkeypatch,
         )
-        assert fetch_latest_release(include_prereleases=True) == (
-            "v1.0.0-rc.1",
-            _tag_url("v1.0.0-rc.1"),
-        )
+        assert fetch_latest_release(include_prereleases=True) == "v1.0.0-rc.1"
 
     def test_empty_list_returns_none(self, monkeypatch):
         _fake_urlopen([], monkeypatch)
@@ -223,16 +212,6 @@ class TestFetchPrereleases:
     def test_non_list_body_returns_none(self, monkeypatch):
         _fake_urlopen({"tag_name": "v9.9.9"}, monkeypatch)
         assert fetch_latest_release(include_prereleases=True) is None
-
-    def test_hostile_url_falls_back_to_releases_page(self, monkeypatch):
-        _fake_urlopen(
-            [{"tag_name": "v1.0.0-rc.1", "html_url": "javascript:alert(1)"}],
-            monkeypatch,
-        )
-        assert fetch_latest_release(include_prereleases=True) == (
-            "v1.0.0-rc.1",
-            update_check.RELEASES_PAGE_URL,
-        )
 
 
 class TestPrereleaseOptIn:
@@ -259,7 +238,7 @@ class TestPrereleaseOptIn:
             monkeypatch,
         )
         assert check_for_update(include_prereleases=True) == UpdateInfo(
-            version="1.0.0-rc.1", url=_tag_url("v1.0.0-rc.1")
+            version="1.0.0-rc.1", url=update_check.DOWNLOAD_PAGE_URL
         )
 
     def test_opted_in_still_prefers_the_final(self, monkeypatch):
@@ -273,7 +252,7 @@ class TestPrereleaseOptIn:
             monkeypatch,
         )
         assert check_for_update(include_prereleases=True) == UpdateInfo(
-            version="1.0.0", url=_tag_url("v1.0.0")
+            version="1.0.0", url=update_check.DOWNLOAD_PAGE_URL
         )
 
 

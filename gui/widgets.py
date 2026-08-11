@@ -13,8 +13,12 @@ deliberately not trusted as the state, because on X11 the flag is really the
 ``_NET_WM_STATE_ABOVE`` property and Qt's xcb plugin only writes it while the
 window is unmapped.
 
+``place_window_behind`` is the other half of that: Qt can lift a window to the
+front of its band but cannot order two top-level windows against each other,
+so the overlay is pinned under the control panel natively.
+
 ``set_titlebar_dark`` is the third piece of native window chrome that lives
-here rather than in the stylesheet, for the same reason as the other two: the
+here rather than in the stylesheet, for the same reason as the others: the
 caption bar belongs to the window manager, not to Qt.
 """
 
@@ -122,10 +126,98 @@ def set_window_on_top(window: QWidget, on_top: bool) -> None:
             # first and the panel last, so the panel still ends up in front.
             window.raise_()
         return
-    flags = handle.flags()
-    handle.setFlags(
-        flags | Qt.WindowStaysOnTopHint if on_top else flags & ~Qt.WindowStaysOnTopHint
-    )
+    handle.setFlags(_with_on_top(handle.flags(), on_top))
+
+
+def _with_on_top(flags: Qt.WindowType, on_top: bool) -> Qt.WindowType:
+    """``flags`` with the always-on-top bit set or cleared, and nothing else.
+
+    **Clearing it goes through plain integers on purpose, and the reason is
+    not portable.** ``~`` on a Qt flag enum is CPython's ``Flag.__invert__``,
+    and on some interpreters it does not invert all 32 bits — it complements
+    within the enum's declared range, making ``~Qt.WindowStaysOnTopHint``
+    ``0x01fbffff``. Anding with that silently drops every window flag above
+    it, ``WindowCloseButtonHint`` (0x08000000) first. A window without that
+    hint keeps its ✕ and Windows draws it **greyed out and inert**, on a
+    focused window, for the rest of the process — ``|`` never brings it back.
+
+    That is the "sometimes the ✕ is greyed out" report. The *trigger* was never
+    random — ``always_on_top_mode`` defaults to *When running*, so the first
+    Stop of every session did it — but **which builds carry it is**, which is
+    why it looked like one. Measured on identical PySide6 6.11.1:
+
+    ===============  ==============  ============
+    CPython          ``~`` gives     ✕ after Stop
+    ===============  ==============  ============
+    3.12.6, 3.12.10  ``0x01fbffff``  dead
+    3.12.13          ``0xfffbffff``  fine
+    ===============  ==============  ============
+
+    ``actions/setup-python`` resolves ``"3.12"`` at build time, so the runner
+    image decides: v1.0.0-rc.1's Windows EXE was built on 3.12.10 and had it,
+    the AppImage on 3.12.13 and did not. **No test may assert either
+    behaviour** — one of them is a passing tautology on any given interpreter.
+    """
+    if on_top:
+        return flags | Qt.WindowStaysOnTopHint
+    return Qt.WindowType(int(flags) & ~int(Qt.WindowStaysOnTopHint))
+
+
+# SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE — restack and nothing else, and never
+# take focus doing it.
+_SWP_RESTACK_ONLY = 0x0013
+
+
+def place_window_behind(window: QWidget, above: QWidget) -> bool:
+    """Put ``window`` directly behind ``above``. True when it was applied.
+
+    Qt can only lift a top-level window to the front of its band (``raise_``);
+    ordering two of them against each other is a native call, which is why
+    this is ctypes like the two helpers around it.
+
+    What it is for: the overlay and the control panel are both always-on-top
+    while a session runs, and always-on-top is a **band, not a rank** — inside
+    it the order is whoever was raised last. Rather than lifting the panel
+    back over the overlay again and again, the overlay is given one standing
+    position: directly under the panel. Nothing else on the desktop moves, and
+    the panel is never touched.
+
+    Three things make it refuse, and each would do damage:
+
+    * ``above`` **minimized or hidden** — Windows parks a minimized window at
+      the bottom of the z-order, so inserting behind it would drop the overlay
+      under every other application.
+    * ``above`` **not itself always-on-top** — ``SetWindowPos`` takes the
+      topmost-ness of the window it inserts after, so this would quietly
+      demote the overlay out of the band and put the taskbar over it.
+    * **No native window yet**, on either side.
+
+    The caller falls back to ``raise_()``, which is the behaviour that was
+    there before.
+    """
+    if sys.platform != "win32":
+        return False
+    if not above.isVisible() or above.isMinimized() or not is_window_on_top(above):
+        return False
+    if window.windowHandle() is None or above.windowHandle() is None:
+        return False
+    try:
+        import ctypes
+
+        return bool(
+            ctypes.windll.user32.SetWindowPos(
+                int(window.winId()),
+                int(above.winId()),
+                0,
+                0,
+                0,
+                0,
+                _SWP_RESTACK_ONLY,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - the caller has a fallback
+        log(f"Could not place the overlay under the panel: {exc}", level="DEBUG")
+        return False
 
 
 # Windows paints a title bar from the SYSTEM light/dark preference and from
