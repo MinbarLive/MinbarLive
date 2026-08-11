@@ -132,18 +132,31 @@ def set_window_on_top(window: QWidget, on_top: bool) -> None:
 def _with_on_top(flags: Qt.WindowType, on_top: bool) -> Qt.WindowType:
     """``flags`` with the always-on-top bit set or cleared, and nothing else.
 
-    **Clearing it goes through plain integers on purpose.** ``~`` on a PySide6
-    flag enum does not invert all 32 bits: it complements within the enum's
-    declared range, and ``~Qt.WindowStaysOnTopHint`` is ``0x01fbffff``. Anding
-    with that silently drops every window flag above ``0x01ffffff`` —
-    ``WindowCloseButtonHint`` (0x08000000) first among them. A window without
-    that hint keeps its ✕ and Windows draws it **greyed out and inert**, on a
-    focused window, for the rest of the process.
+    **Clearing it goes through plain integers on purpose, and the reason is
+    not portable.** ``~`` on a Qt flag enum is CPython's ``Flag.__invert__``,
+    and on some interpreters it does not invert all 32 bits — it complements
+    within the enum's declared range, making ``~Qt.WindowStaysOnTopHint``
+    ``0x01fbffff``. Anding with that silently drops every window flag above
+    it, ``WindowCloseButtonHint`` (0x08000000) first. A window without that
+    hint keeps its ✕ and Windows draws it **greyed out and inert**, on a
+    focused window, for the rest of the process — ``|`` never brings it back.
 
-    That is the "sometimes the ✕ is greyed out" report, and it was never
-    random: ``always_on_top_mode`` defaults to *When running*, so the first
-    Stop of every session cleared the flag and took the close button with it.
-    Setting the flag again does not bring it back — ``|`` only adds.
+    That is the "sometimes the ✕ is greyed out" report. The *trigger* was never
+    random — ``always_on_top_mode`` defaults to *When running*, so the first
+    Stop of every session did it — but **which builds carry it is**, which is
+    why it looked like one. Measured on identical PySide6 6.11.1:
+
+    ===============  ==============  ============
+    CPython          ``~`` gives     ✕ after Stop
+    ===============  ==============  ============
+    3.12.6, 3.12.10  ``0x01fbffff``  dead
+    3.12.13          ``0xfffbffff``  fine
+    ===============  ==============  ============
+
+    ``actions/setup-python`` resolves ``"3.12"`` at build time, so the runner
+    image decides: v1.0.0-rc.1's Windows EXE was built on 3.12.10 and had it,
+    the AppImage on 3.12.13 and did not. **No test may assert either
+    behaviour** — one of them is a passing tautology on any given interpreter.
     """
     if on_top:
         return flags | Qt.WindowStaysOnTopHint

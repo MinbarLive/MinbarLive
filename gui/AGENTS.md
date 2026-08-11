@@ -71,14 +71,20 @@ packaging section below for the shipped build.
   On X11 the cheap path does not exist: the flag is the `_NET_WM_STATE_ABOVE` property
   and Qt's xcb plugin only writes it while the window is unmapped, so `set_window_on_top`
   re-creates and re-shows there. That is why the setting did nothing at all on Linux.
-- **Never clear a window flag with `~` on the enum.** `~Qt.WindowStaysOnTopHint` is
-  `0x01fbffff` — PySide6 complements within the enum's *declared range*, so `flags & ~x`
+- **Never clear a window flag with `~` on the enum, and never test what `~` does.**
+  On some interpreters `~Qt.WindowStaysOnTopHint` is `0x01fbffff` — CPython's
+  `Flag.__invert__` complements within the enum's *declared range* — so `flags & ~x`
   silently drops every window flag above it, `WindowCloseButtonHint` (0x08000000) first.
   A window without that hint keeps its ✕ and Windows draws it **greyed out and inert**,
   on a focused window, for the rest of the process. That is the "the X is sometimes
-  greyed out" report, twice; it was never random — `always_on_top_mode` defaults to
-  *When running*, so the first Stop of every session did it. Use plain ints:
-  `Qt.WindowType(int(flags) & ~int(flag))`, as `widgets._with_on_top` does.
+  greyed out" report, twice. The trigger was never random (`always_on_top_mode` defaults
+  to *When running*, so the first Stop of every session did it) but **which builds carry
+  it is**: on identical PySide6 6.11.1, CPython 3.12.6 and 3.12.10 mask and 3.12.13
+  inverts fully, and `setup-python` resolves `"3.12"` at build time — rc.1's Windows EXE
+  was built on 3.12.10 and had it, the AppImage on 3.12.13 and did not. Use plain ints:
+  `Qt.WindowType(int(flags) & ~int(flag))`, as `widgets._with_on_top` does. A test
+  asserting the masking behaviour passes on Windows CI and **fails on `linux-smoke`** —
+  that is how this was found.
 - **Always-on-top is a band, not a rank, and the app has several windows in it.**
   Inside the band the order is whoever was raised last, so `subtitle_window._keep_on_top`
   — the once-a-second restack that keeps the overlay above a clicked taskbar — buried

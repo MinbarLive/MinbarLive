@@ -2441,11 +2441,12 @@ class TestAlwaysOnTopKeepsTheCloseButton:
     — on a focused window, for the rest of the process.
 
     Reported twice as "the X is sometimes greyed out" and written off once as
-    DWM dimming an inactive window. It was never random: ``always_on_top_mode``
-    defaults to *When running*, so the first Stop of any session cleared the
-    flag. The cause is that ``~`` on a PySide6 flag enum complements within the
-    enum's declared range only — ``~Qt.WindowStaysOnTopHint`` is 0x01fbffff,
-    which drops every window flag above it."""
+    DWM dimming an inactive window. The trigger was never random —
+    ``always_on_top_mode`` defaults to *When running*, so the first Stop of any
+    session cleared the flag — but **which builds carry it is**, and that is
+    the other half of the story: see ``widgets._with_on_top``. Nothing here may
+    assert what ``~`` does on this interpreter; only that the helper does not
+    depend on it."""
 
     def test_clearing_the_flag_keeps_every_other_one(self):
         from gui.widgets import _with_on_top
@@ -2464,10 +2465,6 @@ class TestAlwaysOnTopKeepsTheCloseButton:
         # Spelled out, because the close button is the one that was lost and
         # the one whose absence is invisible until a user tries to close.
         assert int(cleared) & int(Qt.WindowCloseButtonHint)
-
-    def test_the_enum_complement_that_caused_it(self):
-        """Locks in WHY, so nobody reinstates the tidier-looking expression."""
-        assert int(~Qt.WindowStaysOnTopHint) & int(Qt.WindowCloseButtonHint) == 0
 
     def test_a_real_window_keeps_its_close_button_through_a_session(self, qt_app):
         from gui.widgets import is_window_on_top, set_window_on_top
