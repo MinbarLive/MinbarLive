@@ -7062,6 +7062,43 @@ class TestTransparentStaticRibbon:
         assert gap >= PILL_CLEARANCE, f"only {gap} px between card and pill"
 
 
+class TestTypedNewlinesSurviveToTheOverlay:
+    """A two-line announcement came out as "Hallowas geht ab?".
+
+    ``QTextLayout`` lays out ONE paragraph and does not break on ``\\n`` — it
+    shapes the character away entirely, so the two words ran together without
+    even a space between them. U+2028 is the break it does honour inside a
+    paragraph. Reported from a real session.
+    """
+
+    def test_the_conversion_is_only_about_line_breaks(self):
+        import gui.subtitle_window as sw
+
+        assert sw._forced_line_breaks("Hallo\nwas") == "Hallo was"
+        assert sw._forced_line_breaks("Hallo\r\nwas") == "Hallo was"
+        assert sw._forced_line_breaks("nothing to do") == "nothing to do"
+
+    def test_a_typed_newline_really_lays_out_as_two_lines(self, overlay):
+        # The behaviour, not just the string swap: \n gave lineCount 1, which
+        # is the bug — the words were glued into one line.
+        from gui.fonts import subtitle_font
+
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True)
+        layout, _height = w._layout_text(
+            "Hallo\nwas geht ab?", subtitle_font(w._translation_px())
+        )
+        assert layout.lineCount() == 2
+
+    def test_text_without_a_newline_is_unaffected(self, overlay):
+        from gui.fonts import subtitle_font
+
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True)
+        layout, _height = w._layout_text(
+            "Hallo was geht ab?", subtitle_font(w._translation_px())
+        )
+        assert layout.lineCount() == 1
+
+
 class TestAnnouncementBackdrop:
     """An announcement belongs to no layout, so it has to carry its own.
 

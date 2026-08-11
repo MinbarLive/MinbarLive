@@ -204,6 +204,26 @@ _WINDOWS = sys.platform == "win32"
 # topmost window on the desktop.
 RESTACK_MS = 1000
 
+# What Qt honours as a line break inside one laid-out paragraph. Spelled as an
+# escape on purpose: the character itself is invisible in a source file, and
+# this one carries meaning.
+_LINE_SEPARATOR = " "
+
+
+def _forced_line_breaks(text: str) -> str:
+    """Turn typed newlines into breaks ``QTextLayout`` actually honours.
+
+    A ``QTextLayout`` lays out ONE paragraph and does not break on ``\\n``; it
+    shapes it away entirely, so an announcement typed as two lines came out as
+    "Hallowas geht ab?" — the words run together without even a space between
+    them. Reported from a real session.
+
+    Applied to every laid-out string rather than to announcements alone: any
+    text reaching the overlay with a newline in it has the same problem, and
+    gluing two words together is never the intended reading.
+    """
+    return text.replace("\r\n", "\n").replace("\n", _LINE_SEPARATOR)
+
 
 @dataclass
 class _Run:
@@ -871,7 +891,12 @@ class SubtitleWindow(QWidget):
         Returns the laid-out object (draw it with ``QTextLayout.draw``) and the
         height it occupies, so measuring and drawing can never disagree.
         """
-        layout = QTextLayout(text, font)
+        # QTextLayout lays out ONE paragraph and does not treat "\n" as a break
+        # — it shapes it away, so a two-line announcement came out as
+        # "Hallowas geht ab?" with the words run together and not even a space
+        # between them. U+2028 LINE SEPARATOR is the character it does honour
+        # inside a paragraph, which is what a typed newline means here.
+        layout = QTextLayout(_forced_line_breaks(text), font)
         option = QTextOption(Qt.AlignHCenter)
         option.setWrapMode(QTextOption.WordWrap)
         # QTextOption defaults to LEFT-TO-RIGHT, not to "work it out" — so an
