@@ -726,8 +726,9 @@ class TestLifecycle:
 
 
 class TestWindowIcon:
-    """The taskbar button drew a pale smudge: the shipped .ico carries the full
-    vertical lockup — mark, wordmark and tagline — at every one of its sizes."""
+    """The taskbar button drew a pale smudge: the .ico used to carry the full
+    vertical lockup — mark, wordmark and tagline — at every one of its sizes.
+    Both it and the runtime icon are the mark alone now."""
 
     def test_the_icon_covers_the_sizes_windows_asks_for(self, qt_app):
         from gui.icons import ICON_SIZES, app_icon
@@ -765,6 +766,35 @@ class TestWindowIcon:
             assert box is not None, "nothing drawn"
             above, below = box[1], square.height - box[3]
             assert abs(above - below) <= 1, f"not vertically centred: {box}"
+
+    def test_the_shipped_ico_holds_the_same_mark(self):
+        """The EXE icon — and so the desktop shortcut's and Explorer's — comes
+        from the .ico, not from ``app_icon``. It carried the lockup while the
+        taskbar button beside it carried the mark, which is two logos for one
+        app. Regenerate with ``packaging/make_windows_icon.py``."""
+        from PIL import Image, ImageChops
+
+        from config import ICON_PATH, ICON_PATH_PNG_ON_DARK
+        from gui.icons import ICON_SIZES
+        from utils.icons import square_marks
+
+        ico = Image.open(ICON_PATH)
+        assert {(size, size) for size in ICON_SIZES} <= set(ico.info["sizes"])
+        squares = dict(
+            zip(
+                ICON_SIZES,
+                square_marks(ICON_PATH_PNG_ON_DARK, ICON_SIZES),
+                strict=True,
+            )
+        )
+        # The ends and the taskbar size; comparing all eight buys nothing and
+        # every frame comes out of the same call.
+        for size in (16, 32, 256):
+            ico.size = (size, size)
+            frame = ico.convert("RGBA")
+            assert ImageChops.difference(frame, squares[size]).getbbox() is None, (
+                f"the {size}px frame is not the mark the app draws"
+            )
 
     def test_utils_icons_does_not_pull_tk_into_the_process(self):
         # gui/control_panel.py and gui/icons.py both call logo_mark, and
