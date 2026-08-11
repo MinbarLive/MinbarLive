@@ -79,6 +79,19 @@ packaging section below for the shipped build.
   greyed out" report, twice; it was never random — `always_on_top_mode` defaults to
   *When running*, so the first Stop of every session did it. Use plain ints:
   `Qt.WindowType(int(flags) & ~int(flag))`, as `widgets._with_on_top` does.
+- **Always-on-top is a band, not a rank, and the app has several windows in it.**
+  Inside the band the order is whoever was raised last, so `subtitle_window._keep_on_top`
+  — the once-a-second restack that keeps the overlay above a clicked taskbar — buried
+  the control panel with it: the panel came forward when clicked and sank again within
+  the second. The fix is a standing position for the overlay, **not** repeatedly lifting
+  the panel: `widgets.place_window_behind` puts the overlay directly under the window
+  passed as `stay_under`, so the panel is never restacked at all. A window that keeps
+  forcing itself forward is its own defect — the maintainer rejected that shape
+  explicitly. It falls back to `raise_()` off Windows, with no panel, or when the panel
+  is minimized or not itself topmost (each of those would strand the overlay at the
+  bottom of the stack). **Known cost:** a click on the taskbar puts the shell above both
+  windows, and the overlay only comes back over it when the panel next does — clicking
+  the panel fixes it. Beating the taskbar without moving the panel is not possible.
 - **The native title bar goes through `widgets.set_titlebar_dark`**, never the
   stylesheet — a caption bar is the window manager's, not a widget. On Windows it
   follows the SYSTEM light/dark preference and nothing the app asks for, so a

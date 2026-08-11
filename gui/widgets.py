@@ -13,8 +13,12 @@ deliberately not trusted as the state, because on X11 the flag is really the
 ``_NET_WM_STATE_ABOVE`` property and Qt's xcb plugin only writes it while the
 window is unmapped.
 
+``place_window_behind`` is the other half of that: Qt can lift a window to the
+front of its band but cannot order two top-level windows against each other,
+so the overlay is pinned under the control panel natively.
+
 ``set_titlebar_dark`` is the third piece of native window chrome that lives
-here rather than in the stylesheet, for the same reason as the other two: the
+here rather than in the stylesheet, for the same reason as the others: the
 caption bar belongs to the window manager, not to Qt.
 """
 
@@ -144,6 +148,63 @@ def _with_on_top(flags: Qt.WindowType, on_top: bool) -> Qt.WindowType:
     if on_top:
         return flags | Qt.WindowStaysOnTopHint
     return Qt.WindowType(int(flags) & ~int(Qt.WindowStaysOnTopHint))
+
+
+# SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE — restack and nothing else, and never
+# take focus doing it.
+_SWP_RESTACK_ONLY = 0x0013
+
+
+def place_window_behind(window: QWidget, above: QWidget) -> bool:
+    """Put ``window`` directly behind ``above``. True when it was applied.
+
+    Qt can only lift a top-level window to the front of its band (``raise_``);
+    ordering two of them against each other is a native call, which is why
+    this is ctypes like the two helpers around it.
+
+    What it is for: the overlay and the control panel are both always-on-top
+    while a session runs, and always-on-top is a **band, not a rank** — inside
+    it the order is whoever was raised last. Rather than lifting the panel
+    back over the overlay again and again, the overlay is given one standing
+    position: directly under the panel. Nothing else on the desktop moves, and
+    the panel is never touched.
+
+    Three things make it refuse, and each would do damage:
+
+    * ``above`` **minimized or hidden** — Windows parks a minimized window at
+      the bottom of the z-order, so inserting behind it would drop the overlay
+      under every other application.
+    * ``above`` **not itself always-on-top** — ``SetWindowPos`` takes the
+      topmost-ness of the window it inserts after, so this would quietly
+      demote the overlay out of the band and put the taskbar over it.
+    * **No native window yet**, on either side.
+
+    The caller falls back to ``raise_()``, which is the behaviour that was
+    there before.
+    """
+    if sys.platform != "win32":
+        return False
+    if not above.isVisible() or above.isMinimized() or not is_window_on_top(above):
+        return False
+    if window.windowHandle() is None or above.windowHandle() is None:
+        return False
+    try:
+        import ctypes
+
+        return bool(
+            ctypes.windll.user32.SetWindowPos(
+                int(window.winId()),
+                int(above.winId()),
+                0,
+                0,
+                0,
+                0,
+                _SWP_RESTACK_ONLY,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - the caller has a fallback
+        log(f"Could not place the overlay under the panel: {exc}", level="DEBUG")
+        return False
 
 
 # Windows paints a title bar from the SYSTEM light/dark preference and from

@@ -2824,6 +2824,10 @@ class ControlPanel(QMainWindow):
             bilingual_mode=s.bilingual_mode,
             side_by_side=s.subtitle_side_by_side,
             adaptive_catchup=s.adaptive_subtitle_catchup,
+            # The overlay's standing position: directly under this window, so
+            # its once-a-second restack cannot bury the panel (#gui/AGENTS.md,
+            # "Always-on-top is a band").
+            stay_under=self,
         )
         self.subtitle_window.set_always_on_top(self._effective_always_on_top())
         self._apply_active_announcement()

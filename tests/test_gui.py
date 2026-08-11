@@ -26,7 +26,7 @@ import pytest
 pytest.importorskip("PySide6", reason="PySide6 not installed")
 
 import shiboken6  # noqa: E402
-from PySide6.QtCore import QEvent, Qt  # noqa: E402
+from PySide6.QtCore import QEvent, QObject, Qt  # noqa: E402
 from PySide6.QtGui import QColor  # noqa: E402
 from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
@@ -178,6 +178,24 @@ def overlay(qt_app):
     yield _make
     for w in made:
         w.destroy()
+
+
+class _ZOrderWatch(QObject):
+    """Appends ``name`` to ``order`` every time the watched widget is raised.
+
+    ``QWidget.raise_`` sends itself a ZOrderChange event, which is the only
+    way to observe the call from outside: the method belongs to a Shiboken
+    type and cannot be patched. Parented, so it outlives the caller's frame.
+    """
+
+    def __init__(self, name: str, order: list, parent):
+        super().__init__(parent)
+        self._name, self._order = name, order
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt API
+        if event.type() == QEvent.ZOrderChange:
+            self._order.append(self._name)
+        return False
 
 
 def _click(widget) -> None:
@@ -2292,6 +2310,99 @@ class TestNoStrayTopLevelWindows:
         assert card.symbol_label.parentWidget() is not None
         assert card.arrow_label.parentWidget() is not None
         card.deleteLater()
+
+
+class TestTheOverlayStaysUnderThePanel:
+    """While a session runs the overlay and the panel are both always-on-top,
+    and inside that band the order is whoever was raised last — so the
+    overlay's once-a-second restack buried the panel a second after every
+    click on it (maintainer, from a live run).
+
+    The overlay is given one standing position instead: directly under the
+    panel. **The panel is never restacked** — the maintainer rejected lifting
+    it back over and over, and a window that keeps forcing itself forward is
+    its own defect."""
+
+    class _FakeOverlay:
+        """Records how the panel built it; every method is a no-op."""
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: None
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        # The overlay is faked rather than suppressed: what is under test is
+        # the wiring between the two, and a real one would put a fullscreen
+        # always-on-top window over the test run.
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(cp, "SubtitleWindow", self._FakeOverlay)
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        yield p
+        p.close()
+
+    def test_the_panel_tells_the_overlay_to_stay_under_it(self, panel):
+        assert panel.subtitle_window is not None, "no overlay was built"
+        assert panel.subtitle_window.kwargs["stay_under"] is panel
+
+    def test_a_hidden_overlay_restacks_nothing(self, overlay, qt_app):
+        order: list[str] = []
+        w = overlay(SUBTITLE_MODE_CONTINUOUS)
+        w.installEventFilter(_ZOrderWatch("overlay", order, w))
+        w._keep_on_top()
+        assert order == []
+
+    def test_without_a_panel_it_falls_back_to_raising(self, overlay, qt_app):
+        """What shipped before, and still the answer off Windows and while the
+        panel is minimized — see widgets.place_window_behind."""
+        order: list[str] = []
+        w = overlay(SUBTITLE_MODE_CONTINUOUS)
+        w.installEventFilter(_ZOrderWatch("overlay", order, w))
+        w.show()
+        qt_app.processEvents()
+        w._keep_on_top()
+        w.hide()
+        assert order == ["overlay"]
+
+    @pytest.mark.parametrize(
+        ("visible", "minimized", "on_top", "why"),
+        [
+            (False, False, True, "a hidden target has no useful z-order"),
+            (True, True, True, "Windows parks a minimized window at the bottom"),
+            (True, False, False, "inserting behind it would demote the overlay"),
+        ],
+    )
+    def test_it_refuses_a_target_that_would_do_damage(
+        self, visible, minimized, on_top, why, qt_app
+    ):
+        from gui.widgets import place_window_behind
+
+        class FakeTarget:
+            def isVisible(self):  # noqa: N802 - Qt API
+                return visible
+
+            def isMinimized(self):  # noqa: N802 - Qt API
+                return minimized
+
+            def windowHandle(self):  # noqa: N802 - Qt API
+                return None
+
+        import gui.widgets as widgets
+
+        original = widgets.is_window_on_top
+        widgets.is_window_on_top = lambda _w: on_top
+        try:
+            assert place_window_behind(QWidget(), FakeTarget()) is False, why
+        finally:
+            widgets.is_window_on_top = original
 
 
 class TestAlwaysOnTopKeepsTheCloseButton:

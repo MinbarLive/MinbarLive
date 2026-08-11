@@ -54,7 +54,12 @@ from config import (
 )
 from gui.fonts import is_arabic_text, source_font, subtitle_font
 from gui.palette import palette
-from gui.widgets import is_window_on_top, needs_remap, set_window_on_top
+from gui.widgets import (
+    is_window_on_top,
+    needs_remap,
+    place_window_behind,
+    set_window_on_top,
+)
 from utils.logging import log
 from utils.settings import (
     BACKDROP_OPACITY_MAX,
@@ -279,10 +284,14 @@ class SubtitleWindow(QWidget):
         always_on_top: bool = True,
         adaptive_catchup: bool = False,
         on_stop=None,
+        stay_under=None,
     ):
         super().__init__()
         self._on_close = on_close
         self._on_stop = on_stop
+        # The window this one is never allowed above — the control panel. See
+        # _keep_on_top.
+        self._stay_under = stay_under
         self._monitor_index = monitor_index
         self._target_language = target_language
         self._mode = subtitle_mode
@@ -1961,28 +1970,42 @@ class SubtitleWindow(QWidget):
         self._apply_geometry()
 
     def _keep_on_top(self) -> None:
-        """Put the overlay back at the top of the topmost band.
+        """Hold the overlay's place in the stacking order.
 
         Always-on-top is not a rank, it is a band: Windows keeps its taskbar in
         that same band, and inside it the order is whoever was raised last. So
         clicking the taskbar lifts the shell over the subtitles for good — the
         flag is still set, the overlay is still "always on top", and it is
-        still behind the taskbar. Re-raising is the only lever a client has.
+        still behind the taskbar. Restacking is the only lever a client has.
 
-        ``raise_`` and not a re-placement: it restacks without activating
-        (SWP_NOACTIVATE on Windows), so the overlay still never takes focus off
-        the control panel — the property WA_ShowWithoutActivating exists to
-        protect. Skipped while hidden, so a stopped session costs nothing but
-        the timer tick.
+        **The overlay is placed directly under the control panel** rather than
+        at the front of the band, because the panel is in that band too and a
+        plain raise buried it: it came forward when clicked and sank again
+        within the second. One standing position for the overlay, applied to
+        the overlay alone — the panel is never restacked, which is the whole
+        point (see ``widgets.place_window_behind``). Everything the panel owns
+        that sits above the panel therefore stays above the subtitles as well.
+
+        Where that cannot be done — no panel, minimized, or off Windows — it
+        falls back to ``raise_``, which is what shipped before. ``raise_``
+        restacks without activating (SWP_NOACTIVATE), so the overlay still
+        never takes focus off the panel; WA_ShowWithoutActivating exists to
+        protect exactly that. Skipped while hidden, so a stopped session costs
+        nothing but the timer tick.
 
         Windows only, and armed only while the setting is on. macOS puts a
         floating window below the Dock and the menu bar whatever it asks for
         (see _apply_geometry), so there is nothing to win there; on X11 the
-        stacking belongs to the window manager and a client re-raising itself
+        stacking belongs to the window manager and a client restacking itself
         every second would be fighting it.
         """
-        if self.isVisible():
-            self.raise_()
+        if not self.isVisible():
+            return
+        if self._stay_under is not None and place_window_behind(
+            self, self._stay_under
+        ):
+            return
+        self.raise_()
 
     def set_backdrop_opacity(self, percent: int) -> None:
         """Set backdrop opacity 0-100. 0 leaves the video fully visible.
