@@ -58,9 +58,11 @@ def _wait_for(predicate, timeout=10.0, interval=0.01):
 
 
 class FakeStreamHandle:
-    def __init__(self):
+    def __init__(self, *, can_commit=False):
         self.fed = []
         self.closed = False
+        self.commit_count = 0
+        self._can_commit = can_commit
 
     def feed(self, pcm_bytes):
         self.fed.append(pcm_bytes)
@@ -68,27 +70,45 @@ class FakeStreamHandle:
     def close(self):
         self.closed = True
 
+    def commit_turn(self):
+        # Default False mirrors Deepgram/Gemini, whose turns cannot outrun
+        # their own endpointing; the OpenAI-shaped case opts in.
+        if not self._can_commit:
+            return False
+        self.commit_count += 1
+        return True
+
 
 class FakeStreamingProvider:
-    def __init__(self):
-        self.handle = FakeStreamHandle()  # most recent handle
+    def __init__(self, *, can_commit=False):
+        self._can_commit = can_commit
+        self.handle = FakeStreamHandle(can_commit=can_commit)  # most recent handle
         self.open_count = 0
         self.opened_with = None
         self.on_transcript = None
         self.on_utterance_end = None
         self.on_error = None
+        self.on_speech_activity = None
 
     def open_stream(
-        self, *, model, language, on_transcript, on_utterance_end, on_error
+        self,
+        *,
+        model,
+        language,
+        on_transcript,
+        on_utterance_end,
+        on_error,
+        on_speech_activity=None,
     ):
         self.open_count += 1
         if self.open_count > 1:
             # A reconnect gets a fresh handle, like a real re-opened socket.
-            self.handle = FakeStreamHandle()
+            self.handle = FakeStreamHandle(can_commit=self._can_commit)
         self.opened_with = {"model": model, "language": language}
         self.on_transcript = on_transcript
         self.on_utterance_end = on_utterance_end
         self.on_error = on_error
+        self.on_speech_activity = on_speech_activity
         return self.handle
 
 
@@ -1310,6 +1330,140 @@ class TestStallWatchdog:
         )
         provider.on_transcript("text arrived", True)
         assert controller._streaming._speech_fed_seconds == 0.0
+
+
+class TestStallWatchdogRespectsAnOpenTurn:
+    """Measured live 2026-08-12: 53 stall reconnects, zero connection errors,
+    and a 128 s hole in a khutbah where five consecutive reconnects each
+    destroyed the turn the previous one was waiting on. A speaker the
+    server-side VAD never hears pause produces one endless turn, and a turn
+    yields no transcript until it commits — so "no transcript" was reading a
+    working engine as a dead one. While a turn is open the fix commits it
+    (keeping the audio) instead of reopening the connection (discarding it)."""
+
+    def _start(self, streaming_env, monkeypatch, *, timeout=0.3, grace=0.4):
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_STALL_TIMEOUT_SECONDS", timeout
+        )
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_STALL_MIN_SPEECH_SECONDS", 1.0
+        )
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_STALL_GRACE_SECONDS", grace
+        )
+        controller = streaming_env.controller
+        controller.start(input_device=0)
+        return controller, streaming_env.provider
+
+    def _stall_with_open_turn(self, controller, provider):
+        """Drive the session into the exact live failure state: speech flowing,
+        a turn open server-side, no transcript for longer than the timeout."""
+        session = controller._streaming
+        session._noise_gate = SimpleNamespace(is_zeroing=False)  # speech flowing
+        provider.on_speech_activity(True)  # server VAD: turn opened
+        session._speech_fed_seconds = 5.0
+        session._last_activity = time.time() - 60
+
+    def test_open_turn_is_committed_instead_of_reconnected(
+        self, streaming_env, monkeypatch
+    ):
+        controller, provider = self._start(streaming_env, monkeypatch)
+        controller._streaming._handle._can_commit = True
+        self._stall_with_open_turn(controller, provider)
+        assert _wait_for(lambda: provider.handle.commit_count == 1)
+        # The whole point: the connection — and the buffered speech on it —
+        # survives. The old watchdog reopened here and lost the turn.
+        assert provider.open_count == 1
+        assert not provider.handle.closed
+
+    def test_provider_without_commit_still_reconnects(
+        self, streaming_env, monkeypatch
+    ):
+        """Deepgram/Gemini report no speech activity and cannot commit; their
+        recovery must stay exactly what it was."""
+        controller, provider = self._start(streaming_env, monkeypatch)
+        assert controller._streaming._handle._can_commit is False
+        self._stall_with_open_turn(controller, provider)
+        assert _wait_for(lambda: provider.open_count == 2)
+
+    def test_a_commit_that_produces_nothing_escalates_to_a_swap(
+        self, streaming_env, monkeypatch
+    ):
+        """A forced commit bypasses the server VAD, so no speech-stopped event
+        arrives to clear the turn flag. If the flag stuck on, the watchdog
+        would be disarmed for the rest of the session and a genuinely dead
+        connection would never be recovered."""
+        controller, provider = self._start(streaming_env, monkeypatch)
+        controller._streaming._handle._can_commit = True
+        self._stall_with_open_turn(controller, provider)
+        assert _wait_for(lambda: provider.handle.commit_count == 1)
+        assert controller._streaming._turn_active is False
+        # Still nothing came back: now it really is stuck, so recover the old way.
+        controller._streaming._speech_fed_seconds = 5.0
+        controller._streaming._last_activity = time.time() - 60
+        assert _wait_for(lambda: provider.open_count == 2)
+
+    def test_speech_activity_is_proof_of_life(self, streaming_env, monkeypatch):
+        """Both VAD edges restart the stall clock: a message from the engine is
+        a message from the engine, whichever edge it reports."""
+        controller, provider = self._start(streaming_env, monkeypatch, timeout=15.0)
+        session = controller._streaming
+        for edge in (True, False):
+            session._last_activity = time.time() - 60
+            session._speech_fed_seconds = 5.0
+            provider.on_speech_activity(edge)
+            assert time.time() - session._last_activity < 1.0
+            assert session._speech_fed_seconds == 0.0
+
+    def test_a_reopened_connection_starts_with_no_turn_open(
+        self, streaming_env, monkeypatch
+    ):
+        """The flag belongs to a connection, not to the session. A swap that
+        inherited it would disarm the watchdog on the fresh socket."""
+        controller, provider = self._start(streaming_env, monkeypatch)
+        self._stall_with_open_turn(controller, provider)
+        assert _wait_for(lambda: provider.open_count == 2)
+        assert controller._streaming._turn_active is False
+
+
+class TestSwapFlushesPendingText:
+    def test_transcribed_text_leaves_before_the_connection_is_replaced(
+        self, streaming_env, monkeypatch
+    ):
+        """Text the dying connection already transcribed must be translated as
+        its own unit. Left in the accumulator it survives, but only to be
+        welded onto the *next* connection's first turn — one subtitle built
+        from speech on either side of an outage."""
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_STALL_TIMEOUT_SECONDS", 0.3
+        )
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_STALL_MIN_SPEECH_SECONDS", 1.0
+        )
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_STALL_GRACE_SECONDS", 0.1
+        )
+        controller = streaming_env.controller
+        controller.start(input_device=0)
+        provider = streaming_env.provider
+
+        provider.on_transcript("said before the outage", True)
+        controller._streaming._noise_gate = SimpleNamespace(is_zeroing=True)
+        controller._streaming._speech_fed_seconds = 5.0
+        controller._streaming._last_activity = time.time() - 60
+
+        assert _wait_for(lambda: provider.open_count == 2)
+        assert _wait_for(lambda: not controller.translation_queue.empty())
+        translation, _source = controller.translation_queue.get_nowait()
+        assert translation == "XX:said before the outage"
+
+        # And the new connection's first turn is its own subtitle, not a
+        # concatenation with what came before the swap.
+        provider.on_transcript("said after the outage", True)
+        provider.on_utterance_end()
+        assert _wait_for(lambda: not controller.translation_queue.empty())
+        translation, _source = controller.translation_queue.get_nowait()
+        assert translation == "XX:said after the outage"
 
 
 if __name__ == "__main__":

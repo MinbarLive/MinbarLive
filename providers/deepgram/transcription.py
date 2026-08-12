@@ -55,6 +55,12 @@ class DeepgramStreamHandle:
         except Exception as e:
             log(f"Deepgram send_media failed: {e}", level="WARNING")
 
+    def commit_turn(self) -> bool:
+        """Never needed here: Deepgram finalizes on endpointing (300 ms), so a
+        turn cannot outlive the speaker's next breath and there is no buffered
+        speech to rescue. The caller falls back to reopening the connection."""
+        return False
+
     def close(self) -> None:
         if self._closed.is_set():
             return
@@ -77,6 +83,7 @@ class DeepgramTranscriptionProvider:
         on_transcript: Callable[[str, bool], None],
         on_utterance_end: Callable[[], None],
         on_error: Callable[[Exception], None],
+        on_speech_activity: Callable[[bool], None] | None = None,
     ) -> DeepgramStreamHandle:
         handle = DeepgramStreamHandle()
 

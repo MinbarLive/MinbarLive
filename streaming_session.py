@@ -358,6 +358,12 @@ class StreamingSession:
         # on a healthy connection too, so only fed speech may count toward a
         # "stuck session" verdict.
         self._speech_fed_seconds = 0.0
+        # True between the provider's own VAD reporting speech-start and
+        # speech-stop — i.e. a turn is open server-side and its transcript
+        # cannot arrive yet by design. Only providers that report speech
+        # activity ever set it; for the rest it stays False and the watchdog
+        # behaves exactly as before.
+        self._turn_active = False
 
     # --- lifecycle -------------------------------------------------------
 
@@ -427,12 +433,16 @@ class StreamingSession:
         # from the new receive thread must count as current, not stale.
         self._generation = next(_GENERATIONS)
         generation = self._generation
+        # A fresh connection has no turn open; a swap must not inherit the
+        # dead one's flag or the watchdog would stay disarmed forever.
+        self._turn_active = False
         return self._provider.open_stream(
             model=self._model,
             language=self._language,
             on_transcript=self._on_transcript,
             on_utterance_end=self._on_utterance_end,
             on_error=lambda exc, gen=generation: self._on_stream_error(exc, gen),
+            on_speech_activity=self._on_speech_activity,
         )
 
     def _swap_connection(self, reason: str) -> bool:
@@ -448,11 +458,21 @@ class StreamingSession:
         being torn down (``_connect`` was cleared by ``close_connection``). Any
         exception raised while opening propagates to the caller so it can
         classify it.
+
+        Whatever the dying connection already transcribed is flushed first.
+        Left in the accumulator it would survive, but only to be concatenated
+        onto the *next* connection's first turn and translated as one block —
+        speech from either side of an outage welded into a single subtitle.
+        The old connection's words are a finished unit; they leave as one.
         """
         with self._lock:
             connect = self._connect
             if connect is None:
                 return False  # stop()/terminal error already tore the session down
+            # After the bail-out, so a teardown that won the race is not handed
+            # a translation to run. Takes only the accumulator's own lock, which
+            # is never held while acquiring this one.
+            self._on_utterance_end()
             old = self._handle
             self._handle = None  # feeder drops chunks while down
             if old is not None:
@@ -462,6 +482,40 @@ class StreamingSession:
                     log(f"STREAMING error closing {reason} handle: {e}", level="DEBUG")
             self._handle = connect()
             return True
+
+    def _commit_open_turn(self) -> bool:
+        """Ask the provider to end the turn it is holding open and transcribe it.
+
+        The non-destructive half of stall recovery. Returns True if the commit
+        was issued, meaning the caller must NOT reopen the connection.
+
+        The turn flag is cleared on success because a forced commit bypasses
+        the server's VAD, so no speech-stopped event will arrive to clear it —
+        and a flag stuck on would disarm the watchdog for the rest of the
+        session. Clearing it also lets the next stall escalate to a real swap:
+        if the commit produced nothing, the following check finds no turn in
+        flight and recovers the old way.
+        """
+        handle = self._handle
+        if handle is None:
+            return False
+        try:
+            committed = handle.commit_turn()
+        except Exception as e:
+            log(f"STREAMING turn commit failed: {e}", level="WARNING")
+            return False
+        if not committed:
+            return False
+        self._turn_active = False
+        self._mark_activity()
+        log(
+            f"STREAMING No transcript for over "
+            f"{STREAMING_STALL_TIMEOUT_SECONDS:.0f}s, but the engine reports a "
+            "turn still open — committing it instead of reconnecting, so the "
+            "buffered speech is transcribed rather than discarded.",
+            level="INFO",
+        )
+        return True
 
     def _mark_activity(self) -> None:
         """The engine proved it is alive: restart both stall clocks."""
@@ -496,6 +550,17 @@ class StreamingSession:
         text, live_rev = self._utterances.take_and_reset()
         if text.strip():
             self._utterance_queue.put((text, live_rev))
+
+    def _on_speech_activity(self, speaking: bool) -> None:
+        """The provider's VAD heard speech start or stop.
+
+        Both edges are proof the connection is alive, which is why each one
+        restarts the stall clock. The flag matters more than the clock: while
+        a turn is open the engine *cannot* have produced a transcript yet, so
+        silence from the transcript side says nothing about its health.
+        """
+        self._turn_active = speaking
+        self._mark_activity()
 
     def _on_stream_error(self, exc: Exception, generation: int) -> None:
         if generation != self._generation:
@@ -658,6 +723,27 @@ class StreamingSession:
           grace forces a mid-speech swap: exactly the stuck-session case,
           where that speech is already being lost. With the noise filter
           off there is no gate signal and the swap happens immediately.
+
+        Neither guard was enough, because both ask the *client* whether speech
+        is flowing and neither asks the engine whether it is working. Measured
+        live 2026-08-12 over a 43-minute khutbah: 53 stall reconnects, zero
+        connection errors, ~25 minutes with no subtitles, and a 128 s hole
+        where five consecutive reconnects each destroyed the turn the previous
+        one was waiting on — a metronome at 23.9 s, the watchdog's own cycle
+        time. A speaker the server-side VAD never hears pause produces one
+        endless turn, and a turn produces no transcript until it commits, so
+        "no transcript for 15 s" was indistinguishable from a dead socket.
+        The watchdog was not failing to fix the outage; it *was* the outage.
+
+        So a third guard, and it is the one that asks the engine:
+
+        - While the provider reports a turn in flight, a missing transcript is
+          expected rather than suspicious. Reopening the connection there
+          throws away speech that was never transcribed, so instead ask the
+          provider to end the turn and transcribe what it has
+          (``commit_turn``) — the buffered audio is kept, not discarded. Only
+          if the provider offers no such control, or the commit fails, does
+          the swap still happen.
         """
         stop_event = self._stop_event
         while not stop_event.wait(timeout=min(2.0, STREAMING_STALL_TIMEOUT_SECONDS / 2)):
@@ -668,6 +754,8 @@ class StreamingSession:
                 continue
             if self._speech_fed_seconds < STREAMING_STALL_MIN_SPEECH_SECONDS:
                 continue  # a pause in the speech, not a stuck session
+            if self._turn_active and self._commit_open_turn():
+                continue  # the engine is working; it just has not committed yet
             grace_deadline = time.time() + STREAMING_STALL_GRACE_SECONDS
             cancelled = False
             while True:

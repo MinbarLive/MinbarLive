@@ -81,6 +81,24 @@ _DELTA_EVENT = "conversation.item.input_audio_transcription.delta"
 _COMPLETED_EVENT = "conversation.item.input_audio_transcription.completed"
 _FAILED_EVENT = "conversation.item.input_audio_transcription.failed"
 
+# Server-VAD turn boundaries. Transcription is tied to the *commit* of a turn,
+# so a speaker the server never hears pause produces no transcript event of any
+# kind — not even a delta — for as long as the turn runs. These two events are
+# the only thing distinguishing that from a connection that has died quietly,
+# and the stall watchdog needs them to avoid tearing down a working session
+# mid-sentence (measured live 2026-08-12: 53 stall reconnects, zero connection
+# errors, and a 128 s hole in the khutbah where five reconnects each destroyed
+# the turn the previous one was waiting on).
+_SPEECH_STARTED_EVENT = "input_audio_buffer.speech_started"
+_SPEECH_STOPPED_EVENT = "input_audio_buffer.speech_stopped"
+
+# Committing an empty buffer is an error, and the caller only commits with a
+# turn in flight — but a race against the server's own VAD commit can still
+# empty it first. That specific code is benign: it means the turn ended on its
+# own, which is the outcome the commit was asking for. Never escalate it into
+# an audience-facing connection error.
+_EMPTY_COMMIT_ERROR_CODE = "input_audio_buffer_commit_empty"
+
 
 class OpenAIRealtimeStreamHandle:
     """Implements providers.base.StreamHandle."""
@@ -121,6 +139,23 @@ class OpenAIRealtimeStreamHandle:
         except Exception as e:
             log(f"OpenAI realtime audio append failed: {e}", level="WARNING")
 
+    def commit_turn(self) -> bool:
+        """Ask the server to end the open turn and transcribe its buffer.
+
+        Legal under server VAD — the client simply does not normally *need*
+        to send it. The buffered audio becomes a conversation item and is
+        transcribed, which is what makes this the non-destructive answer to a
+        turn that will not end on its own.
+        """
+        if self._closed.is_set() or self._connection is None or not self._ready.is_set():
+            return False
+        try:
+            self._connection.input_audio_buffer.commit()
+        except Exception as e:
+            log(f"OpenAI realtime turn commit failed: {e}", level="WARNING")
+            return False
+        return True
+
     def close(self) -> None:
         if self._closed.is_set():
             return
@@ -143,6 +178,7 @@ class OpenAIRealtimeTranscriptionProvider:
         on_transcript: Callable[[str, bool], None],
         on_utterance_end: Callable[[], None],
         on_error: Callable[[Exception], None],
+        on_speech_activity: Callable[[bool], None] | None = None,
     ) -> OpenAIRealtimeStreamHandle:
         handle = OpenAIRealtimeStreamHandle()
         startup_done = threading.Event()
@@ -209,6 +245,12 @@ class OpenAIRealtimeTranscriptionProvider:
                                     f"{etype} in {time.monotonic() - started_at:.2f}s",
                                     level="DEBUG",
                                 )
+                        elif etype == _SPEECH_STARTED_EVENT:
+                            if on_speech_activity is not None:
+                                on_speech_activity(True)
+                        elif etype == _SPEECH_STOPPED_EVENT:
+                            if on_speech_activity is not None:
+                                on_speech_activity(False)
                         elif etype == _DELTA_EVENT:
                             if event.delta:
                                 text = deltas.get(event.item_id, "") + event.delta
@@ -239,6 +281,16 @@ class OpenAIRealtimeTranscriptionProvider:
                         elif etype == "error":
                             err = getattr(event, "error", None)
                             msg = getattr(err, "message", None) or str(err or event)
+                            if getattr(err, "code", None) == _EMPTY_COMMIT_ERROR_CODE:
+                                # The server's own VAD committed the turn first.
+                                # Benign — and escalating it would put a
+                                # connection-error subtitle in front of the
+                                # audience for a turn that ended normally.
+                                log(
+                                    f"OpenAI realtime commit raced server VAD: {msg}",
+                                    level="DEBUG",
+                                )
+                                continue
                             exc = RuntimeError(msg)
                             if not handle._ready.is_set():
                                 _fail_startup(exc)
