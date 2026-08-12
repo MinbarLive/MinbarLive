@@ -50,6 +50,7 @@ from providers import (
 from translation import recitation
 from translation.stt import maybe_arabic_retranscription, transcribe_with_fallback
 from translation.translator import translate_text
+from utils.frozen_env import external_process_env
 from utils.history import batch_srt_path, write_batch_record
 from utils.logging import log
 from utils.settings import (
@@ -187,7 +188,11 @@ def _extract_audio(input_path: str, wav_path: str) -> None:
     # CREATE_NO_WINDOW: don't flash a console window from the GUI on Windows
     creationflags = 0x08000000 if sys.platform == "win32" else 0
     result = subprocess.run(
-        cmd, capture_output=True, text=True, creationflags=creationflags
+        cmd,
+        capture_output=True,
+        text=True,
+        creationflags=creationflags,
+        env=external_process_env(),
     )
     if result.returncode != 0:
         tail = (result.stderr or "").strip().splitlines()[-1:]
