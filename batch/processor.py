@@ -47,6 +47,7 @@ from providers import (
     get_transcription_provider,
     get_transcription_provider_for,
 )
+from translation import recitation
 from translation.stt import maybe_arabic_retranscription, transcribe_with_fallback
 from translation.translator import translate_text
 from utils.history import batch_srt_path, write_batch_record
@@ -452,6 +453,9 @@ def process_file(
             ]
 
     entries: list[SrtEntry] = []
+    # A recitation belongs to one recording: without this, the last file's
+    # closing surah would still be predicting the next file's opening verses.
+    recitation.reset()
     # (start_seconds, transcription, translation) for the in-app batch record
     records: list[tuple[float, str, str]] = []
     recent: list[str] = []  # rolling raw context (no async summarizer in batch)

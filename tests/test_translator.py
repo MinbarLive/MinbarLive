@@ -10,11 +10,21 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import QURAN_VERIFIED_MARKER
-from translation import translator
+from translation import recitation, translator
 
 # 4 words after normalization
 VERSE = "بسم الله الرحمن الرحيم"
 VERSE_TRANSLATION = "Im Namen Allahs, des Allerbarmers, des Barmherzigen. (1:1)"
+
+
+@pytest.fixture(autouse=True)
+def _forget_recitation():
+    """Certifying a verse run tells the recitation tracker the speaker is
+    reciting — process-global state, so one test's verified run would
+    otherwise prime the next test's candidate list."""
+    recitation.reset()
+    yield
+    recitation.reset()
 
 
 class TestSelectVerifiedVerse:
