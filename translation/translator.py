@@ -30,6 +30,7 @@ from providers import (
     get_translation_provider,
     get_translation_provider_for,
 )
+from translation import recitation
 from translation.dictionary import (
     fuzzy_match_athan,
     get_quran_dict,
@@ -434,6 +435,9 @@ def _select_verified_verse_run(
             f"text={text_sim:.2f}) → exact dictionary translations, GPT skipped",
             level="INFO",
         )
+        # Certified, not merely nominated — the only thing allowed to convince
+        # the tracker that a recitation is under way.
+        recitation.note_certified(run)
         return " ".join(candidates[ref][2] for ref in run)
 
     return None
@@ -582,6 +586,8 @@ def translate_text(
         )
 
         # --- 2b) Hard-verified verse bypass: exact dictionary translation ---
+        # Deliberately the un-augmented list: this bypass trusts the embedding
+        # score alone, so a predicted verse must never be able to reach it.
         verified = _select_verified_verse(quran_matches, arabic_txt, target_lang_code)
         if verified is not None:
             score, ar_verse, verse_translation = verified
@@ -590,11 +596,19 @@ def translate_text(
                 "exact dictionary translation, GPT skipped",
                 level="INFO",
             )
+            ref = _parse_ayah_ref(quran_dict.get(ar_verse, ""))
+            if ref is not None:
+                recitation.note_certified([ref])
             return f"{QURAN_VERIFIED_MARKER} {verse_translation}"
 
         # --- 2c) Multi-verse run: consecutive complete ayat in one segment ---
+        # The only step allowed to see predicted verses, because it certifies
+        # by comparing dictionary text against what was actually said rather
+        # than by trusting a score (translation/recitation.py).
         verified_run = _select_verified_verse_run(
-            quran_matches, arabic_txt, target_lang_code
+            recitation.expected_candidates(quran_matches),
+            arabic_txt,
+            target_lang_code,
         )
         if verified_run is not None:
             return f"{QURAN_VERIFIED_MARKER} {verified_run}"

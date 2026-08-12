@@ -232,6 +232,21 @@ RAG_HARD_MATCH_MAX_WORD_DIFF = 6
 # dictionary verses must fuzzy-match the whole normalized segment at least
 # this well. Embeddings only nominate candidates — the text match certifies.
 RAG_MULTI_VERSE_TEXT_SIMILARITY = 0.80
+# Recitation follow-through (translation/recitation.py): once this many ayat
+# of one surah have been VERIFIED inside the window, the next few ayat are
+# offered to the text verifier as extra candidates. Embedding similarity is
+# weakest exactly here — a segment straddling a verse boundary blends two
+# verses and scores below RAG_MIN_SIMILARITY — so the verses the speaker is
+# about to recite are the ones most likely to be missed.
+# Two verses, not one: a single quoted ayah mid-sermon predicts nothing.
+RECITATION_MIN_VERSES = 2
+# How recently those verses must have been verified for the speaker to still
+# count as reciting. Comfortably longer than one segment, short enough that a
+# verse quoted before a digression stops predicting anything.
+RECITATION_WINDOW_SECONDS = 45
+# How far ahead to offer. Covers a segment landing mid-verse plus the next
+# one; more would only add candidates the text check must reject anyway.
+RECITATION_LOOKAHEAD_AYAT = 3
 # Prefix shown on subtitles for verified verses (kept as one constant so the
 # GUI indicator can be restyled in one place)
 QURAN_VERIFIED_MARKER = "📖"

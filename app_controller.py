@@ -45,6 +45,7 @@ from providers import (
     resolve_streaming_transcription_model,
 )
 from streaming_session import StreamingSession
+from translation import recitation
 from translation.buffering import (
     AudioSegment,
     ChunkBasedStrategy,
@@ -982,6 +983,7 @@ class AppController:
 
             context_mgr = get_context_manager()
             context_mgr.reset()
+            recitation.reset()  # a recitation never spans two sessions
             context_mgr.start()
         except Exception:
             # A provider connection may already be open, but a session is not
@@ -1092,6 +1094,7 @@ class AppController:
 
             # Start context manager (for async summarization)
             context_mgr.reset()  # Fresh context for new session
+            recitation.reset()  # a recitation never spans two sessions
             context_mgr.start()
             context_started = True
         except Exception:
