@@ -35,7 +35,7 @@
   "subtitles": "Subtitles:",
   "speed": "Speed:",
   "transparent": "Transparent",
-  "show_footer": "Footer",
+  "hide_footer_label": "Hide footer",
   "logs": "Logs",
   "advanced_settings": "Advanced",
   "translation_provider": "Translation Provider:",

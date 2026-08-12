@@ -33,7 +33,7 @@
   "subtitles": "الترجمة:",
   "speed": "السرعة:",
   "transparent": "شفاف",
-  "show_footer": "تذييل",
+  "hide_footer_label": "إخفاء التذييل",
   "logs": "السجل",
   "advanced_settings": "متقدم",
   "translation_provider": "مزود الترجمة:",

@@ -33,7 +33,7 @@
   "subtitles": "Titlovi:",
   "speed": "Brzina:",
   "transparent": "Prozirno",
-  "show_footer": "Podnožje",
+  "hide_footer_label": "Sakrij podnožje",
   "logs": "Zapisnik",
   "advanced_settings": "Napredno",
   "translation_provider": "Pružalac prijevoda:",

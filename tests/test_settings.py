@@ -408,6 +408,59 @@ class TestReviewPromptSettings:
             settings_module._cached_settings = None
 
 
+class TestFooterHideMode:
+    """The disclaimer gained the same three-way control the overlay has:
+    hide it never, only while stopped, or always."""
+
+    def _load(self, tmp_path, monkeypatch, data):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
+        settings_module._cached_settings = None
+        try:
+            return load_settings(use_cache=False)
+        finally:
+            settings_module._cached_settings = None
+
+    def test_default_is_never(self):
+        assert Settings().footer_hide_mode == "never"
+
+    def test_round_trip(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            settings_module, "_settings_path", lambda: tmp_path / "settings.json"
+        )
+        settings_module._cached_settings = None
+        save_settings(Settings(footer_hide_mode="stopped"))
+        settings_module._cached_settings = None
+        try:
+            assert load_settings(use_cache=False).footer_hide_mode == "stopped"
+        finally:
+            settings_module._cached_settings = None
+
+    def test_invalid_value_falls_back_to_never(self, tmp_path, monkeypatch):
+        loaded = self._load(tmp_path, monkeypatch, {"footer_hide_mode": "nope"})
+        assert loaded.footer_hide_mode == "never"
+
+    def test_legacy_show_footer_off_migrates_to_always(self, tmp_path, monkeypatch):
+        loaded = self._load(tmp_path, monkeypatch, {"show_footer": False})
+        assert loaded.footer_hide_mode == "always"
+
+    def test_legacy_show_footer_on_migrates_to_never(self, tmp_path, monkeypatch):
+        """"Shown" meant shown in every state. Landing such a user on the new
+        middle setting would silently take the disclaimer off their idle
+        screen — a change they never asked for."""
+        loaded = self._load(tmp_path, monkeypatch, {"show_footer": True})
+        assert loaded.footer_hide_mode == "never"
+
+    def test_new_setting_wins_over_the_legacy_one(self, tmp_path, monkeypatch):
+        loaded = self._load(
+            tmp_path,
+            monkeypatch,
+            {"footer_hide_mode": "stopped", "show_footer": False},
+        )
+        assert loaded.footer_hide_mode == "stopped"
+
+
 class TestSubtitleHideMode:
     def test_default_is_never(self):
         assert Settings().subtitle_hide_mode == "never"

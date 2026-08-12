@@ -33,7 +33,7 @@
   "subtitles": "Altyazılar:",
   "speed": "Hız:",
   "transparent": "Saydam",
-  "show_footer": "Altbilgi",
+  "hide_footer_label": "Altbilgiyi gizle",
   "logs": "Günlük",
   "advanced_settings": "Gelişmiş",
   "translation_provider": "Çeviri Sağlayıcı:",

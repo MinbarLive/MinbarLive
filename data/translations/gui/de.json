@@ -35,7 +35,7 @@
   "subtitles": "Untertitel:",
   "speed": "Geschw.:",
   "transparent": "Transparent",
-  "show_footer": "Fußzeile",
+  "hide_footer_label": "Fußzeile ausblenden",
   "logs": "Protokoll",
   "advanced_settings": "Erweitert",
   "translation_provider": "Übersetzungsanbieter:",

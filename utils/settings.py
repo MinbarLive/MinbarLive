@@ -397,8 +397,12 @@ def _load_subtitle_text_color(value: object) -> str:
     return ""
 
 
-# Valid values (and dropdown order) for the two window-behaviour selectors.
+# Valid values (and dropdown order) for the window-behaviour selectors.
 SUBTITLE_HIDE_MODES = ("never", "stopped", "always")
+# Same vocabulary, applied to the disclaimer pill rather than the whole
+# overlay: "stopped" leaves the idle screen clean while still disclaiming
+# every translation the audience actually reads.
+FOOTER_HIDE_MODES = ("never", "stopped", "always")
 ALWAYS_ON_TOP_MODES = ("never", "running", "always")
 
 # How the control panel's secondary windows (settings, history, batch,
@@ -452,7 +456,9 @@ class Settings:
     subtitle_theme_mode: str = (
         DEFAULT_THEME_MODE  # Subtitle-window theme (dark or light)
     )
-    show_footer: bool = True  # Show footer disclaimer in subtitle window
+    # When to hide the footer disclaimer: "never" (always shown, the default),
+    # "stopped" (only while a session runs) or "always".
+    footer_hide_mode: str = "never"
     # Show original text above the translation (default ON since 2026-07-15,
     # together with the live transcript line — user decision)
     bilingual_mode: bool = True
@@ -702,6 +708,17 @@ def load_settings(use_cache: bool = True) -> Settings:
             subtitle_hide_mode = "stopped"
         else:
             subtitle_hide_mode = "never"
+        # Footer policy: prefer the new 3-way setting, else migrate the legacy
+        # boolean. show_footer=True meant "shown in every state", which is
+        # "never hide" — not the new "stopped" middle ground, which nobody who
+        # only ever had a checkbox can have chosen.
+        raw_footer_mode = data.get("footer_hide_mode")
+        if raw_footer_mode in FOOTER_HIDE_MODES:
+            footer_hide_mode = raw_footer_mode
+        elif data.get("show_footer", True) is False:
+            footer_hide_mode = "always"
+        else:
+            footer_hide_mode = "never"
         # Always-on-top policy: prefer the new 3-way setting, else migrate the
         # legacy boolean. An explicit False stays "never"; the legacy default
         # True adopts the new "running" default (on-top-while-stopped had no
@@ -774,7 +791,7 @@ def load_settings(use_cache: bool = True) -> Settings:
             gui_language=data.get("gui_language", DEFAULT_GUI_LANGUAGE),
             theme_mode=theme_mode,
             subtitle_theme_mode=subtitle_theme_mode,
-            show_footer=data.get("show_footer", True),
+            footer_hide_mode=footer_hide_mode,
             bilingual_mode=data.get("bilingual_mode", True),
             subtitle_side_by_side=data.get("subtitle_side_by_side", False),
             alt_font_size_base=data.get("alt_font_size_base"),
@@ -870,7 +887,7 @@ def save_settings(settings: Settings) -> None:
         "gui_language": settings.gui_language,
         "theme_mode": settings.theme_mode,
         "subtitle_theme_mode": settings.subtitle_theme_mode,
-        "show_footer": settings.show_footer,
+        "footer_hide_mode": settings.footer_hide_mode,
         "bilingual_mode": settings.bilingual_mode,
         "subtitle_side_by_side": settings.subtitle_side_by_side,
         "alt_font_size_base": settings.alt_font_size_base,
