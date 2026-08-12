@@ -52,6 +52,7 @@ from providers import (
     get_model_choices,
     ranked_keyed_provider,
 )
+from utils.frozen_env import external_process_env
 from utils.logging import log
 from utils.settings import (
     SOURCE_LANGUAGES,
@@ -775,9 +776,12 @@ class BatchWindow(QDialog):
             if sys.platform == "win32":
                 os.startfile(folder)  # noqa: S606 - a folder the user just wrote to
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", folder])  # noqa: S603,S607
+                # env: from a frozen build the bundle's *_LIBRARY_PATH would
+                # otherwise leak into the file manager and crash it on a libstdc++
+                # mismatch — the same trap the ffmpeg call sidesteps.
+                subprocess.Popen(["open", folder], env=external_process_env())  # noqa: S603,S607
             else:
-                subprocess.Popen(["xdg-open", folder])  # noqa: S603,S607
+                subprocess.Popen(["xdg-open", folder], env=external_process_env())  # noqa: S603,S607
         except OSError as exc:
             log(f"Opening the output folder failed: {exc}", level="WARNING")
 

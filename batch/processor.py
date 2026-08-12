@@ -39,7 +39,6 @@ from config import (
     BATCH_MIN_STANDALONE_SECONDS,
     CONTEXT_RECENT_RAW_COUNT,
     FS,
-    IS_FROZEN,
     SILENCE_THRESHOLD,
 )
 from providers import (
@@ -50,6 +49,7 @@ from providers import (
 )
 from translation.stt import maybe_arabic_retranscription, transcribe_with_fallback
 from translation.translator import translate_text
+from utils.frozen_env import external_process_env
 from utils.history import batch_srt_path, write_batch_record
 from utils.logging import log
 from utils.settings import (
@@ -158,36 +158,6 @@ def is_ffmpeg_available() -> bool:
     return _find_ffmpeg() is not None
 
 
-def _external_process_env() -> dict[str, str] | None:
-    """Environment for launching a *system* executable from inside the app.
-
-    PyInstaller's onefile bootloader prepends its extraction directory to
-    ``LD_LIBRARY_PATH`` (Linux) / ``DYLD_LIBRARY_PATH`` (macOS) so the bundled
-    Python can find its own shared objects. A system binary spawned from here
-    inherits that variable and then loads *our* libraries instead of the
-    system's: a bundled ``libstdc++.so.6`` older than the one the system
-    ffmpeg's own dependencies need fails with, e.g.,
-
-        ffmpeg: /tmp/_MEIxxxx/libstdc++.so.6: version `GLIBCXX_3.4.32' not
-        found (required by /usr/lib/libSPIRV-Tools.so)
-
-    The bootloader saves each original value as ``<VAR>_ORIG``; restore it (or
-    drop the injected variable when there was none) so the child sees the
-    library environment it would outside the bundle. Returns None when not
-    frozen — inherit the current environment unchanged.
-    """
-    if not IS_FROZEN:
-        return None
-    env = os.environ.copy()
-    for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
-        original = env.pop(f"{var}_ORIG", None)
-        if original is not None:
-            env[var] = original
-        else:
-            env.pop(var, None)
-    return env
-
-
 def _extract_audio(input_path: str, wav_path: str) -> None:
     """Convert any audio/video file to 16 kHz mono WAV via ffmpeg."""
     # An absolute path, never the bare name: Windows' CreateProcess searches
@@ -221,7 +191,7 @@ def _extract_audio(input_path: str, wav_path: str) -> None:
         capture_output=True,
         text=True,
         creationflags=creationflags,
-        env=_external_process_env(),
+        env=external_process_env(),
     )
     if result.returncode != 0:
         tail = (result.stderr or "").strip().splitlines()[-1:]
