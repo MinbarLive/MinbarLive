@@ -7944,6 +7944,40 @@ class TestLayoutAppearanceMemory:
         in_row = [row.itemAt(i).widget() for i in range(row.count())]
         assert in_row[:2] == [panel.bilingual_check, panel.layout_segment]
 
+    def test_nothing_is_shown_before_it_has_a_parent(self, qt_app, monkeypatch):
+        """A widget with no parent is a window of its own.
+
+        Showing the selector before ``addWidget`` reparented it mapped a real
+        titled frame on the desktop for the length of the build — a small
+        window that flashed beside the control panel on every start.
+        """
+        import gui.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        flashed = []
+        real_set_visible = QWidget.setVisible
+
+        def spy(widget, visible):
+            if visible and widget.parentWidget() is None:
+                flashed.append(type(widget).__name__)
+            real_set_visible(widget, visible)
+
+        monkeypatch.setattr(QWidget, "setVisible", spy)
+
+        class FakeController:
+            pass
+
+        p = cp.ControlPanel(FakeController())
+        try:
+            assert flashed == []
+        finally:
+            p.close()
+
     def test_the_first_switch_moves_nothing(self, panel):
         """Both layouts start from what was already chosen, so turning the mode
         on for the first time does not resize the subtitles."""
