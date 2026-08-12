@@ -1072,7 +1072,6 @@ class ControlPanel(QMainWindow):
             1 if self.settings.subtitle_side_by_side else 0,
             compact=True,
         )
-        self.layout_segment.setVisible(self.settings.bilingual_mode)
         self.layout_segment.changed.connect(
             lambda index: self._on_side_by_side_toggled(index == 1)
         )
@@ -1086,6 +1085,11 @@ class ControlPanel(QMainWindow):
         card.body.addWidget(self.interim_check)
         card.body.addWidget(self.transparent_check)
         card.body.addLayout(bilingual_row)
+        # Only here, after the ROW reached the card, is the selector parented —
+        # a free-standing layout adopts nothing. Shown any earlier it is a
+        # parentless widget, which is a window: it flashed a small titled frame
+        # on screen for the length of the build, as the log panel once did.
+        self.layout_segment.setVisible(self.settings.bilingual_mode)
 
         hide_caption = QLabel(self._t("hide_subtitle_label", "Hide subtitle window"))
         hide_caption.setObjectName("field")
