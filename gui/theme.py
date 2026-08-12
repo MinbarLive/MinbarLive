@@ -514,6 +514,33 @@ QComboBox QAbstractItemView::item:selected {{
     color: #ffffff;
 }}
 
+/* The file picker (batch card, transcript export) is a system dialog we don't
+   build. On Linux without the GTK/KDE platform-theme plugin — the AppImage
+   case — Qt falls back to its own QFileDialog, and the app sheet's
+   `QWidget {{ color }}` paints its labels and rows in the theme text colour
+   while their views keep Qt's default light background: white on white, the
+   file list unreadable. Give the dialog's own surfaces a background so the
+   text has something to sit on. Native dialogs ignore QSS, so this only ever
+   touches the broken fallback. */
+QFileDialog {{ background-color: {c["app_bg"]}; }}
+QFileDialog QTreeView, QFileDialog QListView, QFileDialog QAbstractItemView {{
+    background-color: {c["entry"]};
+    color: {c["text"]};
+    alternate-background-color: {c["panel_soft"]};
+    border: 1px solid {c["entry_border"]};
+    border-radius: 8px;
+    selection-background-color: {c["accent"]};
+    selection-color: #ffffff;
+    outline: none;
+}}
+QFileDialog QHeaderView::section {{
+    background-color: {c["panel_soft"]};
+    color: {c["text"]};
+    border: none;
+    border-bottom: 1px solid {c["border"]};
+    padding: 4px 8px;
+}}
+
 QPlainTextEdit, QTextEdit {{
     background-color: {c["log_bg"]};
     color: {c["log_text"]};
