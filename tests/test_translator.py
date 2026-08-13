@@ -10,11 +10,21 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import QURAN_VERIFIED_MARKER
-from translation import translator
+from translation import recitation, translator
 
 # 4 words after normalization
 VERSE = "بسم الله الرحمن الرحيم"
 VERSE_TRANSLATION = "Im Namen Allahs, des Allerbarmers, des Barmherzigen. (1:1)"
+
+
+@pytest.fixture(autouse=True)
+def _forget_recitation():
+    """Certifying a verse run tells the recitation tracker the speaker is
+    reciting — process-global state, so one test's verified run would
+    otherwise prime the next test's candidate list."""
+    recitation.reset()
+    yield
+    recitation.reset()
 
 
 class TestSelectVerifiedVerse:
@@ -104,6 +114,22 @@ class TestSelectVerifiedVerse:
         """A high-scoring second match must not qualify over a weak top match."""
         matches = [(0.80, "other verse", "x"), (0.95, VERSE, "hint")]
         assert translator._select_verified_verse(matches, VERSE, "de") is None
+
+    def test_right_length_wrong_words_rejected(self):
+        """The backstop the run bypass always had and this one lacked. Without
+        it the decision rested entirely on the embedding: a segment of the
+        right length whose words merely sat in the same semantic neighbourhood
+        replaced itself with a verse's exact dictionary translation, and
+        nothing ever compared what was said to what was printed."""
+        decoy = " ".join(f"كلمة{i}" for i in range(4))  # same word count as VERSE
+        assert translator._select_verified_verse([(0.92, VERSE, "x")], decoy, "de") is None
+
+    def test_transcription_noise_still_qualifies(self):
+        """The check must not be stricter than reality: measured against 48
+        real verifications, the lowest genuine single-verse match scored 0.848,
+        so ordinary mis-hearings have to keep passing."""
+        noisy = VERSE.replace("الرحمن", "الرحمان")  # one letter off
+        assert translator._select_verified_verse([(0.92, VERSE, "x")], noisy, "de")
 
 
 class TestTranslateTextBypass:

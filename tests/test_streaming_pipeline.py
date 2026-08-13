@@ -371,11 +371,42 @@ class TestIntraTurnSentenceFlush:
 
     def test_unpunctuated_speech_flushes_on_the_word_count_rule(self):
         """gpt-4o-transcribe usually punctuates; when it does not, the turn
-        must not still grow without bound."""
+        must not still grow without bound.
+
+        All but the final word: that one is still being revised (see
+        test_a_growing_tail_word_is_not_re_flushed)."""
         s = self._session()
         assert s.set_interim(" ".join(f"w{i}" for i in range(17)))[0] == ""
         long_text = " ".join(f"w{i}" for i in range(18))
-        assert s.set_interim(long_text)[0] == long_text
+        assert s.set_interim(long_text)[0] == " ".join(f"w{i}" for i in range(17))
+
+    def test_a_growing_tail_word_is_not_re_flushed(self):
+        """Live 2026-08-13: a reciter with no pauses put the same two ayat on
+        screen three times inside 400 ms.
+
+        Deltas arrive mid-word, so an interim ends on a fragment that the next
+        message completes: يشعر → يشعرون → يشعرون. Emitting that fragment made
+        each following interim fail the prefix check in _remainder_locked,
+        which resets the record and re-flushes the WHOLE turn.
+        """
+        s = self._session()
+        base = " ".join(f"w{i}" for i in range(17))
+        first, _rev = s.set_interim(f"{base} yash")
+        assert first == base  # the fragment is held back
+        assert s.set_interim(f"{base} yashurun")[0] == ""  # revision: nothing re-sent
+        assert s.set_interim(f"{base} yashurun.")[0] == "yashurun."  # terminator: tail
+        s.add_final(f"{base} yashurun.")
+        assert s.take_and_reset()[0] == ""  # every word left exactly once
+
+    def test_the_held_back_word_still_leaves_when_the_turn_ends(self):
+        """Holding a word back must not lose it if the turn ends right there —
+        a missing word is a hole in the khutbah, which is the whole reason
+        _remainder_locked errs toward duplication in the first place."""
+        s = self._session()
+        long_text = " ".join(f"w{i}" for i in range(18))
+        assert s.set_interim(long_text)[0] == " ".join(f"w{i}" for i in range(17))
+        s.add_final(long_text)
+        assert s.take_and_reset()[0] == "w17"
 
     def test_word_count_rule_measures_the_untranslated_remainder(self):
         """Not the whole turn — otherwise every interim after the first flush

@@ -32,6 +32,7 @@ from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 from gui.subtitle_window import SubtitleWindow  # noqa: E402
 from utils.settings import (  # noqa: E402
+    FOOTER_HIDE_MODES,
     PIPELINE_MODE_STREAMING,
     STATIC_LIFT_PERCENT_MAX,
     STATIC_LIFT_PERCENT_MIN,
@@ -1708,6 +1709,9 @@ class TestSubtitleHideMode:
             def set_stopped_hint(self, visible):
                 pass
 
+            def set_show_footer(self, enabled):
+                pass
+
             def set_always_on_top(self, enabled):
                 pass
 
@@ -1772,6 +1776,100 @@ class TestSubtitleHideMode:
         assert panel.subtitle_window is None
 
 
+class TestFooterHideMode:
+    """Same three-way policy, applied to the two bottom pills instead of the
+    whole overlay. The window stays a dumb renderer of two booleans — mode and
+    running state are resolved here."""
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+
+        class FakeOverlay:
+            def __init__(self):
+                self.footer = None
+                self.stopped_hint = None
+
+            def set_show_footer(self, enabled):
+                self.footer = enabled
+
+            def set_stopped_hint(self, visible):
+                self.stopped_hint = visible
+
+        p = cp.ControlPanel(type("C", (), {})())
+        p.subtitle_window = FakeOverlay()
+        yield p
+        p.subtitle_window = None
+        p.close()
+
+    @pytest.mark.parametrize(
+        "mode,running,footer,hint",
+        [
+            # Hiding the disclaimer is a request for a clean screen, so the
+            # pause pill goes with it — otherwise "Übersetzung angehalten"
+            # stands alone at the bottom of an empty overlay.
+            ("never", False, True, True),
+            ("never", True, True, False),
+            ("always", False, False, False),
+            ("always", True, False, False),
+            ("stopped", False, False, False),
+            ("stopped", True, True, False),
+        ],
+    )
+    def test_visibility_matrix(self, panel, mode, running, footer, hint):
+        panel.settings.footer_hide_mode = mode
+        panel._running = running
+        panel._apply_overlay_pills()
+        assert panel.subtitle_window.footer is footer
+        assert panel.subtitle_window.stopped_hint is hint
+
+    def test_stopped_mode_leaves_the_idle_overlay_blank(self, panel):
+        """The whole point of "when stopped": nothing at the bottom at all."""
+        panel.settings.footer_hide_mode = "stopped"
+        panel._running = False
+        panel._apply_overlay_pills()
+        assert panel.subtitle_window.footer is False
+        assert panel.subtitle_window.stopped_hint is False
+
+    def test_never_still_shows_the_pause_pill(self, panel):
+        """The default must not change: an operator who never touched this
+        setting still gets the disclaimer AND the pause notice."""
+        panel.settings.footer_hide_mode = "never"
+        panel._running = False
+        panel._apply_overlay_pills()
+        assert panel.subtitle_window.footer is True
+        assert panel.subtitle_window.stopped_hint is True
+
+    def test_starting_and_stopping_moves_both_pills(self, panel):
+        """"When stopped" is only worth anything if start/stop actually
+        re-evaluate it — the mode changes nothing on its own."""
+        panel.settings.footer_hide_mode = "stopped"
+        panel._running = True
+        panel._apply_overlay_pills()
+        assert (panel.subtitle_window.footer, panel.subtitle_window.stopped_hint) == (
+            True,
+            False,
+        )
+        panel._running = False
+        panel._apply_overlay_pills()
+        assert (panel.subtitle_window.footer, panel.subtitle_window.stopped_hint) == (
+            False,
+            False,
+        )
+
+    def test_the_selector_writes_the_mode(self, panel):
+        panel._on_footer_mode_changed(FOOTER_HIDE_MODES.index("stopped"))
+        assert panel.settings.footer_hide_mode == "stopped"
+
+    def test_no_overlay_is_not_an_error(self, panel):
+        panel.subtitle_window = None
+        panel.settings.footer_hide_mode = "stopped"
+        panel._apply_overlay_pills()  # must not raise
+
+
 class TestAnnouncementSurvivesARebuiltOverlay:
     """An "until stopped" message must outlive the window it is drawn on.
 
@@ -1801,6 +1899,9 @@ class TestAnnouncementSurvivesARebuiltOverlay:
                 pass
 
             def set_stopped_hint(self, visible):
+                pass
+
+            def set_show_footer(self, enabled):
                 pass
 
             def show(self):
@@ -2046,8 +2147,10 @@ class TestAdvancedCard:
             "other_settings", "Other settings"
         )
         aot = order.index(panel._t("window_on_top_label", "Window always on top"))
-        first_check = order.index(panel._other_checks["show_footer"].text())
-        assert aot < first_check
+        footer = order.index(panel._t("hide_footer_label", "Hide footer"))
+        first_check = order.index(panel._other_checks["auto_stop_inactivity"].text())
+        # Both captioned selectors stay above the bare checkboxes.
+        assert aot < footer < first_check
 
 
 class TestStartStopFocus:
@@ -9049,7 +9152,7 @@ class TestAmpersandInACheckboxLabel:
         import json
         import re
 
-        keys = ("show_footer", "auto_stop_inactivity", "noise_filter",
+        keys = ("auto_stop_inactivity", "noise_filter",
                 "auto_cleanup_logs", "auto_cleanup_content",
                 "auto_start_on_launch")
         for path in glob.glob("data/translations/gui/*.json"):

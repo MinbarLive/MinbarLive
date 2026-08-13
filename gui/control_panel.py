@@ -100,6 +100,7 @@ from utils.settings import (
     BACKDROP_OPACITY_MAX,
     BACKDROP_OPACITY_MIN,
     DEFAULT_SOURCE_FONT_SIZE_BASE,
+    FOOTER_HIDE_MODES,
     PIPELINE_MODE_STREAMING,
     SOURCE_FONT_SIZE_BASE_MAX,
     SOURCE_FONT_SIZE_BASE_MIN,
@@ -1235,9 +1236,20 @@ class ControlPanel(QMainWindow):
         body.addWidget(aot_caption)
         body.addWidget(self.aot_segment)
 
+        footer_caption = QLabel(self._t("hide_footer_label", "Hide footer"))
+        footer_caption.setObjectName("field")
+        self.footer_segment = SegmentedControl(
+            [self._t(*_HIDE_MODE_KEYS[m]) for m in FOOTER_HIDE_MODES],
+            FOOTER_HIDE_MODES.index(self.settings.footer_hide_mode)
+            if self.settings.footer_hide_mode in FOOTER_HIDE_MODES
+            else 0,
+        )
+        self.footer_segment.changed.connect(self._on_footer_mode_changed)
+        body.addWidget(footer_caption)
+        body.addWidget(self.footer_segment)
+
         self._other_checks: dict[str, QCheckBox] = {}
         for attribute, key, fallback in (
-            ("show_footer", "show_footer", "Show disclaimer"),
             ("auto_stop_inactivity", "auto_stop_inactivity", "Stop when idle"),
             ("noise_filter", "noise_filter", "Noise filter"),
             ("auto_cleanup_logs", "auto_cleanup_logs", "Clean up logs"),
@@ -2060,6 +2072,11 @@ class ControlPanel(QMainWindow):
         save_settings(self.settings)
         self._apply_subtitle_hide_mode()
 
+    def _on_footer_mode_changed(self, index: int) -> None:
+        self.settings.footer_hide_mode = FOOTER_HIDE_MODES[index]
+        save_settings(self.settings)
+        self._apply_overlay_pills()
+
     def _on_aot_changed(self, index: int) -> None:
         self.settings.always_on_top_mode = ALWAYS_ON_TOP_MODES[index]
         save_settings(self.settings)
@@ -2188,8 +2205,6 @@ class ControlPanel(QMainWindow):
     def _on_simple_setting(self, attribute: str, checked: bool) -> None:
         setattr(self.settings, attribute, checked)
         save_settings(self.settings)
-        if attribute == "show_footer" and self.subtitle_window:
-            self.subtitle_window.set_show_footer(checked)
 
     # ── handlers: providers ──────────────────────────────────────────────
     def _on_provider_changed(self, _index: int) -> None:
@@ -2513,8 +2528,7 @@ class ControlPanel(QMainWindow):
         # Buttons and pill first: the pipeline IS up, and anything below that
         # raises must not leave the panel reading "Connecting…" forever.
         self._sync_running_state()
-        if self.subtitle_window:
-            self.subtitle_window.set_stopped_hint(False)
+        self._apply_overlay_pills()
         self._apply_always_on_top()
         self.bridge.start(
             streaming=streaming_enabled(self.settings),
@@ -2589,7 +2603,7 @@ class ControlPanel(QMainWindow):
         self._end_session_tracking("completed")
         if self.subtitle_window:
             self.subtitle_window.set_live_text(None)
-            self.subtitle_window.set_stopped_hint(True)
+        self._apply_overlay_pills()
         self._apply_always_on_top()
         # An announcement left on screen after the session ends is usually
         # stale ("starts in 10 minutes"), so clear it unless the operator
@@ -2784,6 +2798,37 @@ class ControlPanel(QMainWindow):
             return self._running
         return False
 
+    def _footer_should_show(self) -> bool:
+        mode = self.settings.footer_hide_mode
+        if mode == "always":
+            return False
+        if mode == "stopped":
+            return self._running
+        return True  # "never"
+
+    def _stopped_hint_should_show(self) -> bool:
+        """The pause pill follows the footer setting.
+
+        Hiding the disclaimer is a request for a clean screen, and the pill
+        stack is one visual object to the audience: leaving "Übersetzung
+        angehalten" standing alone at the bottom of an otherwise empty overlay
+        defeats the point of hiding the line above it. So both modes that hide
+        the footer hide this too — which for "stopped" means the idle overlay
+        goes completely blank, and for "always" means this pill never appears.
+        """
+        return not self._running and self.settings.footer_hide_mode == "never"
+
+    def _apply_overlay_pills(self) -> None:
+        """Push both bottom pills' visibility to the overlay.
+
+        The window stays a dumb renderer of two booleans: the mode and the
+        running state are the panel's business, and it already recomputes
+        every other running-state-dependent thing here.
+        """
+        if self.subtitle_window:
+            self.subtitle_window.set_show_footer(self._footer_should_show())
+            self.subtitle_window.set_stopped_hint(self._stopped_hint_should_show())
+
     def _subtitle_window_should_exist(self) -> bool:
         mode = self.settings.subtitle_hide_mode
         if mode == "always":
@@ -2799,8 +2844,7 @@ class ControlPanel(QMainWindow):
         should = self._subtitle_window_should_exist()
         if should and self.subtitle_window is None:
             self._ensure_subtitle_window()
-            if self.subtitle_window and not self._running:
-                self.subtitle_window.set_stopped_hint(True)
+            self._apply_overlay_pills()
         elif not should and self.subtitle_window is not None:
             if not self._announcement_active:
                 self._teardown_subtitle_window()
@@ -2823,7 +2867,7 @@ class ControlPanel(QMainWindow):
             window_height_percent=s.window_height_percent,
             static_lift_percent=s.static_lift_percent,
             backdrop_opacity=s.subtitle_backdrop_opacity,
-            show_footer=s.show_footer,
+            show_footer=self._footer_should_show(),
             theme_mode=s.subtitle_theme_mode,
             bilingual_mode=s.bilingual_mode,
             side_by_side=s.subtitle_side_by_side,

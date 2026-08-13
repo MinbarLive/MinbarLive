@@ -165,7 +165,18 @@ class UtteranceSession:
             # No terminator, but this much unpunctuated speech is already a
             # wall of text — the same word-count rule the segmented buffer
             # flushes on.
-            ready = remainder
+            #
+            # The final word is held back because it is the one still being
+            # revised. Deltas arrive mid-word, so an interim ends on a
+            # fragment: "يشعر" becomes "يشعرون" becomes "يشعرون." over three
+            # messages. Emitting that fragment made the next interim fail the
+            # prefix check in _remainder_locked, which resets and re-flushes
+            # the WHOLE turn — live 2026-08-13 a reciter with no pauses put the
+            # same two ayat on screen three times inside 400 ms.
+            #
+            # Only this branch needs it: _cut_complete_sentence ends on a
+            # terminator, so its last word is by definition finished.
+            ready = " ".join(remainder.split()[:-1])
         if ready:
             self._emitted.extend(ready.split())
         return ready

@@ -228,10 +228,39 @@ RAG_HARD_MATCH_MAX_WORD_DIFF = 6
 # ayat recited back-to-back, no single verse can pass the guards above (the
 # blended embedding lowers every verse's score and the length guard rejects
 # any one verse). Candidates that are consecutive ayat of the same surah are
-# instead verified as a run by exact text comparison: the concatenated
-# dictionary verses must fuzzy-match the whole normalized segment at least
-# this well. Embeddings only nominate candidates — the text match certifies.
-RAG_MULTI_VERSE_TEXT_SIMILARITY = 0.80
+# instead verified as a run by exact text comparison.
+# Governs BOTH verified-verse bypasses: whichever verses are about to replace
+# the segment's output, their concatenated dictionary text must fuzzy-match the
+# normalized segment at least this well. Embeddings say a segment is *about* a
+# verse; only this says the words were actually recited.
+# Calibrated against 48 real verifications from three days of khutbah logs:
+# the lowest single-verse match measured 0.848 and the lowest run 0.881, so
+# 0.80 clears every observed true positive while rejecting a same-length
+# segment of different words (measured 0.28).
+RAG_TEXT_MATCH_SIMILARITY = 0.80
+# Recitation follow-through (translation/recitation.py): once this many ayat
+# of one surah have been VERIFIED inside the window, the next few ayat are
+# offered to the text verifier as extra candidates. Embedding similarity is
+# weakest exactly here — a segment straddling a verse boundary blends two
+# verses and scores below RAG_MIN_SIMILARITY — so the verses the speaker is
+# about to recite are the ones most likely to be missed.
+# Two verses, not one: a single quoted ayah mid-sermon predicts nothing.
+# Only STARTING a recitation needs this many — continuing one needs a single
+# verse of the same surah, because verified verses arrive with gaps (a pause,
+# a madd, half an ayah in the segment) and dropping out of recitation mode
+# there would lose the help exactly when recognition got patchy.
+RECITATION_MIN_VERSES = 2
+# How recently a verse must have been seen for the speaker to still count as
+# reciting. Every certified OR nominated verse of the active surah pushes this
+# out, so it is a gap tolerance between recognitions, not a cap on the
+# recitation: it has to comfortably outlast a stretch the text check refuses to
+# certify. Measured live 2026-08-13 during a continuous Al-Ahzab recitation,
+# consecutive verifications landed 88 s apart — at 45 s the tracker never
+# activated at all.
+RECITATION_WINDOW_SECONDS = 120
+# How far ahead to offer. Covers a segment landing mid-verse plus the next
+# one; more would only add candidates the text check must reject anyway.
+RECITATION_LOOKAHEAD_AYAT = 3
 # Prefix shown on subtitles for verified verses (kept as one constant so the
 # GUI indicator can be restyled in one place)
 QURAN_VERIFIED_MARKER = "📖"
