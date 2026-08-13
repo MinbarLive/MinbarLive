@@ -315,3 +315,39 @@ class TestTranslateTextWiring:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestTrackerContributionIsMeasurable:
+    """The tracker's whole justification is that it rescues verses the
+    embedding never surfaced — but a certification looks identical either way
+    in the log, so its real contribution has only ever been inferred from a
+    correlation between firings and badge counts. That is far too weak to
+    decide whether to keep it. The verified line now says which verses were
+    injected, using the score-0.0 sentinel (RAG never returns below
+    RAG_MIN_SIMILARITY, so 0.0 cannot be a genuine match)."""
+
+    def _verify_run(self, monkeypatch, matches, segment):
+        monkeypatch.setattr(translator, "quran_dict", REF)
+        monkeypatch.setattr(translator, "get_quran_dict", lambda code: dict(REF))
+        lines: list[str] = []
+        monkeypatch.setattr(
+            translator, "log", lambda msg, level="INFO": lines.append(msg)
+        )
+        result = translator._select_verified_verse_run(matches, segment, "de")
+        return result, " | ".join(lines)
+
+    def test_a_tracker_rescued_verse_is_named_in_the_log(self, monkeypatch):
+        """81:8 was injected (score 0.0); the log must say so."""
+        matches = [(0.72, V7, REF[V7]), (0.0, V8, REF[V8])]
+        result, logged = self._verify_run(monkeypatch, matches, f"{V7} {V8}")
+        assert result is not None
+        assert "1 rescued by the recitation tracker" in logged
+        assert "(81:8)" in logged
+
+    def test_an_embedding_only_run_says_so(self, monkeypatch):
+        """Both verses came from RAG — the tracker deserves no credit."""
+        matches = [(0.72, V7, REF[V7]), (0.68, V8, REF[V8])]
+        result, logged = self._verify_run(monkeypatch, matches, f"{V7} {V8}")
+        assert result is not None
+        assert "all nominated by the embedding" in logged
+        assert "rescued by the recitation tracker" not in logged
