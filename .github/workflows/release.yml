@@ -219,6 +219,35 @@ jobs:
             sed -E -e 's# by @[A-Za-z0-9-]+ in https://github\.com/\S+$##' \
                    -e 's/ \(#[0-9]+\)$//' \
               generated.md > cleaned.md
+
+            # Collapse the commit list behind a <details> block once it gets
+            # long. A release that follows a three-week gap lists 40+ commits,
+            # and GitHub renders a release body in FULL — there is no built-in
+            # "show more" on either the release page or the releases list — so
+            # the install instructions above end up scrolled far off screen,
+            # which is the one part a visitor actually needs. Nothing is lost:
+            # the changelog stays complete, one click away.
+            commits=$(grep -c '^\* ' cleaned.md || true)
+            if [ "${commits:-0}" -gt 15 ]; then
+              # "What.s Changed" rather than "What's Changed": the apostrophe
+              # would have to close and reopen the single-quoted awk program.
+              awk -v n="$commits" '
+                /^## What.s Changed/ {
+                  print; print "";
+                  print "<details>";
+                  print "<summary>Alle Änderungen / Full changelog (" n " commits)</summary>";
+                  print "";          # blank line, or GitHub stops rendering
+                  inlist = 1; next   # the markdown list inside the HTML block
+                }
+                inlist && /^\*\*Full Changelog\*\*/ {
+                  print ""; print "</details>"; print ""; print; inlist = 0; next
+                }
+                { print }
+                END { if (inlist) { print ""; print "</details>" } }
+              ' cleaned.md > collapsed.md
+              mv collapsed.md cleaned.md
+            fi
+
             if ! cmp -s generated.md cleaned.md; then
               gh release edit "$tag" --notes-file cleaned.md
             fi
