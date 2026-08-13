@@ -452,9 +452,24 @@ def _select_verified_verse_run(
             )
             continue
 
+        # How many of these verses the embedding never surfaced. RAG returns
+        # nothing below RAG_MIN_SIMILARITY, so a score of exactly 0.0 can only
+        # be a candidate the recitation tracker injected — that is the sentinel
+        # recitation.expected_candidates uses. Without this line the tracker's
+        # contribution is unmeasurable: certifications look identical whether
+        # the verse came from the embedding or from the prediction, and the
+        # only evidence is a correlation between tracker firings and badge
+        # counts, which is far too weak to justify keeping or dropping it.
+        rescued = [f"({s}:{a})" for s, a in run if candidates[(s, a)][0] == 0.0]
         log(
             f"Quran verse run verified ({len(run)} verses {refs}, "
-            f"text={text_sim:.2f}) → exact dictionary translations, GPT skipped",
+            f"text={text_sim:.2f}) → exact dictionary translations, GPT skipped"
+            + (
+                f" — {len(rescued)} rescued by the recitation tracker: "
+                f"{' '.join(rescued)}"
+                if rescued
+                else " — all nominated by the embedding"
+            ),
             level="INFO",
         )
         # Certified, not merely nominated — the only thing allowed to convince
