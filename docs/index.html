@@ -177,6 +177,28 @@
   .btn-secondary:hover { transform: translateY(-2px); border-color: var(--navy-soft); }
 
   .hero .meta { margin-top: 18px; font-size: 0.85rem; color: var(--ink-muted); }
+  .hero .version-line { margin-top: 6px; }
+  .hero .version-line b { color: var(--navy); }
+
+  /* ---------- new-release banner ---------- */
+  /* Must beat the `display: block` below, or the `hidden` attribute stops
+     working: the browser's own `[hidden] { display: none }` is a user-agent
+     rule and any author rule setting `display` overrides it. Without this the
+     banner renders as an empty coloured bar whenever it is meant to be gone,
+     which is every day except the fortnight after a release. */
+  .release-banner[hidden] { display: none; }
+  .release-banner {
+    display: block; text-decoration: none; text-align: center;
+    padding: 14px 20px; font-weight: 700; font-size: 1rem; line-height: 1.45;
+    color: #fff; background: linear-gradient(135deg, var(--navy-soft), var(--navy-deep));
+    box-shadow: 0 6px 22px rgba(29, 74, 107, 0.28);
+    position: relative; z-index: 20;
+  }
+  .release-banner:hover { filter: brightness(1.08); }
+  .release-banner .rb-sub {
+    display: block; font-weight: 500; font-size: 0.85rem; opacity: 0.9; margin-top: 2px;
+  }
+  @media (max-width: 560px) { .release-banner { font-size: 0.92rem; padding: 12px 14px; } }
 
   /* ---------- stats strip (inside the hero, between vision and download) ---------- */
   .stats { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; margin-top: 36px; }
@@ -345,6 +367,12 @@
 </head>
 <body>
 
+<!-- Shown only while the newest OFFICIAL release is fresh (see
+     RELEASE_BANNER_DAYS). Most visitors who see it arrived from the in-app
+     update badge, so it has to be the first thing on the page and unmissable —
+     landing on the normal hero leaves them wondering whether anything changed. -->
+<a id="release-banner" class="release-banner" hidden href="https://github.com/MinbarLive/MinbarLive/releases"></a>
+
 <div class="bg-blobs" aria-hidden="true">
   <div class="blob blob-1"></div>
   <div class="blob blob-2"></div>
@@ -395,6 +423,11 @@
       <a class="btn btn-secondary" href="https://github.com/MinbarLive/MinbarLive" data-i18n="hero_cta_github">👨‍💻 Auf GitHub ansehen</a>
     </div>
     <p class="meta" data-i18n="hero_meta">100 % kostenlos · Windows, Linux & macOS (nur Apple Silicon) · Du brauchst nur einen KI-Zugangsschlüssel (API-Key)</p>
+    <!-- Filled from the GitHub API; stays hidden if that call fails, so a
+         rate-limited or offline visitor sees the page exactly as before rather
+         than an empty or half-written line. Deliberately NOT data-i18n:
+         setLang() overwrites innerHTML, which would wipe the fetched text. -->
+    <p class="meta version-line" id="version-line" hidden></p>
   </header>
 
   <div class="divider" aria-hidden="true"></div>
@@ -633,6 +666,9 @@ const translations = {
     hero_cta_download_macos: "🍎 Download für macOS",
     hero_cta_github: "👨‍💻 Auf GitHub ansehen",
     hero_meta: "100 % kostenlos · Windows, Linux & macOS (nur Apple Silicon) · Du brauchst nur einen KI-Zugangsschlüssel (API-Key)",
+    version_line: "Aktuelle Version: <b>{version}</b> · veröffentlicht am {date}",
+    release_new: "🎉 Neue Version {version} ist da!",
+    release_new_sub: "Veröffentlicht am {date} · hier herunterladen und die Neuerungen ansehen",
     stat1_num: "~1–3 s",
     stat1_label: "Verzögerung (Echtzeit)",
     stat2_label: "Ausgangssprachen",
@@ -716,6 +752,9 @@ const translations = {
     hero_cta_download_macos: "🍎 Download for macOS",
     hero_cta_github: "👨‍💻 View on GitHub",
     hero_meta: "100% free · Windows, Linux & macOS (Apple Silicon only) · You only need an AI access key (API key)",
+    version_line: "Current version: <b>{version}</b> · released {date}",
+    release_new: "🎉 Version {version} is out!",
+    release_new_sub: "Released {date} · download it here and see what changed",
     stat1_num: "~1–3 s",
     stat1_label: "Delay (real-time)",
     stat2_label: "Source languages",
@@ -804,8 +843,57 @@ function setLang(lang) {
   });
   document.getElementById("btn-de").classList.toggle("active", lang === "de");
   document.getElementById("btn-en").classList.toggle("active", lang === "en");
+  renderRelease(lang);
   try { localStorage.setItem("minbarlive-lang", lang); } catch (e) { /* private mode */ }
 }
+
+/* ---------- current version + fresh-release banner ----------
+   Reads the newest OFFICIAL release. The GitHub endpoint used here excludes
+   pre-releases by design, which is what we want: a release candidate must not
+   announce itself on the front page or change what the download buttons serve.
+
+   Everything degrades to the page as it was before: if the request fails (rate
+   limit, offline, API change) both elements simply stay hidden. */
+const RELEASE_API = "https://api.github.com/repos/MinbarLive/MinbarLive/releases/latest";
+/* How long a release counts as "new". Long enough that someone who opens the
+   in-app update badge a week late still lands on the announcement, short
+   enough that it never becomes permanent furniture — a banner that is always
+   there stops being read. One number to change. */
+const RELEASE_BANNER_DAYS = 10;
+let latestRelease = null;
+
+function renderRelease(lang) {
+  if (!latestRelease) return;
+  const dict = translations[lang] || translations.de;
+  const version = String(latestRelease.tag_name || "").replace(/^v/, "");
+  const published = new Date(latestRelease.published_at);
+  const date = published.toLocaleDateString(lang === "de" ? "de-DE" : "en-GB",
+    { day: "numeric", month: "long", year: "numeric" });
+  const fill = (tpl) => (tpl || "").replace("{version}", version).replace("{date}", date);
+
+  const line = document.getElementById("version-line");
+  line.innerHTML = fill(dict.version_line);
+  line.hidden = false;
+
+  const ageDays = (Date.now() - published.getTime()) / 86400000;
+  const banner = document.getElementById("release-banner");
+  if (ageDays <= RELEASE_BANNER_DAYS) {
+    banner.innerHTML = fill(dict.release_new) +
+      '<span class="rb-sub">' + fill(dict.release_new_sub) + "</span>";
+    if (latestRelease.html_url) banner.href = latestRelease.html_url;
+    banner.hidden = false;
+  } else {
+    banner.hidden = true;
+  }
+}
+
+fetch(RELEASE_API, { headers: { Accept: "application/vnd.github+json" } })
+  .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
+  .then(data => {
+    latestRelease = data;
+    renderRelease(document.documentElement.lang || "de");
+  })
+  .catch(() => { /* leave both hidden — the page is complete without them */ });
 
 (function initLang() {
   let lang = null;
