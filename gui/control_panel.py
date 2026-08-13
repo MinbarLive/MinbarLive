@@ -2075,7 +2075,7 @@ class ControlPanel(QMainWindow):
     def _on_footer_mode_changed(self, index: int) -> None:
         self.settings.footer_hide_mode = FOOTER_HIDE_MODES[index]
         save_settings(self.settings)
-        self._apply_footer_visibility()
+        self._apply_overlay_pills()
 
     def _on_aot_changed(self, index: int) -> None:
         self.settings.always_on_top_mode = ALWAYS_ON_TOP_MODES[index]
@@ -2528,9 +2528,7 @@ class ControlPanel(QMainWindow):
         # Buttons and pill first: the pipeline IS up, and anything below that
         # raises must not leave the panel reading "Connecting…" forever.
         self._sync_running_state()
-        if self.subtitle_window:
-            self.subtitle_window.set_stopped_hint(False)
-        self._apply_footer_visibility()
+        self._apply_overlay_pills()
         self._apply_always_on_top()
         self.bridge.start(
             streaming=streaming_enabled(self.settings),
@@ -2605,8 +2603,7 @@ class ControlPanel(QMainWindow):
         self._end_session_tracking("completed")
         if self.subtitle_window:
             self.subtitle_window.set_live_text(None)
-            self.subtitle_window.set_stopped_hint(True)
-        self._apply_footer_visibility()
+        self._apply_overlay_pills()
         self._apply_always_on_top()
         # An announcement left on screen after the session ends is usually
         # stale ("starts in 10 minutes"), so clear it unless the operator
@@ -2809,15 +2806,28 @@ class ControlPanel(QMainWindow):
             return self._running
         return True  # "never"
 
-    def _apply_footer_visibility(self) -> None:
-        """Push the effective footer visibility to the overlay.
+    def _stopped_hint_should_show(self) -> bool:
+        """The pause pill follows the footer setting.
 
-        The window stays a dumb renderer of one boolean: the mode and the
+        Hiding the disclaimer is a request for a clean screen, and the pill
+        stack is one visual object to the audience: leaving "Übersetzung
+        angehalten" standing alone at the bottom of an otherwise empty overlay
+        defeats the point of hiding the line above it. So both modes that hide
+        the footer hide this too — which for "stopped" means the idle overlay
+        goes completely blank, and for "always" means this pill never appears.
+        """
+        return not self._running and self.settings.footer_hide_mode == "never"
+
+    def _apply_overlay_pills(self) -> None:
+        """Push both bottom pills' visibility to the overlay.
+
+        The window stays a dumb renderer of two booleans: the mode and the
         running state are the panel's business, and it already recomputes
         every other running-state-dependent thing here.
         """
         if self.subtitle_window:
             self.subtitle_window.set_show_footer(self._footer_should_show())
+            self.subtitle_window.set_stopped_hint(self._stopped_hint_should_show())
 
     def _subtitle_window_should_exist(self) -> bool:
         mode = self.settings.subtitle_hide_mode
@@ -2834,8 +2844,7 @@ class ControlPanel(QMainWindow):
         should = self._subtitle_window_should_exist()
         if should and self.subtitle_window is None:
             self._ensure_subtitle_window()
-            if self.subtitle_window and not self._running:
-                self.subtitle_window.set_stopped_hint(True)
+            self._apply_overlay_pills()
         elif not should and self.subtitle_window is not None:
             if not self._announcement_active:
                 self._teardown_subtitle_window()
