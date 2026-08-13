@@ -15,7 +15,7 @@ handed GPT a verse marked "expected", would eventually put an ayah on a mosque
 screen that nobody recited — the one failure this app must not have. Injected
 candidates go to ``_select_verified_verse_run`` alone, which admits a verse
 only if the concatenated dictionary text fuzzy-matches what was actually said
-(``RAG_MULTI_VERSE_TEXT_SIMILARITY``) and the length guards pass. A wrong
+(``RAG_TEXT_MATCH_SIMILARITY``) and the length guards pass. A wrong
 prediction fails that comparison and disappears; it cannot reach the subtitle.
 The score-based single-verse bypass never sees these candidates at all.
 

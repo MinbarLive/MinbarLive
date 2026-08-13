@@ -115,6 +115,22 @@ class TestSelectVerifiedVerse:
         matches = [(0.80, "other verse", "x"), (0.95, VERSE, "hint")]
         assert translator._select_verified_verse(matches, VERSE, "de") is None
 
+    def test_right_length_wrong_words_rejected(self):
+        """The backstop the run bypass always had and this one lacked. Without
+        it the decision rested entirely on the embedding: a segment of the
+        right length whose words merely sat in the same semantic neighbourhood
+        replaced itself with a verse's exact dictionary translation, and
+        nothing ever compared what was said to what was printed."""
+        decoy = " ".join(f"كلمة{i}" for i in range(4))  # same word count as VERSE
+        assert translator._select_verified_verse([(0.92, VERSE, "x")], decoy, "de") is None
+
+    def test_transcription_noise_still_qualifies(self):
+        """The check must not be stricter than reality: measured against 48
+        real verifications, the lowest genuine single-verse match scored 0.848,
+        so ordinary mis-hearings have to keep passing."""
+        noisy = VERSE.replace("الرحمن", "الرحمان")  # one letter off
+        assert translator._select_verified_verse([(0.92, VERSE, "x")], noisy, "de")
+
 
 class TestTranslateTextBypass:
     """End-to-end translate_text behavior around the bypass."""
