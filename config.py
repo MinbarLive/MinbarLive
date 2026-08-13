@@ -244,11 +244,14 @@ RAG_MULTI_VERSE_TEXT_SIMILARITY = 0.80
 # a madd, half an ayah in the segment) and dropping out of recitation mode
 # there would lose the help exactly when recognition got patchy.
 RECITATION_MIN_VERSES = 2
-# How recently a verse must have been verified for the speaker to still count
-# as reciting. Every certified verse of the active surah pushes this out, so it
-# is a gap tolerance between recognitions, not a cap on the recitation: it has
-# to comfortably outlast a stretch the text check refuses to certify.
-RECITATION_WINDOW_SECONDS = 45
+# How recently a verse must have been seen for the speaker to still count as
+# reciting. Every certified OR nominated verse of the active surah pushes this
+# out, so it is a gap tolerance between recognitions, not a cap on the
+# recitation: it has to comfortably outlast a stretch the text check refuses to
+# certify. Measured live 2026-08-13 during a continuous Al-Ahzab recitation,
+# consecutive verifications landed 88 s apart — at 45 s the tracker never
+# activated at all.
+RECITATION_WINDOW_SECONDS = 120
 # How far ahead to offer. Covers a segment landing mid-verse plus the next
 # one; more would only add candidates the text check must reject anyway.
 RECITATION_LOOKAHEAD_AYAT = 3

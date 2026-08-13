@@ -585,6 +585,18 @@ def translate_text(
             arabic_txt, target_lang_code=target_lang_code
         )
 
+        # Let a running recitation follow the reciter even through verses that
+        # never certify: a nominated verse the tracker was already predicting
+        # moves its anchor along, so the NEXT segment is offered the verses
+        # actually coming rather than ones already recited.
+        recitation.note_nominated(
+            [
+                ref
+                for _score, ar_verse, _hint in quran_matches
+                if (ref := _parse_ayah_ref(quran_dict.get(ar_verse, ""))) is not None
+            ]
+        )
+
         # --- 2b) Hard-verified verse bypass: exact dictionary translation ---
         # Deliberately the un-augmented list: this bypass trusts the embedding
         # score alone, so a predicted verse must never be able to reach it.

@@ -131,6 +131,45 @@ class RecitationTracker:
                     self._highest = max(recent)
                 self._until = now + RECITATION_WINDOW_SECONDS
 
+    def note_nominated(self, refs: list[tuple[int, int]]) -> None:
+        """Verses RAG merely *surfaced* — enough to move the anchor along, never
+        enough to start a recitation.
+
+        Certification is sparse: over a five-minute Tā-Hā recitation measured
+        live 2026-08-13 the tracker offered only four distinct predictions in
+        39 firings, because the anchor advanced only when a verse verified. It
+        sat on 20:23-25 for nine consecutive segments while the reciter
+        travelled from 20:23 to 20:33 — stale, and therefore useless in exactly
+        the stretch it was meant to cover.
+
+        A nomination is weak evidence, so it gets a correspondingly weak power:
+        it may only advance an ALREADY ACTIVE recitation, and only onto a verse
+        this tracker was already predicting (within RECITATION_LOOKAHEAD_AYAT
+        of the anchor). So it can confirm "the reciter reached the verse we
+        expected" and cannot invent a jump somewhere else — the anchor still
+        walks the surah one prediction at a time.
+
+        Safe by the same argument as everything else here: the anchor only
+        decides which candidates are *offered*, and an offered verse still has
+        to match the spoken words to be certified.
+        """
+        if not refs:
+            return
+        now = time.time()
+        with self._lock:
+            if self._surah is None or now > self._until:
+                return  # nomination alone never starts a recitation
+            reachable = [
+                ayah
+                for surah, ayah in refs
+                if surah == self._surah
+                and self._highest < ayah <= self._highest + RECITATION_LOOKAHEAD_AYAT
+            ]
+            if not reachable:
+                return
+            self._highest = max(reachable)
+            self._until = now + RECITATION_WINDOW_SECONDS
+
     def expected_next(self) -> list[tuple[int, int]]:
         """The ayat likely to be recited next, or ``[]`` when not reciting.
 
@@ -163,6 +202,10 @@ def reset() -> None:
 
 def note_certified(refs: list[tuple[int, int]]) -> None:
     _tracker.note_certified(refs)
+
+
+def note_nominated(refs: list[tuple[int, int]]) -> None:
+    _tracker.note_nominated(refs)
 
 
 def expected_next() -> list[tuple[int, int]]:
