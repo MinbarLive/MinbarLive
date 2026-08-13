@@ -72,56 +72,80 @@ class RecitationTracker:
         self._lock = threading.Lock()
         # (surah, ayah) -> when it was certified.
         self._seen: dict[tuple[int, int], float] = {}
+        # The surah currently being recited, how far into it we have got, and
+        # when that verdict goes stale.
+        self._surah: int | None = None
+        self._highest = 0
+        self._until = 0.0
 
     def reset(self) -> None:
         with self._lock:
             self._seen.clear()
+            self._surah = None
+            self._highest = 0
+            self._until = 0.0
 
     def note_certified(self, refs: list[tuple[int, int]]) -> None:
-        """Record verses that passed verification — never mere candidates."""
+        """Record verses that passed verification — never mere candidates.
+
+        **Verified verses arrive with gaps, and the gaps are the normal case.**
+        A reciter pauses for breath or holds a madd, the segment carries half
+        an ayah, the text check correctly refuses to certify it, and that verse
+        is translated by GPT instead. So a real recitation reaches here as
+        "81:7 verified, 81:8 missed, 81:9 verified" far more often than as a
+        clean consecutive run — and it is exactly the missed verses that the
+        prediction exists to rescue.
+
+        Hence two different bars:
+
+        - **Starting** a recitation needs RECITATION_MIN_VERSES of one surah
+          inside the window, consecutive or not. One ayah quoted mid-sermon
+          predicts nothing about what follows; two say the speaker is working
+          through a surah.
+        - **Continuing** one needs a single verse of that same surah. Requiring
+          two again would drop out of recitation mode precisely when
+          recognition got patchy, which is when the help is worth most.
+
+        A wrong guess costs nothing — it fails the text check downstream — so
+        the tracker is deliberately generous once it is convinced.
+        """
         if not refs:
             return
         now = time.time()
         with self._lock:
             for ref in refs:
                 self._seen[ref] = now
+            for surah in sorted({s for s, _ in refs}):
+                highest = max(a for s, a in refs if s == surah)
+                if self._surah == surah and now <= self._until:
+                    self._highest = max(self._highest, highest)
+                else:
+                    recent = [
+                        a
+                        for (s, a), seen in self._seen.items()
+                        if s == surah and seen >= now - RECITATION_WINDOW_SECONDS
+                    ]
+                    if len(recent) < RECITATION_MIN_VERSES:
+                        continue  # a lone quotation, not a recitation
+                    self._surah = surah
+                    self._highest = max(recent)
+                self._until = now + RECITATION_WINDOW_SECONDS
 
     def expected_next(self) -> list[tuple[int, int]]:
         """The ayat likely to be recited next, or ``[]`` when not reciting.
 
-        Continues the highest ayah of the longest recent run in a single
-        surah. Requires RECITATION_MIN_VERSES of that surah inside
-        RECITATION_WINDOW_SECONDS: one verse is a quotation mid-sermon, which
-        predicts nothing about what follows.
+        Counts on from the furthest ayah reached in the active surah — not
+        from the last one certified, which after an out-of-order or repeated
+        verse would walk the prediction backwards over ground already covered.
         """
-        cutoff = time.time() - RECITATION_WINDOW_SECONDS
         with self._lock:
-            recent = [ref for ref, seen in self._seen.items() if seen >= cutoff]
-        if len(recent) < RECITATION_MIN_VERSES:
-            return []
-
-        by_surah: dict[int, set[int]] = {}
-        for surah, ayah in recent:
-            by_surah.setdefault(surah, set()).add(ayah)
-
-        best: tuple[int, int] | None = None  # (surah, last ayah of the run)
-        best_length = 0
-        for surah, ayahs in by_surah.items():
-            ordered = sorted(ayahs)
-            length = 1
-            for index in range(1, len(ordered)):
-                length = length + 1 if ordered[index] == ordered[index - 1] + 1 else 1
-                if length > best_length:
-                    best_length, best = length, (surah, ordered[index])
-            if best_length == 0 and len(ordered) >= RECITATION_MIN_VERSES:
-                # Same surah, non-consecutive (a skipped ayah, or one verse
-                # mis-detected). Still recitation — continue from the last.
-                best_length, best = 1, (surah, ordered[-1])
-
-        if best is None or best_length < RECITATION_MIN_VERSES:
-            return []
-        surah, last = best
-        return [(surah, last + step) for step in range(1, RECITATION_LOOKAHEAD_AYAT + 1)]
+            if self._surah is None or time.time() > self._until:
+                return []
+            surah, highest = self._surah, self._highest
+        return [
+            (surah, highest + step)
+            for step in range(1, RECITATION_LOOKAHEAD_AYAT + 1)
+        ]
 
 
 _tracker = RecitationTracker()

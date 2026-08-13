@@ -239,10 +239,15 @@ RAG_MULTI_VERSE_TEXT_SIMILARITY = 0.80
 # verses and scores below RAG_MIN_SIMILARITY — so the verses the speaker is
 # about to recite are the ones most likely to be missed.
 # Two verses, not one: a single quoted ayah mid-sermon predicts nothing.
+# Only STARTING a recitation needs this many — continuing one needs a single
+# verse of the same surah, because verified verses arrive with gaps (a pause,
+# a madd, half an ayah in the segment) and dropping out of recitation mode
+# there would lose the help exactly when recognition got patchy.
 RECITATION_MIN_VERSES = 2
-# How recently those verses must have been verified for the speaker to still
-# count as reciting. Comfortably longer than one segment, short enough that a
-# verse quoted before a digression stops predicting anything.
+# How recently a verse must have been verified for the speaker to still count
+# as reciting. Every certified verse of the active surah pushes this out, so it
+# is a gap tolerance between recognitions, not a cap on the recitation: it has
+# to comfortably outlast a stretch the text check refuses to certify.
 RECITATION_WINDOW_SECONDS = 45
 # How far ahead to offer. Covers a segment landing mid-verse plus the next
 # one; more would only add candidates the text check must reject anyway.

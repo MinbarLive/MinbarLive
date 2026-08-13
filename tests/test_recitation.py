@@ -51,19 +51,63 @@ class TestTrackerActivation:
             (81, 8 + step) for step in range(1, RECITATION_LOOKAHEAD_AYAT + 1)
         ]
 
+    def test_two_ayat_with_a_gap_also_start_one(self):
+        """The normal shape of a real recitation, not an edge case: 81:8 was
+        recited but only half of it landed in the segment, so the text check
+        refused to certify it and GPT translated it instead. Requiring a clean
+        consecutive run here withheld the prediction in exactly the case it
+        exists for."""
+        recitation.note_certified([(81, 7)])
+        recitation.note_certified([(81, 9)])
+        assert recitation.expected_next()[0] == (81, 10)
+
     def test_prediction_continues_from_the_highest_ayah(self):
         recitation.note_certified([(81, 7), (81, 8)])
         recitation.note_certified([(81, 9)])
+        assert recitation.expected_next()[0] == (81, 10)
+
+    def test_a_single_verse_keeps_an_established_recitation_alive(self, monkeypatch):
+        """Starting needs two; continuing needs one. Otherwise a patchy
+        stretch — the only kind that needs help — drops out of recitation
+        mode."""
+        monkeypatch.setattr(recitation, "RECITATION_WINDOW_SECONDS", 0.4)
+        recitation.note_certified([(81, 7), (81, 8)])
+        for ayah in (9, 10, 11):
+            time.sleep(0.25)  # longer than half the window: only the refresh saves it
+            recitation.note_certified([(81, ayah)])
+            assert recitation.expected_next()[0] == (81, ayah + 1)
+
+    def test_a_repeated_verse_does_not_walk_the_prediction_backwards(self):
+        """A reciter repeating an ayah, or an out-of-order certification, must
+        not un-advance the anchor over ground already covered."""
+        recitation.note_certified([(81, 7), (81, 8), (81, 9)])
+        recitation.note_certified([(81, 8)])
         assert recitation.expected_next()[0] == (81, 10)
 
     def test_two_ayat_of_different_surahs_are_not_a_recitation(self):
         recitation.note_certified([(81, 7), (2, 255)])
         assert recitation.expected_next() == []
 
+    def test_a_new_surah_needs_its_own_two_verses_to_take_over(self):
+        recitation.note_certified([(81, 7), (81, 8)])
+        recitation.note_certified([(2, 255)])  # one ayah quoted elsewhere
+        assert recitation.expected_next()[0] == (81, 9)  # still At-Takwir
+        recitation.note_certified([(2, 256)])
+        assert recitation.expected_next()[0] == (2, 257)  # now Al-Baqara
+
     def test_a_stale_recitation_stops_predicting(self, monkeypatch):
         monkeypatch.setattr(recitation, "RECITATION_WINDOW_SECONDS", 0.05)
         recitation.note_certified([(81, 7), (81, 8)])
         time.sleep(0.1)
+        assert recitation.expected_next() == []
+
+    def test_a_lapsed_recitation_needs_two_verses_again(self, monkeypatch):
+        """Once the window closes, a single verse must not silently resume it —
+        that is the "one quotation predicts nothing" rule again."""
+        monkeypatch.setattr(recitation, "RECITATION_WINDOW_SECONDS", 0.05)
+        recitation.note_certified([(81, 7), (81, 8)])
+        time.sleep(0.1)
+        recitation.note_certified([(81, 20)])
         assert recitation.expected_next() == []
 
     def test_reset_forgets_everything(self):
