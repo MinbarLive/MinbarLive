@@ -312,6 +312,27 @@ STREAMING_RECONNECT_MAX_SECONDS = 30.0
 STREAMING_STALL_TIMEOUT_SECONDS = 15.0
 STREAMING_STALL_MIN_SPEECH_SECONDS = 3.0
 STREAMING_STALL_GRACE_SECONDS = 5.0
+# How long a turn may run with no transcript before the watchdog commits it.
+# A DISPLAY-LATENCY setting, not a recovery one — the two were the same number
+# until 2026-08-13 and should not be again. OpenAI Realtime sends nothing at
+# all while a turn is open, so for a speaker who never pauses this interval is
+# the sole thing deciding how often subtitles appear: measured live at the old
+# 15 s, bursts landed 18 s apart with 10-13 s of blank screen between them.
+#
+# The commit is a BLIND cut: at commit time the audio has not been transcribed,
+# so nothing here knows where an ayah ends. The obvious worry is that shorter
+# pieces land mid-verse more often and cost 📖 verifications (both Quran
+# bypasses reject a partial verse on purpose). Measured on three live
+# recitations 2026-08-13, that worry is unfounded — verification rate is
+# dominated by where the reciter breathes, not by this constant:
+#
+#   15 s commit, fast recitation      2/22 verified,  18 s between bursts
+#    6 s commit, fast recitation      4/41 verified, 4.7 s between subtitles
+#   no forced commits, normal pace    1/46 verified, 3.5 s between subtitles
+#
+# Splits come from waqf falling mid-ayah (see issue #98), which happens with or
+# without a forced commit. Tune this for cadence; it is not a 📖 knob.
+STREAMING_TURN_COMMIT_SECONDS = 6.0
 STREAMING_ENDPOINTING_MS = 300  # Deepgram endpointing sensitivity (silence -> final)
 STREAMING_UTTERANCE_END_MS = 1000  # Deepgram UtteranceEnd silence threshold (ms)
 # Gemini Live VAD: silence before the turn (utterance) is considered ended.

@@ -35,6 +35,7 @@ from config import (
     STREAMING_STALL_GRACE_SECONDS,
     STREAMING_STALL_MIN_SPEECH_SECONDS,
     STREAMING_STALL_TIMEOUT_SECONDS,
+    STREAMING_TURN_COMMIT_SECONDS,
 )
 from providers.base import StreamHandle, StreamingTranscriptionProvider
 from translation.buffering import SENTENCE_ENDINGS, looks_semantically_complete
@@ -375,6 +376,10 @@ class StreamingSession:
         # activity ever set it; for the rest it stays False and the watchdog
         # behaves exactly as before.
         self._turn_active = False
+        # True from a forced turn commit until the transcript it asked for
+        # arrives. A stall that finds it still set means the commit changed
+        # nothing — the only case that still warrants swapping the connection.
+        self._commit_pending = False
 
     # --- lifecycle -------------------------------------------------------
 
@@ -444,9 +449,11 @@ class StreamingSession:
         # from the new receive thread must count as current, not stale.
         self._generation = next(_GENERATIONS)
         generation = self._generation
-        # A fresh connection has no turn open; a swap must not inherit the
-        # dead one's flag or the watchdog would stay disarmed forever.
+        # A fresh connection has no turn open and owes no committed one; a swap
+        # must not inherit the dead one's flags or the watchdog would stay
+        # disarmed forever.
         self._turn_active = False
+        self._commit_pending = False
         return self._provider.open_stream(
             model=self._model,
             language=self._language,
@@ -500,15 +507,35 @@ class StreamingSession:
         The non-destructive half of stall recovery. Returns True if the commit
         was issued, meaning the caller must NOT reopen the connection.
 
-        The turn flag is cleared on success because a forced commit bypasses
-        the server's VAD, so no speech-stopped event will arrive to clear it —
-        and a flag stuck on would disarm the watchdog for the rest of the
-        session. Clearing it also lets the next stall escalate to a real swap:
-        if the commit produced nothing, the following check finds no turn in
-        flight and recovers the old way.
+        The turn flag deliberately stays ON. A forced commit bypasses the
+        server's VAD, so no speech-stopped event arrives to clear it — but no
+        fresh speech-STARTED arrives either, because from the server's point of
+        view the speech never stopped. Clearing the flag therefore did not
+        re-arm the watchdog for the next real stall, it guaranteed that the
+        next stall found no turn in flight and swapped the connection. Measured
+        live 2026-08-13 during pauseless recitation: commit, 21 s, reconnect,
+        16 s, commit — five cycles 40.4 s apart to within 0.1 s, half of them
+        tearing down a connection that answered every commit within 0.6 s. Each
+        swap cost 2-3 ayat, because the feeder drops audio while the handle is
+        down.
+
+        Escalation is preserved by ``_commit_pending`` instead: a transcript
+        clears it, so a commit that produced nothing leaves it set and the
+        following stall recovers the old way.
         """
         handle = self._handle
         if handle is None:
+            return False
+        if self._commit_pending:
+            # The last stall already committed this turn and no transcript came
+            # back. The engine is not merely mid-turn, it is stuck — drop the
+            # flag so the caller falls through to the swap.
+            self._turn_active = False
+            log(
+                "STREAMING the previous turn commit produced no transcript — "
+                "treating the session as stuck after all.",
+                level="WARNING",
+            )
             return False
         try:
             committed = handle.commit_turn()
@@ -517,11 +544,11 @@ class StreamingSession:
             return False
         if not committed:
             return False
-        self._turn_active = False
+        self._commit_pending = True
         self._mark_activity()
         log(
             f"STREAMING No transcript for over "
-            f"{STREAMING_STALL_TIMEOUT_SECONDS:.0f}s, but the engine reports a "
+            f"{STREAMING_TURN_COMMIT_SECONDS:.0f}s, but the engine reports a "
             "turn still open — committing it instead of reconnecting, so the "
             "buffered speech is transcribed rather than discarded.",
             level="INFO",
@@ -540,6 +567,9 @@ class StreamingSession:
         if not text.strip():
             return
         self._mark_activity()
+        # The engine answered: whatever a forced commit asked for has arrived,
+        # so the next stall may commit again instead of escalating to a swap.
+        self._commit_pending = False
         if self._outage:
             # Proof of life after a reconnect: end the outage and reset
             # the backoff for the next disconnect.
@@ -755,18 +785,38 @@ class StreamingSession:
           (``commit_turn``) — the buffered audio is kept, not discarded. Only
           if the provider offers no such control, or the commit fails, does
           the swap still happen.
+
+        The open-turn commit runs on its own clock, ``TURN_COMMIT_SECONDS``,
+        because it is answering a different question. "How long may a turn run
+        before we ask for its text" is display latency: with OpenAI silent for
+        the whole turn, it alone sets how often subtitles appear. "How long may
+        a connection produce nothing before we call it dead" is recovery. They
+        were one number until 2026-08-13, which is why the only way to make
+        subtitles arrive sooner was to make the session quicker to give up on
+        its own socket.
         """
         stop_event = self._stop_event
-        while not stop_event.wait(timeout=min(2.0, STREAMING_STALL_TIMEOUT_SECONDS / 2)):
+        poll = min(
+            2.0, STREAMING_TURN_COMMIT_SECONDS / 2, STREAMING_STALL_TIMEOUT_SECONDS / 2
+        )
+        while not stop_event.wait(timeout=poll):
             if self._outage or self._handle is None:
                 continue  # the error-triggered supervisor already owns recovery
             stalled_since = self._last_activity
-            if time.time() - stalled_since <= STREAMING_STALL_TIMEOUT_SECONDS:
-                continue
+            idle = time.time() - stalled_since
             if self._speech_fed_seconds < STREAMING_STALL_MIN_SPEECH_SECONDS:
                 continue  # a pause in the speech, not a stuck session
-            if self._turn_active and self._commit_open_turn():
+            if (
+                self._turn_active
+                and idle > STREAMING_TURN_COMMIT_SECONDS
+                and self._commit_open_turn()
+            ):
                 continue  # the engine is working; it just has not committed yet
+            if idle <= STREAMING_STALL_TIMEOUT_SECONDS:
+                # Too early to call the connection dead. A commit that was
+                # refused here is not evidence of anything: the provider may
+                # simply not offer one (Deepgram, Gemini).
+                continue
             grace_deadline = time.time() + STREAMING_STALL_GRACE_SECONDS
             cancelled = False
             while True:

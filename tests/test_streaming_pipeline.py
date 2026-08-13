@@ -1372,9 +1372,14 @@ class TestStallWatchdogRespectsAnOpenTurn:
     working engine as a dead one. While a turn is open the fix commits it
     (keeping the audio) instead of reopening the connection (discarding it)."""
 
-    def _start(self, streaming_env, monkeypatch, *, timeout=0.3, grace=0.4):
+    def _start(
+        self, streaming_env, monkeypatch, *, timeout=0.3, grace=0.4, commit=0.2
+    ):
         monkeypatch.setattr(
             streaming_session_module, "STREAMING_STALL_TIMEOUT_SECONDS", timeout
+        )
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_TURN_COMMIT_SECONDS", commit
         )
         monkeypatch.setattr(
             streaming_session_module, "STREAMING_STALL_MIN_SPEECH_SECONDS", 1.0
@@ -1420,24 +1425,85 @@ class TestStallWatchdogRespectsAnOpenTurn:
     def test_a_commit_that_produces_nothing_escalates_to_a_swap(
         self, streaming_env, monkeypatch
     ):
-        """A forced commit bypasses the server VAD, so no speech-stopped event
-        arrives to clear the turn flag. If the flag stuck on, the watchdog
-        would be disarmed for the rest of the session and a genuinely dead
-        connection would never be recovered."""
+        """A commit the engine never answers is the genuinely dead connection.
+        Without this escalation the turn flag would disarm the watchdog for the
+        rest of the session and the socket would never be recovered."""
         controller, provider = self._start(streaming_env, monkeypatch)
         controller._streaming._handle._can_commit = True
         self._stall_with_open_turn(controller, provider)
         assert _wait_for(lambda: provider.handle.commit_count == 1)
-        assert controller._streaming._turn_active is False
-        # Still nothing came back: now it really is stuck, so recover the old way.
+        # No transcript follows. Still stalled: now it really is stuck, so
+        # recover the old way rather than commit into the void again.
         controller._streaming._speech_fed_seconds = 5.0
         controller._streaming._last_activity = time.time() - 60
+        assert _wait_for(lambda: provider.open_count == 2)
+        assert provider.handle.commit_count == 0  # the fresh handle, not re-committed
+
+    def test_an_answered_commit_commits_again_instead_of_swapping(
+        self, streaming_env, monkeypatch
+    ):
+        """Measured live 2026-08-13: clearing the turn flag on a *successful*
+        commit turned every second stall into a swap, because a server VAD that
+        never heard the speech stop never sends a fresh speech-started to set
+        the flag again. Commit, 21 s, reconnect, 16 s, commit — five cycles
+        40.4 s apart, half of them tearing down a connection that answered
+        every commit within 0.6 s, at 2-3 ayat of lost recitation each."""
+        controller, provider = self._start(streaming_env, monkeypatch)
+        controller._streaming._handle._can_commit = True
+        self._stall_with_open_turn(controller, provider)
+        assert _wait_for(lambda: provider.handle.commit_count == 1)
+        provider.on_transcript("the committed turn came back", True)
+        # The same unbroken turn stalls again, with no new speech-started.
+        controller._streaming._speech_fed_seconds = 5.0
+        controller._streaming._last_activity = time.time() - 60
+        assert _wait_for(lambda: provider.handle.commit_count == 2)
+        assert provider.open_count == 1
+        assert not provider.handle.closed
+
+    def test_an_open_turn_commits_on_its_own_clock(self, streaming_env, monkeypatch):
+        """Display latency and dead-socket detection are different questions,
+        and were the same number until 2026-08-13. A turn is committed after
+        TURN_COMMIT_SECONDS so subtitles appear; the connection is only given
+        up on after the much longer stall timeout."""
+        controller, provider = self._start(
+            streaming_env, monkeypatch, timeout=30.0, commit=0.2
+        )
+        session = controller._streaming
+        session._handle._can_commit = True
+        session._noise_gate = SimpleNamespace(is_zeroing=False)
+        provider.on_speech_activity(True)
+        session._speech_fed_seconds = 5.0
+        session._last_activity = time.time() - 1.0  # only the commit clock expired
+        assert _wait_for(lambda: provider.handle.commit_count == 1)
+        assert provider.open_count == 1
+
+    def test_a_refused_commit_does_not_swap_before_the_stall_timeout(
+        self, streaming_env, monkeypatch
+    ):
+        """The commit clock must not become a second, faster death sentence.
+        Deepgram and Gemini refuse every commit; they may not be reconnected
+        six seconds into a turn because of it."""
+        controller, provider = self._start(
+            streaming_env, monkeypatch, timeout=30.0, commit=0.2, grace=0.1
+        )
+        session = controller._streaming
+        assert session._handle._can_commit is False
+        session._noise_gate = SimpleNamespace(is_zeroing=False)
+        provider.on_speech_activity(True)
+        session._speech_fed_seconds = 5.0
+        session._last_activity = time.time() - 1.0
+        time.sleep(0.6)  # several poll cycles past the commit clock
+        assert provider.open_count == 1
+        # Past the stall timeout it recovers exactly as it always did.
+        session._last_activity = time.time() - 60
         assert _wait_for(lambda: provider.open_count == 2)
 
     def test_speech_activity_is_proof_of_life(self, streaming_env, monkeypatch):
         """Both VAD edges restart the stall clock: a message from the engine is
         a message from the engine, whichever edge it reports."""
-        controller, provider = self._start(streaming_env, monkeypatch, timeout=15.0)
+        controller, provider = self._start(
+            streaming_env, monkeypatch, timeout=15.0, commit=15.0
+        )
         session = controller._streaming
         for edge in (True, False):
             session._last_activity = time.time() - 60
