@@ -158,6 +158,12 @@ class GeminiLiveStreamHandle:
         except RuntimeError:
             pass  # loop already shut down
 
+    def commit_turn(self) -> bool:
+        """Never needed here: ``_maybe_cut_turn`` already caps a running turn
+        at STREAMING_MAX_UTTERANCE_SECONDS provider-side, so speech cannot sit
+        unbounded in an open turn. The caller falls back to reopening."""
+        return False
+
     def close(self) -> None:
         if self._closed.is_set():
             return
@@ -182,6 +188,7 @@ class GeminiLiveTranscriptionProvider:
         on_transcript: Callable[[str, bool], None],
         on_utterance_end: Callable[[], None],
         on_error: Callable[[Exception], None],
+        on_speech_activity: Callable[[bool], None] | None = None,
     ) -> GeminiLiveStreamHandle:
         handle = GeminiLiveStreamHandle()
         # UsageMetadata is cumulative for one physical Live connection. A

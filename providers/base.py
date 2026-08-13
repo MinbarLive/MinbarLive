@@ -55,6 +55,21 @@ class StreamHandle(Protocol):
         """Close the stream. Safe to call more than once."""
         ...
 
+    def commit_turn(self) -> bool:
+        """End the turn now and transcribe what the server already buffered.
+
+        The non-destructive alternative to reopening a connection that has
+        gone quiet: a speaker who never pauses long enough for server-side
+        VAD produces one endless turn, and replacing the connection throws
+        that buffered speech away unheard. Committing keeps it.
+
+        Returns:
+            True if a commit was actually issued. False means the provider
+            has no such control and the caller must fall back to reopening
+            the connection.
+        """
+        ...
+
 
 @runtime_checkable
 class StreamingTranscriptionProvider(Protocol):
@@ -74,6 +89,7 @@ class StreamingTranscriptionProvider(Protocol):
         on_transcript: Callable[[str, bool], None],
         on_utterance_end: Callable[[], None],
         on_error: Callable[[Exception], None],
+        on_speech_activity: Callable[[bool], None] | None = None,
     ) -> StreamHandle:
         """Open a streaming transcription session.
 
@@ -88,6 +104,12 @@ class StreamingTranscriptionProvider(Protocol):
                 detects a natural pause — the signal to flush accumulated
                 text into translation.
             on_error: Called if the connection fails or drops unexpectedly.
+            on_speech_activity: Called with True when the provider's own VAD
+                starts hearing speech and False when it stops. Separate from
+                ``on_transcript`` because it arrives *while* a turn is still
+                open — the only proof that a silent connection is working
+                rather than stuck. Providers that expose no such signal leave
+                it uncalled.
 
         Returns:
             A handle to feed audio into and close.

@@ -1392,9 +1392,14 @@ class _FakeRealtimeConnection:
         self.session = SimpleNamespace(
             update=lambda **kw: self.session_updates.append(kw)
         )
+        self.commits = 0
         self.input_audio_buffer = SimpleNamespace(
-            append=lambda **kw: self.appended_audio.append(kw)
+            append=lambda **kw: self.appended_audio.append(kw),
+            commit=self._commit,
         )
+
+    def _commit(self, **kw):
+        self.commits += 1
 
     def __iter__(self):
         yield from self._events
@@ -1458,7 +1463,9 @@ class TestOpenAIRealtimeTranscriptionProvider:
         monkeypatch.setattr(openai_realtime, "get_client", lambda: client)
         return conn, captured
 
-    def _open(self, transcripts=None, utterance_ends=None, errors=None):
+    def _open(
+        self, transcripts=None, utterance_ends=None, errors=None, speech=None
+    ):
         return OpenAIRealtimeTranscriptionProvider().open_stream(
             model="gpt-4o-transcribe",
             language="ar",
@@ -1476,6 +1483,9 @@ class TestOpenAIRealtimeTranscriptionProvider:
                 (lambda e: errors.append(e))
                 if errors is not None
                 else _fail_on_real_error
+            ),
+            on_speech_activity=(
+                (lambda active: speech.append(active)) if speech is not None else None
             ),
         )
 
@@ -1550,6 +1560,69 @@ class TestOpenAIRealtimeTranscriptionProvider:
         # server-side stream end — the error event must come first.
         assert _wait_until(lambda: len(errors) >= 1)
         assert "rate limited" in str(errors[0])
+
+    def test_server_vad_edges_reach_on_speech_activity(self, monkeypatch):
+        """The only signal that separates "the speaker has not paused yet"
+        from "the socket is dead" — both look like silence from the transcript
+        side. Dropping these events cost a khutbah 128 s of content on
+        2026-08-12 (see TestStallWatchdogRespectsAnOpenTurn)."""
+        events = [
+            _rt_event("input_audio_buffer.speech_started"),
+            _rt_event("input_audio_buffer.speech_stopped"),
+        ]
+        self._fake_client(monkeypatch, events)
+        speech = []
+        self._open(speech=speech)
+        assert _wait_until(lambda: speech == [True, False])
+
+    def test_speech_events_are_harmless_without_the_callback(self, monkeypatch):
+        """The callback is optional in the Protocol; the loop must not raise
+        when a caller passes nothing."""
+        events = [
+            _rt_event("input_audio_buffer.speech_started"),
+            _rt_event(self.COMPLETED, item_id="i1", transcript="still works"),
+        ]
+        self._fake_client(monkeypatch, events)
+        transcripts = []
+        self._open(transcripts=transcripts)
+        assert _wait_until(lambda: ("still works", True) in transcripts)
+
+    def test_commit_turn_commits_the_input_buffer(self, monkeypatch):
+        conn, _ = self._fake_client(monkeypatch, [], conn=_BlockingRealtimeConnection([]))
+        handle = self._open()
+        assert handle.commit_turn() is True
+        assert conn.commits == 1
+        handle.close()
+
+    def test_commit_turn_is_false_once_closed(self, monkeypatch):
+        """A stall and a teardown can race; committing a dead socket must
+        report failure rather than raise, so the caller falls back to a swap."""
+        self._fake_client(monkeypatch, [], conn=_BlockingRealtimeConnection([]))
+        handle = self._open()
+        handle.close()
+        assert handle.commit_turn() is False
+
+    def test_empty_commit_error_is_not_an_outage(self, monkeypatch):
+        """A forced commit can race the server's own VAD commit, leaving the
+        buffer already empty. That turn ended exactly as wanted — escalating
+        it would put a connection-error subtitle in front of the audience."""
+        events = [
+            _rt_event(
+                "error",
+                error=SimpleNamespace(
+                    message="buffer too small",
+                    code="input_audio_buffer_commit_empty",
+                ),
+            ),
+            _rt_event(self.COMPLETED, item_id="i1", transcript="turn landed anyway"),
+        ]
+        self._fake_client(monkeypatch, events)
+        errors, transcripts = [], []
+        self._open(errors=errors, transcripts=transcripts)
+        assert _wait_until(lambda: ("turn landed anyway", True) in transcripts)
+        # The scripted events then run out, which reports a stream end of its
+        # own; only the commit race must not be among what was escalated.
+        assert not any("buffer too small" in str(e) for e in errors)
 
     def test_feed_appends_base64_audio(self, monkeypatch):
         import base64
