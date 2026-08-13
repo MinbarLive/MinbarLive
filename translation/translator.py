@@ -22,7 +22,7 @@ from config import (
     RAG_HARD_MATCH_MAX_WORD_DIFF,
     RAG_HARD_MATCH_MIN_LENGTH_RATIO,
     RAG_HARD_MATCH_THRESHOLD,
-    RAG_MULTI_VERSE_TEXT_SIMILARITY,
+    RAG_TEXT_MATCH_SIMILARITY,
 )
 from providers import (
     get_translation_model_chain,
@@ -285,6 +285,17 @@ def _select_verified_verse(
       difference cap — the ratio alone is too permissive for long verses),
       otherwise sermon speech around the verse would be silently dropped or a
       partially recited verse would be over-completed
+    - the verse text actually fuzzy-matches the segment
+      (RAG_TEXT_MATCH_SIMILARITY)
+
+    That last guard is the one the run bypass always had and this one lacked.
+    Without it the decision rested entirely on the embedding: a segment of the
+    right length whose words merely sat in the same semantic neighbourhood
+    could replace itself with a verse's exact dictionary translation, and
+    nothing downstream would ever compare what was said to what was printed.
+    Measured against 48 real verifications across three days of khutbah logs
+    before choosing the threshold — the lowest genuine single-verse match
+    scored 0.848, so nothing observed is lost.
 
     Returns:
         (score, arabic_verse, verified_translation) or None.
@@ -302,10 +313,12 @@ def _select_verified_verse(
             return None
         translation = target_dict[ar_verse]
 
-    verse_words = len(normalize_arabic(ar_verse).split())
+    verse_norm = normalize_arabic(ar_verse)
+    verse_words = len(verse_norm.split())
     if verse_words == 0:
         return None
-    segment_words = len(normalize_arabic(arabic_text).split())
+    segment_norm = normalize_arabic(arabic_text)
+    segment_words = len(segment_norm.split())
     ratio = segment_words / verse_words
     word_diff = abs(segment_words - verse_words)
     if (
@@ -317,6 +330,15 @@ def _select_verified_verse(
         log(
             f"Quran hard match rejected by length guard "
             f"(ratio={ratio:.2f}, word_diff={word_diff}, score={score:.3f})",
+            level="DEBUG",
+        )
+        return None
+
+    text_sim = SequenceMatcher(None, verse_norm, segment_norm).ratio()
+    if text_sim < RAG_TEXT_MATCH_SIMILARITY:
+        log(
+            f"Quran hard match rejected by text check "
+            f"(text={text_sim:.2f}, score={score:.3f})",
             level="DEBUG",
         )
         return None
@@ -349,7 +371,7 @@ def _select_verified_verse_run(
     (refs parsed from the German reference dictionary, which every RAG
     candidate is guaranteed to be in) are concatenated in ayah order and
     fuzzy-compared against the normalized segment. A run qualifies only when:
-    - text similarity >= RAG_MULTI_VERSE_TEXT_SIMILARITY
+    - text similarity >= RAG_TEXT_MATCH_SIMILARITY
     - the single-verse length guards pass against the run total (sermon
       speech around the verses must never be silently dropped)
     - every verse has a real target-language dictionary entry
@@ -422,7 +444,7 @@ def _select_verified_verse_run(
 
         refs = " ".join(f"({s}:{a})" for s, a in run)
         text_sim = SequenceMatcher(None, run_norm, segment_norm).ratio()
-        if text_sim < RAG_MULTI_VERSE_TEXT_SIMILARITY:
+        if text_sim < RAG_TEXT_MATCH_SIMILARITY:
             log(
                 f"Quran verse run rejected by text check "
                 f"(refs={refs}, text={text_sim:.2f})",
