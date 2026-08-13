@@ -51,19 +51,102 @@ class TestTrackerActivation:
             (81, 8 + step) for step in range(1, RECITATION_LOOKAHEAD_AYAT + 1)
         ]
 
+    def test_two_ayat_with_a_gap_also_start_one(self):
+        """The normal shape of a real recitation, not an edge case: 81:8 was
+        recited but only half of it landed in the segment, so the text check
+        refused to certify it and GPT translated it instead. Requiring a clean
+        consecutive run here withheld the prediction in exactly the case it
+        exists for."""
+        recitation.note_certified([(81, 7)])
+        recitation.note_certified([(81, 9)])
+        assert recitation.expected_next()[0] == (81, 10)
+
     def test_prediction_continues_from_the_highest_ayah(self):
         recitation.note_certified([(81, 7), (81, 8)])
         recitation.note_certified([(81, 9)])
+        assert recitation.expected_next()[0] == (81, 10)
+
+    def test_a_single_verse_keeps_an_established_recitation_alive(self, monkeypatch):
+        """Starting needs two; continuing needs one. Otherwise a patchy
+        stretch — the only kind that needs help — drops out of recitation
+        mode."""
+        monkeypatch.setattr(recitation, "RECITATION_WINDOW_SECONDS", 0.4)
+        recitation.note_certified([(81, 7), (81, 8)])
+        for ayah in (9, 10, 11):
+            time.sleep(0.25)  # longer than half the window: only the refresh saves it
+            recitation.note_certified([(81, ayah)])
+            assert recitation.expected_next()[0] == (81, ayah + 1)
+
+    def test_a_repeated_verse_does_not_walk_the_prediction_backwards(self):
+        """A reciter repeating an ayah, or an out-of-order certification, must
+        not un-advance the anchor over ground already covered."""
+        recitation.note_certified([(81, 7), (81, 8), (81, 9)])
+        recitation.note_certified([(81, 8)])
         assert recitation.expected_next()[0] == (81, 10)
 
     def test_two_ayat_of_different_surahs_are_not_a_recitation(self):
         recitation.note_certified([(81, 7), (2, 255)])
         assert recitation.expected_next() == []
 
+    def test_a_new_surah_needs_its_own_two_verses_to_take_over(self):
+        recitation.note_certified([(81, 7), (81, 8)])
+        recitation.note_certified([(2, 255)])  # one ayah quoted elsewhere
+        assert recitation.expected_next()[0] == (81, 9)  # still At-Takwir
+        recitation.note_certified([(2, 256)])
+        assert recitation.expected_next()[0] == (2, 257)  # now Al-Baqara
+
     def test_a_stale_recitation_stops_predicting(self, monkeypatch):
         monkeypatch.setattr(recitation, "RECITATION_WINDOW_SECONDS", 0.05)
         recitation.note_certified([(81, 7), (81, 8)])
         time.sleep(0.1)
+        assert recitation.expected_next() == []
+
+    def test_a_nomination_walks_the_anchor_along(self):
+        """Measured live 2026-08-13: over a Tā-Hā recitation the tracker fired
+        39 times but offered only four distinct predictions, because the anchor
+        moved only on certification. It sat on 20:23-25 for nine segments while
+        the reciter reached 20:33."""
+        recitation.note_certified([(20, 21), (20, 22)])
+        assert recitation.expected_next()[0] == (20, 23)
+        recitation.note_nominated([(20, 23)])  # merely surfaced by RAG
+        assert recitation.expected_next()[0] == (20, 24)
+
+    def test_a_nomination_cannot_start_a_recitation(self):
+        """Nominations are weak evidence — a sermon quoting verses would
+        otherwise put the tracker into recitation mode."""
+        recitation.note_nominated([(20, 21), (20, 22), (20, 23)])
+        assert recitation.expected_next() == []
+
+    def test_a_nomination_cannot_jump_beyond_what_was_predicted(self):
+        """It may only confirm a verse the tracker already expected. A stray
+        match elsewhere in the surah must not teleport the anchor past the
+        verses actually being recited."""
+        recitation.note_certified([(20, 21), (20, 22)])
+        recitation.note_nominated([(20, 90)])  # far outside the lookahead
+        assert recitation.expected_next()[0] == (20, 23)
+
+    def test_a_nomination_never_walks_backwards(self):
+        recitation.note_certified([(20, 21), (20, 22)])
+        recitation.note_nominated([(20, 21)])
+        assert recitation.expected_next()[0] == (20, 23)
+
+    def test_nominations_keep_an_uncertified_stretch_alive(self, monkeypatch):
+        """The whole point: a run of segments that never certify must not let
+        the recitation lapse, because that is the stretch needing help."""
+        monkeypatch.setattr(recitation, "RECITATION_WINDOW_SECONDS", 0.4)
+        recitation.note_certified([(20, 21), (20, 22)])
+        for ayah in (23, 24, 25):
+            time.sleep(0.25)
+            recitation.note_nominated([(20, ayah)])
+            assert recitation.expected_next()[0] == (20, ayah + 1)
+
+    def test_a_lapsed_recitation_needs_two_verses_again(self, monkeypatch):
+        """Once the window closes, a single verse must not silently resume it —
+        that is the "one quotation predicts nothing" rule again."""
+        monkeypatch.setattr(recitation, "RECITATION_WINDOW_SECONDS", 0.05)
+        recitation.note_certified([(81, 7), (81, 8)])
+        time.sleep(0.1)
+        recitation.note_certified([(81, 20)])
         assert recitation.expected_next() == []
 
     def test_reset_forgets_everything(self):
@@ -167,6 +250,27 @@ class TestTranslateTextWiring:
         )
         translator.translate_text(f"{V7} {V8}")
         assert recitation.expected_next()[0] == (81, 9)
+
+    def test_a_nomination_during_a_recitation_advances_the_anchor(self, monkeypatch):
+        """The wiring: RAG surfacing the next verse must move the tracker on
+        even when nothing about that segment certifies."""
+        monkeypatch.setattr(
+            translator,
+            "match_quran_rag_multi",
+            lambda text, target_lang_code: [(0.72, V9, "h")],
+        )
+
+        class _FakeProvider:
+            def complete(self, **kwargs):
+                return "GPT out"
+
+        monkeypatch.setattr(
+            translator, "get_translation_provider", lambda: _FakeProvider()
+        )
+        recitation.note_certified([(81, 7), (81, 8)])
+        assert recitation.expected_next()[0] == (81, 9)
+        translator.translate_text("وقال الخطيب كلاما لا يطابق اي اية من الايات")
+        assert recitation.expected_next()[0] == (81, 10)
 
     def test_a_gpt_translation_is_not_remembered(self, monkeypatch):
         """Nothing was verified, so nothing may prime the next segment."""
