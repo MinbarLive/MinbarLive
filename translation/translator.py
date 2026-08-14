@@ -207,6 +207,7 @@ def _build_general_user_prompt(
     - If parts of the Source Text are already in {target_lang}, keep them unchanged and translate only the remaining parts.
     - Use the Context ONLY to resolve unclear references or pronouns; do NOT translate or repeat it.
     - The Context may end with "Already shown to the audience": {target_lang} lines the viewer is reading right now. Continue from them so the subtitles read as one continuous speech — never restate what they already say, and when the Source Text carries on a sentence they left unfinished, render it as that continuation instead of starting a new sentence.
+    - Match the END punctuation of the Source Text. This text is one slice of continuous speech, not a whole sentence: if the Source Text stops mid-sentence (no . ? or ! at its end), end your translation WITHOUT a full stop, so the next subtitle continues it. Close the sentence only where the Source Text closes it.
     - Preserve all meaning of the source text.
     - You may adjust sentence structure, flow, and repetition so the translation sounds natural and fluent in {target_lang}.
     - Do NOT invent additional sentences.
@@ -244,6 +245,7 @@ def _build_user_prompt(
     - Repeat only if it helpts the reader to understand the current sentence and context
     - Use the Context ONLY to resolve unclear references or pronouns; do NOT translate or repeat it.
     - The Context may end with "Already shown to the audience": {target_lang} lines the viewer is reading right now. Continue from them so the subtitles read as one continuous speech — never restate what they already say, and when the Source Text carries on a sentence they left unfinished, render it as that continuation (including its correlative or subordinate clause) instead of starting a new sentence.
+    - Match the END punctuation of the Source Text. This text is one slice of continuous speech, not a whole sentence: if the Source Text stops mid-sentence (no . ? or ! at its end), end your translation WITHOUT a full stop, so the next subtitle continues it. Close the sentence only where the Source Text closes it. Do not add a full stop merely because your line is grammatically complete.
     - Preserve all meanings and religious content of the source text.
     - You may adjust sentence structure, flow, and repetition so the translation sounds natural and fluent in {target_lang}.
     - Do NOT invent additional sentences, Quran verses, or Hadith.
