@@ -904,6 +904,16 @@ class StreamingSession:
             trans_text = trans_text.strip()
             pending = f"{pending} {trans_text}".strip() if pending else trans_text
             pending_rev = live_rev
+            # Word count alone, deliberately. Also requiring a sentence
+            # boundary here was tried on 2026-08-14 and reverted: it cannot
+            # act at this cadence. The hold deadline below is 1 s while
+            # utterances arrive a median of 3 s apart, so the timer always
+            # fires first and flushes the buffer anyway — measured across two
+            # live runs of the same khutbah, blocks/min and words/block did not
+            # move. Making it fire would need a 3-4 s hold, i.e. real latency.
+            # The damage it aimed at (a fragment reading as a closed sentence)
+            # is handled in the translation prompt instead, by mirroring the
+            # source's end punctuation.
             if len(pending.split()) >= STREAMING_COALESCE_MIN_WORDS:
                 _flush_pending()
             else:

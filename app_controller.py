@@ -321,6 +321,12 @@ class AppController:
             # line, and log no empty pair.
             log(f"{log_prefix} Empty translation suppressed", level="DEBUG")
             return translation
+        # Feed the output back, so the next call knows what the audience is
+        # already reading. Skipped in same-language mode, which passes no
+        # context at all. Suppressed empties never get here: an empty line is
+        # not something to continue from.
+        if not same_language:
+            context_mgr.add_translation(translation)
         # No separate source line when the translation came back identical —
         # the per-segment bypass ("Automatic" source + Arabic target) and the
         # code-switching pass-through both return the input unchanged even

@@ -7,10 +7,88 @@ from unittest.mock import MagicMock, patch
 
 from config import (
     CONTEXT_RECENT_RAW_COUNT,
+    CONTEXT_RECENT_TRANSLATION_COUNT,
     CONTEXT_SUMMARIZE_EVERY_N,
     CONTEXT_SUMMARIZE_MIN_SECONDS,
+    QURAN_VERIFIED_MARKER,
 )
 from utils.context_manager import ContextManager
+
+
+class TestTranslationMemory:
+    """The target-language half of the context (see add_translation)."""
+
+    def test_recent_translations_reach_the_context(self):
+        mgr = ContextManager()
+        mgr.add_translation("Alles Lob gehört Allah.")
+        assert "Alles Lob gehört Allah." in mgr.get_context()
+
+    def test_labelled_apart_from_the_source_segments(self):
+        """The model has to tell 'what was said' from 'what I already wrote'."""
+        mgr = ContextManager()
+        mgr.add_transcription("الحمد لله")
+        mgr.add_translation("Alles Lob gehört Allah.")
+        context = mgr.get_context()
+        assert context.index("[Last segments:") < context.index("[Already shown")
+
+    def test_only_the_newest_are_kept(self):
+        mgr = ContextManager()
+        for i in range(CONTEXT_RECENT_TRANSLATION_COUNT + 3):
+            mgr.add_translation(f"line {i}")
+        context = mgr.get_context()
+        assert "line 0" not in context
+        assert f"line {CONTEXT_RECENT_TRANSLATION_COUNT + 2}" in context
+
+    def test_verified_verse_marker_is_stripped(self):
+        """GPT must never see a 📖 it could copy onto its own paraphrase.
+
+        The marker certifies that an exact text check matched what was
+        recited. Anything in the context is material the model imitates, so a
+        stored marker is an invitation to print an unverified ayah as verified
+        — the one failure the verification guards exist to prevent.
+        """
+        mgr = ContextManager()
+        mgr.add_translation(f"{QURAN_VERIFIED_MARKER} O die ihr glaubt")
+        context = mgr.get_context()
+        assert QURAN_VERIFIED_MARKER not in context
+        assert "O die ihr glaubt" in context
+
+    def test_ayah_reference_is_stripped(self):
+        """A (surah:ayah) is a certification too, and GPT was copying it.
+
+        Verified verses arrive as dictionary text ending in "... (3:102)". Once
+        those sat in the context the model began appending references to its own
+        translations — 5 unverified subtitles carried one in a single live
+        session against 0 before the feature existed. An unverified line must
+        never wear the costume of a verified one.
+        """
+        mgr = ContextManager()
+        mgr.add_translation("O die ihr glaubt, fürchtet Allah (3:102)")
+        context = mgr.get_context()
+        assert "(3:102)" not in context
+        assert "O die ihr glaubt, fürchtet Allah" in context
+
+    def test_every_reference_in_a_verified_run_is_stripped(self):
+        """A run joins several dictionary verses, so refs also appear mid-string."""
+        mgr = ContextManager()
+        mgr.add_translation(
+            f"{QURAN_VERIFIED_MARKER} Erste Aussage (3:102) zweite Aussage (33:70)"
+        )
+        context = mgr.get_context()
+        assert "(3:102)" not in context and "(33:70)" not in context
+        assert "Erste Aussage zweite Aussage" in context
+
+    def test_empty_translation_is_not_stored(self):
+        mgr = ContextManager()
+        mgr.add_translation("")
+        mgr.add_translation(f"  {QURAN_VERIFIED_MARKER}  ")
+        assert "Already shown" not in mgr.get_context()
+
+    def test_reset_clears_them(self):
+        mgr = ContextManager()
+        mgr.add_translation("Alles Lob gehört Allah.")
+        mgr.reset()
+        assert "Already shown" not in mgr.get_context()
 
 
 class TestContextManager:

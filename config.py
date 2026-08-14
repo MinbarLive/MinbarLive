@@ -382,6 +382,19 @@ STREAMING_COALESCE_HOLD_SECONDS = 1
 # CONTEXT MANAGEMENT
 # -------------------------
 CONTEXT_RECENT_RAW_COUNT = 3  # Number of recent transcriptions to keep raw
+# How many recent TARGET-language outputs to show the translator. The raw
+# count above is source text — it tells the model what was said, never what it
+# already put on screen, so every block was translated by a model with no
+# memory of its own previous sentence. That is what made consecutive subtitles
+# read as disconnected: a clause split across two calls lost its correlative
+# ("Je mehr …" with the "desto" never arriving), and a fragment whose meaning
+# depended on the previous line got its first half re-stated instead
+# (measured live 2026-08-14).
+# Smaller than the raw count on purpose: the immediately preceding line carries
+# nearly all the continuity, target-language text is more verbose than the
+# Arabic, and this rides on EVERY translation call (see the API-cost invariant
+# in AGENTS.md). Two blocks measured ~22 words — a few dozen tokens.
+CONTEXT_RECENT_TRANSLATION_COUNT = 2
 CONTEXT_SUMMARIZE_EVERY_N = 10  # Summarize after N transcriptions
 # Time floor for the rolling summary: in streaming mode utterances flush
 # every ~3-8s, so "every 10 transcriptions" alone fired a summary LLM call
