@@ -644,12 +644,18 @@ def translate_text(
         verified = _select_verified_verse(quran_matches, arabic_txt, target_lang_code)
         if verified is not None:
             score, ar_verse, verse_translation = verified
+            ref = _parse_ayah_ref(quran_dict.get(ar_verse, ""))
+            # Name the verse. The run bypass below has always logged its refs,
+            # and without the same here a verified line says only that
+            # *something* certified — which cannot be checked against the
+            # recitation afterwards, and this is the one decision in the app
+            # most worth being able to audit from a log.
             log(
-                f"Quran verse verified (Score={score:.3f}) → "
-                "exact dictionary translation, GPT skipped",
+                f"Quran verse verified {f'({ref[0]}:{ref[1]})' if ref else '(no ref)'} "
+                f"(Score={score:.3f}) → exact dictionary translation, "
+                f"GPT skipped: {ar_verse}",
                 level="INFO",
             )
-            ref = _parse_ayah_ref(quran_dict.get(ar_verse, ""))
             if ref is not None:
                 recitation.note_certified([ref])
             return f"{QURAN_VERIFIED_MARKER} {verse_translation}"
