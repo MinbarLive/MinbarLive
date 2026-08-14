@@ -1776,6 +1776,42 @@ class TestSubtitleHideMode:
         assert panel.subtitle_window is None
 
 
+class TestTearingDownTheOverlayDoesNotStopTheSession:
+    """A programmatic teardown must not be read as the operator closing it.
+
+    Closing the overlay stops translating (PR #24) — Alt+F4, the taskbar, the
+    window's ✕. But ``destroy()`` reaches the same ``closeEvent``, so every
+    policy-driven teardown was calling ``on_stop``: choosing "Hide subtitle
+    window: always" during a live khutbah ended the session.
+
+    Written against the REAL window on purpose. TestSubtitleHideMode above
+    substitutes a FakeOverlay whose ``destroy()`` only sets a flag, so the
+    whole close path is invisible to it — which is why this reached a run.
+    """
+
+    def test_destroy_does_not_stop(self, qt_app):
+        stopped = []
+        w = SubtitleWindow(
+            monitor_index=0,
+            subtitle_mode=SUBTITLE_MODE_CONTINUOUS,
+            on_stop=lambda: stopped.append(True),
+        )
+        w.destroy()
+        assert stopped == [], "a policy teardown ended the session"
+
+    def test_an_operator_close_still_stops(self, qt_app):
+        """The other half of the split: #24's behaviour must survive."""
+        stopped = []
+        w = SubtitleWindow(
+            monitor_index=0,
+            subtitle_mode=SUBTITLE_MODE_CONTINUOUS,
+            on_stop=lambda: stopped.append(True),
+        )
+        w.close()  # what Alt+F4 / the taskbar / the ✕ deliver
+        assert stopped == [True]
+        w.destroy()
+
+
 class TestFooterHideMode:
     """Same three-way policy, applied to the two bottom pills instead of the
     whole overlay. The window stays a dumb renderer of two booleans — mode and
