@@ -2478,7 +2478,14 @@ class ControlPanel(QMainWindow):
             return
         device = self._started_device = self._selected_device()
         self._pending_device = None
-        self._ensure_subtitle_window()
+        # Before the pipeline, so the first subtitle has somewhere to land —
+        # but only if the policy wants an overlay at all. Unconditionally, this
+        # re-opened the window a hide mode of "always" had deliberately closed,
+        # and nothing on the success path takes it down again, so it stayed up
+        # for the whole session. Asked with running=True because "stopped"
+        # means "hidden while stopped" and this session is starting.
+        if self._subtitle_window_should_exist(running=True):
+            self._ensure_subtitle_window()
         # Opened before the pipeline so provider threads have somewhere to
         # record usage from their first call; dropped again if the start fails.
         begin_cost_session()
@@ -2829,12 +2836,19 @@ class ControlPanel(QMainWindow):
             self.subtitle_window.set_show_footer(self._footer_should_show())
             self.subtitle_window.set_stopped_hint(self._stopped_hint_should_show())
 
-    def _subtitle_window_should_exist(self) -> bool:
+    def _subtitle_window_should_exist(self, *, running: bool | None = None) -> bool:
+        """Whether the hide policy wants an overlay right now.
+
+        ``running`` overrides the live flag for the one caller that has to ask
+        about a state it is still entering: on_start needs the overlay open
+        BEFORE the pipeline produces a subtitle, and ``self._running`` only
+        becomes true in _finish_start, once the provider handshake is done.
+        """
         mode = self.settings.subtitle_hide_mode
         if mode == "always":
             return False
         if mode == "stopped":
-            return self._running
+            return self._running if running is None else running
         return True  # "never"
 
     def _apply_subtitle_hide_mode(self) -> None:

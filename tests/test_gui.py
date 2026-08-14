@@ -1776,6 +1776,74 @@ class TestSubtitleHideMode:
         assert panel.subtitle_window is None
 
 
+class TestStartRespectsTheHidePolicy:
+    """Start must not re-open an overlay the policy says should not exist.
+
+    on_start opens the overlay before the pipeline so the first subtitle has
+    somewhere to land, which is right for "stopped" — but it did so
+    unconditionally, so "always" got a window back on every Start, and nothing
+    on the success path takes it down again. The operator had to re-pick
+    "always" to close a window they had already asked never to see.
+    """
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        cp = cp_module()
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(cp, "ensure_keys", lambda *a, **k: True)
+        monkeypatch.setattr(cp, "begin_cost_session", lambda: None)
+        made: list[int] = []
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: made.append(1)
+        )
+
+        class FakeController:
+            def __init__(self):
+                self.released = threading.Event()
+                self.translation_queue = queue.Queue()
+
+            def start(self, **_kwargs):
+                self.released.wait(5)
+
+            def stop(self):
+                pass
+
+        p = cp.ControlPanel(FakeController())
+        p._made = made
+        yield p
+        p.controller.released.set()
+        p.close()
+
+    def test_always_gets_no_overlay_on_start(self, panel, qt_app):
+        panel.settings.subtitle_hide_mode = "always"
+        panel._made.clear()
+        panel.on_start()
+        qt_app.processEvents()
+        assert panel._made == [], "Start re-opened an overlay set to always-hidden"
+
+    def test_stopped_still_opens_one_on_start(self, panel, qt_app):
+        """The reason the call is there at all — it must keep working.
+
+        "stopped" means hidden *while stopped*, and self._running only turns
+        true once the provider handshake finishes, so the policy has to be
+        asked about the session being entered rather than the one just left.
+        """
+        panel.settings.subtitle_hide_mode = "stopped"
+        panel._running = False
+        panel._made.clear()
+        panel.on_start()
+        qt_app.processEvents()
+        assert panel._made == [1]
+
+    def test_never_still_opens_one_on_start(self, panel, qt_app):
+        panel.settings.subtitle_hide_mode = "never"
+        panel._made.clear()
+        panel.on_start()
+        qt_app.processEvents()
+        assert panel._made == [1]
+
+
 class TestTearingDownTheOverlayDoesNotStopTheSession:
     """A programmatic teardown must not be read as the operator closing it.
 
