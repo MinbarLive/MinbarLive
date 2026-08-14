@@ -43,6 +43,26 @@ _HOURLY_SUMMARY_MAX_TOKENS = 500
 # package — and because this one must match every occurrence, not just the last.
 _AYAH_REF_RE = re.compile(r"\s*\(\d+:\d+\)")
 
+# The two context section labels. Constants because the translation prompt
+# names the second one verbatim ("Already shown to the audience") and batch
+# mode builds the same sections from its own state — three copies of a literal
+# that must agree is a silent breakage waiting to happen.
+RECENT_SEGMENTS_LABEL = "Last segments"
+RECENT_OUTPUT_LABEL = "Already shown to the audience"
+
+
+def strip_certification_marks(text: str) -> str:
+    """Remove every mark that claims a verse was verified.
+
+    Both the QURAN_VERIFIED_MARKER and any (surah:ayah) reference, because
+    everything placed in the translator's context is material the model
+    imitates and neither is a claim it is allowed to make — they are earned by
+    an exact text check in translation/translator.py and by nothing else.
+    Shared with batch mode so the guard cannot drift between the two pipelines.
+    """
+    text = (text or "").replace(QURAN_VERIFIED_MARKER, "")
+    return _AYAH_REF_RE.sub("", text).strip()
+
 
 def _get_translation_model() -> str:
     """Primary translation model of the active provider."""
@@ -201,8 +221,7 @@ class ContextManager:
         mid-string as well. This only affects the context copy; the reference
         is still shown on screen for genuinely verified verses.
         """
-        text = (text or "").replace(QURAN_VERIFIED_MARKER, "")
-        text = _AYAH_REF_RE.sub("", text).strip()
+        text = strip_certification_marks(text)
         if not text:
             return
         with self._lock:
@@ -230,7 +249,7 @@ class ContextManager:
             # 3. Recent raw transcriptions (for immediate disambiguation)
             if self._state.recent_raw:
                 recent = "\n".join(self._state.recent_raw)
-                parts.append(f"[Last segments:\n{recent}]")
+                parts.append(f"[{RECENT_SEGMENTS_LABEL}:\n{recent}]")
 
             # 4. What the audience is already reading. Last, and labelled
             #    distinctly from the source segments above, because it is the
@@ -238,7 +257,7 @@ class ContextManager:
             #    understand.
             if self._state.recent_translations:
                 shown = "\n".join(self._state.recent_translations)
-                parts.append(f"[Already shown to the audience:\n{shown}]")
+                parts.append(f"[{RECENT_OUTPUT_LABEL}:\n{shown}]")
 
             return "\n\n".join(parts)
 

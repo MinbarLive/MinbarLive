@@ -126,15 +126,45 @@
   </p>
 
   <div class="note">
-    <strong>Current status:</strong> releases are <em>not yet</em> code-signed.
-    Windows therefore shows a Microsoft Defender SmartScreen warning
-    ("unrecognized app", "Unknown publisher") the first time
-    <code>MinbarLive.exe</code> runs. Code signing is <em>not</em> currently
-    being set up: a certificate an open-source project can afford is a real cost
-    per year, and SmartScreen reputation builds up on its own as more people
-    download the same unchanged file. We are taking the free-and-wait route for
-    now. This page will state the signing identity if that changes; until then,
-    the checksums below are how you verify a download.
+    <strong>Current status:</strong> releases are <em>not</em> code-signed, on
+    any platform. Code signing is <em>not</em> currently being set up: a
+    certificate an open-source project can afford is a real cost per year, and
+    SmartScreen reputation builds up on its own as more people download the same
+    unchanged file. We are taking the free-and-wait route for now. This page
+    will state the signing identity if that changes; until then, the checksums
+    below are how you verify a download.
+  </div>
+
+  <p>What you will see on each platform:</p>
+  <div class="table-scroll">
+    <table>
+      <tr>
+        <th>Windows</th>
+        <td>
+          Microsoft Defender SmartScreen warns ("unrecognized app", "Unknown
+          publisher") the first time <code>MinbarLive.exe</code> runs. Choose
+          <em>More info</em> → <em>Run anyway</em>.
+        </td>
+      </tr>
+      <tr>
+        <th>macOS</th>
+        <td>
+          The build is unsigned and un-notarized, so Gatekeeper refuses it on
+          first launch. Open it once via right-click → <em>Open</em>, or clear
+          the quarantine attribute with
+          <code>xattr -dr com.apple.quarantine /Applications/MinbarLive.app</code>.
+          Apple Silicon (arm64) only — there is no Intel build.
+        </td>
+      </tr>
+      <tr>
+        <th>Linux</th>
+        <td>
+          The AppImage is unsigned; Linux shows no publisher prompt. Mark it
+          executable (<code>chmod +x</code>) and verify it against
+          <code>SHA256SUMS-linux.txt</code>.
+        </td>
+      </tr>
+    </table>
   </div>
 
   <h2>Project identity</h2>
@@ -145,7 +175,7 @@
       <tr><th>Source</th><td><a href="https://github.com/MinbarLive/MinbarLive">github.com/MinbarLive/MinbarLive</a></td></tr>
       <tr><th>License</th><td><a href="https://github.com/MinbarLive/MinbarLive/blob/main/LICENSE">AGPL-3.0</a></td></tr>
       <tr><th>Releases</th><td><a href="https://github.com/MinbarLive/MinbarLive/releases">github.com/MinbarLive/MinbarLive/releases</a></td></tr>
-      <tr><th>Signed artifact</th><td><code>MinbarLive.exe</code>, the Windows application, built with PyInstaller</td></tr>
+      <tr><th>Published artifacts</th><td><code>MinbarLive.exe</code> (Windows), <code>MinbarLive-x86_64.AppImage</code> (Linux), <code>MinbarLive-macos-arm64.zip</code> (macOS, Apple Silicon) — all built with PyInstaller. None is signed.</td></tr>
     </table>
   </div>
   <p>
@@ -193,12 +223,13 @@
     from the public source at a tagged commit:
   </p>
   <ul>
-    <li>The workflow triggers on a <code>v*</code> tag and runs on a clean GitHub-hosted Windows runner.</li>
+    <li>The workflow triggers on a <code>v*</code> tag and runs on clean GitHub-hosted runners — one each for Windows, Linux and macOS.</li>
     <li>Dependencies are installed from <code>requirements.txt</code>, which pins exact versions.</li>
     <li>The test suite runs before the build.</li>
     <li>The tag is checked against the version compiled into the application; a mismatch fails the build.</li>
-    <li>PyInstaller builds the executable from <a href="https://github.com/MinbarLive/MinbarLive/blob/main/MinbarLive.spec"><code>MinbarLive.spec</code></a>.</li>
-    <li>A SHA-256 checksum is published alongside the executable as <code>SHA256SUMS.txt</code>.</li>
+    <li>PyInstaller builds each binary from <a href="https://github.com/MinbarLive/MinbarLive/blob/main/MinbarLive.spec"><code>MinbarLive.spec</code></a>.</li>
+    <li>Every binary is launched on its own runner and the build fails if it does not start.</li>
+    <li>A SHA-256 checksum is published for each: <code>SHA256SUMS.txt</code>, <code>SHA256SUMS-linux.txt</code> and <code>SHA256SUMS-macos.txt</code>.</li>
   </ul>
   <p>
     Anyone can re-run the same workflow from the same tag and inspect every step

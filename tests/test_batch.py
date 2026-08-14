@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import translation.stt
 from batch import processor
 from batch.srt_writer import SrtEntry, build_srt, format_timestamp, write_srt
-from config import DURATION, FS
+from config import DURATION, FS, QURAN_VERIFIED_MARKER
+from utils.context_manager import RECENT_OUTPUT_LABEL
 
 
 class TestFormatTimestamp:
@@ -438,6 +439,37 @@ class TestProcessFile:
         second_context = calls["translate"][1][1]
         assert first_context == ""
         assert "نص عربي" in second_context
+
+    def test_context_carries_the_previous_translation(self, pipeline):
+        """Batch must feed its own output back, exactly as the live path does.
+
+        Without this every segment is translated with no memory of the previous
+        line and consecutive SRT subtitles read as disconnected — the live fix
+        shipped in 1.0.0 while batch still had the defect.
+        """
+        wav, calls = pipeline
+        processor.process_file(str(wav))
+        second_context = calls["translate"][1][1]
+        assert RECENT_OUTPUT_LABEL in second_context
+        assert "DE(" in second_context  # the previous segment's translation
+
+    def test_certification_marks_never_reach_the_batch_context(
+        self, pipeline, monkeypatch
+    ):
+        """A stored 📖 or (surah:ayah) is a claim the model would start copying."""
+        contexts = []
+
+        def spy(text, context="", **kw):
+            contexts.append(context)
+            return f"{QURAN_VERIFIED_MARKER} Wortlaut der Ayah (3:102)"
+
+        monkeypatch.setattr(processor, "translate_text", spy)
+        wav, _calls = pipeline
+        processor.process_file(str(wav))
+        assert len(contexts) >= 2
+        assert QURAN_VERIFIED_MARKER not in contexts[-1]
+        assert "(3:102)" not in contexts[-1]
+        assert "Wortlaut der Ayah" in contexts[-1]  # the verse text still helps
 
     def test_cancel_returns_none_and_writes_nothing(self, pipeline):
         wav, _calls = pipeline
