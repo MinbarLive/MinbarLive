@@ -19,8 +19,10 @@ from dataclasses import dataclass, field
 from config import (
     CONTEXT_HOURLY_INTERVAL,
     CONTEXT_RECENT_RAW_COUNT,
+    CONTEXT_RECENT_TRANSLATION_COUNT,
     CONTEXT_SUMMARIZE_EVERY_N,
     CONTEXT_SUMMARIZE_MIN_SECONDS,
+    QURAN_VERIFIED_MARKER,
 )
 from providers import get_translation_model_chain, get_translation_provider
 from utils.logging import log
@@ -46,6 +48,9 @@ class ContextState:
 
     recent_raw: deque = field(
         default_factory=lambda: deque(maxlen=CONTEXT_RECENT_RAW_COUNT)
+    )
+    recent_translations: deque = field(
+        default_factory=lambda: deque(maxlen=CONTEXT_RECENT_TRANSLATION_COUNT)
     )
     pending_for_summary: list = field(default_factory=list)
     rolling_summary: str = ""
@@ -160,10 +165,32 @@ class ContextManager:
         if should_summarize or should_hourly:
             self._summarize_event.set()  # Wake up background thread
 
+    def add_translation(self, text: str):
+        """Record a translation that has just been shown to the audience.
+
+        This is the only part of the context that is target-language text, and
+        it is what lets the next call continue a sentence instead of restarting
+        one (see CONTEXT_RECENT_TRANSLATION_COUNT).
+
+        The verified-verse marker is stripped before storing. Everything in the
+        context is text the model is looking at while writing its own output,
+        and QURAN_VERIFIED_MARKER is a certification the translator is never
+        allowed to issue — it is earned by an exact text check in
+        translation/translator.py and by nothing else. Showing GPT its own
+        earlier 📖 would invite it to copy the symbol onto an ordinary
+        paraphrase, which is precisely the "printed an ayah nobody recited"
+        failure the verification guards exist to prevent.
+        """
+        text = (text or "").replace(QURAN_VERIFIED_MARKER, "").strip()
+        if not text:
+            return
+        with self._lock:
+            self._state.recent_translations.append(text)
+
     def get_context(self) -> str:
         """
         Get the current context string for translation.
-        Combines: hourly summaries + rolling summary + recent raw.
+        Combines: hourly summaries + rolling summary + recent raw + recent output.
 
         Returns immediately with current state (no blocking).
         """
@@ -183,6 +210,14 @@ class ContextManager:
             if self._state.recent_raw:
                 recent = "\n".join(self._state.recent_raw)
                 parts.append(f"[Last segments:\n{recent}]")
+
+            # 4. What the audience is already reading. Last, and labelled
+            #    distinctly from the source segments above, because it is the
+            #    only block the model must continue FROM rather than merely
+            #    understand.
+            if self._state.recent_translations:
+                shown = "\n".join(self._state.recent_translations)
+                parts.append(f"[Already shown to the audience:\n{shown}]")
 
             return "\n\n".join(parts)
 
