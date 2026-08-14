@@ -38,6 +38,7 @@ from config import (
     BATCH_MIN_SILENCE_GAP_SECONDS,
     BATCH_MIN_STANDALONE_SECONDS,
     CONTEXT_RECENT_RAW_COUNT,
+    CONTEXT_RECENT_TRANSLATION_COUNT,
     FS,
     SILENCE_THRESHOLD,
 )
@@ -50,6 +51,11 @@ from providers import (
 from translation import recitation
 from translation.stt import maybe_arabic_retranscription, transcribe_with_fallback
 from translation.translator import translate_text
+from utils.context_manager import (
+    RECENT_OUTPUT_LABEL,
+    RECENT_SEGMENTS_LABEL,
+    strip_certification_marks,
+)
 from utils.frozen_env import external_process_env
 from utils.history import batch_srt_path, write_batch_record
 from utils.logging import log
@@ -464,6 +470,7 @@ def process_file(
     # (start_seconds, transcription, translation) for the in-app batch record
     records: list[tuple[float, str, str]] = []
     recent: list[str] = []  # rolling raw context (no async summarizer in batch)
+    recent_output: list[str] = []  # rolling target-language context, same purpose
     prev_tail = ""  # tail of the last transcription, STT prompt for continuity
 
     for i, (a_start, a_end, d_start, d_end) in enumerate(segments):
@@ -530,7 +537,19 @@ def process_file(
             log_prefix="BATCH ",
         )
 
-        context = "\n".join(recent)
+        # Same two sections the live pipeline builds (utils/context_manager),
+        # labelled identically because the translation prompt names them: the
+        # source segments say what was said, the output block says what the
+        # reader has already been shown. Without the second one every segment
+        # was translated with no memory of the previous line, and consecutive
+        # subtitles read as disconnected — the live fix that landed in #103
+        # never reached batch, so file -> SRT still had the defect.
+        context_parts = []
+        if recent:
+            context_parts.append("[" + RECENT_SEGMENTS_LABEL + ":\n" + "\n".join(recent) + "]")
+        if recent_output:
+            context_parts.append("[" + RECENT_OUTPUT_LABEL + ":\n" + "\n".join(recent_output) + "]")
+        context = "\n\n".join(context_parts)
         translation = translate_text(
             transcription,
             context,
@@ -542,6 +561,13 @@ def process_file(
         )
         recent.append(transcription)
         del recent[:-CONTEXT_RECENT_RAW_COUNT]
+        # Certification marks stripped by the shared helper: a stored 📖 or
+        # (surah:ayah) is a claim the translator would start copying onto its
+        # own output.
+        shown = strip_certification_marks(translation)
+        if shown:
+            recent_output.append(shown)
+            del recent_output[:-CONTEXT_RECENT_TRANSLATION_COUNT]
 
         # An empty translation means GPT judged the segment unintelligible
         # (system-prompt rule) — no SRT line, no transcript entry, no
