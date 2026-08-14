@@ -289,6 +289,9 @@ class SubtitleWindow(QWidget):
         super().__init__()
         self._on_close = on_close
         self._on_stop = on_stop
+        # Set by destroy(): tells closeEvent that the app is taking the overlay
+        # down itself, so it must not be read as the operator closing it.
+        self._closing_programmatically = False
         # The window this one is never allowed above — the control panel. See
         # _keep_on_top.
         self._stay_under = stay_under
@@ -2100,8 +2103,17 @@ class SubtitleWindow(QWidget):
         self._sync_scroll_timer()
 
     def destroy(self) -> None:
-        """Tear the overlay down. Named to match the Tk window's API."""
+        """Tear the overlay down. Named to match the Tk window's API.
+
+        The flag is the point. This is the APP closing the overlay — a hide
+        mode of "always", an announcement ending, a session stopping under
+        "stopped" — and closeEvent below reads a close as the operator asking
+        to stop translating. Without it, choosing "Hide subtitle window:
+        always" during a live session tore the overlay down, which called
+        on_stop and ended the khutbah.
+        """
         self._scroll_timer.stop()
+        self._closing_programmatically = True
         self.close()
         self.deleteLater()
 
@@ -2109,7 +2121,11 @@ class SubtitleWindow(QWidget):
         # Closing the overlay stops the session; it never quits the app. The Tk
         # version wired this to full shutdown, so an Alt+F4 on the OBS-visible
         # overlay took the whole app down (fixed in PR #24).
-        if self._on_stop:
+        #
+        # Only an OPERATOR close means that, though: Alt+F4, the taskbar, the
+        # window's own ✕. A teardown the app asked for goes through destroy(),
+        # which sets the flag — see there for what it cost.
+        if self._on_stop and not self._closing_programmatically:
             self._on_stop()
         if self._on_close:
             self._on_close()
