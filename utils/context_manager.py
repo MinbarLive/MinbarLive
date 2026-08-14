@@ -11,6 +11,7 @@ Token budget target: ~1000-1500 tokens total context.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections import deque
@@ -35,6 +36,12 @@ from utils.settings import load_settings
 # summary comes back truncated or empty.
 _ROLLING_SUMMARY_MAX_TOKENS = 1000
 _HOURLY_SUMMARY_MAX_TOKENS = 500
+
+# (surah:ayah) references carried by the Quran dictionary translations. Kept
+# here rather than imported from translation.translator (whose _AYAH_REF_RE
+# *parses* a trailing one) so this module stays independent of the translation
+# package — and because this one must match every occurrence, not just the last.
+_AYAH_REF_RE = re.compile(r"\s*\(\d+:\d+\)")
 
 
 def _get_translation_model() -> str:
@@ -172,16 +179,30 @@ class ContextManager:
         it is what lets the next call continue a sentence instead of restarting
         one (see CONTEXT_RECENT_TRANSLATION_COUNT).
 
-        The verified-verse marker is stripped before storing. Everything in the
-        context is text the model is looking at while writing its own output,
-        and QURAN_VERIFIED_MARKER is a certification the translator is never
-        allowed to issue — it is earned by an exact text check in
-        translation/translator.py and by nothing else. Showing GPT its own
-        earlier 📖 would invite it to copy the symbol onto an ordinary
-        paraphrase, which is precisely the "printed an ayah nobody recited"
-        failure the verification guards exist to prevent.
+        **Both marks of certification are stripped before storing: the 📖 and
+        any (surah:ayah) reference.** Everything in the context is text the
+        model is looking at while writing its own output, and both of these are
+        things the translator is never allowed to issue — they are earned by an
+        exact text check in translation/translator.py and by nothing else.
+
+        The marker was guarded from the start. The reference was not, and that
+        was a real defect: verified verses arrive as dictionary text ending in
+        "... (96:6)", and once those sat in the context GPT began appending
+        references to its OWN translations — measured live 2026-08-14, five
+        unverified subtitles carried a (surah:ayah) in one session against zero
+        before this feature existed. The refs it guessed happened to be right,
+        which is luck and not a defence: an unverified line was wearing the
+        costume of a verified one, and a viewer cannot tell them apart. That is
+        the "printed an ayah nobody recited" failure the guards exist to
+        prevent.
+
+        Every occurrence is removed, not just a trailing one — a verified *run*
+        joins several dictionary translations and so carries a reference
+        mid-string as well. This only affects the context copy; the reference
+        is still shown on screen for genuinely verified verses.
         """
-        text = (text or "").replace(QURAN_VERIFIED_MARKER, "").strip()
+        text = (text or "").replace(QURAN_VERIFIED_MARKER, "")
+        text = _AYAH_REF_RE.sub("", text).strip()
         if not text:
             return
         with self._lock:

@@ -48,10 +48,35 @@ class TestTranslationMemory:
         — the one failure the verification guards exist to prevent.
         """
         mgr = ContextManager()
-        mgr.add_translation(f"{QURAN_VERIFIED_MARKER} O die ihr glaubt (3:102)")
+        mgr.add_translation(f"{QURAN_VERIFIED_MARKER} O die ihr glaubt")
         context = mgr.get_context()
         assert QURAN_VERIFIED_MARKER not in context
-        assert "O die ihr glaubt (3:102)" in context
+        assert "O die ihr glaubt" in context
+
+    def test_ayah_reference_is_stripped(self):
+        """A (surah:ayah) is a certification too, and GPT was copying it.
+
+        Verified verses arrive as dictionary text ending in "... (3:102)". Once
+        those sat in the context the model began appending references to its own
+        translations — 5 unverified subtitles carried one in a single live
+        session against 0 before the feature existed. An unverified line must
+        never wear the costume of a verified one.
+        """
+        mgr = ContextManager()
+        mgr.add_translation("O die ihr glaubt, fürchtet Allah (3:102)")
+        context = mgr.get_context()
+        assert "(3:102)" not in context
+        assert "O die ihr glaubt, fürchtet Allah" in context
+
+    def test_every_reference_in_a_verified_run_is_stripped(self):
+        """A run joins several dictionary verses, so refs also appear mid-string."""
+        mgr = ContextManager()
+        mgr.add_translation(
+            f"{QURAN_VERIFIED_MARKER} Erste Aussage (3:102) zweite Aussage (33:70)"
+        )
+        context = mgr.get_context()
+        assert "(3:102)" not in context and "(33:70)" not in context
+        assert "Erste Aussage zweite Aussage" in context
 
     def test_empty_translation_is_not_stored(self):
         mgr = ContextManager()
