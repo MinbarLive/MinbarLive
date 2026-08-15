@@ -146,7 +146,7 @@ class UpdateBanner(NoticeBanner):
         self.show_notice(
             self.fill(
                 "update_available",
-                "Version {version} available — click to download",
+                "A new version {version} is available — click to download",
                 version=info.version,
             ),
             info.url,
