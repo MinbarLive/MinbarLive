@@ -795,6 +795,27 @@ class TestWindowIcon:
                 f"{ink.shape[1]} — that is a chord, so the node is sliced"
             )
 
+    def test_the_header_logo_is_rendered_for_the_screens_scale(self, qt_app, monkeypatch):
+        """The header logo was built at exactly 30 px and handed to a QLabel
+        with no device pixel ratio, so at 125% Qt stretched a 30 px bitmap to
+        38 and it read as blurry next to crisp text. It has to be rasterised at
+        the screen's ratio and carry it, which keeps the LOGICAL size at 30.
+        """
+        panel = _panel(monkeypatch)
+        try:
+            pixmap = panel._logo_pixmap(30)
+            assert pixmap is not None, "no header logo"
+            ratio = panel.devicePixelRatioF() or 1.0
+            assert pixmap.devicePixelRatio() == pytest.approx(ratio), (
+                "the pixmap does not carry the screen's ratio, so Qt will scale it"
+            )
+            assert pixmap.height() == round(30 * ratio), (
+                f"rasterised at {pixmap.height()} device px, expected {round(30 * ratio)}"
+            )
+            assert pixmap.height() / pixmap.devicePixelRatio() == pytest.approx(30, abs=1)
+        finally:
+            panel.deleteLater()
+
     def test_the_shipped_ico_holds_the_same_mark(self):
         """The EXE icon — and so the desktop shortcut's and Explorer's — comes
         from the .ico, not from ``app_icon``. It carried the lockup while the
