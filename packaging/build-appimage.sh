@@ -27,15 +27,16 @@ mkdir -p "$APPDIR/usr/bin" \
 cp "$BIN" "$APPDIR/usr/bin/MinbarLive"
 
 # Icon: the dome mark (no lettering) centred on a 256x256 transparent square,
-# reusing the exact crop the in-app header logo uses so the launcher icon and
-# the window logo match. Pure Pillow/numpy - importing utils.icons pulls in
-# tkinter but never creates a root, so no display is required here.
+# reusing the exact asset the in-app header logo uses so the launcher icon and
+# the window logo match. The mark is split off the lockup ahead of time by
+# packaging/make_logo_assets.py - feeding the lockup here would put the wordmark
+# and tagline in the launcher icon. Pure Pillow, so no display is required.
 python3 - <<'PY'
 from PIL import Image
 
 from utils.icons import logo_mark
 
-mark = logo_mark("public/MinbarLive1.png", 240)
+mark = logo_mark("public/MinbarLive_mark.png", 240)
 mark.thumbnail((240, 240), Image.LANCZOS)  # guarantee it fits the 256 canvas
 canvas = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
 canvas.alpha_composite(mark, ((256 - mark.width) // 2, (256 - mark.height) // 2))
