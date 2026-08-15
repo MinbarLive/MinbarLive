@@ -206,7 +206,7 @@
   "wizard_disclaimer_title": "Bitte beachten",
   "wizard_disclaimer_text": "MinbarLive nutzt künstliche Intelligenz, um Sprache in Echtzeit zu transkribieren und zu übersetzen. KI-Übersetzungen können falsch, unvollständig oder ungenau sein — besonders bei religiösen Inhalten. Das Audio wird zur Verarbeitung an den gewählten KI-Anbieter gesendet. Verlasse dich nicht auf die Untertitel als verbindliche religiöse Quelle.",
   "wizard_disclaimer_accept": "Ich verstehe, dass KI-Übersetzungen ungenau sein können.",
-  "update_available": "Version {version} verfügbar — zum Herunterladen klicken",
+  "update_available": "Eine neue Version {version} ist verfügbar — zum Herunterladen klicken",
   "check_updates_on_launch": "Beim Start nach Updates suchen",
   "include_prereleases": "Auch Beta- und Testversionen anbieten",
   "integrated_windows_hint": "Einstellungen, Verlauf und Batch im Hauptfenster öffnen (Esc schließt) statt als separate Fenster.",
