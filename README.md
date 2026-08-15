@@ -82,7 +82,7 @@ Rough guide for an OpenAI setup (the default; segmented mode, Arabic → German)
 
 > **macOS:** The `.app` is **experimental** and ships **unsigned**. It is **Apple Silicon only (M1 and newer) — it will not run on Intel Macs**. Because it is not signed or notarized, Gatekeeper blocks the first launch: **right-click the app → "Open" → "Open"**. If macOS refuses outright, open **System Settings → Privacy & Security** and click **"Open Anyway"** next to the MinbarLive message, then launch it again. This is the same "unknown developer" warning Windows shows for the EXE. Grant the microphone permission when asked, or there is no audio. Two platform limits: system-audio **loopback capture does not exist on macOS** (route audio through a virtual device such as [BlackHole](https://existential.audio/blackhole/), which then shows up as a normal input), and the subtitle overlay **cannot float above the Dock or the menu bar**, so it is laid out inside the usable screen area instead of covering them.
 
-> **Linux:** The AppImage runs on modern desktops without extra dependencies, but is still maturing: a few features are Windows-only (the OBS-visible borderless overlay, transparent static mode), and API-key storage needs a Secret Service keychain (GNOME Keyring / KWallet) — without one, keys are never written to disk and apply to the running session only. See [docs/ci.md](docs/ci.md).
+> **Linux:** The AppImage runs on modern desktops without extra dependencies, but is still maturing. The borderless overlay and transparent static mode work here too, but a few things remain Windows-only: system-audio **loopback capture** does not exist, so Linux has microphone input only, and **overlay placement and always-on-top** need X11 — under Wayland the compositor centres the overlay and the always-on-top setting does nothing. Per-pixel transparency also wants a compositing window manager. API-key storage needs a Secret Service keychain (GNOME Keyring / KWallet) — without one, keys are never written to disk and apply to the running session only. See [docs/ci.md](docs/ci.md).
 
 ### Option B: Build it yourself (Python)
 
@@ -180,7 +180,7 @@ The **Batch / File** card in the control panel processes a pre-recorded audio or
 
 ## Announcements
 
-The 📣 button opens a small window to type a message ("Prayer starts in 5 minutes", "Please switch phones to silent") and choose how long it stays up: 10 s, 30 s, 1 min, 5 min, or until you stop it. It appears large and centred on the subtitle screen, above the subtitles. Frequently used messages can be pinned as favourites, and the last few are kept for one-click re-use. An "until stopped" announcement stays up even when translation is stopped, unless you turn that off in the announcement window.
+The ⚑ button opens a small window to type a message ("Prayer starts in 5 minutes", "Please switch phones to silent") and choose how long it stays up: 10 s, 30 s, 1 min, 5 min, or until you stop it. It appears large and centred on the subtitle screen, above the subtitles. Frequently used messages can be pinned as favourites, and the last few are kept for one-click re-use. An "until stopped" announcement stays up even when translation is stopped, unless you turn that off in the announcement window.
 
 <br>
 
@@ -198,11 +198,21 @@ Easiest way to mirror, stream or record with camera + subtitles using [OBS Studi
 
 1. **Add your camera**: Sources → Add → Video Capture Device
 2. **Add the subtitle window**: Sources → Add → Window Capture → Select `[MinbarLive.exe]: MinbarLive Subtitles`
-3. **Position subtitles at bottom**: Right-click the subtitle source → Transform → Edit Transform → Set "Positional Alignment" to **Bottom Center**
-4. **Display on another monitor**: Right-click the canvas → Open Preview Projector → Select your monitor (press `Escape` to exit)
-5. **Auto-restore projector on startup**: Go to File → Settings → General → Projectors → Enable "Save projectors on exit" to automatically reopen the projector window when OBS starts
+3. **Set the capture method** (Windows): in the same properties window, set **Capture Method** to `Windows 10 (1903 and up)`
+4. **Position subtitles at bottom**: Right-click the subtitle source → Transform → Edit Transform → Set "Positional Alignment" to **Bottom Center**
+5. **Display on another monitor**: Right-click the canvas → Open Preview Projector → Select your monitor (press `Escape` to exit)
+6. **Auto-restore projector on startup**: Go to File → Settings → General → Projectors → Enable "Save projectors on exit" to automatically reopen the projector window when OBS starts
 
 This overlays the live translations on your camera feed for Mirroring, YouTube, Zoom, or recording.
+
+> **If the subtitle source shows a black rectangle**, the Capture Method is set to
+> `Automatic` or `BitBlt (Windows 7 and up)`. The overlay draws with per-pixel
+> transparency, and neither of those methods can read such a window — they return an
+> empty, fully black frame. `Windows 10 (1903 and up)` reads it correctly. It has to be
+> chosen by hand: OBS's `Automatic` falls back to BitBlt for everything except a short
+> built-in list of window types, which no Qt window belongs to. A **Display Capture** of
+> the subtitle monitor is the other option that works. This applies to Windows only — on
+> Linux and macOS, OBS captures the overlay window as it is.
 
 <br>
 
