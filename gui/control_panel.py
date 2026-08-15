@@ -399,11 +399,19 @@ class ControlPanel(QMainWindow):
             self.setWindowIcon(icon)
 
     def _logo_pixmap(self, height: int = 30) -> QPixmap | None:
-        """The header logo's mark for the current theme.
+        """The header logo's mark for the current theme, at ``height`` LOGICAL px.
 
-        ``logo_mark`` trims the shipped artwork's transparent padding and its
-        illegible lettering (see utils/icons) — drawing the raw PNG would put a
-        tiny dome in the middle of an empty box.
+        ``logo_mark`` trims the shipped artwork's transparent padding (see
+        utils/icons) — drawing the raw PNG would put a tiny dome in the middle
+        of an empty box.
+
+        **Rendered at the screen's device pixel ratio, not at ``height``.** A
+        pixmap carries its own ratio, and one left at 1.0 is stretched by the
+        scale factor when it is drawn: at 125% a 30 px bitmap was blown up to
+        38 and read as a blurry logo beside crisp text. The source is over
+        1200 px wide, so the detail costs nothing — it was being thrown away
+        before the resize. The window icon never had the problem because
+        ``square_marks`` hands Qt real frames at every size Windows asks for.
         """
         path = (
             ICON_PATH_PNG_ON_DARK
@@ -417,11 +425,15 @@ class ControlPanel(QMainWindow):
 
             from utils.icons import logo_mark
 
+            ratio = self.devicePixelRatioF() or 1.0
             buffer = io.BytesIO()
-            logo_mark(path, height).save(buffer, format="PNG")
+            logo_mark(path, max(1, round(height * ratio))).save(buffer, format="PNG")
             pixmap = QPixmap()
             pixmap.loadFromData(buffer.getvalue(), "PNG")
-            return pixmap if not pixmap.isNull() else None
+            if pixmap.isNull():
+                return None
+            pixmap.setDevicePixelRatio(ratio)
+            return pixmap
         except Exception as exc:  # noqa: BLE001 - a missing logo is cosmetic
             log(f"Header logo unavailable: {exc}", level="WARNING")
             return None

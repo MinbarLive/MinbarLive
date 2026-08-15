@@ -56,10 +56,14 @@ RESOURCE_DIR = _get_resource_dir()
 # Bundled/static resources
 DATA_DIR = os.path.join(RESOURCE_DIR, "data")
 ICON_PATH = os.path.join(RESOURCE_DIR, "public", "MinbarLive.ico")
-ICON_PATH_PNG = os.path.join(RESOURCE_DIR, "public", "MinbarLive1.png")
-# Same artwork outlined in white, for placing on a dark background.
+# The mark alone, split off the lockup by ``packaging/make_logo_assets.py``. The
+# app never draws the wordmark, and no horizontal crop of the lockup can produce
+# the mark: the letter ascenders start above the node that hangs below the
+# mark's base line, so a cut either slices the node or keeps letter tops.
+ICON_PATH_PNG = os.path.join(RESOURCE_DIR, "public", "MinbarLive_mark.png")
+# Same mark outlined in white, for placing on a dark background.
 ICON_PATH_PNG_ON_DARK = os.path.join(
-    RESOURCE_DIR, "public", "MinbarLive_white_stroke.png"
+    RESOURCE_DIR, "public", "MinbarLive_mark_on_dark.png"
 )
 
 # Writable runtime data (works for EXEs, avoids Program Files permissions)
