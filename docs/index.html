@@ -307,7 +307,7 @@
   .linkbtn .li-icon { font-size: 1.35rem; width: 34px; text-align: center; flex-shrink: 0; }
   .linkbtn .li-text b { display: block; color: var(--navy-deep); font-size: 0.98rem; }
   .linkbtn .li-text span { font-size: 0.82rem; color: var(--ink-muted); }
-  .linkbtn .li-arrow { margin-left: auto; color: var(--navy-soft); font-weight: 700; }
+  .linkbtn .li-arrow { margin-inline-start: auto; color: var(--navy-soft); font-weight: 700; }
 
   /* community */
   .community {
@@ -332,6 +332,23 @@
   footer .foot-links { margin-top: 14px; display: flex; gap: 18px; justify-content: center; flex-wrap: wrap; }
   footer .foot-links a { color: var(--navy-soft); text-decoration: none; font-size: 0.88rem; font-weight: 600; }
   footer .foot-links a:hover { text-decoration: underline; }
+
+  /* ---------- Arabic / RTL ---------- */
+  /* Inter and Segoe UI carry no Arabic glyphs on every platform, so name the
+     faces that actually ship with Windows, macOS/iOS, Android and the common
+     Linux desktops. No web font: the page loads no external resources today
+     and one Arabic font file would be the largest thing on it. */
+  html[lang="ar"] body {
+    font-family: "Segoe UI", "Geeza Pro", "Noto Naskh Arabic", "Noto Sans Arabic",
+                 Tahoma, system-ui, sans-serif;
+    line-height: 1.8; /* Arabic ascenders and diacritics need more room than 1.6 */
+  }
+  /* Arabic is a joined script: tightened tracking pulls letters into each other
+     and loosened tracking looks like it is falling apart. Blanket-reset rather
+     than a list of selectors, so a new heading cannot silently reintroduce it. */
+  html[lang="ar"] * { letter-spacing: normal; }
+  /* The arrow points the way the reader is going, not at a fixed side. */
+  html[dir="rtl"] .linkbtn .li-arrow { transform: scaleX(-1); }
 
   /* ---------- phones (must stay at the end so it overrides the base rules) ---------- */
   @media (max-width: 720px) {
@@ -397,8 +414,9 @@
       <a href="#community" data-i18n="nav_community">Mitmachen</a>
     </nav>
     <div class="lang-switch" role="group" aria-label="Language">
-      <button id="btn-de" onclick="setLang('de')">DE</button>
-      <button id="btn-en" onclick="setLang('en')">EN</button>
+      <button data-lang="de" onclick="setLang('de')">DE</button>
+      <button data-lang="en" onclick="setLang('en')">EN</button>
+      <button data-lang="ar" onclick="setLang('ar')">AR</button>
     </div>
   </div>
 </div>
@@ -415,9 +433,11 @@
       <p data-i18n="hero_vision">Unsere Vision: Jede Moschee soll Vorträge mehrsprachig zugänglich machen können, ohne teure Hardware.</p>
     </div>
     <div class="stats">
-      <div class="stat"><b data-i18n="stat1_num">~1–3 s</b><span data-i18n="stat1_label">Verzögerung (Echtzeit)</span></div>
-      <div class="stat"><b>15+</b><span data-i18n="stat2_label">Ausgangssprachen</span></div>
-      <div class="stat"><b>35+</b><span data-i18n="stat3_label">Zielsprachen</span></div>
+      <!-- dir="auto": "15+" has no strong directional character, so in the RTL
+           page it would otherwise be laid out as "+15". -->
+      <div class="stat"><b dir="auto" data-i18n="stat1_num">~1–3 s</b><span data-i18n="stat1_label">Verzögerung (Echtzeit)</span></div>
+      <div class="stat"><b dir="auto">15+</b><span data-i18n="stat2_label">Ausgangssprachen</span></div>
+      <div class="stat"><b dir="auto">35+</b><span data-i18n="stat3_label">Zielsprachen</span></div>
     </div>
     <div class="cta-row">
       <a class="btn btn-primary" href="https://github.com/MinbarLive/MinbarLive/releases/latest/download/MinbarLive.exe" data-i18n="hero_cta_download">🚀 Download für Windows</a>
@@ -823,29 +843,142 @@ const translations = {
     footer_issues: "Report a bug",
     footer_privacy: "Privacy",
     footer_disclaimer_link: "Disclaimer"
+  },
+  /* Arabic. Latin digits throughout on purpose: version numbers, prices and
+     "M1" arrive as Latin digits from elsewhere on the page, and mixing them
+     with Arabic-Indic ones in the same paragraph reads as a bug. Arrows are
+     spelled out as "ثم" — an arrow glyph in an RTL run points the wrong way
+     for the reader and browsers disagree on whether to mirror it. */
+  ar: {
+    _title: "MinbarLive | ترجمة حية للمحاضرات الإسلامية",
+    _desc: "يعرض MinbarLive ترجمة مكتوبة على الشاشة في الوقت الحقيقي. مفتوح المصدر، يعمل محليًا، لكل مسجد.",
+    nav_start: "الرئيسية",
+    nav_features: "المزايا",
+    nav_install: "البدء",
+    nav_links: "الروابط",
+    nav_community: "المشاركة",
+    hero_badge: "🕌 مجاني ومفتوح المصدر · لكل مسجد",
+    hero_title: "ترجمة حية للمحاضرات الإسلامية، في الوقت الحقيقي",
+    hero_lead: "يستمع MinbarLive ويترجم بالذكاء الاصطناعي ويعرض الترجمة على الشاشة، كلمةً بكلمة أثناء حديث المتحدث.",
+    hero_vision: "رؤيتنا: أن يتمكن كل مسجد من إتاحة محاضراته بعدة لغات، دون أجهزة باهظة.",
+    hero_cta_download: "🚀 تنزيل لويندوز",
+    hero_cta_download_linux: "🐧 تنزيل للينكس",
+    hero_cta_download_macos: "🍎 تنزيل لماك",
+    hero_cta_github: "👨‍💻 عرض على GitHub",
+    hero_meta: "مجاني 100٪ · ويندوز ولينكس وماك (Apple Silicon فقط) · تحتاج فقط إلى مفتاح وصول للذكاء الاصطناعي (API key)",
+    version_line: "الإصدار الحالي: <b><bdi>{version}</bdi></b> · صدر في {date}",
+    release_new: "🎉 صدر الإصدار الجديد <bdi>{version}</bdi>!",
+    release_new_sub: "صدر في {date} · نزّله من هنا واطّلع على الجديد",
+    /* <bdi> around every digit range: bare "1–3" in an RTL run lays out as
+       "3–1", because the dash is neutral and the two numbers become separate
+       runs ordered right to left. */
+    stat1_num: "<bdi>~1–3</bdi> ث",
+    stat1_label: "زمن التأخير (فوري)",
+    stat2_label: "لغات المصدر",
+    stat3_label: "لغات الترجمة",
+    features_title: "ما الذي يقدّمه MinbarLive",
+    features_sub: "مصمَّم لخطب الجمعة والمحاضرات والدروس.",
+    intro_video_title: "▶️ لمحة سريعة: كيف يعمل MinbarLive",
+    intro_video_note: "شرح الإعداد خطوة بخطوة تجده في الفيديو التعليمي أدناه.",
+    f1_title: "بث فوري",
+    f1_text: "يظهر النص المنطوق كلمةً بكلمة، وتتبعه الترجمة بعد كل جملة خلال <bdi>1–3</bdi> ثوانٍ تقريبًا.",
+    f2_title: "آيات قرآنية موثّقة",
+    f2_text: "يتعرّف على الآيات المتلوّة ويعرض الترجمة المعتمدة بنصها بدلًا من صياغة الذكاء الاصطناعي.",
+    f3_title: "ترجمة ثنائية اللغة",
+    f3_text: "النص الأصلي فوق الترجمة. قواميس القرآن والأذان متوفرة بالألمانية والإنجليزية والتركية والألبانية والبوسنية.",
+    f4_title: "اختر مزوّد الذكاء الاصطناعي",
+    f4_text: "OpenAI (الافتراضي) أو Google Gemini أو Anthropic Claude، ويمكن التبديل بينها في أي وقت من الإعدادات.",
+    f5_title: "جهاز العرض والشاشة وOBS",
+    f5_text: "ترجمة بملء الشاشة على شاشة ثانية أو جهاز عرض، وكذلك للبث المباشر والتسجيلات (مع OBS مثلًا).",
+    f6_title: "ترجمة التسجيلات لاحقًا",
+    f6_text: "يحوّل تسجيلًا صوتيًا أو مرئيًا تلقائيًا إلى ملف ترجمة جاهز، لفيديوهات يوتيوب مثلًا.",
+    f7_title: "السجل وملخصات الذكاء الاصطناعي",
+    f7_text: "تُحفظ كل الجلسات ويمكن البحث فيها، مع ملخص يكتبه الذكاء الاصطناعي بضغطة زر.",
+    f8_title: "محلي وآمن",
+    f8_text: "يعمل التطبيق على جهازك أنت، دون حساب أو تسجيل دخول. ويُحفظ مفتاح الوصول الخاص بك بأمان على الجهاز.",
+    install_title: "🚀 جاهز في 4 خطوات",
+    install_sub: "لا حاجة إلى تثبيت: نزّل الملف، افتحه، وابدأ.",
+    video_title: "🎬 فيديو تعليمي: إعداد MinbarLive واستخدامه",
+    video_note: "تفضّل القراءة؟ الخطوات الأربع أدناه توصلك إلى النتيجة نفسها.",
+    s1_title: "التنزيل",
+    s1_text: 'نزّل أحدث إصدار "MinbarLive.exe" من <a href="https://github.com/MinbarLive/MinbarLive/releases">صفحة الإصدارات</a>.',
+    s2_title: "شغّل MinbarLive.exe",
+    s2_text: "يرشدك معالج الإعداد إلى اختيار اللغة والميكروفون ومزوّد الذكاء الاصطناعي.",
+    s3_title: "أضف مفتاح API",
+    s3_text: 'مفتاحك الشخصي للذكاء الاصطناعي، تنشئه في دقائق. ومفتاح OpenAI واحد يكفي لكل شيء. <a href="https://youtu.be/OB99E7Y1cMA">شاهد الفيديو التعليمي</a>.',
+    s4_title: "تظهر الترجمة!",
+    s4_text: "اضغط «ابدأ» فتظهر الترجمة مباشرة في نافذة الترجمة.",
+    smartscreen: "<b>ملاحظة:</b> قد يعرض ويندوز تحذيرًا عند أول تشغيل لأن الملف غير موقّع رقميًا. هذا أمر طبيعي، والملف من الرابط الرسمي آمن. اختر «معلومات إضافية» ثم «تشغيل على أي حال».",
+    macos_note: "<b>ماك (أجهزة Apple Silicon فقط، M1 وأحدث — أجهزة Intel غير مدعومة):</b> نسخة الماك جديدة وغير موقّعة أيضًا. فك ضغط الملف، وانقل <code>MinbarLive.app</code> إلى مجلد التطبيقات، وشغّله أول مرة بالضغط عليه بالزر الأيمن ثم <b>«فتح»</b> (وإذا منعه النظام تمامًا: إعدادات النظام ثم الخصوصية والأمان ثم «فتح على أي حال»). بعد ذلك يعمل كأي تطبيق آخر. ملاحظة: لا يتيح الماك تسجيل صوت الجهاز نفسه — استخدم لذلك جهاز صوت افتراضيًا مثل BlackHole.",
+    cost_note: "<b>تكلفة الـAPI:</b> MinbarLive نفسه مجاني، لكنه يستخدم مفتاح API الخاص بك. تكلفة ساعة من الترجمة الحية نحو 0.50 دولار (من العربية إلى الألمانية). نصيحة: حدّد سقفًا للاستهلاك في حساب المزوّد.",
+    setup_help: '<b>مساعدة في الإعداد:</b> واجهت صعوبة؟ راسلنا على <a href="mailto:minbar.live@outlook.com">minbar.live@outlook.com</a> وسنساعدك بكل سرور في الإعداد الأول.',
+    links_title: "🔗 كل الروابط",
+    links_sub: "التنزيل والدروس والأدوات المفيدة في مكان واحد.",
+    l1_title: "تنزيل (ويندوز)",
+    l1_sub: "أحدث إصدار لويندوز، مجانًا",
+    l1b_title: "تنزيل (لينكس)",
+    l1b_sub: "ملف AppImage للينكس، مجانًا",
+    l1c_title: "تنزيل (ماك)",
+    l1c_sub: "لأجهزة Apple Silicon فقط (M1 وأحدث)، مجانًا",
+    l2_sub: "للمطورين: الكود المصدري وصفحة المشروع",
+    l3_sub: "ملاحظات مجهولة المصدر عبر Google Forms",
+    l4_title: "شرح: إنشاء مفتاح OpenAI API",
+    l4_sub: "فيديو خطوة بخطوة على يوتيوب",
+    l8_title: "شرح: إعداد MinbarLive",
+    l8_sub: "فيديو تعليمي كامل على يوتيوب",
+    l6_sub: "برنامج مجاني للعرض والبث والتسجيل",
+    l7_sub: "كل الروابط في مكان واحد",
+    community_title: "نبحث عن مختبِرين وآراء ومطوّرين! 🤝",
+    community_text: "MinbarLive مشروع مفتوح المصدر، من المجتمع وإليه. جرّب التطبيق في مسجدك، أو أبلغ عن الأخطاء، أو ساهم في التطوير. كل مساعدة تصنع فرقًا.",
+    community_cta1: "💭 شارك رأيك",
+    community_cta2: "🧑‍💻 ساهم في التطوير",
+    footer_disclaimer: "قد تحتوي ترجمة الذكاء الاصطناعي على أخطاء. MinbarLive أداة مساعدة ولا تغني عن ترجمة متخصصة للمحتوى الديني.",
+    footer_license: "الرخصة (AGPL-3.0)",
+    footer_issues: "الإبلاغ عن خطأ",
+    footer_privacy: "الخصوصية",
+    footer_disclaimer_link: "إخلاء المسؤولية"
   }
 };
 
+/* The languages the switch offers, in the order it shows them. `de` stays the
+   fallback: it is what the markup itself is written in. */
+const LANGS = ["de", "en", "ar"];
+const RTL_LANGS = ["ar"];
+/* Dates for the release line. NOT "ar-SA" — that resolves to the Islamic
+   calendar in current browsers, which would date a software release by Hijri
+   year. "-u-nu-latn" keeps Latin digits, so the date matches the version
+   number beside it instead of mixing two digit systems in one sentence. */
+const DATE_LOCALES = { de: "de-DE", en: "en-GB", ar: "ar-EG-u-nu-latn" };
+
+/* "ar" -> "Ar", so a per-language attribute can be looked up in the dataset:
+   data-href-ar arrives there as `hrefAr`. */
+const langSuffix = (lang) => lang.charAt(0).toUpperCase() + lang.slice(1);
+
 function setLang(lang) {
-  const dict = translations[lang] || translations.de;
+  if (!LANGS.includes(lang)) lang = "de";
+  const dict = translations[lang];
   document.documentElement.lang = lang;
+  document.documentElement.dir = RTL_LANGS.includes(lang) ? "rtl" : "ltr";
   document.title = dict._title;
   document.querySelector('meta[name="description"]').setAttribute("content", dict._desc);
   document.querySelectorAll("[data-i18n]").forEach(el => {
     const val = dict[el.dataset.i18n];
     if (val !== undefined) el.innerHTML = val;
   });
-  document.querySelectorAll("[data-href-de]").forEach(el => {
-    el.href = lang === "de" ? el.dataset.hrefDe : el.dataset.hrefEn;
+  // Per-language links and video embeds. English is the fallback for any
+  // language that has no version of its own — there is no Arabic tutorial yet.
+  document.querySelectorAll("[data-href-en]").forEach(el => {
+    el.href = el.dataset["href" + langSuffix(lang)] || el.dataset.hrefEn;
   });
-  // Video embeds that exist in both languages. Assigning src reloads the
-  // iframe, so only touch it when the language actually changes the source.
-  document.querySelectorAll("[data-src-de]").forEach(el => {
-    const next = lang === "de" ? el.dataset.srcDe : el.dataset.srcEn;
+  // Assigning src reloads the iframe, so only touch it when the language
+  // actually changes the source.
+  document.querySelectorAll("[data-src-en]").forEach(el => {
+    const next = el.dataset["src" + langSuffix(lang)] || el.dataset.srcEn;
     if (el.getAttribute("src") !== next) el.setAttribute("src", next);
   });
-  document.getElementById("btn-de").classList.toggle("active", lang === "de");
-  document.getElementById("btn-en").classList.toggle("active", lang === "en");
+  document.querySelectorAll(".lang-switch button").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.lang === lang);
+  });
   renderRelease(lang);
   try { localStorage.setItem("minbarlive-lang", lang); } catch (e) { /* private mode */ }
 }
@@ -870,7 +1003,7 @@ function renderRelease(lang) {
   const dict = translations[lang] || translations.de;
   const version = String(latestRelease.tag_name || "").replace(/^v/, "");
   const published = new Date(latestRelease.published_at);
-  const date = published.toLocaleDateString(lang === "de" ? "de-DE" : "en-GB",
+  const date = published.toLocaleDateString(DATE_LOCALES[lang] || DATE_LOCALES.de,
     { day: "numeric", month: "long", year: "numeric" });
   const fill = (tpl) => (tpl || "").replace("{version}", version).replace("{date}", date);
 
@@ -901,10 +1034,11 @@ fetch(RELEASE_API, { headers: { Accept: "application/vnd.github+json" } })
 (function initLang() {
   let lang = null;
   const param = new URLSearchParams(location.search).get("lang");
-  if (param === "de" || param === "en") lang = param;
+  if (LANGS.includes(param)) lang = param;
   if (!lang) { try { lang = localStorage.getItem("minbarlive-lang"); } catch (e) {} }
-  if (lang !== "de" && lang !== "en") {
-    lang = (navigator.language || "").toLowerCase().startsWith("de") ? "de" : "en";
+  if (!LANGS.includes(lang)) {
+    const browser = (navigator.language || "").toLowerCase();
+    lang = LANGS.find(l => browser.startsWith(l)) || "en";
   }
   setLang(lang);
 })();
