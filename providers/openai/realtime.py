@@ -15,8 +15,17 @@ Event mapping onto the StreamingTranscriptionProvider callbacks:
   item and reported as a growing interim transcript.
 - ``...transcription.completed`` carries the full transcript of one server-VAD
   turn — reported as the final transcript, immediately followed by the
-  utterance-end signal (one completed turn == one utterance; the API has no
-  separate utterance-end event).
+  utterance-end signal (the API has no separate utterance-end event).
+
+**One completed item is NOT one utterance.** That assumption held only while
+the server's VAD owned every turn boundary. A forced turn commit (the stall
+watchdog's ``commit_turn``) hands the buffered audio to a *new* conversation
+item while the VAD's own item is still open, so two items overlap and
+interleave their deltas over the same speech. Both the transcript and the
+utterance-end callbacks therefore carry ``item_id=``: the accumulator keys its
+bookkeeping by item, and without it the first item to complete wiped the record
+the second was still extending — which put the same sentence on screen up to
+four times (issue #106).
 """
 
 from __future__ import annotations
@@ -256,9 +265,21 @@ class OpenAIRealtimeTranscriptionProvider:
                                 text = deltas.get(event.item_id, "") + event.delta
                                 deltas[event.item_id] = text
                                 if text.strip():
-                                    on_transcript(text, False)
+                                    on_transcript(text, False, item_id=event.item_id)
                         elif etype == _COMPLETED_EVENT:
                             deltas.pop(event.item_id, None)
+                            if deltas:
+                                # A forced commit opened a second item over
+                                # audio this one still owned. Recorded because
+                                # it is the precondition for the duplicate
+                                # subtitles of issue #106, and nothing in the
+                                # logs used to show it.
+                                log(
+                                    f"OpenAI realtime item {event.item_id} "
+                                    f"completed with {len(deltas)} other item(s) "
+                                    "still streaming",
+                                    level="DEBUG",
+                                )
                             record_openai_transcription_usage(
                                 getattr(event, "usage", None),
                                 model=model,
@@ -266,8 +287,8 @@ class OpenAIRealtimeTranscriptionProvider:
                             )
                             text = (event.transcript or "").strip()
                             if text:
-                                on_transcript(text, True)
-                            on_utterance_end()
+                                on_transcript(text, True, item_id=event.item_id)
+                            on_utterance_end(item_id=event.item_id)
                         elif etype == _FAILED_EVENT:
                             deltas.pop(event.item_id, None)
                             log(
@@ -277,7 +298,7 @@ class OpenAIRealtimeTranscriptionProvider:
                             )
                             # Flush so an accumulated interim can't linger on
                             # screen (an empty flush clears the live line).
-                            on_utterance_end()
+                            on_utterance_end(item_id=event.item_id)
                         elif etype == "error":
                             err = getattr(event, "error", None)
                             msg = getattr(err, "message", None) or str(err or event)

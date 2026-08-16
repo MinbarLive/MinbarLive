@@ -86,8 +86,8 @@ class StreamingTranscriptionProvider(Protocol):
         *,
         model: str,
         language: str | None,
-        on_transcript: Callable[[str, bool], None],
-        on_utterance_end: Callable[[], None],
+        on_transcript: Callable[..., None],
+        on_utterance_end: Callable[..., None],
         on_error: Callable[[Exception], None],
         on_speech_activity: Callable[[bool], None] | None = None,
     ) -> StreamHandle:
@@ -99,10 +99,20 @@ class StreamingTranscriptionProvider(Protocol):
                 the same auto-detect behavior as ``TranscriptionProvider``).
             on_transcript: Called with (text, is_final) as transcripts arrive.
                 May be called multiple times per utterance with growing
-                interim text before a final one.
+                interim text before a final one. Providers whose engine can
+                have more than one transcription unit open at once also pass
+                ``item_id=`` — see ``on_utterance_end``.
             on_utterance_end: Called when the provider's own endpointing
                 detects a natural pause — the signal to flush accumulated
-                text into translation.
+                text into translation. Providers that transcribe in
+                independently-completing units pass ``item_id=`` identifying
+                the one that ended, because a unit completing is NOT proof the
+                speaker stopped: OpenAI's forced turn commit opens a second
+                item over audio the first still owns, and treating the first
+                completion as the end of the utterance discarded the
+                bookkeeping the second one was still relying on (duplicate
+                subtitles, issue #106). Providers with a single linear stream
+                omit it.
             on_error: Called if the connection fails or drops unexpectedly.
             on_speech_activity: Called with True when the provider's own VAD
                 starts hearing speech and False when it stops. Separate from

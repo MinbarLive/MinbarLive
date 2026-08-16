@@ -425,6 +425,92 @@ class TestIntraTurnSentenceFlush:
         s.add_final("etwas ganz anderes")
         assert s.take_and_reset()[0] == "etwas ganz anderes"
 
+    def test_forced_commit_prepending_a_word_does_not_repeat_the_verse(self):
+        """Issue #106, observed live 2026-08-14 and again 2026-08-16.
+
+        A forced turn commit re-transcribes the buffered audio, and the
+        re-transcription prepended "لسعى" to an ayah already on screen. With
+        the record required at index 0 the whole verse went out a second time —
+        the first copy verified with the 📖, the second scored below the gate
+        and rendered as ordinary prose.
+        """
+        verse = "يا أيها الذين آمنوا اتقوا الله حق تقاته ولا تموتن إلا وأنتم مسلمون."
+        s = self._session()
+        assert s.set_interim(verse)[0] == verse
+        s.add_final("لسعى. " + verse)
+        assert s.take_and_reset()[0] == "لسعى."
+
+    def test_words_on_both_sides_of_the_match_are_kept(self):
+        """The run can end up in the middle. Everything outside it is new, and
+        dropping either side would be a hole."""
+        s = self._session()
+        assert s.set_interim("erster Satz.")[0] == "erster Satz."
+        s.add_final("davor. erster Satz. danach")
+        assert s.take_and_reset()[0] == "davor. danach"
+
+    def test_retracted_words_are_not_re_sent(self):
+        """The other shape a forced commit produces, live 2026-08-16 00:19:54:
+        the re-transcription DROPS leading words the deltas carried. What is
+        left is wholly inside the record, so none of it is new."""
+        s = self._session()
+        assert s.set_interim("خط. خط. الحمد لله.")[0] == "خط. خط. الحمد لله."
+        assert s.set_interim("الحمد لله.")[0] == ""
+
+    def test_retraction_that_also_adds_words_still_falls_back(self):
+        """Only full containment is safe. Once the text carries a word the
+        record has never seen, there is no telling which words are new — so it
+        goes out whole, duplicating rather than risking a hole."""
+        s = self._session()
+        assert s.set_interim("erster Satz. zweiter Satz.")[0] == "erster Satz. zweiter Satz."
+        assert s.set_interim("zweiter Satz. dritter Satz.")[0] == "zweiter Satz. dritter Satz."
+
+    def test_a_completing_item_does_not_wipe_another_items_record(self):
+        """Issue #106 shape 3, measured live 2026-08-16 00:14:19.
+
+        A forced commit opens a second item over audio the first still owns.
+        When the first completes, ``on_utterance_end`` fires for THAT item
+        while the second is still streaming. With one shared record the second
+        item's next delta re-sent every word already on screen: the observed
+        block was a character-exact prefix of its predecessor, so the guard had
+        passed and only a wiped record could explain it.
+        """
+        s = self._session()
+        assert s.set_interim("erster Satz.", item_id="B")[0] == "erster Satz."
+        s.take_and_reset(item_id="A")  # the OTHER item completed
+        assert s.set_interim("erster Satz. und weiter.", item_id="B")[0] == "und weiter."
+
+    def test_its_own_completion_still_retires_the_record(self):
+        """The flip side: once an item really is done its record must go, or
+        the next turn's repeat of the same phrase would be swallowed."""
+        s = self._session()
+        assert s.set_interim("الحمد لله.", item_id="A")[0] == "الحمد لله."
+        s.take_and_reset(item_id="A")
+        assert s.set_interim("الحمد لله. وبعد", item_id="A")[0] == "الحمد لله."
+
+    def test_two_items_keep_separate_records(self):
+        """Interleaved deltas over the same speech must not be measured
+        against each other — that is what made the guard fail at all."""
+        s = self._session()
+        assert s.set_interim("erster Satz.", item_id="A")[0] == "erster Satz."
+        assert s.set_interim("erster Satz.", item_id="B")[0] == "erster Satz."
+        assert s.set_interim("erster Satz.", item_id="A")[0] == ""
+        assert s.set_interim("erster Satz.", item_id="B")[0] == ""
+
+    def test_reset_items_forgets_records_from_a_dropped_connection(self):
+        s = self._session()
+        assert s.set_interim("erster Satz.", item_id="A")[0] == "erster Satz."
+        s.reset_items()
+        assert s.set_interim("erster Satz.", item_id="A")[0] == "erster Satz."
+
+    def test_providers_without_items_are_unaffected(self):
+        """Deepgram and Gemini pass no item and land on a single key — the
+        previous single-record behaviour, unchanged."""
+        s = self._session()
+        assert s.set_interim("erster Satz. zweiter")[0] == "erster Satz."
+        s.add_final("erster Satz. zweiter Satz.")
+        assert s.take_and_reset()[0] == "zweiter Satz."
+        assert s.set_interim("erster Satz.")[0] == "erster Satz."
+
     def test_live_line_keeps_the_whole_turn_while_it_runs(self):
         """It renders only its last wrapped row, so trimming the flushed part
         would show the same words and risk a blank row."""

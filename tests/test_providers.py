@@ -1470,14 +1470,20 @@ class TestOpenAIRealtimeTranscriptionProvider:
             model="gpt-4o-transcribe",
             language="ar",
             on_transcript=(
-                (lambda text, is_final: transcripts.append((text, is_final)))
+                (
+                    lambda text, is_final, item_id=None: transcripts.append(
+                        (text, is_final)
+                    )
+                )
                 if transcripts is not None
-                else lambda *a: None
+                else lambda *a, **k: None
             ),
+            # Records the id rather than True: which item ended is the whole
+            # point of the signal (issue #106).
             on_utterance_end=(
-                (lambda: utterance_ends.append(True))
+                (lambda item_id=None: utterance_ends.append(item_id))
                 if utterance_ends is not None
-                else lambda: None
+                else lambda **k: None
             ),
             on_error=(
                 (lambda e: errors.append(e))
@@ -1535,6 +1541,35 @@ class TestOpenAIRealtimeTranscriptionProvider:
             ("Assalamu", False),
             ("Assalamu alaikum", True),
         ]
+
+    def test_overlapping_items_end_under_their_own_ids(self, monkeypatch):
+        """Issue #106. A forced turn commit opens a second item over audio the
+        first still owns, so the two interleave. Each callback must say WHICH
+        item it is about — the accumulator keys its bookkeeping on it, and
+        without the id the first completion wiped the record the second was
+        still extending and re-sent everything already on screen.
+        """
+        events = [
+            _rt_event(self.DELTA, item_id="i1", delta="erster"),
+            _rt_event(self.DELTA, item_id="i2", delta="zweiter"),
+            _rt_event(self.COMPLETED, item_id="i1", transcript="erster"),
+            _rt_event(self.COMPLETED, item_id="i2", transcript="zweiter"),
+        ]
+        self._fake_client(monkeypatch, events)
+        transcripts, utterance_ends = [], []
+        self._open(transcripts=transcripts, utterance_ends=utterance_ends)
+        assert _wait_until(lambda: len(utterance_ends) == 2)
+        assert utterance_ends == ["i1", "i2"]
+
+    def test_failed_item_ends_under_its_own_id(self, monkeypatch):
+        events = [
+            _rt_event(self.DELTA, item_id="i7", delta="doomed"),
+            _rt_event(self.FAILED, item_id="i7", error=SimpleNamespace(message="x")),
+        ]
+        self._fake_client(monkeypatch, events)
+        utterance_ends = []
+        self._open(utterance_ends=utterance_ends)
+        assert _wait_until(lambda: utterance_ends == ["i7"])
 
     def test_failed_transcription_still_flushes(self, monkeypatch):
         """A failed utterance must clear the pending interim (empty flush)
