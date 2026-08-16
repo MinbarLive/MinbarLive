@@ -74,6 +74,24 @@ _GENERATIONS = itertools.count(1)
 _SENTENCE_FLUSH_PROVIDERS = frozenset({"openai_realtime"})
 
 
+def _find_emitted_run(words: list[str], emitted: list[str]) -> int | None:
+    """Index where ``emitted`` sits inside ``words`` as a contiguous run.
+
+    ``None`` when it does not occur at all. An empty record matches at 0, so a
+    fresh turn takes the whole text.
+
+    The FIRST occurrence, so a speaker who genuinely repeats a phrase has the
+    repeat emitted rather than swallowed.
+    """
+    if not emitted:
+        return 0
+    n = len(emitted)
+    for i in range(len(words) - n + 1):
+        if words[i : i + n] == emitted:
+            return i
+    return None
+
+
 def _cut_complete_sentence(text: str) -> str:
     """The leading run of ``text`` ending on a sentence terminator, or ``""``.
 
@@ -123,10 +141,18 @@ class UtteranceSession:
         self._live_settled = False
         self._live_rev = 0
         self._sentence_flush = sentence_flush
-        # Words of the CURRENT turn already handed to translation by an
-        # intra-turn flush. The words themselves, not a count, so the next
+        # Words already handed to translation by an intra-turn flush, per
+        # transcription item. The words themselves, not a count, so the next
         # text can be checked for actually continuing them.
-        self._emitted: list[str] = []
+        #
+        # Keyed by item because a forced turn commit makes OpenAI open a
+        # SECOND item over audio the first still owns, and the two interleave
+        # their deltas. With one shared record, the first item completing wiped
+        # the record the second was still extending, and its next delta then
+        # re-sent every word already on screen. Providers with one linear
+        # stream pass no item and land under a single ``None`` key, which is
+        # exactly the previous behaviour.
+        self._emitted: dict[str | None, list[str]] = {}
 
     def _publish_live_locked(self) -> None:
         pieces = [p for p in self._parts if p.strip()]
@@ -136,31 +162,62 @@ class UtteranceSession:
         self._live_settled = False  # new speech: the line is in progress again
         self._live_rev += 1
 
-    def _remainder_locked(self, text: str) -> str:
-        """The words of the current turn not yet handed to translation."""
+    def _remainder_locked(self, text: str, item_id: str | None = None) -> str:
+        """The words of this item not yet handed to translation.
+
+        The emitted run is looked for anywhere in the text, not only at index 0
+        (issue #106). A forced turn commit makes the server re-transcribe the
+        buffered audio, and the re-transcription may PREPEND words the deltas
+        never carried — live 2026-08-14 a verified ayah came back as
+        "لسعى. <the ayah>", and requiring the record at index 0 re-sent the
+        whole verse, once certified and once not.
+
+        Words on either side of the match are what is new, so nothing is lost
+        when the match is not at the start.
+        """
         words = text.split()
-        if words[: len(self._emitted)] != self._emitted:
-            # Not a continuation of what already went out: the engine opened a
-            # new conversation item before the old one completed, or a
-            # completed transcript is not the verbatim concatenation of its
-            # deltas. Start the turn over rather than cut the wrong prefix off
-            # — a duplicated sentence is recoverable, a missing one is a hole
-            # in the khutbah.
+        emitted = self._emitted.get(item_id, [])
+        start = _find_emitted_run(words, emitted)
+        if start is None and _find_emitted_run(emitted, words) is not None:
+            # The engine RETRACTED words it had already sent — live 2026-08-16
+            # "خط. خط. <sentence>" came back as just "<sentence>". What is left
+            # sits wholly inside the record, so every word of it is already on
+            # screen and none of it is new. Falling through to the reset below
+            # would re-send the sentence, which is exactly what happened.
+            #
+            # Logged with the text because this is the ONE branch that can
+            # drop speech instead of repeating it. If a hole ever appears in a
+            # khutbah, this line is the first place to look: what it names
+            # should already be on screen, and if it is not, this rule is why.
             log(
-                "STREAMING intra-turn flush: text no longer continues the "
-                "flushed prefix — translating it whole",
+                "STREAMING intra-turn flush: the engine retracted words, the "
+                f"rest is already on screen — suppressing {text[:80]!r}",
                 level="DEBUG",
             )
-            self._emitted = []
-        return " ".join(words[len(self._emitted) :])
+            return ""
+        if start is None:
+            # The record does not occur at all: the engine opened a new
+            # conversation item before the old one completed, retracted words
+            # it had already sent AND added new ones, or a completed transcript
+            # is not the verbatim concatenation of its deltas. Start the turn
+            # over rather than cut the wrong words off — a duplicated sentence
+            # is recoverable, a missing one is a hole in the khutbah.
+            log(
+                "STREAMING intra-turn flush: the flushed words are gone from "
+                "the text — translating it whole",
+                level="DEBUG",
+            )
+            self._emitted.pop(item_id, None)
+            return " ".join(words)
+        return " ".join(words[:start] + words[start + len(emitted) :])
 
-    def _cut_flushable_locked(self, text: str) -> str:
+    def _cut_flushable_locked(self, text: str, item_id: str | None = None) -> str:
         """The next chunk of the running turn worth translating, or ``""``.
 
         Records it as emitted, so neither a later interim nor the turn's final
         transcript hands the same words to the translator a second time.
         """
-        remainder = self._remainder_locked(text)
+        remainder = self._remainder_locked(text, item_id)
         ready = _cut_complete_sentence(remainder)
         if not ready and looks_semantically_complete(remainder):
             # No terminator, but this much unpunctuated speech is already a
@@ -179,13 +236,13 @@ class UtteranceSession:
             # terminator, so its last word is by definition finished.
             ready = " ".join(remainder.split()[:-1])
         if ready:
-            self._emitted.extend(ready.split())
+            self._emitted.setdefault(item_id, []).extend(ready.split())
         return ready
 
-    def add_final(self, text: str) -> None:
+    def add_final(self, text: str, item_id: str | None = None) -> None:
         with self._lock:
             if self._sentence_flush:
-                remainder = self._remainder_locked(text)
+                remainder = self._remainder_locked(text, item_id)
                 if not remainder:
                     # Every word of this turn already left sentence by
                     # sentence. Publish nothing: the live line must keep its
@@ -200,7 +257,7 @@ class UtteranceSession:
             self._interim = ""  # this hypothesis window just finalized
             self._publish_live_locked()
 
-    def set_interim(self, text: str) -> tuple[str, int]:
+    def set_interim(self, text: str, item_id: str | None = None) -> tuple[str, int]:
         """Record the newest interim; returns (flushable text, live revision).
 
         The flushable text is a finished sentence cut out of the still-running
@@ -215,11 +272,19 @@ class UtteranceSession:
         with self._lock:
             self._interim = text
             self._publish_live_locked()
-            ready = self._cut_flushable_locked(text) if self._sentence_flush else ""
+            ready = (
+                self._cut_flushable_locked(text, item_id) if self._sentence_flush else ""
+            )
             return ready, self._live_rev
 
-    def take_and_reset(self) -> tuple[str, int]:
+    def take_and_reset(self, item_id: str | None = None) -> tuple[str, int]:
         """Flush the utterance; returns (text, live revision at flush time).
+
+        Retires the emitted record of ``item_id`` only. Any other item is still
+        streaming its own deltas, and dropping its record would make its next
+        delta look like a brand-new turn and re-send every word already on
+        screen — the duplicate measured live on 2026-08-16, where a completed
+        item wiped a record that a second, overlapping item was still using.
 
         The live text is deliberately NOT cleared here — it is marked
         *settled* instead: the finished source stays on screen (recolored
@@ -245,8 +310,18 @@ class UtteranceSession:
                 # still in flight, so the settled line stays up for that
                 # call's compare-and-clear rather than being blanked here.
                 self._live_settled = True
-            self._emitted = []  # the turn is over
+            self._emitted.pop(item_id, None)  # this item is over
             return text, self._live_rev
+
+    def reset_items(self) -> None:
+        """Forget every emitted record — the connection they belong to is gone.
+
+        Item ids are unique per connection, so records left behind by a swapped
+        connection can never match again; without this they would accumulate
+        for the life of the session.
+        """
+        with self._lock:
+            self._emitted.clear()
 
     def get_live_state(self) -> tuple[str, bool]:
         """(live text, settled) — settled means the utterance is finished
@@ -491,6 +566,9 @@ class StreamingSession:
             # a translation to run. Takes only the accumulator's own lock, which
             # is never held while acquiring this one.
             self._on_utterance_end()
+            # Item ids belong to the connection being dropped: nothing they
+            # recorded can ever be continued once it is closed.
+            self._utterances.reset_items()
             old = self._handle
             self._handle = None  # feeder drops chunks while down
             if old is not None:
@@ -563,7 +641,9 @@ class StreamingSession:
 
     # --- provider callbacks ----------------------------------------------
 
-    def _on_transcript(self, text: str, is_final: bool) -> None:
+    def _on_transcript(
+        self, text: str, is_final: bool, item_id: str | None = None
+    ) -> None:
         if not text.strip():
             return
         self._mark_activity()
@@ -576,9 +656,9 @@ class StreamingSession:
             self._outage = False
             self._backoff = STREAMING_RECONNECT_BASE_SECONDS
         if is_final:
-            self._utterances.add_final(text)
+            self._utterances.add_final(text, item_id)
         else:
-            ready, live_rev = self._utterances.set_interim(text)
+            ready, live_rev = self._utterances.set_interim(text, item_id)
             if ready:
                 # A finished sentence inside a turn that is still running:
                 # translate it now instead of waiting for the speaker to pause
@@ -587,8 +667,8 @@ class StreamingSession:
                 # downstream all apply to it unchanged.
                 self._utterance_queue.put((ready, live_rev))
 
-    def _on_utterance_end(self) -> None:
-        text, live_rev = self._utterances.take_and_reset()
+    def _on_utterance_end(self, item_id: str | None = None) -> None:
+        text, live_rev = self._utterances.take_and_reset(item_id)
         if text.strip():
             self._utterance_queue.put((text, live_rev))
 
