@@ -219,6 +219,12 @@ class TestProcessFile:
         """Mocked pipeline around a real 3-segment WAV (tone, silence, tone)."""
         wav = tmp_path / "khutbah.wav"
         _write_test_wav(wav, "tst")
+        # These tests cover the per-segment loop, not the segment cap: pin the
+        # cap above the fixture's DURATION-second tones so one tone stays one
+        # segment. Without this the geometry (and every count below) moves
+        # whenever the production cap is retuned — it went 15s -> 12s in s59.
+        # TestSegmentSpeech is what actually exercises the cap.
+        monkeypatch.setattr(processor, "BATCH_MAX_SEGMENT_SECONDS", DURATION + 3.0)
 
         calls = {
             "transcribe": [],
@@ -403,25 +409,85 @@ class TestProcessFile:
         assert calls["prompts"][0] is None
         assert calls["prompts"][1] == "نص عربي"
 
-    def test_verbatim_prompt_echo_dropped(self, pipeline, monkeypatch):
-        """Live-observed: on non-speech audio the model can echo the
-        continuity prompt back verbatim — that segment must be dropped, not
-        written to the SRT as duplicated text."""
+    def test_partial_prompt_echo_is_re_read_not_dropped(self, pipeline, monkeypatch):
+        """The live failure: the model answers with the *last clause* of the
+        continuity prompt rather than the whole of it, which an equality check
+        never caught. The segment must be read again with the prompt withheld
+        so the speech is recovered — dropping it would only trade a duplicate
+        line for a silent gap."""
         wav, _calls = pipeline
-        long_text = "كلمة " * 40  # above the echo-guard length gate
+        clause = "لعلاج هذا المرض فإن الله جل وعلا"
+        first = "كلمة " * 40 + clause
+        spoken = "ومن هنا قال الله جل وعلا مبينا هدف نزول كلام الله"
 
-        class Echo:
+        class PartialEcho:
             def __init__(self):
                 self.n = 0
 
             def transcribe(self, audio, *, model, language=None, prompt=None):
                 self.n += 1
-                return long_text if self.n == 1 else prompt
+                if self.n == 1:
+                    return first
+                # Prompted it echoes; unprompted it has nothing to echo and
+                # returns what was actually said.
+                return clause if prompt else spoken
 
-        monkeypatch.setattr(processor, "get_transcription_provider", lambda: Echo())
+        monkeypatch.setattr(
+            processor, "get_transcription_provider", lambda: PartialEcho()
+        )
         out = processor.process_file(str(wav))
         content = Path(out).read_text(encoding="utf-8-sig")
-        assert content.count("-->") == 1  # echoed second segment dropped
+        assert content.count("-->") == 2  # nothing dropped
+        assert f"DE({spoken})" in content  # the recovered speech
+        assert f"DE({clause})" not in content  # not the echoed clause
+
+    def test_echo_detected_through_diacritics_and_markers(self):
+        """The model re-renders the clause it echoes: different punctuation,
+        harakat the prompt never carried, sometimes wrapped in "###". Comparing
+        against a list of expected punctuation missed all three."""
+        prompt = "لعلاج هذا المرض فإن الله جل وعلا"
+        for variant in (
+            prompt + ".",  # trailing punctuation
+            "### " + prompt + " ###",  # fenced
+            "لِعِلاج هذا المَرض فإن الله جل وعلا",  # harakat added
+        ):
+            assert processor._looks_like_prompt_echo(variant, prompt), variant
+
+    def test_genuine_repeat_survives_the_re_read(self, pipeline, monkeypatch):
+        """A phrase the speaker really did repeat comes back unchanged from the
+        unprompted read, so a false suspicion costs one extra call and nothing
+        else — which is why the gate can afford to be easy to trip."""
+        wav, _calls = pipeline
+        phrase = "سبحان الله وبحمده سبحان الله العظيم"
+
+        class Repeat:
+            def __init__(self):
+                self.n = 0
+
+            def transcribe(self, audio, *, model, language=None, prompt=None):
+                self.n += 1
+                return phrase
+
+        provider = Repeat()
+        monkeypatch.setattr(
+            processor, "get_transcription_provider", lambda: provider
+        )
+        out = processor.process_file(str(wav))
+        content = Path(out).read_text(encoding="utf-8-sig")
+        assert content.count("-->") == 2  # both lines kept
+        assert provider.n == 3  # 2 segments + one unprompted re-read
+
+    def test_echo_does_not_disable_the_guard_for_later_segments(
+        self, pipeline, monkeypatch
+    ):
+        """Regression: the old gate read the length of the *previous
+        transcription*, so once a short echo had been accepted it fell below
+        the threshold and switched the guard off for the rest of the file.
+        The gate now reads the candidate, which cannot be turned off this
+        way."""
+        short_echo = "لعلاج هذا المرض فإن الله جل وعلا"
+        assert len(short_echo) < 80  # would have failed the old length gate
+        assert processor._looks_like_prompt_echo(short_echo, "وقال " + short_echo)
 
     def test_short_repeat_not_mistaken_for_echo(self, pipeline):
         """Identical short phrases across segments (dhikr, takbir) are real
@@ -694,3 +760,22 @@ class TestTextWriter:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestPromptTail:
+    """The continuity prompt handed to the next segment."""
+
+    def test_short_text_returned_whole(self):
+        assert processor._prompt_tail("  kurz  ") == "kurz"
+
+    def test_long_text_cut_at_a_word_boundary(self):
+        # A raw character slice opens mid-word, telling the model the previous
+        # audio ended in a fragment nobody said.
+        tail = processor._prompt_tail("wort " * 100)
+        assert len(tail) <= processor._PROMPT_TAIL_CHARS
+        assert tail.startswith("wort")
+        assert not tail.endswith(" ")
+
+    def test_unbroken_run_still_returns_something(self):
+        tail = processor._prompt_tail("x" * 500)
+        assert len(tail) == processor._PROMPT_TAIL_CHARS

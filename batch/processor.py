@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import unicodedata
 from collections.abc import Callable
 
 import numpy as np
@@ -74,10 +75,15 @@ _SPLIT_WINDOW_FRAMES = 6  # 300 ms
 # Tail of the previous transcription passed as the STT prompt for continuity.
 # Kept short so one bad segment cannot poison the rest of the session.
 _PROMPT_TAIL_CHARS = 200
-# Live-observed failure mode: on non-speech audio (music/noise) the model can
-# echo the continuity prompt back verbatim instead of transcribing. A long
-# exact echo is never real speech; short repeats (dhikr, takbir) must pass.
-_PROMPT_ECHO_MIN_CHARS = 80
+# Live-observed failure mode: on audio it cannot read (noise, music, a very
+# quiet passage) the model returns part of the continuity prompt instead of
+# transcribing. It is normally the prompt's *last clause*, not the whole
+# string, so the exact-equality check this replaced never fired: the echo was
+# written to the SRT and — being shorter than the length gate — switched the
+# guard off for every segment after it. Suspicion is length-gated only far
+# enough that short real repeats (dhikr, takbir) are not re-read on every
+# segment; the cost of a false positive is one extra call, not a lost line.
+_PROMPT_ECHO_MIN_CHARS = 25
 
 
 class FfmpegNotFoundError(RuntimeError):
@@ -388,6 +394,57 @@ def _segment_to_wav_bytes(segment: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
+def _flatten_for_echo(text: str) -> str:
+    """Letters and digits only, single-spaced — the form in which a
+    transcription is compared against the prompt it may have echoed.
+
+    Everything else is dropped rather than matched against a list of expected
+    punctuation. The model re-renders the same clause with different marks than
+    the prompt carries ("جل وعلا" vs "جل وعلا."), with harakat the prompt lacks,
+    and occasionally wrapped in "###" — an explicit list missed all three
+    (combining marks are not alphanumeric, so this is diacritic-insensitive
+    for free).
+    """
+    out = []
+    for ch in text:
+        if unicodedata.category(ch).startswith("M"):
+            continue  # combining mark: delete, never space — spacing a
+            # harakah splits the word it sits on ("لِعلاج" -> "ل عﻻج")
+        out.append(ch if ch.isalnum() else " ")
+    return " ".join("".join(out).split())
+
+
+def _looks_like_prompt_echo(transcription: str, prompt: str) -> bool:
+    """True when the STT handed back text it was *shown* rather than heard.
+
+    Containment, not equality: the model echoes a clause out of the prompt far
+    more often than the whole of it. This is a suspicion — the caller re-reads
+    the segment without a prompt rather than acting on it directly — so it is
+    deliberately easy to trip.
+    """
+    if not prompt or not transcription:
+        return False
+    candidate = _flatten_for_echo(transcription)
+    if len(candidate) < _PROMPT_ECHO_MIN_CHARS:
+        return False
+    return candidate in _flatten_for_echo(prompt)
+
+
+def _prompt_tail(text: str) -> str:
+    """Continuity prompt for the next segment: the tail of ``text``.
+
+    Cut at a word boundary. A raw character slice opens mid-word, which tells
+    the model the previous audio ended in a fragment that was never spoken —
+    a worse prompt than a slightly shorter clean one.
+    """
+    text = text.strip()
+    if len(text) <= _PROMPT_TAIL_CHARS:
+        return text
+    tail = text[-_PROMPT_TAIL_CHARS:]
+    _partial, sep, rest = tail.partition(" ")
+    return (rest.strip() if sep and rest.strip() else tail).strip()
+
+
 def output_path_for(input_path: str, target_language: str, ext: str = "srt") -> str:
     """Output path next to the source file, tagged with the target language."""
     stem, _ = os.path.splitext(input_path)
@@ -472,6 +529,7 @@ def process_file(
     recent: list[str] = []  # rolling raw context (no async summarizer in batch)
     recent_output: list[str] = []  # rolling target-language context, same purpose
     prev_tail = ""  # tail of the last transcription, STT prompt for continuity
+    empty_segments = 0  # segments that yielded no text (STT failure or silence)
 
     for i, (a_start, a_end, d_start, d_end) in enumerate(segments):
         if cancel_event is not None and cancel_event.is_set():
@@ -507,21 +565,35 @@ def process_file(
             prompt=prev_tail or None,
             log_prefix="BATCH ",
         )
-        if (
-            transcription is not None
-            and len(prev_tail) >= _PROMPT_ECHO_MIN_CHARS
-            and transcription.strip() == prev_tail
-        ):
+        if _looks_like_prompt_echo(transcription or "", prev_tail):
+            # Re-read the same audio with the prompt withheld. Unprompted the
+            # model has nothing to echo, so whatever comes back is what it
+            # heard: a real repetition returns unchanged and is kept, and an
+            # echo gives up the speech it had skipped. The previous guard
+            # dropped the segment instead, which turned an echo into a silent
+            # gap in the transcript — the failure mode was never the duplicate
+            # line, it was the audio the duplicate stood in for.
             log(
-                "BATCH Dropped verbatim prompt echo (non-speech segment)",
+                f"BATCH Suspected prompt echo at {start_s:.1f}s — "
+                f"re-transcribing without prompt",
                 level="WARNING",
             )
-            transcription = None
+            retry = transcribe_with_fallback(
+                stt_provider,
+                models_to_try,
+                wav_bytes,
+                lang_code,
+                prompt=None,
+                log_prefix="BATCH ",
+            )
+            if retry is not None and retry.strip():
+                transcription = retry
         if transcription is None or not transcription.strip():
+            empty_segments += 1
             if progress_callback is not None:
                 progress_callback(i + 1, total)
             continue
-        prev_tail = transcription.strip()[-_PROMPT_TAIL_CHARS:]
+        prev_tail = _prompt_tail(transcription)
 
         # Mirror the live pipeline: a secondary Arabic transcription feeds
         # the Quran/Athan matchers (skip conditions in translation/stt).
@@ -584,6 +656,15 @@ def process_file(
             records.append((start_s, transcription, translation))
         if progress_callback is not None:
             progress_callback(i + 1, total)
+
+    # Content the user will not find in the output and would otherwise have to
+    # discover by reading the file against the recording.
+    if empty_segments:
+        log(
+            f"BATCH {empty_segments} of {total} segments produced no text "
+            f"(no subtitle written for them)",
+            level="WARNING",
+        )
 
     out_path: str | None = None
     if output_format in ("srt", "both"):
