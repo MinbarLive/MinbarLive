@@ -1,6 +1,6 @@
 <div align="center">
     <a href="https://minbarlive.info/">
-        <img alt="Logo" height="200px" src="./public/MinbarLive2.png">
+        <img alt="Logo" height="200px" src="./public/MinbarLive_rounded_edge.png">
     </a>
 </div>
 
@@ -228,7 +228,7 @@ API keys live in the **OS keychain** and are **never written to `settings.json`*
 
 **Updating:** replace the program file (`.exe` / `.app` / `.AppImage`). Everything above is kept and you carry straight on.
 
-**Removing everything:** ⚙ Settings → **Delete everything** deletes that whole folder *and* the keychain entries for every provider, tells you what went, and closes the app; the next start begins at the setup wizard. Deleting the folder by hand leaves the keychain entries behind, which is why the button exists.
+**Removing everything:** ⚙ Settings → **Delete everything** deletes that whole folder _and_ the keychain entries for every provider, tells you what went, and closes the app; the next start begins at the setup wizard. Deleting the folder by hand leaves the keychain entries behind, which is why the button exists.
 
 <br>
 
