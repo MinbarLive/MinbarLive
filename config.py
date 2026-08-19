@@ -192,7 +192,15 @@ VAD_DECISION_MAX_BOOST = 16.0  # +24 dB
 # Batch mode splits a file on its own pauses (VAD-style) instead of on a blind
 # clock, so segment boundaries fall in silence — no words cut mid-boundary and
 # no short utterance lost inside a mostly-silent block.
-BATCH_MAX_SEGMENT_SECONDS = 15.0  # cap for one transcription chunk (unbroken speech)
+# 12s, not the 15s this started at, and not shorter: measured over three passes
+# of the same 6:20 khutbah at 15/12/10/8s (s59). 15s truncates — the model
+# returns the first clause of a long chunk and stops — costing ~13% of the words
+# and swinging 49 words between identical runs. Below 12s the coverage stops
+# improving and the transcript fragments instead, which reads worse and gives
+# the translator two-word units to work with. 12s recovered the most content
+# (361 words vs 313 at 15s), varied least between runs (spread 11) and matched
+# an independent reference best (0.80 vs 0.71). See DEVLOG s59 for the table.
+BATCH_MAX_SEGMENT_SECONDS = 12.0  # cap for one transcription chunk (unbroken speech)
 BATCH_MIN_SILENCE_GAP_SECONDS = 0.4  # micro-pauses shorter than this stay inside a block
 BATCH_MIN_SEGMENT_SECONDS = 0.3  # drop speech runs shorter than this (transients)
 # Segments are contiguous: a pause up to this length is absorbed into the

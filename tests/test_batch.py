@@ -219,6 +219,12 @@ class TestProcessFile:
         """Mocked pipeline around a real 3-segment WAV (tone, silence, tone)."""
         wav = tmp_path / "khutbah.wav"
         _write_test_wav(wav, "tst")
+        # These tests cover the per-segment loop, not the segment cap: pin the
+        # cap above the fixture's DURATION-second tones so one tone stays one
+        # segment. Without this the geometry (and every count below) moves
+        # whenever the production cap is retuned — it went 15s -> 12s in s59.
+        # TestSegmentSpeech is what actually exercises the cap.
+        monkeypatch.setattr(processor, "BATCH_MAX_SEGMENT_SECONDS", DURATION + 3.0)
 
         calls = {
             "transcribe": [],
