@@ -42,6 +42,13 @@ translation, `openai_realtime` streaming STT, `gpt-4o-transcribe` segmented STT,
 selectable. Model lists and fallback chains live in `utils/settings.py` and
 `providers/<id>/` — **not** in `config.py`.
 
+**Source languages are per-engine, not global.** The STT engines validate the language code
+differently — OpenAI Realtime rejects Somali that the segmented OpenAI endpoint transcribes,
+Deepgram Nova-2 has no Arabic at all, and both Gemini paths validate nothing because the
+language only ever reaches them inside a prompt. Each engine declares what it accepts in its
+own module; `providers.supported_source_languages()` is what the pickers filter with. Target
+languages are NOT per-provider: no translation provider takes a language argument.
+
 ---
 
 ## Architecture

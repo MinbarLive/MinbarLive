@@ -1286,6 +1286,173 @@ class TestDeepgramTranscriptionProvider:
         assert errors == []
 
 
+class TestSourceLanguageSupport:
+    """Which spoken languages each STT engine actually accepts.
+
+    The bug this guards: one global SOURCE_LANGUAGES list was offered for every
+    engine, so picking Somali on the default engine (OpenAI Realtime) opened a
+    socket that was rejected with "Invalid value: 'so'" and reconnected into
+    the same rejection forever.
+    """
+
+    def test_openai_realtime_rejects_what_its_api_rejects(self):
+        allowed = providers.supported_source_language_codes("openai_realtime")
+        # Straight from the API's own rejection message.
+        for code in ("so", "ps", "bn", "ha", "sq", "ku"):
+            assert code not in allowed
+        for code in ("ar", "de", "en", "tr", "ur", "id", "ms", "fa", "sw", "bs"):
+            assert code in allowed
+
+    def test_segmented_openai_is_wider_than_realtime(self):
+        """Somali is not an unsupported language — it is unsupported on ONE
+        engine. The file endpoint takes the whole Whisper set."""
+        segmented = providers.supported_source_language_codes("openai")
+        realtime = providers.supported_source_language_codes("openai_realtime")
+        for code in ("so", "ps", "bn", "ha", "sq"):
+            assert code in segmented and code not in realtime
+        # Kurdish is in no Whisper build, so it stays out of both.
+        assert "ku" not in segmented
+
+    def test_gemini_constrains_nothing(self):
+        """Neither Gemini path sends a language field the API can reject: the
+        segmented provider puts it in the prompt and Gemini Live auto-detects."""
+        assert providers.supported_source_language_codes("gemini") is None
+        assert providers.supported_source_language_codes("gemini_realtime") is None
+        names = [n for n, _c in providers.supported_source_languages("gemini_realtime")]
+        assert "Kurdish" in names and "Somali" in names
+
+    def test_deepgram_is_per_model_not_per_provider(self):
+        """Nova-2 has no Arabic and Nova-3 does — the app's primary language.
+        Collapsing the two into one Deepgram set would offer it on Nova-2."""
+        assert "ar" in providers.supported_source_language_codes("deepgram", "nova-3")
+        assert "ar" not in providers.supported_source_language_codes("deepgram", "nova-2")
+
+    def test_unknown_deepgram_model_falls_back_to_the_default_model(self):
+        """A model id left over from another engine must not widen the list to
+        "everything allowed" — that puts the rejected language back."""
+        assert providers.supported_source_language_codes(
+            "deepgram", "gpt-4o-transcribe"
+        ) == providers.supported_source_language_codes("deepgram", "nova-3")
+
+    def test_unknown_engine_constrains_nothing(self):
+        assert providers.supported_source_language_codes("no-such-engine") is None
+
+    def test_automatic_survives_the_filter(self):
+        """"Automatic" is a mode, not a language; only the callers that must
+        drop it (streaming) do so."""
+        names = [
+            n for n, _c in providers.supported_source_languages("openai_realtime")
+        ]
+        assert names[0] == "Automatic"
+
+    def test_every_engine_keeps_the_primary_arabic_german_path(self):
+        for engine, model in (
+            ("openai", None),
+            ("openai_realtime", None),
+            ("gemini", None),
+            ("gemini_realtime", None),
+            ("deepgram", "nova-3"),
+        ):
+            names = [
+                n for n, _c in providers.supported_source_languages(engine, model)
+            ]
+            assert "Arabic" in names and "German" in names, engine
+
+    def test_filtered_list_is_a_subset_of_source_languages(self):
+        from utils.settings import SOURCE_LANGUAGES
+
+        assert set(providers.supported_source_languages("openai_realtime")) <= set(
+            SOURCE_LANGUAGES
+        )
+
+
+class TestSourceLanguageConfigStaysHonest:
+    """Guards on the language DATA rather than on any one lookup.
+
+    Adding or removing a language is meant to be a one-line edit, and these are
+    what make that safe: each one fails the moment a list and the thing that
+    reads it drift apart, and says which edit was left out.
+    """
+
+    def test_every_engine_declares_its_languages(self):
+        """The registry is read with .get(), and a miss means "unconstrained" —
+        so an engine added to TRANSCRIPTION_PROVIDERS but forgotten here would
+        silently offer every language again. That IS the bug this all fixes.
+        """
+        from utils.settings import TRANSCRIPTION_PROVIDERS
+
+        missing = [
+            pid
+            for pid in TRANSCRIPTION_PROVIDERS
+            if pid not in providers._SOURCE_LANGUAGE_SUPPORT
+        ]
+        assert not missing, (
+            f"{missing} have no entry in providers._SOURCE_LANGUAGE_SUPPORT. "
+            "Add one — frozenset(...) of the codes the API accepts, or None if "
+            "it validates nothing (see the Gemini entries)."
+        )
+
+    def test_the_registry_names_no_engine_that_does_not_exist(self):
+        from utils.settings import TRANSCRIPTION_PROVIDERS
+
+        stale = set(providers._SOURCE_LANGUAGE_SUPPORT) - set(TRANSCRIPTION_PROVIDERS)
+        assert not stale, f"{stale} are no longer transcription providers"
+
+    def test_every_deepgram_model_in_the_dropdown_has_a_language_set(self):
+        """Deepgram is keyed per model. A third Nova generation added to the
+        dropdown without a set would fall back to Nova-3's — plausible-looking
+        and wrong."""
+        from providers.deepgram import SUPPORTED_LANGUAGE_CODES, TRANSCRIPTION_MODELS
+
+        missing = [
+            model_id
+            for _name, model_id in TRANSCRIPTION_MODELS
+            if model_id not in SUPPORTED_LANGUAGE_CODES
+        ]
+        assert not missing, f"{missing} have no entry in SUPPORTED_LANGUAGE_CODES"
+
+    def test_declared_codes_are_well_formed(self):
+        """A typo ("ar " or "AR") silently removes a language from an engine —
+        the set is only ever tested with `in`, so a bad key never raises."""
+        for engine, support in providers._SOURCE_LANGUAGE_SUPPORT.items():
+            if support is None:
+                continue
+            sets = support.values() if isinstance(support, dict) else [support]
+            for codes in sets:
+                for code in codes:
+                    assert code == code.strip().lower(), f"{engine}: {code!r}"
+                    assert code.isalpha() and 2 <= len(code) <= 3, f"{engine}: {code!r}"
+
+    def test_the_gemini_only_languages_are_the_ones_we_think(self):
+        """Pinned on purpose. These transcribe ONLY on the engines that
+        validate nothing, so they are the languages most likely to be quietly
+        broken by an upstream change — in either direction. If this fails
+        because a provider WIDENED its list, that is good news: update the
+        engine's set and this pin together.
+        """
+        from utils.settings import SOURCE_LANGUAGES
+
+        validating = [
+            pid
+            for pid in providers._SOURCE_LANGUAGE_SUPPORT
+            if providers.supported_source_language_codes(pid) is not None
+        ]
+        unvalidated_only = {
+            name
+            for name, code in SOURCE_LANGUAGES
+            if code is not None
+            and not any(
+                code in providers.supported_source_language_codes(pid)
+                for pid in validating
+            )
+        }
+        assert unvalidated_only == {"Kurdish"}, (
+            "Kurdish is in no Whisper build and on no Deepgram model, so only "
+            "the Gemini paths (which never send a language field) transcribe "
+            f"it. Now: {sorted(unvalidated_only)}"
+        )
+
+
 class TestStreamingEngineHelpers:
     """Per-engine streaming model resolution, key mapping and capture rate."""
 

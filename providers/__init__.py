@@ -23,6 +23,7 @@ import providers.deepgram as deepgram_models
 import providers.gemini as gemini_models
 import providers.gemini.realtime as gemini_live_models
 import providers.openai.realtime as openai_realtime_models
+import providers.openai.transcription as openai_transcription
 from config import (
     EMBEDDING_MODEL,
     FS,
@@ -57,6 +58,7 @@ from utils.settings import (
     DEFAULT_TRANSLATION_MODEL,
     FALLBACK_TRANSCRIPTION_MODELS,
     FALLBACK_TRANSLATION_MODELS,
+    SOURCE_LANGUAGES,
     TRANSCRIPTION_MODELS,
     TRANSLATION_MODELS,
     load_settings,
@@ -454,6 +456,76 @@ def resolve_streaming_transcription_model(
     )
     valid = {model_id for _name, model_id in choices}
     return transcription_model if transcription_model in valid else default
+
+
+# ---------------------------------------------------------------------------
+# Source-language support per STT engine
+# ---------------------------------------------------------------------------
+
+# Which spoken languages each STT engine actually accepts. ``None`` means "no
+# constraint" — not "everything is equally good", but "nothing in the request
+# is validated, so no code can be rejected".
+#
+# The engines differ enough that one global SOURCE_LANGUAGES list is wrong for
+# all but one of them: OpenAI Realtime rejects Somali outright while the
+# segmented OpenAI endpoint transcribes it, and Deepgram Nova-2 has no Arabic.
+# Offering the union means the operator picks a language, presses Start, and
+# gets a connection error loop with no hint of which engine would have worked.
+#
+# A value may be a set (one set for the whole engine) or a dict keyed by model
+# id (per-model sets — Deepgram, where the two Nova generations differ).
+#
+# EVERY id in settings.TRANSCRIPTION_PROVIDERS must appear here. The lookup
+# below reads this with .get(), so a missing engine silently means "accepts
+# everything" — which is the bug this table exists to prevent, reintroduced.
+# tests/test_providers.py::TestSourceLanguageConfigStaysHonest enforces it.
+# Adding a spoken language needs NO edit here: see .claude/skills/add-language.
+_SOURCE_LANGUAGE_SUPPORT: dict[str, frozenset[str] | dict[str, frozenset[str]] | None] = {
+    # Segmented: the language reaches the API as a validated parameter.
+    "openai": openai_transcription.SUPPORTED_LANGUAGE_CODES,
+    # Gemini's segmented provider only mentions the language INSIDE the prompt
+    # (providers/gemini/transcription.py) — there is no field to reject.
+    "gemini": None,
+    # Streaming.
+    "openai_realtime": openai_realtime_models.SUPPORTED_LANGUAGE_CODES,
+    "deepgram": deepgram_models.SUPPORTED_LANGUAGE_CODES,
+    # Gemini Live rejects language_codes on the Developer API and auto-detects
+    # instead (providers/gemini/realtime.py) — the setting never leaves the app.
+    "gemini_realtime": None,
+}
+
+
+def supported_source_language_codes(
+    provider_id: str, model_id: str | None = None
+) -> frozenset[str] | None:
+    """The ISO codes an STT engine accepts, or None when it validates nothing.
+
+    ``model_id`` only matters for engines whose models disagree (Deepgram); it
+    is ignored elsewhere, and an unknown model falls back to the engine's
+    default model's set rather than to "everything allowed" — guessing wide
+    here would put the rejected language back in the dropdown.
+    """
+    support = _SOURCE_LANGUAGE_SUPPORT.get((provider_id or "").lower())
+    if not isinstance(support, dict):
+        return support
+    if model_id in support:
+        return support[model_id]
+    default = _STREAMING_MODELS.get(provider_id, (None, []))[0]
+    return support.get(default) or frozenset().union(*support.values())
+
+
+def supported_source_languages(
+    provider_id: str, model_id: str | None = None
+) -> list[tuple[str, str | None]]:
+    """SOURCE_LANGUAGES filtered to what this engine can actually transcribe.
+
+    "Automatic" (code None) is kept: it is a mode, not a language, and the
+    callers that must drop it (streaming) already do so on their own.
+    """
+    allowed = supported_source_language_codes(provider_id, model_id)
+    if allowed is None:
+        return list(SOURCE_LANGUAGES)
+    return [(name, code) for name, code in SOURCE_LANGUAGES if code is None or code in allowed]
 
 
 # ---------------------------------------------------------------------------
