@@ -1,12 +1,22 @@
 """Version information for MinbarLive."""
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 # Split version into numeric and optional suffix (e.g., 'beta')
 _version_parts = __version__.split("-")
 _version_nums = _version_parts[0].split(".")
 __version_info__ = tuple(int(x) for x in _version_nums)
 
 # Version history:
+# 1.0.1     - The spoken-language list now follows the transcription engine.
+#             The engines do not accept the same languages, and the picker
+#             offered all of them on every engine: choosing Somali on the
+#             default engine was refused before any audio was sent, and the
+#             app retried the same refusal indefinitely instead of saying so.
+#             Somali, Pashto, Bengali, Hausa and Albanian work on the
+#             chunk/semantic engines; Kurdish needs Gemini (#114)
+#           - Changing the input device runs the level meter for a few
+#             seconds, so a newly picked microphone is heard rather than
+#             guessed at (#114)
 # 1.0.0     - First stable release. Verified live in a mosque across the rc.1
 #             cycle.
 #           - Subtitles read as continuous speech: the translator now sees the
