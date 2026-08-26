@@ -4109,6 +4109,23 @@ class TestHistoryBatchTab:
 class TestHistoryCostTab:
     """The Kosten tab: a spend chart over a per-session breakdown."""
 
+    @staticmethod
+    def _days_ago(days: int, hour: int, minute: int) -> str:
+        """A timestamp N days back, so the 30-day window always contains it.
+
+        These were hardcoded July dates. Both sessions sat inside the window
+        when they were written and the older one fell out of it on 2026-08-27,
+        turning `test_the_thirty_day_header_formats` red on every branch — the
+        suite's only failure, and nothing to do with whatever was being changed
+        at the time. A fixture that describes "recently" must say so relatively.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        moment = (datetime.now(UTC) - timedelta(days=days)).replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+        return moment.isoformat()
+
     @pytest.fixture
     def cost(self, qt_app, monkeypatch):
         import gui.history_window as hw
@@ -4116,8 +4133,8 @@ class TestHistoryCostTab:
         sessions = [
             {
                 "id": "s2",
-                "started_at": "2026-07-28T14:08:00+00:00",
-                "ended_at": "2026-07-28T14:12:00+00:00",
+                "started_at": self._days_ago(2, 14, 8),
+                "ended_at": self._days_ago(2, 14, 12),
                 "total_cost_usd": "0.1704",
                 "fully_priced": True,
                 "providers": {
@@ -4138,8 +4155,8 @@ class TestHistoryCostTab:
             },
             {
                 "id": "s1",
-                "started_at": "2026-07-27T17:19:00+00:00",
-                "ended_at": "2026-07-27T17:21:00+00:00",
+                "started_at": self._days_ago(3, 17, 19),
+                "ended_at": self._days_ago(3, 17, 21),
                 "total_cost_usd": "0.0331",
                 "fully_priced": False,
                 "providers": {
