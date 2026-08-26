@@ -20,6 +20,7 @@ import queue
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -996,6 +997,136 @@ class TestSubtitleModeLabels:
             panel.close()
 
 
+class TestDeviceChangePreview:
+    """Changing the input device auditions it on the meter by itself.
+
+    Picking a device from a dropdown of names is a guess until something moves
+    the meter, and the "Test mic" button beside it is easy to miss.
+    """
+
+    @pytest.fixture
+    def panel(self, qt_app, monkeypatch):
+        import gui.control_panel as cp
+
+        monkeypatch.setattr(cp, "save_settings", lambda s: None)
+        monkeypatch.setattr(cp, "activate_stored_keys", lambda: None)
+        monkeypatch.setattr(
+            cp.ControlPanel, "_ensure_subtitle_window", lambda self: None
+        )
+
+        class FakeController:
+            def __init__(self):
+                self.started: list[int | None] = []
+                self.stops = 0
+                self.testing = False
+                self.fail = False
+                self.swaps: list[int] = []
+                self.translation_queue = queue.Queue()
+                self.error_queue = queue.Queue()
+                self.interim_queue = queue.Queue()
+
+            def is_input_level_test_running(self):
+                return self.testing
+
+            def start_input_level_test(self, device=None):
+                if self.fail:
+                    raise RuntimeError("device busy")
+                self.started.append(device)
+                self.testing = True
+
+            def stop_input_level_test(self, timeout=1.0):
+                self.stops += 1
+                self.testing = False
+
+            def get_input_level(self):
+                return None
+
+            def change_input_device(self, idx):
+                self.swaps.append(idx)
+                return True
+
+            def restart(self, input_device=None):
+                pass
+
+        controller = FakeController()
+        p = cp.ControlPanel(controller)
+        # Hardware-independent: give the panel one device at the position the
+        # combo is already on, so _selected_device() has something to return.
+        p.device_indices = [7]
+        p.device_combo.setCurrentIndex(0)
+        # setCurrentIndex may itself have emitted a change; every test below
+        # starts from nothing recorded and nothing armed.
+        p._device_preview_timer.stop()
+        controller.started.clear()
+        controller.stops = 0
+        controller.testing = False
+        yield p, controller
+        p.close()
+
+    def test_changing_the_device_starts_the_meter(self, panel):
+        p, controller = panel
+        p._on_device_changed(0)
+        assert controller.started == [7]
+        assert p._device_preview_timer.isActive()
+
+    def test_the_preview_ends_itself(self, panel):
+        p, controller = panel
+        p._on_device_changed(0)
+        p._end_device_preview()  # what the timer fires
+        assert controller.stops == 1
+        assert not controller.testing
+
+    def test_a_running_session_is_hot_swapped_not_previewed(self, panel):
+        """A live session already feeds the meter and owns the device, so a
+        preview could not open it anyway."""
+        p, controller = panel
+        p._running = True
+        p._on_device_changed(0)
+        assert controller.started == []
+        assert controller.swaps == [7]
+
+    def test_a_manual_test_follows_the_device_but_keeps_running(self, panel):
+        """Cutting the operator's own test off after five seconds would be the
+        panel overruling them."""
+        p, controller = panel
+        p._toggle_input_level_test()  # operator starts it
+        assert controller.testing
+        p._on_device_changed(0)
+        assert controller.started[-1] == 7  # re-opened on the new device
+        assert not p._device_preview_timer.isActive()
+
+    def test_pressing_the_button_disarms_a_pending_preview(self, panel):
+        """Stop-then-Test inside the five seconds must leave the operator's new
+        test alone when the timer comes due."""
+        p, controller = panel
+        p._on_device_changed(0)
+        p._toggle_input_level_test()  # Stop
+        p._toggle_input_level_test()  # Test mic, on purpose this time
+        assert controller.testing
+        assert not p._device_preview_timer.isActive()
+
+    def test_a_busy_device_is_logged_not_shown(self, panel, monkeypatch):
+        """The preview is the panel's idea, so its failure must not put a modal
+        in front of every device change."""
+        import gui.control_panel as cp
+
+        shown: list[object] = []
+        monkeypatch.setattr(cp, "show_message", lambda *a, **k: shown.append(a))
+        p, controller = panel
+        controller.fail = True
+        p._on_device_changed(0)
+        assert shown == []
+        assert not p._device_preview_timer.isActive()
+
+    def test_a_controller_without_the_level_api_survives(self, panel):
+        """The panel talks to the controller through getattr elsewhere; a
+        device change must not become the one call that hard-fails."""
+        p, _controller = panel
+        p.controller = SimpleNamespace()
+        p._on_device_changed(0)  # must not raise
+        assert not p._device_preview_timer.isActive()
+
+
 class TestDeviceHotSwap:
     """Changing the device mid-session must swap it, not silently do nothing."""
 
@@ -1737,6 +1868,60 @@ class TestSourceLanguageChoices:
         panel.settings.source_language = "Automatic"
         panel._refresh_source_combo()
         assert panel.settings.source_language != "Automatic"
+
+    def test_the_engine_narrows_the_list_too(self, panel):
+        """Somali died in the field with "Invalid value: 'so'" on a reconnect
+        loop: the picker offered a language the default engine rejects."""
+        panel.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+        panel.settings.transcription_provider = "openai_realtime"
+        panel.settings.transcription_model = "gpt-4o-transcribe"
+        panel._refresh_source_combo()
+        entries = self._entries(panel)
+        assert "Somali" not in entries
+        assert "Arabic" in entries
+
+    def test_the_same_language_is_offered_on_an_engine_that_takes_it(self, panel):
+        """Proof the filter is per-engine, not a blanket removal of Somali."""
+        from utils.settings import PIPELINE_MODE_SEGMENTED
+
+        panel.settings.pipeline_mode = PIPELINE_MODE_SEGMENTED
+        panel.settings.transcription_provider = "openai"
+        panel.settings.transcription_model = "gpt-4o-transcribe"
+        panel._refresh_source_combo()
+        assert "Somali" in self._entries(panel)
+
+    def test_deepgram_nova_2_drops_arabic(self, panel):
+        """Per MODEL: Nova-3 transcribes Arabic, Nova-2 does not."""
+        panel.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+        panel.settings.transcription_provider = "deepgram"
+        panel.settings.transcription_model = "nova-3"
+        panel._refresh_source_combo()
+        assert "Arabic" in self._entries(panel)
+        panel.settings.transcription_model = "nova-2"
+        panel._refresh_source_combo()
+        assert "Arabic" not in self._entries(panel)
+
+    def test_an_unsupported_stored_language_is_replaced(self, panel):
+        """A settings file written before the engine changed must not survive
+        into a Start that cannot work."""
+        panel.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+        panel.settings.transcription_provider = "openai_realtime"
+        panel.settings.transcription_model = "gpt-4o-transcribe"
+        panel.settings.source_language = "Somali"
+        panel._refresh_source_combo()
+        assert panel.settings.source_language in self._entries(panel)
+        assert panel.settings.source_language != "Somali"
+
+    def test_gemini_live_keeps_every_language(self, panel):
+        """Gemini Live auto-detects — the setting never reaches the API, so
+        nothing can be rejected and nothing may be hidden."""
+        panel.settings.pipeline_mode = PIPELINE_MODE_STREAMING
+        panel.settings.transcription_provider = "gemini_realtime"
+        panel.settings.transcription_model = "gemini-2.5-flash-native-audio-latest"
+        panel._refresh_source_combo()
+        entries = self._entries(panel)
+        for name in ("Somali", "Kurdish", "Pashto", "Hausa", "Albanian"):
+            assert name in entries
 
 
 class TestSubtitleHideMode:
@@ -3924,6 +4109,23 @@ class TestHistoryBatchTab:
 class TestHistoryCostTab:
     """The Kosten tab: a spend chart over a per-session breakdown."""
 
+    @staticmethod
+    def _days_ago(days: int, hour: int, minute: int) -> str:
+        """A timestamp N days back, so the 30-day window always contains it.
+
+        These were hardcoded July dates. Both sessions sat inside the window
+        when they were written and the older one fell out of it on 2026-08-27,
+        turning `test_the_thirty_day_header_formats` red on every branch — the
+        suite's only failure, and nothing to do with whatever was being changed
+        at the time. A fixture that describes "recently" must say so relatively.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        moment = (datetime.now(UTC) - timedelta(days=days)).replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+        return moment.isoformat()
+
     @pytest.fixture
     def cost(self, qt_app, monkeypatch):
         import gui.history_window as hw
@@ -3931,8 +4133,8 @@ class TestHistoryCostTab:
         sessions = [
             {
                 "id": "s2",
-                "started_at": "2026-07-28T14:08:00+00:00",
-                "ended_at": "2026-07-28T14:12:00+00:00",
+                "started_at": self._days_ago(2, 14, 8),
+                "ended_at": self._days_ago(2, 14, 12),
                 "total_cost_usd": "0.1704",
                 "fully_priced": True,
                 "providers": {
@@ -3953,8 +4155,8 @@ class TestHistoryCostTab:
             },
             {
                 "id": "s1",
-                "started_at": "2026-07-27T17:19:00+00:00",
-                "ended_at": "2026-07-27T17:21:00+00:00",
+                "started_at": self._days_ago(3, 17, 19),
+                "ended_at": self._days_ago(3, 17, 21),
                 "total_cost_usd": "0.0331",
                 "fully_priced": False,
                 "providers": {

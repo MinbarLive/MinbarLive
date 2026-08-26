@@ -54,6 +54,27 @@ TRANSCRIPTION_MODELS = [
     ("GPT-4o Mini Transcribe", "gpt-4o-mini-transcribe"),
 ]
 
+# Source-language codes a Realtime transcription session accepts. NOT the
+# Whisper 98: the Realtime API validates the ``language`` field against this
+# narrower list and rejects anything outside it — "Invalid value: 'so'" —
+# before a single audio frame is sent, so the session never opens and the
+# reconnect loop retries the same rejection forever.
+#
+# Copied verbatim from that rejection message (2026-08-26). The docs give no
+# list, only "The Realtime API rejects unsupported or incorrectly formatted
+# language codes", so the error IS the specification. If OpenAI widens it,
+# re-derive this set from a fresh rejection rather than from the docs.
+SUPPORTED_LANGUAGE_CODES = frozenset(
+    {
+        "af", "ar", "az", "be", "bg", "bs", "ca", "cs", "cy", "da",
+        "de", "el", "en", "es", "et", "fa", "fi", "fr", "gl", "he",
+        "hi", "hr", "hu", "hy", "id", "is", "it", "iw", "ja", "kk",
+        "kn", "ko", "lt", "lv", "mi", "mk", "mr", "ms", "ne", "nl",
+        "no", "pl", "pt", "ro", "ru", "sk", "sl", "sr", "sv", "sw",
+        "ta", "th", "tl", "tr", "uk", "ur", "vi", "zh",
+    }
+)
+
 # ``client.realtime.connect()`` only completes the WebSocket handshake.  The
 # server confirms authentication and the effective session configuration in a
 # subsequent event, so returning before one of these arrives makes a rejected

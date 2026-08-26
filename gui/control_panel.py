@@ -87,6 +87,7 @@ from providers import (
     TRANSCRIPTION_PROVIDER_CHOICES,
     get_default_model,
     get_model_choices,
+    supported_source_languages,
 )
 from utils.cost_tracking import (
     begin_cost_session,
@@ -145,6 +146,12 @@ _COST_FLUSH_MS = 30_000
 # operator can see what is happening (and reach Stop) before a provider
 # handshake starts. The Tk panel waits the same 700 ms.
 _AUTO_START_DELAY_MS = 700
+# How long the input meter runs by itself after the device dropdown changes.
+# Picking a device is a guess until something moves the meter, and the "Test
+# mic" button beside it is easy to miss — so the panel takes the first turn.
+# Long enough to say a sentence into the microphone; short enough that the
+# panel is not still holding an input the operator has moved on from.
+_DEVICE_PREVIEW_MS = 5_000
 # Edge length of the round "?" / swap buttons — the height of the dropdown they
 # sit beside (CONTROL_H), so a control row reads as one row.
 _HELP_BTN_PX = CONTROL_H
@@ -273,6 +280,10 @@ class ControlPanel(QMainWindow):
         self._level_timer = QTimer(self)
         self._level_timer.timeout.connect(self._poll_input_level)
         self._level_timer.start(200)
+        # Single-shot: armed by a device change, ends that preview only.
+        self._device_preview_timer = QTimer(self)
+        self._device_preview_timer.setSingleShot(True)
+        self._device_preview_timer.timeout.connect(self._end_device_preview)
         # Session-scoped, unlike the two above: started in _finish_start and
         # stopped in _end_session_tracking, so neither runs while idle.
         self._inactivity_timer = QTimer(self)
@@ -1611,18 +1622,40 @@ class ControlPanel(QMainWindow):
 
     # ── dropdown refreshers ──────────────────────────────────────────────
     def _refresh_source_combo(self) -> None:
-        """Real-time transcription cannot auto-detect the source language, so
-        "Automatic" is removed from the picker while streaming is selected."""
+        """The spoken-language list, narrowed to what the current setup accepts.
+
+        Two independent cuts:
+
+        - Real-time transcription cannot auto-detect the source language, so
+          "Automatic" is removed while streaming is selected.
+        - Each STT engine validates the language code it is handed, and they do
+          not agree — OpenAI Realtime rejects the Somali the segmented OpenAI
+          endpoint transcribes happily, and Deepgram Nova-2 has no Arabic at
+          all. Offering the union let the operator pick a language the engine
+          would refuse, which surfaced only as a reconnect loop in the log
+          ("Invalid value: 'so'") with nothing on screen naming the cause.
+        """
         streaming = self.settings.pipeline_mode == PIPELINE_MODE_STREAMING
         names = [
             name
-            for name, code in SOURCE_LANGUAGES
+            for name, code in supported_source_languages(
+                self.settings.transcription_provider,
+                self.settings.transcription_model,
+            )
             if not (streaming and code is None)
         ]
         current = self.settings.source_language
         if current not in names:
+            # Changing the spoken language out from under the operator is
+            # worth saying out loud, even though the dropdown shows the result.
+            log(
+                f"Spoken language {current} is not supported by "
+                f"{self.settings.transcription_provider}; "
+                f"switched to {names[0]}"
+            )
             current = names[0]
             self.settings.source_language = current
+            save_settings(self.settings)
         # Signals stay connected: blocking them across the repopulate is enough,
         # and disconnect/reconnect warns loudly the first time round (nothing is
         # connected yet when the card builds).
@@ -2243,6 +2276,8 @@ class ControlPanel(QMainWindow):
         self.settings.transcription_model = get_default_model(provider, "transcription")
         save_settings(self.settings)
         self._refresh_model_combos()
+        # Engines disagree on which spoken languages they accept.
+        self._refresh_source_combo()
         ensure_keys(required_key_providers(self.settings), self.texts, self)
 
     def _on_transcription_model_changed(self, _index: int) -> None:
@@ -2250,6 +2285,9 @@ class ControlPanel(QMainWindow):
         if model:
             self.settings.transcription_model = model
             save_settings(self.settings)
+            # Nova-3 and Nova-2 accept different spoken languages, so the model
+            # is as much a constraint on the source list as the engine is.
+            self._refresh_source_combo()
             # A streaming socket is opened with one fixed model.
             self._restart_pipeline_for_live_change()
 
@@ -2308,6 +2346,9 @@ class ControlPanel(QMainWindow):
             ) = self._manual_transcription
             self._manual_transcription = None
             self._refresh_provider_combos()
+        # Both branches swap the engine AND its model, and the two together
+        # decide which spoken languages are on offer.
+        self._refresh_source_combo()
         save_settings(self.settings)
         self._sync_default_model_states()
 
@@ -2345,14 +2386,54 @@ class ControlPanel(QMainWindow):
                 self.level_value.setStyleSheet(f"color: {colour};")
         self._sync_level_button()
 
-    def _sync_level_button(self) -> None:
-        testing = False
+    def _level_test_running(self) -> bool:
         checker = getattr(self.controller, "is_input_level_test_running", None)
-        if checker is not None:
-            try:
-                testing = bool(checker())
-            except Exception:  # noqa: BLE001
-                testing = False
+        if checker is None:
+            return False
+        try:
+            return bool(checker())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _preview_device(self, device: int) -> None:
+        """Run the input meter for a few seconds on a freshly picked device.
+
+        Stopped only: a live session already feeds the meter and owns the
+        device, so a preview could not open it anyway.
+
+        A manual test the operator started is followed onto the new device but
+        NOT put on the timer — cutting their own test off after five seconds
+        would be the panel overruling them. Only a preview the panel started
+        gets ended by the panel.
+        """
+        auto = self._device_preview_timer.isActive()
+        manual = self._level_test_running() and not auto
+        try:
+            # Restarts on the new device: start_input_level_test() stops any
+            # test already open before it takes the device.
+            self.controller.start_input_level_test(device)
+        except Exception as exc:  # noqa: BLE001
+            # Logged, not shown: this preview is the panel's idea, and a modal
+            # on a busy device would interrupt every device change.
+            log(f"Input level preview unavailable: {exc}", level="WARN")
+            return
+        self._level_button_state = None
+        if not manual:
+            self._device_preview_timer.start(_DEVICE_PREVIEW_MS)
+
+    def _end_device_preview(self) -> None:
+        """Close the automatic preview when its few seconds are up."""
+        if self._running or not self._level_test_running():
+            # Start took the device over, or the operator already stopped it.
+            return
+        try:
+            self.controller.stop_input_level_test()
+        except Exception:  # noqa: BLE001
+            pass
+        self._level_button_state = None
+
+    def _sync_level_button(self) -> None:
+        testing = self._level_test_running()
         state = (self._running, testing)
         if state == self._level_button_state:
             return
@@ -2367,8 +2448,10 @@ class ControlPanel(QMainWindow):
         )
 
     def _toggle_input_level_test(self) -> None:
-        checker = getattr(self.controller, "is_input_level_test_running", None)
-        if checker is not None and checker():
+        # Pressing the button hands the meter to the operator either way, so
+        # the pending preview must not fire and stop the test they just began.
+        self._device_preview_timer.stop()
+        if self._level_test_running():
             try:
                 self.controller.stop_input_level_test()
             except Exception:  # noqa: BLE001
@@ -2790,6 +2873,7 @@ class ControlPanel(QMainWindow):
             self._pending_device = device
             return
         if not self._running:
+            self._preview_device(device)
             return
         self._apply_device_change(device)
 

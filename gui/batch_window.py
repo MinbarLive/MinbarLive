@@ -51,6 +51,7 @@ from providers import (
     get_default_model,
     get_model_choices,
     ranked_keyed_provider,
+    supported_source_languages,
 )
 from utils.frozen_env import external_process_env
 from utils.logging import log
@@ -256,6 +257,9 @@ class BatchWindow(QDialog):
         column.addWidget(self._language_card())
         column.addWidget(self._output_card())
         column.addWidget(self._file_card())
+        # Only now: the engine picker lives inside the output card's expander,
+        # two cards after the language one that its choice narrows.
+        self._refresh_source_combo()
         # Keeps the cards top-aligned when the window is taller than they are.
         column.addStretch(1)
         self.scroll.setWidget(self.body)
@@ -677,10 +681,34 @@ class BatchWindow(QDialog):
         combo.setCurrentIndex(max(0, index))
         combo.blockSignals(blocked)
 
+    def _refresh_source_combo(self) -> None:
+        """Narrow the spoken-language list to what the batch STT engine takes.
+
+        OpenAI's file endpoint validates the ``language`` field against the
+        Whisper set — no Kurdish — while Gemini only mentions the language
+        inside the prompt and so rejects nothing. Offering the union let a
+        batch run fail on the first segment.
+        """
+        names = [
+            name
+            for name, _code in supported_source_languages(
+                self._selected_stt_provider(), self.stt_model_combo.currentData()
+            )
+        ]
+        current = language_canonical_name(self.source_combo.currentText())
+        if current not in names:
+            current = names[0]
+        blocked = self.source_combo.blockSignals(True)
+        self.source_combo.clear()
+        self.source_combo.addItems([language_display_name(n) for n in names])
+        self.source_combo.setCurrentText(language_display_name(current))
+        self.source_combo.blockSignals(blocked)
+
     def _on_stt_provider(self, _index: int) -> None:
         self._fill_models(
             self.stt_model_combo, self._selected_stt_provider(), "transcription"
         )
+        self._refresh_source_combo()
 
     def _on_translation_provider(self, _index: int) -> None:
         self._fill_models(

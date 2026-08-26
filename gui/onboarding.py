@@ -59,6 +59,7 @@ from providers import (
     get_streaming_key_provider,
     resolve_provider_by_keys,
     save_api_key,
+    supported_source_languages,
 )
 from utils.logging import log
 from utils.settings import (
@@ -66,7 +67,6 @@ from utils.settings import (
     DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER,
     GUI_LANGUAGES,
     PIPELINE_MODE_STREAMING,
-    SOURCE_LANGUAGES,
     STREAMING_TRANSCRIPTION_PROVIDERS,
     TARGET_LANGUAGE_NAMES,
     THEME_MODES,
@@ -270,7 +270,22 @@ class OnboardingWizard(QDialog):
         # Real-time — where onboarding always lands — cannot auto-detect the
         # source language, so "Automatic" (the entry with no language code) is
         # not offered here at all.
-        self._source_names = [name for name, code in SOURCE_LANGUAGES if code is not None]
+        #
+        # Narrowed further to what the default streaming engine accepts, since
+        # the engines disagree (OpenAI Realtime rejects Somali outright). The
+        # engine is only decided at _finish(), after the key page two steps
+        # later, so the default is the best guess available here — _finish()
+        # re-checks against the engine it actually lands on.
+        self._source_names = [
+            name
+            for name, code in supported_source_languages(
+                DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER,
+                get_default_model(
+                    DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER, "transcription"
+                ),
+            )
+            if code is not None
+        ]
         self.source_combo = Dropdown()
         self.source_combo.addItems(
             [language_display_name(n) for n in self._source_names]
@@ -849,6 +864,22 @@ class OnboardingWizard(QDialog):
         settings.use_default_transcription_model = (
             engine == DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER
         )
+        # The languages page offered the DEFAULT engine's languages; a
+        # Gemini-only or Deepgram-only setup lands on a different one. Only the
+        # engine chosen just above knows whether the pick survives.
+        allowed = [
+            name
+            for name, code in supported_source_languages(
+                engine, settings.transcription_model
+            )
+            if code is not None
+        ]
+        if settings.source_language not in allowed:
+            log(
+                f"Spoken language {settings.source_language} is not supported "
+                f"by {engine}; switched to {allowed[0]}"
+            )
+            settings.source_language = allowed[0]
 
         settings.disclaimer_accepted = True
         settings.onboarding_completed = True

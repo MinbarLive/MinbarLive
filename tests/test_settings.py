@@ -1137,6 +1137,53 @@ class TestLanguageEndonyms:
             shown = language_display_name(name)
             assert language_canonical_name(shown) == name
 
+    def test_every_language_has_an_endonym(self):
+        """The round-trip tests above pass trivially when an endonym is MISSING
+        — both directions fall through to identity — so they cannot catch a
+        language added to the list and not to the map. That language then shows
+        its English name mid-dropdown, next to native names, and nothing warns.
+        """
+        from utils.settings import LANGUAGE_ENDONYMS, SOURCE_LANGUAGES, TARGET_LANGUAGES
+
+        named = [n for n, _c in SOURCE_LANGUAGES] + [n for n, _c in TARGET_LANGUAGES]
+        missing = sorted({n for n in named if n not in LANGUAGE_ENDONYMS})
+        assert not missing, (
+            f"{missing} have no LANGUAGE_ENDONYMS entry — add the language's own "
+            "name for it (Türkçe, not Turkish)"
+        )
+
+    def test_no_endonym_names_a_language_that_is_gone(self):
+        from utils.settings import LANGUAGE_ENDONYMS, SOURCE_LANGUAGES, TARGET_LANGUAGES
+
+        named = {n for n, _c in SOURCE_LANGUAGES} | {n for n, _c in TARGET_LANGUAGES}
+        stale = sorted(set(LANGUAGE_ENDONYMS) - named - {"Automatic"})
+        assert not stale, f"{stale} are in LANGUAGE_ENDONYMS but in no language list"
+
+    def test_language_codes_are_unique(self):
+        """Two names on one code makes the reverse lookup pick one arbitrarily."""
+        from utils.settings import SOURCE_LANGUAGES, TARGET_LANGUAGES
+
+        for label, entries in (
+            ("SOURCE_LANGUAGES", SOURCE_LANGUAGES),
+            ("TARGET_LANGUAGES", TARGET_LANGUAGES),
+        ):
+            codes = [c for _n, c in entries if c is not None]
+            dupes = sorted({c for c in codes if codes.count(c) > 1})
+            assert not dupes, f"{label} repeats {dupes}"
+
+    def test_source_codes_are_plain_iso_639_1(self):
+        """Source codes are handed to the STT APIs as-is. A regional variant
+        ("pt-BR") or an uppercase code is rejected by every one of them, and the
+        per-engine sets it is matched against hold bare lowercase codes only."""
+        from utils.settings import SOURCE_LANGUAGES
+
+        for name, code in SOURCE_LANGUAGES:
+            if code is None:
+                continue  # "Automatic"
+            assert code.isalpha() and code.islower() and len(code) == 2, (
+                f"{name}: {code!r}"
+            )
+
     def test_canonical_names_pass_through_unchanged(self):
         """A settings.json written before endonyms existed stores English
         names — those must keep resolving."""
