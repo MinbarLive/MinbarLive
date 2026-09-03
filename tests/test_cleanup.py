@@ -53,7 +53,6 @@ class TestPurgeOldFiles:
 
     def test_keeps_file_exactly_at_boundary(self, tmp_dir):
         """A file whose date equals the cutoff date should NOT be deleted."""
-        cutoff_date = datetime.now() - timedelta(days=30)
         # File date is same day as cutoff — its datetime is midnight,
         # cutoff is now()-30d which is later in the day, so file_date < cutoff.
         # We test one day *inside* the boundary to be unambiguous.
