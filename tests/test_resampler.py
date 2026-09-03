@@ -37,7 +37,7 @@ def test_streaming_matches_single_shot_regardless_of_block_sizes():
     chunked = StreamResampler(48000, 16000, 1)
     parts = []
     i = 0
-    for size in ([100, 517, 2048, 33] * 100):
+    for size in [100, 517, 2048, 33] * 100:
         if i >= len(x):
             break
         parts.append(chunked.process(x[i : i + size]))
@@ -51,7 +51,9 @@ def test_streaming_matches_single_shot_regardless_of_block_sizes():
 def test_downsample_preserves_a_pure_tone_cleanly():
     src, dst = 48000, 16000
     t = np.arange(src) / src
-    x = (0.5 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)  # 1 kHz, well below Nyquist
+    x = (0.5 * np.sin(2 * np.pi * 1000 * t)).astype(
+        np.float32
+    )  # 1 kHz, well below Nyquist
     out = StreamResampler(src, dst, 1).process(x)
     # steady-state amplitude preserved (skip filter warm-up/tail edges)
     core = out[500:-500]

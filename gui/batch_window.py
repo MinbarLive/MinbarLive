@@ -426,7 +426,10 @@ class BatchWindow(QDialog):
         self.stt_model_combo = Dropdown()
         grid.addWidget(
             self._caption(self._t("batch_transcription_model", "Transcription")),
-            0, 0, 1, 2,
+            0,
+            0,
+            1,
+            2,
         )
         grid.addWidget(self.stt_provider_combo, 1, 0)
         grid.addWidget(self.stt_model_combo, 1, 1)
@@ -447,7 +450,10 @@ class BatchWindow(QDialog):
         self.translation_model_combo = Dropdown()
         grid.addWidget(
             self._caption(self._t("batch_translation_model", "Translation")),
-            2, 0, 1, 2,
+            2,
+            0,
+            1,
+            2,
         )
         grid.addWidget(self.translation_provider_combo, 3, 0)
         grid.addWidget(self.translation_model_combo, 3, 1)
@@ -767,7 +773,10 @@ class BatchWindow(QDialog):
             return
         # Both chosen engines need a key; ask now rather than failing inside
         # the worker thread half a file in.
-        providers = [self._selected_stt_provider(), self._selected_translation_provider()]
+        providers = [
+            self._selected_stt_provider(),
+            self._selected_translation_provider(),
+        ]
         if not ensure_keys(list(dict.fromkeys(providers)), {}, self):
             return
         self.progress.setValue(0)
@@ -913,9 +922,9 @@ class BatchWindow(QDialog):
     def _on_download_progress(self, percent: int) -> None:
         self.progress.setValue(percent)
         self._set_status(
-            self._t("batch_ffmpeg_downloading", "Downloading ffmpeg… {percent}%").format(
-                percent=percent
-            )
+            self._t(
+                "batch_ffmpeg_downloading", "Downloading ffmpeg… {percent}%"
+            ).format(percent=percent)
         )
 
     def _on_download_finished(self) -> None:

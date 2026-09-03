@@ -60,7 +60,9 @@ class TestNoTkImport:
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.append(node.module)
 
-        toolkits = [m for m in imported if m.split(".")[0] in ("tkinter", "customtkinter")]
+        toolkits = [
+            m for m in imported if m.split(".")[0] in ("tkinter", "customtkinter")
+        ]
         assert not toolkits, f"control_state must stay Tk-free, imports: {toolkits}"
 
 
@@ -171,9 +173,7 @@ class TestRepairDefaultProvider:
         assert repair_default_provider(settings) is None
         assert settings.ai_provider == DEFAULT_AI_PROVIDER
 
-    def test_repair_to_a_non_default_provider_turns_the_default_off(
-        self, monkeypatch
-    ):
+    def test_repair_to_a_non_default_provider_turns_the_default_off(self, monkeypatch):
         """A setup whose only key belongs to a non-default provider must keep
         working rather than being force-migrated to the current default —
         and "Use default" has to go off so the panel shows the real one."""
@@ -183,10 +183,10 @@ class TestRepairDefaultProvider:
         monkeypatch.setattr(
             control_state, "resolve_provider_by_keys", lambda **k: keyed
         )
-        stale = next(p for p in PROVIDER_RANKING if p not in (DEFAULT_AI_PROVIDER, keyed))
-        settings = make_settings(
-            ai_provider=stale, use_default_translation_model=True
+        stale = next(
+            p for p in PROVIDER_RANKING if p not in (DEFAULT_AI_PROVIDER, keyed)
         )
+        settings = make_settings(ai_provider=stale, use_default_translation_model=True)
         assert repair_default_provider(settings) == stale
         assert settings.ai_provider == keyed
         assert settings.use_default_translation_model is False
@@ -269,9 +269,7 @@ class TestVisibleProviderChoices:
         assert visible_provider_choices(self.CHOICES, running=False) == self.CHOICES
 
     def test_running_hides_keyless_providers(self, monkeypatch):
-        monkeypatch.setattr(
-            control_state, "has_usable_key", lambda p: p == "gemini"
-        )
+        monkeypatch.setattr(control_state, "has_usable_key", lambda p: p == "gemini")
         assert visible_provider_choices(self.CHOICES, running=True) == [
             ("Gemini", "gemini")
         ]

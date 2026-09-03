@@ -196,6 +196,7 @@ _MIN_WINDOW_H = 420
 # one settings file.
 _GEOMETRY_RE = re.compile(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)")
 
+
 def _readable_on(hex_color: str) -> str:
     """Black or white label text, whichever stays legible on ``hex_color``."""
     try:
@@ -597,7 +598,9 @@ class ControlPanel(QMainWindow):
         self.monitor_combo = self._combo()
         for i, screen in enumerate(QGuiApplication.screens()):
             g = screen.geometry()
-            self.monitor_combo.addItem(f"{i + 1}. {screen.name()} ({g.width()}x{g.height()})")
+            self.monitor_combo.addItem(
+                f"{i + 1}. {screen.name()} ({g.width()}x{g.height()})"
+            )
         self.monitor_combo.setCurrentIndex(
             max(0, min(self.settings.monitor_index, self.monitor_combo.count() - 1))
         )
@@ -635,7 +638,9 @@ class ControlPanel(QMainWindow):
             1,
         )
         top.addWidget(
-            field(self._t("input_device", "Input device"), self.device_combo, symbol="◉"),
+            field(
+                self._t("input_device", "Input device"), self.device_combo, symbol="◉"
+            ),
             1,
         )
         # Roomier than the other cards: moving font size into the expander
@@ -678,9 +683,7 @@ class ControlPanel(QMainWindow):
         button.setObjectName("link")
         button.setFlat(True)
         button.setCursor(Qt.PointingHandCursor)
-        button.clicked.connect(
-            lambda: QDesktopServices.openUrl(QUrl(BLACKHOLE_URL))
-        )
+        button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(BLACKHOLE_URL)))
         return button
 
     def _input_level_row(self) -> QWidget:
@@ -991,7 +994,8 @@ class ControlPanel(QMainWindow):
         pair = QHBoxLayout()
         pair.setSpacing(6)
         pair.addWidget(
-            field(self._t("source", "Spoken language"), self.source_combo, symbol="⌁"), 1
+            field(self._t("source", "Spoken language"), self.source_combo, symbol="⌁"),
+            1,
         )
         swap = QPushButton("⇄")
         swap.setObjectName("icon")
@@ -1004,7 +1008,9 @@ class ControlPanel(QMainWindow):
         # the caption happens to be the height it was measured at.
         pair.addWidget(swap, 0, Qt.AlignBottom)
         pair.addWidget(
-            field(self._t("target", "Subtitle language"), self.target_combo, symbol="→"),
+            field(
+                self._t("target", "Subtitle language"), self.target_combo, symbol="→"
+            ),
             1,
         )
         card.body.addLayout(pair)
@@ -1014,9 +1020,7 @@ class ControlPanel(QMainWindow):
         strat_head = QHBoxLayout()
         strat_label = QLabel("⇶  " + self._t("processing_strategy", "Processing"))
         strat_label.setObjectName("field")
-        self.strategy_hint = QLabel(
-            self._t("hint_stop_to_change", "⚠ Stop to change")
-        )
+        self.strategy_hint = QLabel(self._t("hint_stop_to_change", "⚠ Stop to change"))
         self.strategy_hint.setObjectName("warning_text")
         self.strategy_hint.setVisible(False)
         strat_head.addWidget(strat_label)
@@ -1157,7 +1161,8 @@ class ControlPanel(QMainWindow):
             keys = [f"subtitle_hint_{m}" for m in modes]
             names = [self._t(f"subtitle_mode_{m}", m) for m in modes]
         body = "\n\n".join(
-            f"{name}\n{self._t(key, '')}" for name, key in zip(names, keys, strict=False)
+            f"{name}\n{self._t(key, '')}"
+            for name, key in zip(names, keys, strict=False)
         )
         self._info(title, body)
 
@@ -1187,7 +1192,9 @@ class ControlPanel(QMainWindow):
         card.toggled.connect(lambda _open: self._relayout_columns(force=True))
 
         # Transcription first, then translation — the Tk order.
-        card.body.addWidget(self._section(self._t("section_transcription", "Transcription")))
+        card.body.addWidget(
+            self._section(self._t("section_transcription", "Transcription"))
+        )
         self.transcription_provider_combo = self._combo()
         self.transcription_provider_combo.currentIndexChanged.connect(
             self._on_transcription_provider_changed
@@ -1216,7 +1223,9 @@ class ControlPanel(QMainWindow):
         )
 
         card.body.addSpacing(_SECTION_GAP)
-        card.body.addWidget(self._section(self._t("section_translation", "Translation")))
+        card.body.addWidget(
+            self._section(self._t("section_translation", "Translation"))
+        )
         self.provider_combo = self._combo()
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         self.model_combo = self._combo()
@@ -1922,7 +1931,9 @@ class ControlPanel(QMainWindow):
     def _step_font(self, *, smaller: bool) -> None:
         # font_size_base is a DIVISOR, so a bigger base is a smaller font.
         base = self.settings.font_size_base
-        self.settings.font_size_base = min(80, base + 5) if smaller else max(20, base - 5)
+        self.settings.font_size_base = (
+            min(80, base + 5) if smaller else max(20, base - 5)
+        )
         if self.subtitle_window:
             if smaller:
                 self.subtitle_window.decrease_font()
@@ -2888,9 +2899,7 @@ class ControlPanel(QMainWindow):
             self._running = False
             self._end_session_tracking("error")
             self._sync_running_state()
-            show_message(
-                self, "MinbarLive", str(exc), kind="error", translate=self._t
-            )
+            show_message(self, "MinbarLive", str(exc), kind="error", translate=self._t)
 
     # ── subtitle window ──────────────────────────────────────────────────
     def _effective_always_on_top(self) -> bool:

@@ -70,9 +70,11 @@ def _fake_urlopen(payload, monkeypatch):
 
     class FakeResponse(io.BytesIO):
         def __init__(self):
-            body = payload if isinstance(payload, bytes) else json.dumps(
+            body = (
                 payload
-            ).encode("utf-8")
+                if isinstance(payload, bytes)
+                else json.dumps(payload).encode("utf-8")
+            )
             super().__init__(body)
 
         def __enter__(self):
@@ -142,9 +144,7 @@ class TestCheckForUpdate:
             monkeypatch,
         )
         info = check_for_update()
-        assert info == UpdateInfo(
-            version="999.0.0", url=update_check.DOWNLOAD_PAGE_URL
-        )
+        assert info == UpdateInfo(version="999.0.0", url=update_check.DOWNLOAD_PAGE_URL)
 
     def test_current_release_returns_none(self, monkeypatch):
         from version import __version__

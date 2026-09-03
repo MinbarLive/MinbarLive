@@ -80,7 +80,7 @@ class ReviewBanner(NoticeBanner):
         self._decide(disabled=True)
 
     def on_close(self) -> None:
-        """"Not this time": ask again after another run of sessions.
+        """ "Not this time": ask again after another run of sessions.
 
         The counter is reset rather than left at the threshold, which is the
         whole difference between this and *Never show again* — left alone it

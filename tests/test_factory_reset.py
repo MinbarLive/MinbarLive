@@ -112,9 +112,7 @@ class TestTheFolder:
 
 
 class TestTheKeychain:
-    def test_configured_keys_are_cleared_and_named(
-        self, data_dir, monkeypatch
-    ):
+    def test_configured_keys_are_cleared_and_named(self, data_dir, monkeypatch):
         import providers
 
         held = {"openai", "deepgram"}
@@ -125,9 +123,7 @@ class TestTheKeychain:
         assert held == set()
         assert result.ok
 
-    def test_a_provider_with_no_key_is_not_reported_as_removed(
-        self, data_dir, no_keys
-    ):
+    def test_a_provider_with_no_key_is_not_reported_as_removed(self, data_dir, no_keys):
         result = fr.factory_reset()
         assert result.keys_removed == []
         assert result.ok
@@ -148,9 +144,7 @@ class TestTheKeychain:
         # naming the rest beats leaving the user with both halves.
         assert result.data_dir_removed
 
-    def test_one_provider_raising_does_not_stop_the_others(
-        self, data_dir, monkeypatch
-    ):
+    def test_one_provider_raising_does_not_stop_the_others(self, data_dir, monkeypatch):
         import providers
 
         held = {"openai", "gemini", "anthropic", "deepgram"}
@@ -170,9 +164,7 @@ class TestTheKeychain:
 class TestNothingWritesTheFolderBackAfterwards:
     """The two ways the folder comes back the moment it is deleted."""
 
-    def test_save_settings_is_blocked_after_a_successful_reset(
-        self, data_dir, no_keys
-    ):
+    def test_save_settings_is_blocked_after_a_successful_reset(self, data_dir, no_keys):
         # closeEvent persists the window geometry, and save_settings mkdirs its
         # parent — so without the block the app recreates the folder on the way
         # out, with onboarding_completed still true. The next launch would then
@@ -186,9 +178,7 @@ class TestNothingWritesTheFolderBackAfterwards:
         assert not data_dir.exists(), "save_settings put the app-data folder back"
         assert not (data_dir / "settings.json").exists()
 
-    def test_a_failed_reset_does_not_block_writes(
-        self, data_dir, monkeypatch, no_keys
-    ):
+    def test_a_failed_reset_does_not_block_writes(self, data_dir, monkeypatch, no_keys):
         # Nothing was deleted, so the install is still live and its settings
         # still matter. Blocking here would silently drop real preferences.
         monkeypatch.setattr(fr.shutil, "rmtree", lambda _p: None)

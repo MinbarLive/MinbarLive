@@ -192,7 +192,9 @@ class OnboardingWizard(QDialog):
         widget.setText(prefix + self._t(key, fallback))
         return widget
 
-    def _label(self, key: str, fallback: str, object_name: str = "wizard_sub") -> QLabel:
+    def _label(
+        self, key: str, fallback: str, object_name: str = "wizard_sub"
+    ) -> QLabel:
         label = QLabel("")
         label.setObjectName(object_name)
         label.setWordWrap(True)
@@ -262,9 +264,7 @@ class OnboardingWizard(QDialog):
         return [self._t(f"theme_{mode}", mode.title()) for mode in THEME_MODES]
 
     def _step_languages(self) -> QWidget:
-        page, inner = self._card(
-            "wizard_languages_title", "Translation languages"
-        )
+        page, inner = self._card("wizard_languages_title", "Translation languages")
         settings = load_settings()
 
         # Real-time — where onboarding always lands — cannot auto-detect the
@@ -306,7 +306,9 @@ class OnboardingWizard(QDialog):
         )
 
         inner.addSpacing(6)
-        inner.addWidget(self._label("wizard_source_language", "Spoken language (source)"))
+        inner.addWidget(
+            self._label("wizard_source_language", "Spoken language (source)")
+        )
         inner.addWidget(self.source_combo)
         inner.addSpacing(6)
         inner.addWidget(
@@ -359,8 +361,7 @@ class OnboardingWizard(QDialog):
         # meter that can never move (the panel can still be used later).
         self._no_devices_label = self._label(
             "wizard_no_devices",
-            "No input devices found — you can choose one later in the control "
-            "panel.",
+            "No input devices found — you can choose one later in the control panel.",
         )
         inner.addWidget(self._no_devices_label)
         has_devices = bool(self.device_names)
@@ -438,9 +439,7 @@ class OnboardingWizard(QDialog):
             # A device that cannot be opened is worth a dialog only when the
             # user asked for the test — not while merely browsing the list.
             if not auto:
-                show_message(
-                    self, "MinbarLive", str(exc), translate=self._t
-                )
+                show_message(self, "MinbarLive", str(exc), translate=self._t)
             self._sync_level_button()
             return
         self._level_timer.start(_LEVEL_POLL_MS)

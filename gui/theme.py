@@ -165,8 +165,10 @@ class _ControlStyle(QProxyStyle):
         enabled = bool(option.state & QStyle.State_Enabled)
         hover = bool(option.state & QStyle.State_MouseOver)
         if not enabled:
-            return qcolor(self._c["button"]), qcolor(self._c["border"]), qcolor(
-                self._c["muted"]
+            return (
+                qcolor(self._c["button"]),
+                qcolor(self._c["border"]),
+                qcolor(self._c["muted"]),
             )
         if on:
             key = "accent_hover" if hover else "accent"

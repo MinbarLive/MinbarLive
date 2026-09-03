@@ -273,7 +273,9 @@ class UtteranceSession:
             self._interim = text
             self._publish_live_locked()
             ready = (
-                self._cut_flushable_locked(text, item_id) if self._sentence_flush else ""
+                self._cut_flushable_locked(text, item_id)
+                if self._sentence_flush
+                else ""
             )
             return ready, self._live_rev
 
@@ -948,9 +950,7 @@ class StreamingSession:
             except Exception as e:
                 log(f"STREAMING-PROCESSOR Error: {e}", level="ERROR")
                 self._error_queue.put(f"translation_error:{e}")
-                self._translation_queue.put(
-                    (get_user_message(classify_error(e)), None)
-                )
+                self._translation_queue.put((get_user_message(classify_error(e)), None))
             finally:
                 # The subtitle (or error message) for this utterance is out —
                 # take its live transcript off screen unless newer speech has

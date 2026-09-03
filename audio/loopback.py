@@ -7,6 +7,7 @@ without importing GUI code.
 Also home to the guard that decides whether calling into soundcard at all is
 safe on this machine — see soundcard_usable().
 """
+
 from __future__ import annotations
 
 import os

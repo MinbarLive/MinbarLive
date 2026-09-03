@@ -150,3 +150,10 @@ jobs:
           fi
           echo "$files"
           ruff check $files
+
+      # Formatting, unlike the check above, IS enforced repo-wide: the tree was
+      # made `ruff format`-clean on 2026-09-03, so there is no backlog to
+      # grandfather here. Repo-wide is the point - a changed-files-only gate
+      # lets the rest drift straight back.
+      - name: Ruff format (repo-wide)
+        run: ruff format --check .

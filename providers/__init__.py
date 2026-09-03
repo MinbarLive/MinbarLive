@@ -374,9 +374,7 @@ def get_embedding_provider() -> EmbeddingProvider:
 def get_embedding_model() -> str:
     """The embedding model id matching the active embedding space."""
     return (
-        GEMINI_EMBEDDING_MODEL
-        if get_embedding_space() == "gemini"
-        else EMBEDDING_MODEL
+        GEMINI_EMBEDDING_MODEL if get_embedding_space() == "gemini" else EMBEDDING_MODEL
     )
 
 
@@ -480,7 +478,9 @@ def resolve_streaming_transcription_model(
 # everything" — which is the bug this table exists to prevent, reintroduced.
 # tests/test_providers.py::TestSourceLanguageConfigStaysHonest enforces it.
 # Adding a spoken language needs NO edit here: see .claude/skills/add-language.
-_SOURCE_LANGUAGE_SUPPORT: dict[str, frozenset[str] | dict[str, frozenset[str]] | None] = {
+_SOURCE_LANGUAGE_SUPPORT: dict[
+    str, frozenset[str] | dict[str, frozenset[str]] | None
+] = {
     # Segmented: the language reaches the API as a validated parameter.
     "openai": openai_transcription.SUPPORTED_LANGUAGE_CODES,
     # Gemini's segmented provider only mentions the language INSIDE the prompt
@@ -525,7 +525,11 @@ def supported_source_languages(
     allowed = supported_source_language_codes(provider_id, model_id)
     if allowed is None:
         return list(SOURCE_LANGUAGES)
-    return [(name, code) for name, code in SOURCE_LANGUAGES if code is None or code in allowed]
+    return [
+        (name, code)
+        for name, code in SOURCE_LANGUAGES
+        if code is None or code in allowed
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -623,9 +627,7 @@ def get_model_choices(provider: str, capability: str) -> list[tuple[str, str]]:
     """(display_name, model_id) dropdown choices for a provider capability."""
     provider = _effective_capability_provider(provider, capability)
     per_provider = _MODEL_CHOICES.get(provider, _MODEL_CHOICES[DEFAULT_PROVIDER])
-    return per_provider.get(
-        capability, _MODEL_CHOICES[DEFAULT_PROVIDER][capability]
-    )
+    return per_provider.get(capability, _MODEL_CHOICES[DEFAULT_PROVIDER][capability])
 
 
 def get_default_model(provider: str, capability: str) -> str:

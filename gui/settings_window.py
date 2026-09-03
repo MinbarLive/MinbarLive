@@ -236,7 +236,10 @@ class SettingsWindow(QDialog):
         # twice, reordering one and not the other silently mislabels both
         # segments, and the control would then write the opposite setting.
         self.window_style_segment = SegmentedControl(
-            [self._t(f"window_style_{style}", style.title()) for style in _STYLE_SEGMENTS],
+            [
+                self._t(f"window_style_{style}", style.title())
+                for style in _STYLE_SEGMENTS
+            ],
             self._window_style_index(self.settings.window_style),
         )
         self.window_style_segment.changed.connect(self._on_window_style)
@@ -458,7 +461,8 @@ class SettingsWindow(QDialog):
                 self,
                 self._t("api_key_section", "API key"),
                 self._t(
-                    "dlg_stop_before_change_key", "Stop the session before changing keys."
+                    "dlg_stop_before_change_key",
+                    "Stop the session before changing keys.",
                 ),
                 kind="info",
                 translate=self._t,
@@ -494,7 +498,9 @@ class SettingsWindow(QDialog):
             show_message(
                 self,
                 self._t("api_key_section", "API key"),
-                self._t("dlg_stop_before_remove", "Stop the session before removing keys."),
+                self._t(
+                    "dlg_stop_before_remove", "Stop the session before removing keys."
+                ),
                 kind="info",
                 translate=self._t,
             )
@@ -533,9 +539,7 @@ class SettingsWindow(QDialog):
             show_message(
                 self,
                 self._t("reset_section", "Delete everything"),
-                self._t(
-                    "dlg_stop_before_reset", "Stop the session before resetting."
-                ),
+                self._t("dlg_stop_before_reset", "Stop the session before resetting."),
                 kind="info",
                 translate=self._t,
             )

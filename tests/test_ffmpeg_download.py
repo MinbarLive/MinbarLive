@@ -89,9 +89,7 @@ class TestFfmpegInKnownDirs:
 
     def test_found_in_a_prefix_that_is_not_on_path(self, tmp_path, monkeypatch):
         binary = self._make_exe(tmp_path / "opt" / "homebrew" / "bin")
-        monkeypatch.setattr(
-            processor, "_EXTRA_FFMPEG_DIRS", (str(binary.parent),)
-        )
+        monkeypatch.setattr(processor, "_EXTRA_FFMPEG_DIRS", (str(binary.parent),))
         assert processor._ffmpeg_in_known_dirs() == str(binary)
 
     def test_the_earlier_prefix_wins(self, tmp_path, monkeypatch):
@@ -126,9 +124,7 @@ class TestFfmpegInKnownDirs:
         bundled, and the prefix scan is what answers."""
         binary = self._make_exe(tmp_path / "bin")
         monkeypatch.setattr(processor.shutil, "which", lambda name: None)
-        monkeypatch.setattr(
-            processor, "_EXTRA_FFMPEG_DIRS", (str(binary.parent),)
-        )
+        monkeypatch.setattr(processor, "_EXTRA_FFMPEG_DIRS", (str(binary.parent),))
         assert processor._find_ffmpeg() == str(binary)
 
 

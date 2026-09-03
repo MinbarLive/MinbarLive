@@ -324,8 +324,10 @@ class CardGrid(QObject):
             return
         gap = self.grid.verticalSpacing()
         left = self.natural_height(display_box)
-        right = self.natural_height(self.tails[1][0]) + gap + self.natural_height(
-            advanced_box
+        right = (
+            self.natural_height(self.tails[1][0])
+            + gap
+            + self.natural_height(advanced_box)
         )
         if left > right:
             (shorter, shorter_box), (taller, taller_box) = (

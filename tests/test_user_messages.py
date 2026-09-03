@@ -73,8 +73,7 @@ class TestClassifyError:
 
     def test_gemini_invalid_key_is_a_400(self):
         exc = Exception(
-            "400 INVALID_ARGUMENT. API key not valid. Please pass a valid "
-            "API key."
+            "400 INVALID_ARGUMENT. API key not valid. Please pass a valid API key."
         )
         assert user_messages.classify_error(exc) == "invalid_api_key"
 
@@ -93,9 +92,7 @@ class TestClassifyError:
         assert user_messages.classify_error(exc) == "api_credits_exhausted"
 
     def test_anthropic_low_credit_is_a_400(self):
-        exc = Exception(
-            "Your credit balance is too low to access the Anthropic API."
-        )
+        exc = Exception("Your credit balance is too low to access the Anthropic API.")
         assert user_messages.classify_error(exc) == "api_credits_exhausted"
 
     def test_gemini_resource_exhausted(self):

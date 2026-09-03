@@ -53,7 +53,6 @@ class TestPurgeOldFiles:
 
     def test_keeps_file_exactly_at_boundary(self, tmp_dir):
         """A file whose date equals the cutoff date should NOT be deleted."""
-        cutoff_date = datetime.now() - timedelta(days=30)
         # File date is same day as cutoff — its datetime is midnight,
         # cutoff is now()-30d which is later in the day, so file_date < cutoff.
         # We test one day *inside* the boundary to be unambiguous.
@@ -146,12 +145,13 @@ class TestRunCleanup:
         with open(os.path.join(batch_dir, f"{old}_101500_x.txt"), "w") as f:
             f.write("x")
 
-        with patch("utils.cleanup.LOGS_DIR", logs_dir), patch(
-            "utils.cleanup.HISTORY_DIR", history_dir
-        ), patch("utils.cleanup.BATCH_DIR", batch_dir), patch(
-            "utils.cleanup.LOGS_RETENTION_DAYS", 30
-        ), patch("utils.cleanup.HISTORY_RETENTION_DAYS", 90), patch(
-            "utils.cleanup.BATCH_RETENTION_DAYS", 90
+        with (
+            patch("utils.cleanup.LOGS_DIR", logs_dir),
+            patch("utils.cleanup.HISTORY_DIR", history_dir),
+            patch("utils.cleanup.BATCH_DIR", batch_dir),
+            patch("utils.cleanup.LOGS_RETENTION_DAYS", 30),
+            patch("utils.cleanup.HISTORY_RETENTION_DAYS", 90),
+            patch("utils.cleanup.BATCH_RETENTION_DAYS", 90),
         ):
             run_cleanup()
 
@@ -174,12 +174,13 @@ class TestRunCleanup:
         with open(os.path.join(batch_dir, f"{recent}_101500_x.txt"), "w") as f:
             f.write("x")
 
-        with patch("utils.cleanup.LOGS_DIR", logs_dir), patch(
-            "utils.cleanup.HISTORY_DIR", history_dir
-        ), patch("utils.cleanup.BATCH_DIR", batch_dir), patch(
-            "utils.cleanup.LOGS_RETENTION_DAYS", 30
-        ), patch("utils.cleanup.HISTORY_RETENTION_DAYS", 90), patch(
-            "utils.cleanup.BATCH_RETENTION_DAYS", 90
+        with (
+            patch("utils.cleanup.LOGS_DIR", logs_dir),
+            patch("utils.cleanup.HISTORY_DIR", history_dir),
+            patch("utils.cleanup.BATCH_DIR", batch_dir),
+            patch("utils.cleanup.LOGS_RETENTION_DAYS", 30),
+            patch("utils.cleanup.HISTORY_RETENTION_DAYS", 90),
+            patch("utils.cleanup.BATCH_RETENTION_DAYS", 90),
         ):
             run_cleanup()
 
@@ -204,12 +205,13 @@ class TestRunCleanup:
         with open(os.path.join(batch_dir, f"{old}_101500_x.txt"), "w") as f:
             f.write("x")
 
-        with patch("utils.cleanup.LOGS_DIR", logs_dir), patch(
-            "utils.cleanup.HISTORY_DIR", history_dir
-        ), patch("utils.cleanup.BATCH_DIR", batch_dir), patch(
-            "utils.cleanup.LOGS_RETENTION_DAYS", 30
-        ), patch("utils.cleanup.HISTORY_RETENTION_DAYS", 90), patch(
-            "utils.cleanup.BATCH_RETENTION_DAYS", 90
+        with (
+            patch("utils.cleanup.LOGS_DIR", logs_dir),
+            patch("utils.cleanup.HISTORY_DIR", history_dir),
+            patch("utils.cleanup.BATCH_DIR", batch_dir),
+            patch("utils.cleanup.LOGS_RETENTION_DAYS", 30),
+            patch("utils.cleanup.HISTORY_RETENTION_DAYS", 90),
+            patch("utils.cleanup.BATCH_RETENTION_DAYS", 90),
         ):
             run_cleanup(clean_logs=True, clean_content=False)
 
@@ -227,10 +229,11 @@ class TestRunCleanup:
 
         _create_dated_file(logs_dir, datetime.now() - timedelta(days=60))
 
-        with patch("utils.cleanup.LOGS_DIR", logs_dir), patch(
-            "utils.cleanup.HISTORY_DIR", history_dir
-        ), patch("utils.cleanup.BATCH_DIR", batch_dir), patch(
-            "utils.cleanup.LOGS_RETENTION_DAYS", 30
+        with (
+            patch("utils.cleanup.LOGS_DIR", logs_dir),
+            patch("utils.cleanup.HISTORY_DIR", history_dir),
+            patch("utils.cleanup.BATCH_DIR", batch_dir),
+            patch("utils.cleanup.LOGS_RETENTION_DAYS", 30),
         ):
             run_cleanup(clean_logs=False, clean_content=True)
 

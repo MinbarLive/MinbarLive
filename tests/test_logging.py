@@ -35,9 +35,7 @@ def test_concurrent_log_calls_never_tear_lines(tmp_path, monkeypatch):
         for i in range(n_lines):
             ulog.log(f"thread {tid} line {i} " + "x" * 40, level="INFO")
 
-    threads = [
-        threading.Thread(target=worker, args=(t,)) for t in range(n_threads)
-    ]
+    threads = [threading.Thread(target=worker, args=(t,)) for t in range(n_threads)]
     for t in threads:
         t.start()
     for t in threads:

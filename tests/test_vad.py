@@ -117,9 +117,7 @@ class TestDecisionBoost:
 
     def _quiet_chunk(self, peak=100, n=3200):  # ~-50 dBFS peak, 200 ms
         rng = np.random.default_rng(7)
-        return (
-            rng.normal(0, peak / 4, n).clip(-peak, peak).astype(np.int16)
-        )
+        return rng.normal(0, peak / 4, n).clip(-peak, peak).astype(np.int16)
 
     def test_gate_judges_boosted_copy_but_output_is_unchanged(self, monkeypatch):
         rec = RecordingVad(speech=True)

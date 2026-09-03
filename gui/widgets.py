@@ -466,9 +466,11 @@ class Dropdown(QComboBox):
         """Width the closed box has for text, arrow and padding excluded."""
         opt = QStyleOptionComboBox()
         self.initStyleOption(opt)
-        return self.style().subControlRect(
-            QStyle.CC_ComboBox, opt, QStyle.SC_ComboBoxEditField, self
-        ).width()
+        return (
+            self.style()
+            .subControlRect(QStyle.CC_ComboBox, opt, QStyle.SC_ComboBoxEditField, self)
+            .width()
+        )
 
     def _sync_closed_tooltip(self) -> None:
         # The closed box shows the current entry; a tooltip there needs the
@@ -672,7 +674,9 @@ class _ClickableRow(QWidget):
     clicked = Signal()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt API
-        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+        if event.button() == Qt.LeftButton and self.rect().contains(
+            event.position().toPoint()
+        ):
             self.clicked.emit()
         super().mouseReleaseEvent(event)
 

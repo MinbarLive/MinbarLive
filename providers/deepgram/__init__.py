@@ -25,16 +25,24 @@ TRANSCRIPTION_MODELS = [
 # (ar-EG, en-GB, pt-BR …) but the app only ever sends the base code from
 # SOURCE_LANGUAGES, so the variants would never match anything.
 #
-# Source: developers.deepgram.com/docs/models-languages-overview (2026-08-26).
+# Source: the live API, not the docs. A WebSocket handshake with a (model,
+# language) pair the model does not take is refused with HTTP 400 before any
+# audio flows, so every code below was probed directly. Verified 2026-09-03;
+# the docs page (developers.deepgram.com/docs/models-languages-overview)
+# omits Pashto on Nova-3, which the API accepts.
+# These are data, not code: a grid of ISO codes is scanned by eye against an
+# API's own list, and one code per line makes that impossible to do and the
+# diff between two engine sets unreadable. Keep the formatter off it.
+# fmt: off
 SUPPORTED_LANGUAGE_CODES = {
     "nova-3": frozenset(
         {
             "af", "ar", "be", "bg", "bn", "bs", "ca", "cs", "da", "de",
             "el", "en", "es", "et", "fa", "fi", "fr", "gu", "he", "hi",
             "hr", "hu", "hy", "id", "it", "ja", "ka", "kn", "ko", "lt",
-            "lv", "mk", "mr", "ms", "ne", "nl", "no", "pa", "pl", "pt",
-            "ro", "ru", "sk", "sl", "sr", "sv", "ta", "te", "th", "tl",
-            "tr", "uk", "ur", "vi", "zh",
+            "lv", "mk", "mr", "ms", "ne", "nl", "no", "pa", "pl", "ps",
+            "pt", "ro", "ru", "sk", "sl", "sr", "sv", "ta", "te", "th",
+            "tl", "tr", "uk", "ur", "vi", "zh",
         }
     ),
     "nova-2": frozenset(
@@ -46,6 +54,7 @@ SUPPORTED_LANGUAGE_CODES = {
         }
     ),
 }
+# fmt: on
 
 __all__ = [
     "DEFAULT_STREAMING_MODEL",

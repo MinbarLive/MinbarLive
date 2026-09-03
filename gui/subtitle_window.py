@@ -1143,9 +1143,7 @@ class SubtitleWindow(QWidget):
         trans = subtitle_font(self._translation_px(), text=block.translation)
         src = None
         if self._bilingual and block.source:
-            src = source_font(
-                self._source_px(), block.source, bold=self._side_by_side
-            )
+            src = source_font(self._source_px(), block.source, bold=self._side_by_side)
         return trans, src
 
     def _pair_gap(self, block: Block) -> int:
@@ -1353,9 +1351,7 @@ class SubtitleWindow(QWidget):
             )
         )
         if cards:
-            self._draw_ribbon(
-                p, self._ribbon_rects([run for run, _c in stacked], x, w)
-            )
+            self._draw_ribbon(p, self._ribbon_rects([run for run, _c in stacked], x, w))
         for run, colour in stacked:
             p.setPen(colour)
             run.layout.draw(p, QPointF(x, run.top))
@@ -1591,7 +1587,9 @@ class SubtitleWindow(QWidget):
         if not text:
             return
         layout, _height = self._layout_live(text)
-        p.setPen(self._translation_qcolor() if self._live_settled else self._source_qcolor())
+        p.setPen(
+            self._translation_qcolor() if self._live_settled else self._source_qcolor()
+        )
         layout.draw(p, QPointF(x, y))
 
     def _pill_font(self) -> QFont:
@@ -1704,7 +1702,9 @@ class SubtitleWindow(QWidget):
         p.setFont(font)
         p.setPen(fg)
         p.drawText(
-            QRect(x + pad_x + icon_w + icon_gap, y, w - pad_x * 2 - icon_w - icon_gap, h),
+            QRect(
+                x + pad_x + icon_w + icon_gap, y, w - pad_x * 2 - icon_w - icon_gap, h
+            ),
             int(Qt.AlignVCenter | Qt.AlignLeft) if pause_icon else int(Qt.AlignCenter),
             text,
         )
@@ -1720,13 +1720,16 @@ class SubtitleWindow(QWidget):
         """
         bottom = self.height() - FOOTER_MARGIN - self._static_lift()
         if self._show_footer:
-            bottom = self._pill(
-                p,
-                self._footer_text(),
-                bottom,
-                QColor(self._colors["warning"]),
-                QColor("#111827"),
-            ) - PILL_GAP
+            bottom = (
+                self._pill(
+                    p,
+                    self._footer_text(),
+                    bottom,
+                    QColor(self._colors["warning"]),
+                    QColor("#111827"),
+                )
+                - PILL_GAP
+            )
         if self._stopped_hint:
             c = self._colors
             self._pill(
@@ -2004,9 +2007,7 @@ class SubtitleWindow(QWidget):
         """
         if not self.isVisible():
             return
-        if self._stay_under is not None and place_window_behind(
-            self, self._stay_under
-        ):
+        if self._stay_under is not None and place_window_behind(self, self._stay_under):
             return
         self.raise_()
 

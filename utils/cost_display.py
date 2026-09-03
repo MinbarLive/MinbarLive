@@ -184,9 +184,7 @@ def cost_window_total(
         if not session.get("fully_priced", True):
             estimated = True
     text = format_usd(total)
-    return CostWindowTotal(
-        total=f"~{text}" if estimated else text, sessions=count
-    )
+    return CostWindowTotal(total=f"~{text}" if estimated else text, sessions=count)
 
 
 @dataclass(frozen=True)
@@ -296,8 +294,12 @@ def cost_breakdown_lines(
         reverse=True,
     )
     for pid, prow in ordered:
-        pcost = _cost_label({"total_cost_usd": prow.get("cost_usd"),
-                             "fully_priced": prow.get("fully_priced", True)})
+        pcost = _cost_label(
+            {
+                "total_cost_usd": prow.get("cost_usd"),
+                "fully_priced": prow.get("fully_priced", True),
+            }
+        )
         lines.append(f"{provider_label(pid)} — {pcost}")
         models = prow.get("models", {})
         if isinstance(models, Mapping):
@@ -314,8 +316,6 @@ def cost_breakdown_lines(
                 requests = int(mrow.get("requests", 0) or 0)
                 tag = "" if mrow.get("fully_priced", True) else f"  [{unpriced_note}]"
                 role_text = f" ({roles})" if roles else ""
-                lines.append(
-                    f"    {mid}{role_text}: {requests} {requests_label}{tag}"
-                )
+                lines.append(f"    {mid}{role_text}: {requests} {requests_label}{tag}")
         lines.append("")
     return "\n".join(lines).rstrip("\n")

@@ -188,9 +188,7 @@ class AudioLevelMeter:
                     else self._release_seconds
                 )
                 weight = 1.0 - math.exp(-elapsed / time_constant)
-                smoothed_rms = self._smoothed_rms + weight * (
-                    rms - self._smoothed_rms
-                )
+                smoothed_rms = self._smoothed_rms + weight * (rms - self._smoothed_rms)
 
             self._decay_peak_locked(now)
             if peak >= self._peak_hold:

@@ -445,9 +445,8 @@ class AppController:
         self._input_level_test_stop_event.set()
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=timeout)
-        if (
-            self._input_level_test_thread is thread
-            and (thread is None or not thread.is_alive())
+        if self._input_level_test_thread is thread and (
+            thread is None or not thread.is_alive()
         ):
             self._input_level_test_thread = None
         elif thread is not None and thread.is_alive():
@@ -590,7 +589,10 @@ class AppController:
             or samplerate
         )
         stream_kwargs, resampler = self._apply_capture_resampling(
-            stream_kwargs, open_rate=open_rate, target_rate=samplerate, channels=channels
+            stream_kwargs,
+            open_rate=open_rate,
+            target_rate=samplerate,
+            channels=channels,
         )
 
         candidates = input_device_candidates(
@@ -670,8 +672,7 @@ class AppController:
                             stream.close()
                         except Exception as close_exc:
                             log(
-                                f"Error closing audio stream {candidate}: "
-                                f"{close_exc}",
+                                f"Error closing audio stream {candidate}: {close_exc}",
                                 level="DEBUG",
                             )
                 if stop_event.is_set() or input_stop.is_set():
@@ -686,9 +687,7 @@ class AppController:
         if startup_result is not None:
             self._report_input_start(startup_result, error)
         elif (
-            report_runtime_error
-            and not stop_event.is_set()
-            and not input_stop.is_set()
+            report_runtime_error and not stop_event.is_set() and not input_stop.is_set()
         ):
             self.error_queue.put(f"audio_device_lost:{device}")
 

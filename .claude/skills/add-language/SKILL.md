@@ -13,7 +13,7 @@ for — they share almost nothing:
 | What it changes | The control panel's own labels | What the audience reads on the overlay | What the STT engine is told to listen for |
 | Lives in | `data/translations/gui/{code}.json` | `data/translations/quran/{code}.json` + `.../athan/{code}.json` | Nothing on disk — it is a code sent to the API |
 | Registered in | `GUI_LANGUAGES` (`utils/settings.py`) | Nothing — auto-detected at runtime | `SOURCE_LANGUAGES` (`utils/settings.py`) **and** the per-engine sets |
-| Currently | de, en, ar, bs, sq, tr | de, en, tr, sq, bs | 16 + Automatic, **filtered per engine** |
+| Currently | de, en, ar, bs, sq, tr | de, en, tr, sq, bs | 68 + Automatic, **filtered per engine** |
 
 Note the asymmetry: **`ar` is a GUI language but has no Quran/Athan dictionary** (the
 source text is already Arabic). That is correct, not a gap.
@@ -64,8 +64,10 @@ a live failure (`Invalid value: 'so'` on a reconnect loop, DEVLOG s60), not a ba
 
 ### Adding one
 
-1. Add `("Name", "xx")` to `SOURCE_LANGUAGES` in `utils/settings.py`. **Plain lowercase
-   ISO 639-1 only** — the code goes to the APIs as-is, and every one of them rejects a
+1. Add `("Name", "xx")` to `SOURCE_LANGUAGES` in `utils/settings.py`, in the
+   alphabetical block after Albanian. That list is the UNION of what the engines
+   accept, not a shortlist — do not curate it, the per-engine filter does that.
+   **Plain lowercase ISO 639-1 only** — the code goes to the APIs as-is, and every one of them rejects a
    regional variant like `pt-BR`.
 2. Add the endonym to `LANGUAGE_ENDONYMS` in the same file, in the language's own script
    (`Soomaali`, not `Somali`). Miss this and the dropdown silently shows the English name
@@ -76,9 +78,9 @@ a live failure (`Invalid value: 'so'` on a reconnect loop, DEVLOG s60), not a ba
    exactly which edit was left out.
 
 If it appears on no engine, it will only be offered under Gemini (which validates nothing).
-`test_the_gemini_only_languages_are_the_ones_we_think` pins that set and will fail, on
-purpose — either the language is genuinely Gemini-only (update the pin and say why) or the
-code is wrong.
+`test_the_gemini_only_languages_are_the_ones_we_think` pins that set (currently Albanian,
+Hausa, Kurdish and Somali) and will fail, on purpose — either the language is genuinely
+Gemini-only (update the pin and say why) or the code is wrong.
 
 ### Removing one
 
@@ -90,37 +92,58 @@ Edit the one `SUPPORTED_LANGUAGE_CODES` frozenset in that provider's module — 
 
 | Engine | Set lives in | Source of truth |
 | --- | --- | --- |
-| `openai_realtime` | `providers/openai/realtime.py` | **The API's own rejection message** — re-derive it, see below |
-| `openai` (segmented) | `providers/openai/transcription.py` | Whisper's `LANGUAGES` dict in `whisper/tokenizer.py` |
-| `deepgram` | `providers/deepgram/__init__.py` | developers.deepgram.com/docs/models-languages-overview — **per model** |
+| `openai_realtime` | `providers/openai/realtime.py` | **A per-code probe** — the rejection message under-reports, see below |
+| `openai` (segmented) | `providers/openai/transcription.py` | **A 1-second probe per code** — NOT the Whisper list, which is far wider |
+| `deepgram` | `providers/deepgram/__init__.py` | **A per-(model, code) handshake** — the docs omit Pashto on Nova-3 |
 | `gemini`, `gemini_realtime` | `providers/__init__.py`, as `None` | Nothing to maintain: neither path sends a language field the API can reject |
 
-**Do not take the OpenAI Realtime list from the docs — they publish none.** Ask the API,
-which answers by rejecting a bogus code. Verified working 2026-08-27; it costs one refused
-session and sends no audio:
+**Every engine set is measured against its own live endpoint. None of them is copied
+from a doc, and the OpenAI Realtime one is not read off the API's error message either.**
+
+The Realtime API refuses a bogus code with `Invalid value: 'zz'. Supported values are:
+...`, and that list looks authoritative. It is not. It names **58** codes; the API accepts
+**64**. `bn`, `gu`, `ka`, `ml`, `te` and `yue` are all accepted and none of them appears in
+it (measured 2026-09-03). Believing the message hid Bengali, Gujarati, Georgian, Malayalam
+and Telugu from the app's default engine.
+
+So probe one code at a time. The asymmetry that makes this cheap: **a refusal arrives in
+well under a second, an accepted code never errors at all**, so an 8-second deadline
+separates them cleanly. No audio is sent and no session completes, so it costs nothing.
 
 ```python
-import re, sys, threading
+import sys, threading
 sys.path.insert(0, ".")
+from concurrent.futures import ThreadPoolExecutor
 from providers import get_stored_api_key
 from providers.openai.client import set_api_key
 set_api_key(get_stored_api_key("openai"))   # a bare script must activate the key itself
 from providers.openai.realtime import (
     OpenAIRealtimeTranscriptionProvider, SUPPORTED_LANGUAGE_CODES)
 
-errors, got = [], threading.Event()
 noop = lambda *a, **k: None
-handle = OpenAIRealtimeTranscriptionProvider().open_stream(
-    model="gpt-4o-transcribe", language="zz",
-    on_transcript=noop, on_utterance_end=noop,
-    on_error=lambda e: (errors.append(str(e)), got.set()))
-got.wait(timeout=30)          # the rejection is ASYNCHRONOUS — see below
-handle.close()
-live = set(re.findall(r"'([a-z-]{2,7})'", errors[0])) - {"zz"}
+
+def accepts(lang):
+    errors, got = [], threading.Event()
+    handle = OpenAIRealtimeTranscriptionProvider().open_stream(
+        model="gpt-4o-transcribe", language=lang,
+        on_transcript=noop, on_utterance_end=noop,
+        on_error=lambda e: (errors.append(str(e)), got.set()))
+    fired = got.wait(timeout=8)          # refusals land in <1s; see below
+    handle.close()
+    return not (fired and "Invalid value" in errors[0])
+
+candidates = sorted(set(SUPPORTED_LANGUAGE_CODES) | {"zz", "bn", "ml"})  # widen as needed
+with ThreadPoolExecutor(max_workers=4) as ex:
+    live = {c for c, ok in zip(candidates, ex.map(accepts, candidates)) if ok}
+
+assert "zz" not in live, "control code was accepted - the run is invalid, do not trust it"
 print(len(live), "codes ·", "MATCH" if live == set(SUPPORTED_LANGUAGE_CODES) else "DRIFT")
 print("gained:", sorted(live - set(SUPPORTED_LANGUAGE_CODES)))
 print("lost:  ", sorted(set(SUPPORTED_LANGUAGE_CODES) - live))
 ```
+
+**Always probe `zz` in the same run.** If the control is not refused, something else is
+wrong (key, network, an SDK change) and every "accepted" result is meaningless.
 
 **The rejection arrives asynchronously and that trips people up.** `session.created` comes
 back first and `open_stream()` returns perfectly happily; the server refuses the
@@ -128,6 +151,14 @@ back first and `open_stream()` returns perfectly happily; the server refuses the
 passing a no-op `on_error` — makes a rejected language look accepted. It is also why the
 user-visible symptom is `STREAMING Reconnected … new connection opened` immediately
 followed by the error, over and over.
+
+The other engines answer faster and more plainly:
+
+- **OpenAI segmented** — POST a 1-second tone per code; an unsupported one comes back
+  `400 invalid_value` naming `param: language` before any audio is read.
+- **Deepgram** — open the WebSocket per (model, code); an unsupported pair is refused at
+  the handshake with `HTTP 400`. Probe **per model**, they disagree.
+- **Gemini** — nothing to probe. Neither path sends a field the API can reject.
 
 ---
 

@@ -166,12 +166,16 @@ def run(n_repeats: int, out_name: str, min_interval_s: float) -> None:
     temp_pinned = _force_temperature_zero(provider_id)
     model = get_translation_model_chain()[0]
 
-    print(f"Provider={provider_id}  Model={model}  "
-          f"{SOURCE_LANGUAGE}->{TARGET_LANGUAGE}  "
-          f"N={n_repeats}  temperature={'0' if temp_pinned else 'default'}")
-    print(f"Corpus: {len(CORPUS)} utterances -> "
-          f"{len(CORPUS) * n_repeats} real API calls  "
-          f"(pacing {min_interval_s:g}s/call)\n")
+    print(
+        f"Provider={provider_id}  Model={model}  "
+        f"{SOURCE_LANGUAGE}->{TARGET_LANGUAGE}  "
+        f"N={n_repeats}  temperature={'0' if temp_pinned else 'default'}"
+    )
+    print(
+        f"Corpus: {len(CORPUS)} utterances -> "
+        f"{len(CORPUS) * n_repeats} real API calls  "
+        f"(pacing {min_interval_s:g}s/call)\n"
+    )
 
     pace = _paced(min_interval_s)
     per_entry = []
@@ -198,13 +202,15 @@ def run(n_repeats: int, out_name: str, min_interval_s: float) -> None:
         med = statistics.median(t_totals)
         flag = "  ⚠ LLM-BYPASS (swap this entry)" if bypassed else ""
         print(f"  {entry['id']:22s} {cat:16s} median {med:6.3f}s{flag}")
-        per_entry.append({
-            "id": entry["id"],
-            "kategorie": cat,
-            "t_total": [round(x, 4) for x in t_totals],
-            "output": output,
-            "bypassed": bypassed,
-        })
+        per_entry.append(
+            {
+                "id": entry["id"],
+                "kategorie": cat,
+                "t_total": [round(x, 4) for x in t_totals],
+                "output": output,
+                "bypassed": bypassed,
+            }
+        )
 
     per_category = {
         cat: {"t_total": _stats(cat_samples_total[cat])}
@@ -297,17 +303,27 @@ def compare(baseline_name: str, new_name: str) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out", default="before.json",
-                    help="result filename under bench/results/")
+    ap.add_argument(
+        "--out", default="before.json", help="result filename under bench/results/"
+    )
     ap.add_argument("-n", "--repeats", type=int, default=5)
-    ap.add_argument("--min-interval", type=float, default=DEFAULT_MIN_INTERVAL_S,
-                    help="seconds between calls to stay under free-tier RPM "
-                         "(0 = full speed, use on a paid tier)")
-    ap.add_argument("--compare", nargs=2, metavar=("BASELINE", "NEW"),
-                    help="diff two result files instead of running")
+    ap.add_argument(
+        "--min-interval",
+        type=float,
+        default=DEFAULT_MIN_INTERVAL_S,
+        help="seconds between calls to stay under free-tier RPM "
+        "(0 = full speed, use on a paid tier)",
+    )
+    ap.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("BASELINE", "NEW"),
+        help="diff two result files instead of running",
+    )
     args = ap.parse_args()
 
     from dotenv import load_dotenv
+
     load_dotenv()
 
     if args.compare:

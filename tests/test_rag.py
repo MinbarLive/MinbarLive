@@ -33,9 +33,7 @@ class TestMatchQuranRagMulti:
         matrix = np.eye(3, dtype=np.float32)
         monkeypatch.setattr(rag, "_verses", verses)
         monkeypatch.setattr(rag, "_verse_matrix", matrix)
-        monkeypatch.setattr(
-            rag, "_verse_index", {v: i for i, v in enumerate(verses)}
-        )
+        monkeypatch.setattr(rag, "_verse_index", {v: i for i, v in enumerate(verses)})
         monkeypatch.setattr(
             rag,
             "quran_dict",
@@ -97,9 +95,7 @@ class TestMatchQuranRagMulti:
         self._set_query(monkeypatch, rag, [0.0])
         assert rag.match_quran_rag_multi("text", target_lang_code="xx") == []
 
-    def test_arabic_target_returns_verse_itself(
-        self, rag_with_fake_store, monkeypatch
-    ):
+    def test_arabic_target_returns_verse_itself(self, rag_with_fake_store, monkeypatch):
         rag = rag_with_fake_store
         self._set_query(monkeypatch, rag, [1.0, 0.0, 0.0])
         matches = rag.match_quran_rag_multi(
@@ -107,9 +103,7 @@ class TestMatchQuranRagMulti:
         )
         assert matches[0][2] == "verse_a"
 
-    def test_verse_missing_from_dict_is_skipped(
-        self, rag_with_fake_store, monkeypatch
-    ):
+    def test_verse_missing_from_dict_is_skipped(self, rag_with_fake_store, monkeypatch):
         rag = rag_with_fake_store
         monkeypatch.setattr(rag, "quran_dict", {"verse_b": "trans_b (1:2)"})
         self._set_query(monkeypatch, rag, [0.9, 0.8, 0.0])

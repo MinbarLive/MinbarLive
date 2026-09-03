@@ -285,8 +285,15 @@ class TestProcessFile:
             target_language=None,
         ):
             calls["translate"].append(
-                (text, context, arabic_text, model, provider,
-                 source_language, target_language)
+                (
+                    text,
+                    context,
+                    arabic_text,
+                    model,
+                    provider,
+                    source_language,
+                    target_language,
+                )
             )
             return f"DE({text})"
 
@@ -304,7 +311,8 @@ class TestProcessFile:
         wav, calls = pipeline
         progress = []
         out = processor.process_file(
-            str(wav), progress_callback=lambda done, total: progress.append((done, total))
+            str(wav),
+            progress_callback=lambda done, total: progress.append((done, total)),
         )
         assert out == str(wav.with_name("khutbah.de.srt"))
         content = Path(out).read_text(encoding="utf-8-sig")
@@ -469,9 +477,7 @@ class TestProcessFile:
                 return phrase
 
         provider = Repeat()
-        monkeypatch.setattr(
-            processor, "get_transcription_provider", lambda: provider
-        )
+        monkeypatch.setattr(processor, "get_transcription_provider", lambda: provider)
         out = processor.process_file(str(wav))
         content = Path(out).read_text(encoding="utf-8-sig")
         assert content.count("-->") == 2  # both lines kept
@@ -579,7 +585,9 @@ class TestProcessFile:
         # STT chain comes from get_transcription_model_chain_for → leads model.
         assert calls["transcribe"][0][0] == "gem-stt"
         # Translation provider + model both reach translate_text (idx 3, 4).
-        assert all(c[3] == "claude-x" and c[4] == "anthropic" for c in calls["translate"])
+        assert all(
+            c[3] == "claude-x" and c[4] == "anthropic" for c in calls["translate"]
+        )
 
     def test_language_overrides_flow_through(self, pipeline, monkeypatch, tmp_path):
         # Batch picks its own languages; settings say Arabic→German but the run
@@ -592,9 +600,7 @@ class TestProcessFile:
         assert out.endswith(".en.srt")  # target override drives the SRT name
         name, src, tgt, _entries = calls["record"][0]
         assert (src, tgt) == ("French", "English")
-        assert all(
-            c[5] == "French" and c[6] == "English" for c in calls["translate"]
-        )
+        assert all(c[5] == "French" and c[6] == "English" for c in calls["translate"])
 
     def test_batch_record_written_with_pairs(self, pipeline):
         wav, calls = pipeline

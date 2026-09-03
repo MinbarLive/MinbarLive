@@ -119,10 +119,12 @@ class TestWindowTotal:
 
     def test_sums_sessions_inside_window(self):
         sessions = [
-            _session(id="a", started_at="2026-07-19T10:00:00+00:00",
-                     total_cost_usd="0.50"),
-            _session(id="b", started_at="2026-07-01T10:00:00+00:00",
-                     total_cost_usd="0.30"),
+            _session(
+                id="a", started_at="2026-07-19T10:00:00+00:00", total_cost_usd="0.50"
+            ),
+            _session(
+                id="b", started_at="2026-07-01T10:00:00+00:00", total_cost_usd="0.30"
+            ),
         ]
         result = cost_window_total(sessions, days=30, now=self._NOW)
         assert result.sessions == 2
@@ -130,10 +132,14 @@ class TestWindowTotal:
 
     def test_excludes_sessions_older_than_window(self):
         sessions = [
-            _session(id="recent", started_at="2026-07-19T10:00:00+00:00",
-                     total_cost_usd="0.50"),
-            _session(id="old", started_at="2026-04-24T10:00:00+00:00",
-                     total_cost_usd="9.00"),
+            _session(
+                id="recent",
+                started_at="2026-07-19T10:00:00+00:00",
+                total_cost_usd="0.50",
+            ),
+            _session(
+                id="old", started_at="2026-04-24T10:00:00+00:00", total_cost_usd="9.00"
+            ),
         ]
         result = cost_window_total(sessions, days=30, now=self._NOW)
         assert result.sessions == 1
@@ -141,8 +147,11 @@ class TestWindowTotal:
 
     def test_tilde_when_any_session_estimated(self):
         sessions = [
-            _session(started_at="2026-07-19T10:00:00+00:00",
-                     total_cost_usd="0.50", fully_priced=False),
+            _session(
+                started_at="2026-07-19T10:00:00+00:00",
+                total_cost_usd="0.50",
+                fully_priced=False,
+            ),
         ]
         result = cost_window_total(sessions, days=30, now=self._NOW)
         assert result.total.startswith("~$")
@@ -159,10 +168,18 @@ class TestWindowByProvider:
     def _two_provider_session(self, sid, start, gem, oai, gem_priced=True):
         s = _session(id=sid, started_at=start)
         s["providers"] = {
-            "gemini": {"cost_usd": gem, "fully_priced": gem_priced, "requests": 5,
-                       "models": {}},
-            "openai": {"cost_usd": oai, "fully_priced": True, "requests": 5,
-                       "models": {}},
+            "gemini": {
+                "cost_usd": gem,
+                "fully_priced": gem_priced,
+                "requests": 5,
+                "models": {},
+            },
+            "openai": {
+                "cost_usd": oai,
+                "fully_priced": True,
+                "requests": 5,
+                "models": {},
+            },
         }
         return s
 

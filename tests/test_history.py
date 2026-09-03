@@ -191,8 +191,9 @@ class TestListHistorySessions:
         assert by_date["2026-07-01"].has_summary is True
         assert by_date["2026-07-02"].has_summary is False
         # The .summary sidecar is not itself listed as a session.
-        assert "2026-07-01.summary" not in [os.path.basename(s.path) for s in
-                                            list_history_sessions()]
+        assert "2026-07-01.summary" not in [
+            os.path.basename(s.path) for s in list_history_sessions()
+        ]
 
     def test_roundtrip_with_writer(self, tmp_path, monkeypatch):
         monkeypatch.setattr("utils.history.HISTORY_DIR", str(tmp_path))
@@ -282,9 +283,7 @@ class TestBatchRecords:
 
     def test_has_summary_reflects_sidecar(self, tmp_path, monkeypatch):
         monkeypatch.setattr("utils.history.BATCH_DIR", str(tmp_path))
-        path = write_batch_record(
-            "talk.wav", "Turkish", "English", [(0.0, "a", "b")]
-        )
+        path = write_batch_record("talk.wav", "Turkish", "English", [(0.0, "a", "b")])
         assert list_batch_runs()[0].has_summary is False
         write_summary(path, "A summary.")
         assert list_batch_runs()[0].has_summary is True
