@@ -19,8 +19,23 @@ from utils.app_paths import get_app_data_dir
 
 SETTINGS_FILENAME = "settings.json"
 
-# Supported source languages (spoken language in the mosque)
-# These map to ISO 639-1 codes for transcription
+# Spoken languages the operator can declare, as ISO 639-1 codes handed to the
+# STT APIs. This is the UNION of what the validating engines accept, not a
+# curated shortlist: providers.supported_source_languages() narrows it to the
+# selected engine, so a language no engine takes never renders.
+#
+# Curating it HERE is what this list used to do, and it was wrong. Until
+# 2026-09-03 it held the 16 entries carried unchanged from the first commit,
+# while the engines between them accepted 66 -- so a French, Spanish, Russian
+# or Malayalam khatib had no way to say what he was speaking even though every
+# engine would have transcribed him, and 16 languages the app already
+# TRANSLATES INTO could not be chosen as the source. The GUI language is a
+# separate axis (GUI_LANGUAGES, 6 entries) and constrains none of this: an
+# operator running the panel in English because his mother tongue has no
+# interface translation must still find that mother tongue here.
+#
+# The first block is ordered by relevance to the app's congregations, the rest
+# alphabetically. Adding one: see .claude/skills/add-language.
 SOURCE_LANGUAGES = [
     ("Automatic", None),  # Let the model auto-detect
     ("Arabic", "ar"),
@@ -39,6 +54,59 @@ SOURCE_LANGUAGES = [
     ("Kurdish", "ku"),
     ("Bosnian", "bs"),
     ("Albanian", "sq"),
+    # --- everything else at least one engine accepts, alphabetically ---
+    ("Afrikaans", "af"),
+    ("Armenian", "hy"),
+    ("Azerbaijani", "az"),
+    ("Belarusian", "be"),
+    ("Bulgarian", "bg"),
+    ("Catalan", "ca"),
+    ("Chinese", "zh"),
+    ("Croatian", "hr"),
+    ("Czech", "cs"),
+    ("Danish", "da"),
+    ("Dutch", "nl"),
+    ("Estonian", "et"),
+    ("Finnish", "fi"),
+    ("French", "fr"),
+    ("Galician", "gl"),
+    ("Georgian", "ka"),
+    ("Greek", "el"),
+    ("Gujarati", "gu"),
+    ("Hebrew", "he"),
+    ("Hindi", "hi"),
+    ("Hungarian", "hu"),
+    ("Icelandic", "is"),
+    ("Italian", "it"),
+    ("Japanese", "ja"),
+    ("Kannada", "kn"),
+    ("Kazakh", "kk"),
+    ("Korean", "ko"),
+    ("Latvian", "lv"),
+    ("Lithuanian", "lt"),
+    ("Macedonian", "mk"),
+    ("Malayalam", "ml"),
+    ("Maori", "mi"),
+    ("Marathi", "mr"),
+    ("Nepali", "ne"),
+    ("Norwegian", "no"),
+    ("Polish", "pl"),
+    ("Portuguese", "pt"),
+    ("Punjabi", "pa"),
+    ("Romanian", "ro"),
+    ("Russian", "ru"),
+    ("Serbian", "sr"),
+    ("Slovak", "sk"),
+    ("Slovenian", "sl"),
+    ("Spanish", "es"),
+    ("Swedish", "sv"),
+    ("Tagalog", "tl"),
+    ("Tamil", "ta"),
+    ("Telugu", "te"),
+    ("Thai", "th"),
+    ("Ukrainian", "uk"),
+    ("Vietnamese", "vi"),
+    ("Welsh", "cy"),
 ]
 
 # Supported target languages for translation with ISO codes
@@ -127,6 +195,42 @@ LANGUAGE_ENDONYMS = {
     "Tamil": "தமிழ்",
     "Thai": "ไทย",
     "Vietnamese": "Tiếng Việt",
+    "Afrikaans": "Afrikaans",
+    "Armenian": "Հայերեն",
+    "Azerbaijani": "Azərbaycan dili",
+    "Belarusian": "Беларуская",
+    "Bulgarian": "Български",
+    "Catalan": "Català",
+    "Chinese": "中文",
+    "Croatian": "Hrvatski",
+    "Czech": "Čeština",
+    "Danish": "Dansk",
+    "Estonian": "Eesti",
+    "Finnish": "Suomi",
+    "Galician": "Galego",
+    "Georgian": "ქართული",
+    "Greek": "Ελληνικά",
+    "Gujarati": "ગુજરાતી",
+    "Hebrew": "עברית",
+    "Hungarian": "Magyar",
+    "Icelandic": "Íslenska",
+    "Kannada": "ಕನ್ನಡ",
+    "Kazakh": "Қазақ тілі",
+    "Latvian": "Latviešu",
+    "Lithuanian": "Lietuvių",
+    "Macedonian": "Македонски",
+    "Malayalam": "മലയാളം",
+    "Maori": "Te Reo Māori",
+    "Marathi": "मराठी",
+    "Nepali": "नेपाली",
+    "Norwegian": "Norsk",
+    "Romanian": "Română",
+    "Serbian": "Српски",
+    "Slovak": "Slovenčina",
+    "Slovenian": "Slovenščina",
+    "Telugu": "తెలుగు",
+    "Ukrainian": "Українська",
+    "Welsh": "Cymraeg",
 }
 
 # Reverse map (endonym -> English canonical) plus identity for the canonical
