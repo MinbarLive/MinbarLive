@@ -461,8 +461,14 @@ class TestIntraTurnSentenceFlush:
         record has never seen, there is no telling which words are new — so it
         goes out whole, duplicating rather than risking a hole."""
         s = self._session()
-        assert s.set_interim("erster Satz. zweiter Satz.")[0] == "erster Satz. zweiter Satz."
-        assert s.set_interim("zweiter Satz. dritter Satz.")[0] == "zweiter Satz. dritter Satz."
+        assert (
+            s.set_interim("erster Satz. zweiter Satz.")[0]
+            == "erster Satz. zweiter Satz."
+        )
+        assert (
+            s.set_interim("zweiter Satz. dritter Satz.")[0]
+            == "zweiter Satz. dritter Satz."
+        )
 
     def test_a_completing_item_does_not_wipe_another_items_record(self):
         """Issue #106 shape 3, measured live 2026-08-16 00:14:19.
@@ -477,7 +483,9 @@ class TestIntraTurnSentenceFlush:
         s = self._session()
         assert s.set_interim("erster Satz.", item_id="B")[0] == "erster Satz."
         s.take_and_reset(item_id="A")  # the OTHER item completed
-        assert s.set_interim("erster Satz. und weiter.", item_id="B")[0] == "und weiter."
+        assert (
+            s.set_interim("erster Satz. und weiter.", item_id="B")[0] == "und weiter."
+        )
 
     def test_its_own_completion_still_retires_the_record(self):
         """The flip side: once an item really is done its record must go, or
@@ -676,7 +684,9 @@ class TestStreamingPipeline:
     def test_forced_flush_caps_continuous_speech(self, streaming_env, monkeypatch):
         """Speech without pauses never produces an utterance-end; the
         max-utterance cap must flush anyway."""
-        monkeypatch.setattr(streaming_session_module, "STREAMING_MAX_UTTERANCE_SECONDS", 0.3)
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_MAX_UTTERANCE_SECONDS", 0.3
+        )
         controller, provider = self._start(streaming_env)
         provider.on_transcript("continuous speech", True)
         assert _wait_for(lambda: not controller.translation_queue.empty())
@@ -1001,7 +1011,9 @@ class TestStreamingCoalescing:
     def test_short_utterances_merge_into_one_call(self, streaming_env, monkeypatch):
         # Long hold so the first waits for the second; low min-words so their
         # merge crosses the flush threshold.
-        monkeypatch.setattr(streaming_session_module, "STREAMING_COALESCE_HOLD_SECONDS", 5.0)
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_COALESCE_HOLD_SECONDS", 5.0
+        )
         monkeypatch.setattr(streaming_session_module, "STREAMING_COALESCE_MIN_WORDS", 4)
         controller, provider = self._start(streaming_env)
         provider.on_transcript("alpha beta", True)
@@ -1019,7 +1031,9 @@ class TestStreamingCoalescing:
     def test_trailing_short_utterance_flushes_after_hold(
         self, streaming_env, monkeypatch
     ):
-        monkeypatch.setattr(streaming_session_module, "STREAMING_COALESCE_HOLD_SECONDS", 0.05)
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_COALESCE_HOLD_SECONDS", 0.05
+        )
         controller, provider = self._start(streaming_env)
         provider.on_transcript("lonely clause", True)
         provider.on_utterance_end()  # 2 words, no follow-up
@@ -1028,7 +1042,9 @@ class TestStreamingCoalescing:
 
     def test_long_utterance_flushes_immediately(self, streaming_env, monkeypatch):
         # Hold long enough that only an immediate (>= min-words) flush can pass.
-        monkeypatch.setattr(streaming_session_module, "STREAMING_COALESCE_HOLD_SECONDS", 30.0)
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_COALESCE_HOLD_SECONDS", 30.0
+        )
         monkeypatch.setattr(streaming_session_module, "STREAMING_COALESCE_MIN_WORDS", 3)
         controller, provider = self._start(streaming_env)
         provider.on_transcript("one two three four", True)
@@ -1042,7 +1058,9 @@ class TestStreamingCoalescing:
     def test_fragment_utterance_dropped_not_translated(
         self, streaming_env, monkeypatch
     ):
-        monkeypatch.setattr(streaming_session_module, "STREAMING_COALESCE_HOLD_SECONDS", 0.05)
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_COALESCE_HOLD_SECONDS", 0.05
+        )
         controller, provider = self._start(streaming_env)
         provider.on_transcript("م", True)  # sub-word fragment
         provider.on_utterance_end()
@@ -1057,8 +1075,12 @@ class TestStreamingReconnect:
 
     def _start(self, env, monkeypatch):
         # Real backoff is 1s+ — compress it so tests run in milliseconds.
-        monkeypatch.setattr(streaming_session_module, "STREAMING_RECONNECT_BASE_SECONDS", 0.02)
-        monkeypatch.setattr(streaming_session_module, "STREAMING_RECONNECT_MAX_SECONDS", 0.1)
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_RECONNECT_BASE_SECONDS", 0.02
+        )
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_RECONNECT_MAX_SECONDS", 0.1
+        )
         env.controller.start(input_device=0)
         assert env.provider.on_transcript is not None
         return env.controller, env.provider
@@ -1381,7 +1403,9 @@ class TestStallWatchdog:
         monkeypatch.setattr(
             streaming_session_module, "STREAMING_STALL_MIN_SPEECH_SECONDS", 1.0
         )
-        monkeypatch.setattr(streaming_session_module, "STREAMING_STALL_GRACE_SECONDS", grace)
+        monkeypatch.setattr(
+            streaming_session_module, "STREAMING_STALL_GRACE_SECONDS", grace
+        )
         controller = streaming_env.controller
         controller.start(input_device=0)
         assert streaming_env.provider.open_count == 1
@@ -1408,14 +1432,14 @@ class TestStallWatchdog:
         # Re-armed fresh: the counted speech died with the old connection.
         assert controller._streaming._speech_fed_seconds == 0.0
 
-    def test_transcript_during_grace_cancels_the_swap(
-        self, streaming_env, monkeypatch
-    ):
+    def test_transcript_during_grace_cancels_the_swap(self, streaming_env, monkeypatch):
         """Speech resumed just before the check: the engine is alive and its
         transcript merely in flight. The grace wait must catch it and keep
         the connection (the live-observed harm case)."""
         controller, provider = self._start(streaming_env, monkeypatch, grace=1.2)
-        controller._streaming._noise_gate = SimpleNamespace(is_zeroing=False)  # speech flowing
+        controller._streaming._noise_gate = SimpleNamespace(
+            is_zeroing=False
+        )  # speech flowing
         controller._streaming._speech_fed_seconds = 5.0
         controller._streaming._last_activity = time.time() - 60
         time.sleep(0.3)  # let the watchdog arm and enter the grace wait
@@ -1458,9 +1482,7 @@ class TestStallWatchdogRespectsAnOpenTurn:
     working engine as a dead one. While a turn is open the fix commits it
     (keeping the audio) instead of reopening the connection (discarding it)."""
 
-    def _start(
-        self, streaming_env, monkeypatch, *, timeout=0.3, grace=0.4, commit=0.2
-    ):
+    def _start(self, streaming_env, monkeypatch, *, timeout=0.3, grace=0.4, commit=0.2):
         monkeypatch.setattr(
             streaming_session_module, "STREAMING_STALL_TIMEOUT_SECONDS", timeout
         )
@@ -1498,9 +1520,7 @@ class TestStallWatchdogRespectsAnOpenTurn:
         assert provider.open_count == 1
         assert not provider.handle.closed
 
-    def test_provider_without_commit_still_reconnects(
-        self, streaming_env, monkeypatch
-    ):
+    def test_provider_without_commit_still_reconnects(self, streaming_env, monkeypatch):
         """Deepgram/Gemini report no speech activity and cannot commit; their
         recovery must stay exactly what it was."""
         controller, provider = self._start(streaming_env, monkeypatch)

@@ -26,6 +26,7 @@ def _username_for(provider: str) -> str:
     """Keychain username for a provider's API key entry."""
     return f"{provider}_api_key"
 
+
 # Track whether keyring is available
 _keyring_available: bool | None = None
 

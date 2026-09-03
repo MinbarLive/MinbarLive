@@ -14,8 +14,14 @@ from utils.history import HistoryEntry
 
 def _pairs():
     return [
-        (HistoryEntry("10:00:00", "AR", "السلام عليكم"), HistoryEntry("10:00:00", "GE", "Friede sei mit euch")),
-        (HistoryEntry("10:00:12", "AR", "الحمد لله"), HistoryEntry("10:00:12", "GE", "Lob sei Gott")),
+        (
+            HistoryEntry("10:00:00", "AR", "السلام عليكم"),
+            HistoryEntry("10:00:00", "GE", "Friede sei mit euch"),
+        ),
+        (
+            HistoryEntry("10:00:12", "AR", "الحمد لله"),
+            HistoryEntry("10:00:12", "GE", "Lob sei Gott"),
+        ),
     ]
 
 
@@ -74,9 +80,7 @@ class TestSummarizeSessionFile:
     def _write(self, tmp_path):
         p = tmp_path / "2026-07-07.txt"
         p.write_text(
-            "[10:00:00] AR: السلام عليكم\n"
-            "[10:00:00] GE: Friede sei mit euch\n"
-            "\n",
+            "[10:00:00] AR: السلام عليكم\n[10:00:00] GE: Friede sei mit euch\n\n",
             encoding="utf-8",
         )
         return str(p)
@@ -85,16 +89,26 @@ class TestSummarizeSessionFile:
         captured = {}
 
         class FakeProvider:
-            def complete(self, *, model, user_prompt, system_prompt=None,
-                         max_output_tokens=None, temperature=None):
+            def complete(
+                self,
+                *,
+                model,
+                user_prompt,
+                system_prompt=None,
+                max_output_tokens=None,
+                temperature=None,
+            ):
                 captured.update(
-                    model=model, user_prompt=user_prompt,
+                    model=model,
+                    user_prompt=user_prompt,
                     system_prompt=system_prompt,
                     max_output_tokens=max_output_tokens,
                 )
                 return "  A concise summary.  "
 
-        monkeypatch.setattr(ss, "get_translation_provider_for", lambda pid: FakeProvider())
+        monkeypatch.setattr(
+            ss, "get_translation_provider_for", lambda pid: FakeProvider()
+        )
         monkeypatch.setattr(ss, "get_default_model", lambda pid, cap: "fake-model")
 
         out = ss.summarize_session_file(
@@ -118,11 +132,15 @@ class TestSummarizeSessionFile:
                 seen["model"] = model
                 return "x"
 
-        monkeypatch.setattr(ss, "get_translation_provider_for", lambda pid: FakeProvider())
+        monkeypatch.setattr(
+            ss, "get_translation_provider_for", lambda pid: FakeProvider()
+        )
         monkeypatch.setattr(ss, "get_default_model", lambda pid, cap: "default-model")
         ss.summarize_session_file(
-            self._write(tmp_path), target_language="English",
-            provider_id="openai", model="my-model",
+            self._write(tmp_path),
+            target_language="English",
+            provider_id="openai",
+            model="my-model",
         )
         assert seen["model"] == "my-model"
 

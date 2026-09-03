@@ -92,7 +92,9 @@ def build_openai() -> None:
 
     verses = list(data.keys())
     matrix = _normalize_rows(np.array([data[v] for v in verses], dtype=np.float32))
-    _write_npz(QURAN_EMBEDDINGS_OPENAI_NPZ_PATH, verses, matrix, "text-embedding-3-large")
+    _write_npz(
+        QURAN_EMBEDDINGS_OPENAI_NPZ_PATH, verses, matrix, "text-embedding-3-large"
+    )
 
 
 def build_gemini() -> None:
@@ -133,9 +135,7 @@ def build_gemini() -> None:
         sys.exit(f"Got {len(vectors)} embeddings for {len(verses)} verses — aborting.")
 
     matrix = _normalize_rows(np.array(vectors, dtype=np.float32))
-    _write_npz(
-        QURAN_EMBEDDINGS_GEMINI_NPZ_PATH, verses, matrix, GEMINI_EMBEDDING_MODEL
-    )
+    _write_npz(QURAN_EMBEDDINGS_GEMINI_NPZ_PATH, verses, matrix, GEMINI_EMBEDDING_MODEL)
     print(
         "\nDone. The app uses this matrix automatically whenever the AI "
         "provider is set to Gemini."

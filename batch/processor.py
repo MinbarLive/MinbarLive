@@ -618,9 +618,13 @@ def process_file(
         # never reached batch, so file -> SRT still had the defect.
         context_parts = []
         if recent:
-            context_parts.append("[" + RECENT_SEGMENTS_LABEL + ":\n" + "\n".join(recent) + "]")
+            context_parts.append(
+                "[" + RECENT_SEGMENTS_LABEL + ":\n" + "\n".join(recent) + "]"
+            )
         if recent_output:
-            context_parts.append("[" + RECENT_OUTPUT_LABEL + ":\n" + "\n".join(recent_output) + "]")
+            context_parts.append(
+                "[" + RECENT_OUTPUT_LABEL + ":\n" + "\n".join(recent_output) + "]"
+            )
         context = "\n\n".join(context_parts)
         translation = translate_text(
             transcription,

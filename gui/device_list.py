@@ -112,6 +112,7 @@ def _linux_real_source_names() -> set[str] | None:
     except Exception:
         return None
 
+
 # Host API quality priority — lower value = better quality.
 # Windows WDM-KS is intentionally excluded: it exposes devices using
 # internal path-based identifiers (e.g. "Input (@System32\\driv...") that

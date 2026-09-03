@@ -285,9 +285,7 @@ class GeminiLiveTranscriptionProvider:
                 # supervisor can act — previously this died silently.
                 on_error(RuntimeError("stream ended by server"))
 
-        thread = threading.Thread(
-            target=_run, daemon=True, name="gemini-live-receive"
-        )
+        thread = threading.Thread(target=_run, daemon=True, name="gemini-live-receive")
         handle._thread = thread
         thread.start()
         return handle

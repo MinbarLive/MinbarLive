@@ -90,7 +90,9 @@ def usable_input_samplerate(
     """
     rates = [requested]
     try:
-        native = int(round(sounddevice_module.query_devices(device_index)["default_samplerate"]))
+        native = int(
+            round(sounddevice_module.query_devices(device_index)["default_samplerate"])
+        )
         if native > 0:
             rates.append(native)
     except Exception:
@@ -140,10 +142,7 @@ def _same_physical_device(first: str, second: str) -> bool:
     if first_normalized == second_normalized:
         return True
     shorter = min(len(first_normalized), len(second_normalized))
-    return (
-        shorter >= 20
-        and first_normalized[:shorter] == second_normalized[:shorter]
-    )
+    return shorter >= 20 and first_normalized[:shorter] == second_normalized[:shorter]
 
 
 def input_device_candidates(

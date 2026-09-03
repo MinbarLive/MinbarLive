@@ -86,9 +86,7 @@ class TestMaybeArabicRetranscription:
 
     def test_skipped_in_same_language_mode(self):
         p = RecordingProvider()
-        assert (
-            self._run(p, source_language="German", target_language="German") == ""
-        )
+        assert self._run(p, source_language="German", target_language="German") == ""
         assert p.calls == []
 
     def test_skipped_when_islamic_mode_off(self):
@@ -157,9 +155,7 @@ class TestStripOverlapPrefix:
     def test_trailing_punctuation_on_overlap_still_stripped(self):
         # The STT ends the overlapped word with a period on one pass but not
         # the other ("الخالق." vs "الخالق"); edge punctuation must be ignored.
-        assert (
-            strip_overlap_prefix("وهو الخالق.", "وهو الخالق ويقول") == "ويقول"
-        )
+        assert strip_overlap_prefix("وهو الخالق.", "وهو الخالق ويقول") == "ويقول"
 
     def test_near_identical_word_fuzzy_matched(self):
         # A one-letter STT difference in the overlap ("testing" vs "testng")

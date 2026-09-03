@@ -385,9 +385,7 @@ class CostTracker:
         self._active["total_cost_usd"] = str(
             Decimal(self._active["total_cost_usd"]) + cost
         )
-        self._active["fully_priced"] = (
-            self._active["fully_priced"] and fully_priced
-        )
+        self._active["fully_priced"] = self._active["fully_priced"] and fully_priced
         self._active["last_updated_at"] = _now_iso()
         self._dirty = True
 
@@ -397,7 +395,11 @@ class CostTracker:
 
     def flush(self) -> None:
         with self._lock:
-            if not self._dirty or self._active is None or not self._has_usage(self._active):
+            if (
+                not self._dirty
+                or self._active is None
+                or not self._has_usage(self._active)
+            ):
                 return
             record = copy.deepcopy(self._active)
             self._dirty = False
@@ -425,7 +427,9 @@ class CostTracker:
             if active is not None and self._has_usage(active):
                 records[str(active["id"])] = active
         return sorted(
-            records.values(), key=lambda row: str(row.get("started_at", "")), reverse=True
+            records.values(),
+            key=lambda row: str(row.get("started_at", "")),
+            reverse=True,
         )
 
     def delete_session(self, session_id: str) -> bool:
@@ -547,11 +551,15 @@ def _modality_counts(details: Any) -> dict[str, int]:
         modality = _get(detail, "modality", "")
         modality = getattr(modality, "value", modality)
         name = str(modality or "").lower().split(".")[-1]
-        counts[name] = counts.get(name, 0) + _safe_number(_get(detail, "token_count", 0))
+        counts[name] = counts.get(name, 0) + _safe_number(
+            _get(detail, "token_count", 0)
+        )
     return counts
 
 
-def gemini_usage_values(metadata: Any, *, role: str, live: bool = False) -> dict[str, int | float]:
+def gemini_usage_values(
+    metadata: Any, *, role: str, live: bool = False
+) -> dict[str, int | float]:
     usage = _empty_usage()
     prompt_total = _safe_number(_get(metadata, "prompt_token_count", 0))
     prompt_details = _modality_counts(_get(metadata, "prompt_tokens_details", None))
@@ -579,7 +587,9 @@ def gemini_usage_values(metadata: Any, *, role: str, live: bool = False) -> dict
     tool_tokens = _safe_number(_get(metadata, "tool_use_prompt_token_count", 0))
     usage["input_text_tokens"] += tool_tokens
     output_name = "response_token_count" if live else "candidates_token_count"
-    output_details_name = "response_tokens_details" if live else "candidates_tokens_details"
+    output_details_name = (
+        "response_tokens_details" if live else "candidates_tokens_details"
+    )
     output_total = _safe_number(_get(metadata, output_name, 0))
     output_details = _modality_counts(_get(metadata, output_details_name, None))
     if output_details:
@@ -595,7 +605,9 @@ def gemini_usage_values(metadata: Any, *, role: str, live: bool = False) -> dict
             usage["output_unknown_tokens"] = output_total
         else:
             usage["output_text_tokens"] = output_total
-    usage["output_text_tokens"] += _safe_number(_get(metadata, "thoughts_token_count", 0))
+    usage["output_text_tokens"] += _safe_number(
+        _get(metadata, "thoughts_token_count", 0)
+    )
     return usage
 
 
@@ -626,7 +638,9 @@ def openai_chat_usage_values(usage_obj: Any) -> dict[str, int | float]:
     return usage
 
 
-def record_openai_chat_response(response: Any, *, model: str, role: str = "translation") -> None:
+def record_openai_chat_response(
+    response: Any, *, model: str, role: str = "translation"
+) -> None:
     usage_obj = _get(response, "usage", None)
     if usage_obj is None:
         return

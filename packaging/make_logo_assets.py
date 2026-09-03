@@ -160,7 +160,9 @@ def main() -> int:
         sizes=[(s, s) for s in FAVICON_SIZES],
         append_images=frames[:-1],
     )
-    print(f"{'site favicon':22s} {str(FAVICON_SIZES):12s} -> {os.path.relpath(icon_path, ROOT)}")
+    print(
+        f"{'site favicon':22s} {str(FAVICON_SIZES):12s} -> {os.path.relpath(icon_path, ROOT)}"
+    )
     return 0
 
 

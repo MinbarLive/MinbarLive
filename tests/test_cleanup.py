@@ -146,12 +146,13 @@ class TestRunCleanup:
         with open(os.path.join(batch_dir, f"{old}_101500_x.txt"), "w") as f:
             f.write("x")
 
-        with patch("utils.cleanup.LOGS_DIR", logs_dir), patch(
-            "utils.cleanup.HISTORY_DIR", history_dir
-        ), patch("utils.cleanup.BATCH_DIR", batch_dir), patch(
-            "utils.cleanup.LOGS_RETENTION_DAYS", 30
-        ), patch("utils.cleanup.HISTORY_RETENTION_DAYS", 90), patch(
-            "utils.cleanup.BATCH_RETENTION_DAYS", 90
+        with (
+            patch("utils.cleanup.LOGS_DIR", logs_dir),
+            patch("utils.cleanup.HISTORY_DIR", history_dir),
+            patch("utils.cleanup.BATCH_DIR", batch_dir),
+            patch("utils.cleanup.LOGS_RETENTION_DAYS", 30),
+            patch("utils.cleanup.HISTORY_RETENTION_DAYS", 90),
+            patch("utils.cleanup.BATCH_RETENTION_DAYS", 90),
         ):
             run_cleanup()
 
@@ -174,12 +175,13 @@ class TestRunCleanup:
         with open(os.path.join(batch_dir, f"{recent}_101500_x.txt"), "w") as f:
             f.write("x")
 
-        with patch("utils.cleanup.LOGS_DIR", logs_dir), patch(
-            "utils.cleanup.HISTORY_DIR", history_dir
-        ), patch("utils.cleanup.BATCH_DIR", batch_dir), patch(
-            "utils.cleanup.LOGS_RETENTION_DAYS", 30
-        ), patch("utils.cleanup.HISTORY_RETENTION_DAYS", 90), patch(
-            "utils.cleanup.BATCH_RETENTION_DAYS", 90
+        with (
+            patch("utils.cleanup.LOGS_DIR", logs_dir),
+            patch("utils.cleanup.HISTORY_DIR", history_dir),
+            patch("utils.cleanup.BATCH_DIR", batch_dir),
+            patch("utils.cleanup.LOGS_RETENTION_DAYS", 30),
+            patch("utils.cleanup.HISTORY_RETENTION_DAYS", 90),
+            patch("utils.cleanup.BATCH_RETENTION_DAYS", 90),
         ):
             run_cleanup()
 
@@ -204,12 +206,13 @@ class TestRunCleanup:
         with open(os.path.join(batch_dir, f"{old}_101500_x.txt"), "w") as f:
             f.write("x")
 
-        with patch("utils.cleanup.LOGS_DIR", logs_dir), patch(
-            "utils.cleanup.HISTORY_DIR", history_dir
-        ), patch("utils.cleanup.BATCH_DIR", batch_dir), patch(
-            "utils.cleanup.LOGS_RETENTION_DAYS", 30
-        ), patch("utils.cleanup.HISTORY_RETENTION_DAYS", 90), patch(
-            "utils.cleanup.BATCH_RETENTION_DAYS", 90
+        with (
+            patch("utils.cleanup.LOGS_DIR", logs_dir),
+            patch("utils.cleanup.HISTORY_DIR", history_dir),
+            patch("utils.cleanup.BATCH_DIR", batch_dir),
+            patch("utils.cleanup.LOGS_RETENTION_DAYS", 30),
+            patch("utils.cleanup.HISTORY_RETENTION_DAYS", 90),
+            patch("utils.cleanup.BATCH_RETENTION_DAYS", 90),
         ):
             run_cleanup(clean_logs=True, clean_content=False)
 
@@ -227,10 +230,11 @@ class TestRunCleanup:
 
         _create_dated_file(logs_dir, datetime.now() - timedelta(days=60))
 
-        with patch("utils.cleanup.LOGS_DIR", logs_dir), patch(
-            "utils.cleanup.HISTORY_DIR", history_dir
-        ), patch("utils.cleanup.BATCH_DIR", batch_dir), patch(
-            "utils.cleanup.LOGS_RETENTION_DAYS", 30
+        with (
+            patch("utils.cleanup.LOGS_DIR", logs_dir),
+            patch("utils.cleanup.HISTORY_DIR", history_dir),
+            patch("utils.cleanup.BATCH_DIR", batch_dir),
+            patch("utils.cleanup.LOGS_RETENTION_DAYS", 30),
         ):
             run_cleanup(clean_logs=False, clean_content=True)
 

@@ -108,7 +108,9 @@ def test_saved_device_name_survives_mme_truncation_and_reindexing():
         )
         == 1
     )
-    assert find_input_device_position("Missing microphone", ["Other microphone"]) is None
+    assert (
+        find_input_device_position("Missing microphone", ["Other microphone"]) is None
+    )
 
 
 def test_fallbacks_stay_on_same_mic_and_exclude_wdm_ks():
@@ -233,9 +235,7 @@ def _patch_single_microphone(monkeypatch) -> None:
     monkeypatch.setattr(
         device_list.sd, "query_hostapis", lambda: [{"name": "Core Audio"}]
     )
-    monkeypatch.setattr(
-        device_list.sd, "check_input_settings", lambda **kwargs: None
-    )
+    monkeypatch.setattr(device_list.sd, "check_input_settings", lambda **kwargs: None)
 
 
 def test_loopback_speakers_are_not_listed_where_the_platform_has_none(monkeypatch):
@@ -457,7 +457,7 @@ def test_the_raw_alsa_duplicates_are_still_filtered_out(monkeypatch):
 
 
 def test_the_generic_routing_aliases_survive(monkeypatch):
-    """"default" and "pipewire" are how a user asks for whatever PulseAudio is
+    """ "default" and "pipewire" are how a user asks for whatever PulseAudio is
     already using, and are in no source list."""
     names = _vm_base_names(monkeypatch)
     assert "default" in names

@@ -182,8 +182,7 @@ class RecitationTracker:
                 return []
             surah, highest = self._surah, self._highest
         return [
-            (surah, highest + step)
-            for step in range(1, RECITATION_LOOKAHEAD_AYAT + 1)
+            (surah, highest + step) for step in range(1, RECITATION_LOOKAHEAD_AYAT + 1)
         ]
 
 

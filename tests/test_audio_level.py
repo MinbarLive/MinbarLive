@@ -163,9 +163,7 @@ def test_loopback_segmented_and_streaming_paths_observe_mono_pcm(monkeypatch):
         )
     )
     monkeypatch.setitem(sys.modules, "soundcard", fake_soundcard)
-    controller._loopback_segmented_loop(
-        9001, speaker, startup_result=startup_result
-    )
+    controller._loopback_segmented_loop(9001, speaker, startup_result=startup_result)
 
     assert startup_result.get_nowait() is None
     assert controller.get_input_level().rms_dbfs == pytest.approx(-13.9794, abs=0.01)
@@ -218,9 +216,7 @@ def test_preview_is_local_and_live_start_releases_it(monkeypatch, tmp_path):
     monkeypatch.setattr(
         app_controller, "get_translation_model_chain", lambda: ["test-model"]
     )
-    monkeypatch.setattr(
-        app_controller, "get_context_manager", lambda: context_manager
-    )
+    monkeypatch.setattr(app_controller, "get_context_manager", lambda: context_manager)
 
     controller = AppController()
     controller.start_input_level_test(4)

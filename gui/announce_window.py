@@ -317,7 +317,9 @@ class AnnounceWindow(QDialog):
         star.setFixedSize(34, 34)
         star.setToolTip(self._t("announce_favorites", "Favorites"))
         star.clicked.connect(
-            (lambda: self._unfavorite(text)) if starred else (lambda: self._favorite(text))
+            (lambda: self._unfavorite(text))
+            if starred
+            else (lambda: self._favorite(text))
         )
         row.addWidget(star)
 

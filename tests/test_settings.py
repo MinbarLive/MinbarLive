@@ -446,7 +446,7 @@ class TestFooterHideMode:
         assert loaded.footer_hide_mode == "always"
 
     def test_legacy_show_footer_on_migrates_to_never(self, tmp_path, monkeypatch):
-        """"Shown" meant shown in every state. Landing such a user on the new
+        """ "Shown" meant shown in every state. Landing such a user on the new
         middle setting would silently take the disclaimer off their idle
         screen — a change they never asked for."""
         loaded = self._load(tmp_path, monkeypatch, {"show_footer": True})
@@ -501,9 +501,7 @@ class TestSubtitleHideMode:
 
     def test_legacy_hide_on_stop_migrates_to_stopped(self, tmp_path, monkeypatch):
         path = tmp_path / "settings.json"
-        path.write_text(
-            json.dumps({"hide_subtitle_on_stop": True}), encoding="utf-8"
-        )
+        path.write_text(json.dumps({"hide_subtitle_on_stop": True}), encoding="utf-8")
         monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
         settings_module._cached_settings = None
         try:
@@ -632,9 +630,7 @@ class TestSubtitleTypography:
         path = tmp_path / "settings.json"
         # NaN is not valid JSON per spec but json.dumps emits it — and a
         # hand-edited file can contain anything, which is the point here.
-        path.write_text(
-            json.dumps({"source_font_size_base": stored}), encoding="utf-8"
-        )
+        path.write_text(json.dumps({"source_font_size_base": stored}), encoding="utf-8")
         monkeypatch.setattr(settings_module, "_settings_path", lambda: path)
         settings_module._cached_settings = None
         try:
@@ -1195,7 +1191,7 @@ class TestLanguageEndonyms:
         assert language_canonical_name("Klingon") == "Klingon"
 
     def test_automatic_is_not_translated(self):
-        """"Automatic" is a mode, not a language, so it keeps its label."""
+        """ "Automatic" is a mode, not a language, so it keeps its label."""
         assert language_display_name("Automatic") == "Automatic"
         assert language_canonical_name("Automatic") == "Automatic"
 

@@ -460,9 +460,7 @@ def list_batch_runs() -> list[BatchRun]:
                 time=f"{hhmmss[:2]}:{hhmmss[2:4]}",
                 source_name=_read_batch_source_name(path, filename),
                 path=path,
-                duration_minutes=_duration_minutes(
-                    entries[0].time, entries[-1].time
-                ),
+                duration_minutes=_duration_minutes(entries[0].time, entries[-1].time),
                 active_seconds=_active_seconds([e.time for e in entries]),
                 language_pair=_language_pairs(pairs),
                 entry_count=len(pairs),

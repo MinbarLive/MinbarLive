@@ -182,9 +182,7 @@ class TestRelayout:
         g = grid(100, 100, 100)
         for width in (400, 900, 2000):
             g.relayout(width, log_open=False)
-            placed = [
-                g.grid.itemAt(i).widget() for i in range(g.grid.count())
-            ]
+            placed = [g.grid.itemAt(i).widget() for i in range(g.grid.count())]
             assert sorted(map(id, placed)) == sorted(map(id, g.columns)), width
 
     def test_one_stretched_row_absorbs_a_tall_window(self, grid):
@@ -246,9 +244,7 @@ class TestTwoColumnLevelling:
         assert g.tails[2][1].minimumHeight() > 100, "advanced did not grow"
         assert self._lead_height(g.tails[2][0]) == 0, "padded instead of grown"
 
-    def test_a_short_collapsed_card_is_padded_above_not_inflated(
-        self, grid, qt_app
-    ):
+    def test_a_short_collapsed_card_is_padded_above_not_inflated(self, grid, qt_app):
         g = grid(300, 100, 100, expanded=(True, True, False))
         g.relayout(900, log_open=False)
         self._level(g, qt_app)

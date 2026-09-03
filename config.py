@@ -201,7 +201,9 @@ VAD_DECISION_MAX_BOOST = 16.0  # +24 dB
 # (361 words vs 313 at 15s), varied least between runs (spread 11) and matched
 # an independent reference best (0.80 vs 0.71). See DEVLOG s59 for the table.
 BATCH_MAX_SEGMENT_SECONDS = 12.0  # cap for one transcription chunk (unbroken speech)
-BATCH_MIN_SILENCE_GAP_SECONDS = 0.4  # micro-pauses shorter than this stay inside a block
+BATCH_MIN_SILENCE_GAP_SECONDS = (
+    0.4  # micro-pauses shorter than this stay inside a block
+)
 BATCH_MIN_SEGMENT_SECONDS = 0.3  # drop speech runs shorter than this (transients)
 # Segments are contiguous: a pause up to this length is absorbed into the
 # surrounding segments (split at its centre) rather than dropped, so quiet

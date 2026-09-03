@@ -279,7 +279,9 @@ class CostChart(QWidget):
         tall and would be unhittable."""
         if not self._bars:
             return
-        index = int((event.position().x() - self._PAD_X) // max(1.0, self._slot_width()))
+        index = int(
+            (event.position().x() - self._PAD_X) // max(1.0, self._slot_width())
+        )
         if 0 <= index < len(self._bars):
             self.selected.emit(self._bars[index].session_id)
 
@@ -582,8 +584,11 @@ class SummaryDialog(QDialog):
         if not text:
             return
         QGuiApplication.clipboard().setText(text)
-        _flash(self.copy_btn, self._t("summary_copied", "Copied"),
-               self._t("summary_copy", "Copy"))
+        _flash(
+            self.copy_btn,
+            self._t("summary_copied", "Copied"),
+            self._t("summary_copy", "Copy"),
+        )
 
     def _on_save(self) -> None:
         text = self.text.toPlainText().strip()
@@ -605,8 +610,11 @@ class SummaryDialog(QDialog):
             _warn(self, self._t("summary_save", "Save…"), str(exc), self._t)
             return
         log(f"Summary exported to {target}")
-        _flash(self.save_btn, self._t("summary_saved", "Saved"),
-               self._t("summary_save", "Save…"))
+        _flash(
+            self.save_btn,
+            self._t("summary_saved", "Saved"),
+            self._t("summary_save", "Save…"),
+        )
 
 
 def _flash(button: QPushButton, message: str, restore: str, msec: int = 1500) -> None:
@@ -934,7 +942,6 @@ class HistoryWindow(QDialog):
         # the same 895px.
         self._actions.updateGeometry()
 
-
     def _apply_pane_layout(self, narrow: bool) -> None:
         """List beside transcript, or stacked above it.
 
@@ -1060,9 +1067,7 @@ class HistoryWindow(QDialog):
         whole minutes above."""
         if seconds < 60:
             return self._t("history_seconds", "{seconds} s").format(seconds=seconds)
-        return self._t("history_minutes", "{minutes} min").format(
-            minutes=seconds // 60
-        )
+        return self._t("history_minutes", "{minutes} min").format(minutes=seconds // 60)
 
     def _row_text(self, row) -> tuple[str, str, str | None]:
         """(title, detail line, right-aligned tag) for one list row."""
@@ -1153,7 +1158,9 @@ class HistoryWindow(QDialog):
             return ""
         return cost_breakdown_lines(
             session,
-            estimate_note=self._t("cost_estimate_note", "Estimate — public list prices"),
+            estimate_note=self._t(
+                "cost_estimate_note", "Estimate — public list prices"
+            ),
             unpriced_note=self._t("cost_unpriced", "unpriced"),
             requests_label=self._t("cost_requests", "requests"),
         )
@@ -1275,8 +1282,11 @@ class HistoryWindow(QDialog):
         if not text:
             return
         QGuiApplication.clipboard().setText(text)
-        _flash(self.copy_btn, self._t("history_copied", "Copied"),
-               self._t("history_copy", "Copy"))
+        _flash(
+            self.copy_btn,
+            self._t("history_copied", "Copied"),
+            self._t("history_copy", "Copy"),
+        )
 
     def _on_export(self) -> None:
         entry = self._current()
@@ -1333,8 +1343,7 @@ class HistoryWindow(QDialog):
             self,
             self._t("history_export", "Save…"),
             suggestion,
-            f"{label} (*{extension});;"
-            f"{self._t('batch_all_files', 'All files')} (*.*)",
+            f"{label} (*{extension});;{self._t('batch_all_files', 'All files')} (*.*)",
         )
         return target
 
@@ -1376,9 +1385,7 @@ class HistoryWindow(QDialog):
             os.remove(path)
 
     def _confirm(self, title: str, body: str) -> bool:
-        return ask_yes_no(
-            self, title, body, default_yes=False, translate=self._t
-        )
+        return ask_yes_no(self, title, body, default_yes=False, translate=self._t)
 
     # ── summary dialog ───────────────────────────────────────────────────
     def _on_summarise(self) -> None:

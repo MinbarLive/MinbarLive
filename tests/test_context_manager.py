@@ -295,9 +295,7 @@ class TestSummaryCadence:
                 mgr.add_transcription(f"Utterance {i} content")
             time.sleep(0.4)  # give the background thread a chance to misfire
             mock_provider.complete.assert_not_called()
-            assert (
-                mgr.get_stats()["pending_for_summary"] == CONTEXT_SUMMARIZE_EVERY_N
-            )
+            assert mgr.get_stats()["pending_for_summary"] == CONTEXT_SUMMARIZE_EVERY_N
         finally:
             mgr.stop(timeout=1.0)
 

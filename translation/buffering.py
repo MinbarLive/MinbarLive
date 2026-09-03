@@ -72,7 +72,6 @@ class AudioSegment:
 
 
 class ProcessingStrategy(ABC):
-
     @abstractmethod
     def add_segment(self, segment: AudioSegment) -> list[str]:
         pass
@@ -96,7 +95,6 @@ class ProcessingStrategy(ABC):
 
 
 class ChunkBasedStrategy(ProcessingStrategy):
-
     def __init__(self):
         self.reset()
 
@@ -113,7 +111,6 @@ class ChunkBasedStrategy(ProcessingStrategy):
 
 
 class SemanticBufferingStrategy(ProcessingStrategy):
-
     def __init__(
         self,
         max_chunks: int = SEMANTIC_MAX_CHUNKS,

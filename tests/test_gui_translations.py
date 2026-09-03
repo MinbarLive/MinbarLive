@@ -268,9 +268,9 @@ class TestTheDebugLogIsNotTranslated:
     def test_no_log_call_looks_up_a_translation(self):
         """The other half: a key can be absent while the call still asks for
         one, which silently ships the English fallback and reads as a bug."""
-        source = (
-            Path(__file__).parent.parent / "gui" / "control_panel.py"
-        ).read_text(encoding="utf-8")
+        source = (Path(__file__).parent.parent / "gui" / "control_panel.py").read_text(
+            encoding="utf-8"
+        )
         assert '_t("log_' not in source, (
             "a log() call still routes through the translation table"
         )

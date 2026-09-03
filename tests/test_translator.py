@@ -39,15 +39,11 @@ class TestSelectVerifiedVerse:
         )
 
     def test_exact_verse_qualifies(self):
-        result = translator._select_verified_verse(
-            [(0.90, VERSE, "hint")], VERSE, "de"
-        )
+        result = translator._select_verified_verse([(0.90, VERSE, "hint")], VERSE, "de")
         assert result == (0.90, VERSE, VERSE_TRANSLATION)
 
     def test_score_below_threshold_rejected(self):
-        result = translator._select_verified_verse(
-            [(0.80, VERSE, "hint")], VERSE, "de"
-        )
+        result = translator._select_verified_verse([(0.80, VERSE, "hint")], VERSE, "de")
         assert result is None
 
     def test_segment_with_surrounding_speech_rejected(self):
@@ -102,9 +98,7 @@ class TestSelectVerifiedVerse:
 
     def test_arabic_target_uses_match_directly(self, monkeypatch):
         monkeypatch.setattr(translator, "get_quran_dict", lambda code: {})
-        result = translator._select_verified_verse(
-            [(0.90, VERSE, VERSE)], VERSE, "ar"
-        )
+        result = translator._select_verified_verse([(0.90, VERSE, VERSE)], VERSE, "ar")
         assert result == (0.90, VERSE, VERSE)
 
     def test_empty_matches(self):
@@ -122,7 +116,9 @@ class TestSelectVerifiedVerse:
         replaced itself with a verse's exact dictionary translation, and
         nothing ever compared what was said to what was printed."""
         decoy = " ".join(f"كلمة{i}" for i in range(4))  # same word count as VERSE
-        assert translator._select_verified_verse([(0.92, VERSE, "x")], decoy, "de") is None
+        assert (
+            translator._select_verified_verse([(0.92, VERSE, "x")], decoy, "de") is None
+        )
 
     def test_transcription_noise_still_qualifies(self):
         """The check must not be stricter than reality: measured against 48
@@ -282,8 +278,7 @@ class TestSelectVerifiedVerseRun:
     def test_sermon_speech_around_run_rejected(self):
         """The critical guard carries over: verses + sermon must NOT bypass GPT."""
         segment = (
-            f"{RUN_VERSE_A} {RUN_VERSE_B} "
-            "ثم تحدث الخطيب عن معاني هذه الآيات الكريمة"
+            f"{RUN_VERSE_A} {RUN_VERSE_B} ثم تحدث الخطيب عن معاني هذه الآيات الكريمة"
         )
         result = translator._select_verified_verse_run(
             [(0.77, RUN_VERSE_A, "h"), (0.69, RUN_VERSE_B, "h")], segment, "de"

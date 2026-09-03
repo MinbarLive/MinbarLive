@@ -199,9 +199,7 @@ class StreamNoiseGate:
                 level="WARNING",
             )
             return chunk
-        ratio = (
-            sum(self._frames) / len(self._frames) if self._frames else 0.0
-        )
+        ratio = sum(self._frames) / len(self._frames) if self._frames else 0.0
         if ratio >= VAD_STREAM_OPEN_RATIO:
             self._samples_since_speech = 0
             if self._zeroing:

@@ -89,9 +89,7 @@ def segmented_env(monkeypatch, tmp_path):
     # real webrtcvad classification can't drop them (tests override this
     # to exercise the gate itself).
     monkeypatch.setattr(app_controller, "has_speech", lambda a: True)
-    monkeypatch.setattr(
-        app_controller, "get_transcription_provider", lambda: provider
-    )
+    monkeypatch.setattr(app_controller, "get_transcription_provider", lambda: provider)
     monkeypatch.setattr(
         app_controller, "get_transcription_model_chain", lambda: ["m1", "m2"]
     )
@@ -104,9 +102,7 @@ def segmented_env(monkeypatch, tmp_path):
         app_controller, "log_transcription_and_translation", lambda *a, **k: None
     )
     monkeypatch.setattr(app_controller, "get_user_message", lambda key: f"MSG:{key}")
-    monkeypatch.setattr(
-        translation.stt, "retry_with_backoff", lambda fn, **kw: fn()
-    )
+    monkeypatch.setattr(translation.stt, "retry_with_backoff", lambda fn, **kw: fn())
 
     controller = AppController()
     controller.strategy = ChunkBasedStrategy()
