@@ -278,8 +278,7 @@ class TestResolveProviderByKeys:
     def test_session_typed_key_counts(self, monkeypatch):
         self._keys(monkeypatch, set())
         assert (
-            providers.resolve_provider_by_keys({"anthropic": "sk-ant-x"})
-            == "anthropic"
+            providers.resolve_provider_by_keys({"anthropic": "sk-ant-x"}) == "anthropic"
         )
 
     def test_session_typed_default_key_wins(self, monkeypatch):
@@ -290,9 +289,7 @@ class TestResolveProviderByKeys:
         )
         self._keys(monkeypatch, {other})
         typed = {providers.DEFAULT_PROVIDER: "typed-key-x"}
-        assert providers.resolve_provider_by_keys(typed) == (
-            providers.DEFAULT_PROVIDER
-        )
+        assert providers.resolve_provider_by_keys(typed) == (providers.DEFAULT_PROVIDER)
 
     def test_blank_session_key_is_ignored(self, monkeypatch):
         self._keys(monkeypatch, set())
@@ -300,17 +297,15 @@ class TestResolveProviderByKeys:
             providers.DEFAULT_PROVIDER
         )
 
-    def test_ambient_env_key_does_not_override_a_configured_provider(
-        self, monkeypatch
-    ):
+    def test_ambient_env_key_does_not_override_a_configured_provider(self, monkeypatch):
         """A GEMINI_API_KEY env var left over from some unrelated tool must
         not outrank an OpenAI key the user actually saved in MinbarLive —
         once ANY provider is has_configured_key()-true, ambient env-only
         keys for every other provider (incl. the default) are ignored."""
-        monkeypatch.setattr(providers, "has_usable_key", lambda p: True)  # ambient everywhere
         monkeypatch.setattr(
-            providers, "has_configured_key", lambda p: p == "openai"
-        )
+            providers, "has_usable_key", lambda p: True
+        )  # ambient everywhere
+        monkeypatch.setattr(providers, "has_configured_key", lambda p: p == "openai")
         assert providers.resolve_provider_by_keys() == "openai"
 
     def test_pure_env_only_setup_still_auto_selects(self, monkeypatch):
@@ -504,9 +499,11 @@ class TestGeminiTranslationProvider:
         assert kwargs["config"].system_instruction == "sys"
         assert kwargs["config"].max_output_tokens == 40
         assert kwargs["config"].temperature == 0.2
-        assert str(
-            kwargs["config"].thinking_config.thinking_level
-        ).upper().endswith("MINIMAL")
+        assert (
+            str(kwargs["config"].thinking_config.thinking_level)
+            .upper()
+            .endswith("MINIMAL")
+        )
 
     def test_user_only_defaults_to_thinking_off(self, monkeypatch):
         # Even a bare call sends a config: Gemini 3.x models think by
@@ -664,9 +661,13 @@ class TestProviderChoiceHelpers:
             assert provider_id in providers._TRANSLATION_PROVIDERS
 
     def test_model_choices_per_provider(self):
-        openai_ids = [m for _n, m in providers.get_model_choices("openai", "translation")]
+        openai_ids = [
+            m for _n, m in providers.get_model_choices("openai", "translation")
+        ]
         assert "gpt-5.2" in openai_ids
-        gemini_ids = [m for _n, m in providers.get_model_choices("gemini", "translation")]
+        gemini_ids = [
+            m for _n, m in providers.get_model_choices("gemini", "translation")
+        ]
         assert all(m.startswith("gemini") for m in gemini_ids)
 
     def test_unknown_provider_falls_back_to_default_choices(self):
@@ -734,9 +735,7 @@ class TestKeyHelpers:
         assert providers.has_configured_key("nope") is False
 
     def test_stored_key_gemini(self, monkeypatch):
-        monkeypatch.setattr(
-            "providers.gemini.client._load_stored_key", lambda: "g-key"
-        )
+        monkeypatch.setattr("providers.gemini.client._load_stored_key", lambda: "g-key")
         assert providers.get_stored_api_key("gemini") == "g-key"
 
     def test_stored_key_unknown_provider(self):
@@ -753,9 +752,7 @@ class TestKeyHelpers:
             calls["delete"] = provider
             return True
 
-        monkeypatch.setattr(
-            "utils.keyring_storage.set_api_key_in_keyring", fake_set
-        )
+        monkeypatch.setattr("utils.keyring_storage.set_api_key_in_keyring", fake_set)
         monkeypatch.setattr(
             "utils.keyring_storage.delete_api_key_from_keyring", fake_delete
         )
@@ -784,9 +781,7 @@ class TestKeyHelpers:
             calls["delete"] = provider
             return True
 
-        monkeypatch.setattr(
-            "utils.keyring_storage.set_api_key_in_keyring", fake_set
-        )
+        monkeypatch.setattr("utils.keyring_storage.set_api_key_in_keyring", fake_set)
         monkeypatch.setattr(
             "utils.keyring_storage.delete_api_key_from_keyring", fake_delete
         )
@@ -821,9 +816,7 @@ class TestKeyHelpers:
             calls["delete"] = provider
             return True
 
-        monkeypatch.setattr(
-            "utils.keyring_storage.set_api_key_in_keyring", fake_set
-        )
+        monkeypatch.setattr("utils.keyring_storage.set_api_key_in_keyring", fake_set)
         monkeypatch.setattr(
             "utils.keyring_storage.delete_api_key_from_keyring", fake_delete
         )
@@ -1297,21 +1290,36 @@ class TestSourceLanguageSupport:
 
     def test_openai_realtime_rejects_what_its_api_rejects(self):
         allowed = providers.supported_source_language_codes("openai_realtime")
-        # Straight from the API's own rejection message.
-        for code in ("so", "ps", "bn", "ha", "sq", "ku"):
+        # Probed one code at a time: a refusal arrives in under a second,
+        # an accepted code never errors. NOT read off the rejection
+        # message, which omits six codes the API actually accepts.
+        for code in ("so", "ps", "ha", "sq", "ku"):
             assert code not in allowed
+        assert "bn" in allowed  # listed nowhere in that message, accepted
         for code in ("ar", "de", "en", "tr", "ur", "id", "ms", "fa", "sw", "bs"):
             assert code in allowed
 
-    def test_segmented_openai_is_wider_than_realtime(self):
-        """Somali is not an unsupported language — it is unsupported on ONE
-        engine. The file endpoint takes the whole Whisper set."""
+    def test_the_two_openai_sets_are_measured_not_derived(self):
+        """Both probed against their own live endpoint 2026-09-03.
+
+        Realtime is currently segmented + 'iw'. That near-equality is a
+        measurement, not a rule to lean on: the sets have already diverged
+        in each direction, so neither may be computed from the other.
+        """
         segmented = providers.supported_source_language_codes("openai")
         realtime = providers.supported_source_language_codes("openai_realtime")
-        for code in ("so", "ps", "bn", "ha", "sq"):
-            assert code in segmented and code not in realtime
-        # Kurdish is in no Whisper build, so it stays out of both.
-        assert "ku" not in segmented
+        # 'iw' is Hebrew's legacy alias: a Realtime session takes it, the
+        # file endpoint does not.
+        assert "iw" in realtime and "iw" not in segmented
+        assert segmented - realtime == frozenset()
+        # Both endpoints take these six. The Realtime rejection message
+        # omits every one of them, which is why it must not be trusted as
+        # the source of the set (see providers/openai/realtime.py).
+        for code in ("bn", "gu", "ka", "ml", "te", "yue"):
+            assert code in segmented and code in realtime, code
+        # Neither takes these, whatever the Whisper docs list.
+        for code in ("so", "ha", "sq", "ku", "ps"):
+            assert code not in segmented and code not in realtime, code
 
     def test_gemini_constrains_nothing(self):
         """Neither Gemini path sends a language field the API can reject: the
@@ -1325,7 +1333,9 @@ class TestSourceLanguageSupport:
         """Nova-2 has no Arabic and Nova-3 does — the app's primary language.
         Collapsing the two into one Deepgram set would offer it on Nova-2."""
         assert "ar" in providers.supported_source_language_codes("deepgram", "nova-3")
-        assert "ar" not in providers.supported_source_language_codes("deepgram", "nova-2")
+        assert "ar" not in providers.supported_source_language_codes(
+            "deepgram", "nova-2"
+        )
 
     def test_unknown_deepgram_model_falls_back_to_the_default_model(self):
         """A model id left over from another engine must not widen the list to
@@ -1338,11 +1348,9 @@ class TestSourceLanguageSupport:
         assert providers.supported_source_language_codes("no-such-engine") is None
 
     def test_automatic_survives_the_filter(self):
-        """"Automatic" is a mode, not a language; only the callers that must
+        """ "Automatic" is a mode, not a language; only the callers that must
         drop it (streaming) do so."""
-        names = [
-            n for n, _c in providers.supported_source_languages("openai_realtime")
-        ]
+        names = [n for n, _c in providers.supported_source_languages("openai_realtime")]
         assert names[0] == "Automatic"
 
     def test_every_engine_keeps_the_primary_arabic_german_path(self):
@@ -1353,9 +1361,7 @@ class TestSourceLanguageSupport:
             ("gemini_realtime", None),
             ("deepgram", "nova-3"),
         ):
-            names = [
-                n for n, _c in providers.supported_source_languages(engine, model)
-            ]
+            names = [n for n, _c in providers.supported_source_languages(engine, model)]
             assert "Arabic" in names and "German" in names, engine
 
     def test_filtered_list_is_a_subset_of_source_languages(self):
@@ -1446,10 +1452,11 @@ class TestSourceLanguageConfigStaysHonest:
                 for pid in validating
             )
         }
-        assert unvalidated_only == {"Kurdish"}, (
-            "Kurdish is in no Whisper build and on no Deepgram model, so only "
-            "the Gemini paths (which never send a language field) transcribe "
-            f"it. Now: {sorted(unvalidated_only)}"
+        assert unvalidated_only == {"Albanian", "Hausa", "Kurdish", "Somali"}, (
+            "These four are on no Deepgram model and are rejected by BOTH "
+            "OpenAI endpoints (probed live 2026-09-03), so only the Gemini "
+            "paths, which never send a language field, transcribe them. "
+            f"Now: {sorted(unvalidated_only)}"
         )
 
 
@@ -1478,9 +1485,7 @@ class TestStreamingEngineHelpers:
             == "gpt-4o-mini-transcribe"
         )
         assert (
-            providers.resolve_streaming_transcription_model(
-                "openai_realtime", "nova-3"
-            )
+            providers.resolve_streaming_transcription_model("openai_realtime", "nova-3")
             == "gpt-4o-transcribe"
         )
 
@@ -1524,9 +1529,7 @@ class TestStreamingEngineHelpers:
         assert providers.get_streaming_capture_sample_rate("deepgram") == FS
         assert providers.get_streaming_capture_sample_rate("gemini_realtime") == FS
         # The OpenAI Realtime API only accepts 24 kHz PCM.
-        assert (
-            providers.get_streaming_capture_sample_rate("openai_realtime") == 24000
-        )
+        assert providers.get_streaming_capture_sample_rate("openai_realtime") == 24000
         assert providers.get_streaming_capture_sample_rate("bogus") == FS
 
     def test_default_model_and_choices(self):
@@ -1630,9 +1633,7 @@ class TestOpenAIRealtimeTranscriptionProvider:
         monkeypatch.setattr(openai_realtime, "get_client", lambda: client)
         return conn, captured
 
-    def _open(
-        self, transcripts=None, utterance_ends=None, errors=None, speech=None
-    ):
+    def _open(self, transcripts=None, utterance_ends=None, errors=None, speech=None):
         return OpenAIRealtimeTranscriptionProvider().open_stream(
             model="gpt-4o-transcribe",
             language="ar",
@@ -1752,9 +1753,7 @@ class TestOpenAIRealtimeTranscriptionProvider:
         assert transcripts == [("doomed", False)]  # no final for the failure
 
     def test_error_event_calls_on_error(self, monkeypatch):
-        events = [
-            _rt_event("error", error=SimpleNamespace(message="rate limited"))
-        ]
+        events = [_rt_event("error", error=SimpleNamespace(message="rate limited"))]
         self._fake_client(monkeypatch, events)
         errors = []
         self._open(errors=errors)
@@ -1790,7 +1789,9 @@ class TestOpenAIRealtimeTranscriptionProvider:
         assert _wait_until(lambda: ("still works", True) in transcripts)
 
     def test_commit_turn_commits_the_input_buffer(self, monkeypatch):
-        conn, _ = self._fake_client(monkeypatch, [], conn=_BlockingRealtimeConnection([]))
+        conn, _ = self._fake_client(
+            monkeypatch, [], conn=_BlockingRealtimeConnection([])
+        )
         handle = self._open()
         assert handle.commit_turn() is True
         assert conn.commits == 1
@@ -1833,9 +1834,9 @@ class TestOpenAIRealtimeTranscriptionProvider:
         handle = self._open()
         handle.feed(b"pcm-bytes")
         assert _wait_until(lambda: len(conn.appended_audio) == 1)
-        assert conn.appended_audio[0]["audio"] == base64.b64encode(
-            b"pcm-bytes"
-        ).decode("ascii")
+        assert conn.appended_audio[0]["audio"] == base64.b64encode(b"pcm-bytes").decode(
+            "ascii"
+        )
 
     def test_session_configured_for_transcription(self, monkeypatch):
         conn, captured = self._fake_client(monkeypatch, [])

@@ -54,26 +54,43 @@ TRANSCRIPTION_MODELS = [
     ("GPT-4o Mini Transcribe", "gpt-4o-mini-transcribe"),
 ]
 
-# Source-language codes a Realtime transcription session accepts. NOT the
-# Whisper 98: the Realtime API validates the ``language`` field against this
-# narrower list and rejects anything outside it — "Invalid value: 'so'" —
-# before a single audio frame is sent, so the session never opens and the
-# reconnect loop retries the same rejection forever.
+# Source-language codes a Realtime transcription session accepts. Anything
+# outside it is refused with "Invalid value: 'so'" while the session is being
+# configured, before a single audio frame is sent, so the session never opens
+# and the reconnect loop retries the same rejection forever.
 #
-# Copied verbatim from that rejection message (2026-08-26). The docs give no
-# list, only "The Realtime API rejects unsupported or incorrectly formatted
-# language codes", so the error IS the specification. If OpenAI widens it,
-# re-derive this set from a fresh rejection rather than from the docs.
+# DO NOT rebuild this from the rejection message. That message names only 58
+# codes, and the API accepts 64: bn, gu, ka, ml, te and yue are all accepted
+# and all absent from it (measured 2026-09-03). Trusting it hid five languages
+# the default engine transcribes perfectly well. The docs publish no list
+# either, so the ONLY reliable source is a probe of each candidate code.
+#
+# How to re-derive (costs one refused session per code and sends no audio):
+# open_stream() each candidate and wait on on_error. A refusal arrives in
+# under a second; an accepted code simply never errors, so an 8-second
+# deadline separates them cleanly. Always probe a bogus code such as "zz" in
+# the same run as a control - if that one is not refused, the run is invalid.
+#
+# Relationship to the segmented set in transcription.py: this is that set plus
+# 'iw' (Hebrew's legacy alias). Keep the two constants separate anyway. They
+# have already diverged once in each direction, and merging them is what put a
+# rejected language in the dropdown to begin with.
+# These are data, not code: a grid of ISO codes is scanned by eye against an
+# API's own list, and one code per line makes that impossible to do and the
+# diff between two engine sets unreadable. Keep the formatter off it.
+# fmt: off
 SUPPORTED_LANGUAGE_CODES = frozenset(
     {
-        "af", "ar", "az", "be", "bg", "bs", "ca", "cs", "cy", "da",
-        "de", "el", "en", "es", "et", "fa", "fi", "fr", "gl", "he",
-        "hi", "hr", "hu", "hy", "id", "is", "it", "iw", "ja", "kk",
-        "kn", "ko", "lt", "lv", "mi", "mk", "mr", "ms", "ne", "nl",
-        "no", "pl", "pt", "ro", "ru", "sk", "sl", "sr", "sv", "sw",
-        "ta", "th", "tl", "tr", "uk", "ur", "vi", "zh",
+        "af", "ar", "az", "be", "bg", "bn", "bs", "ca", "cs", "cy",
+        "da", "de", "el", "en", "es", "et", "fa", "fi", "fr", "gl",
+        "gu", "he", "hi", "hr", "hu", "hy", "id", "is", "it", "iw",
+        "ja", "ka", "kk", "kn", "ko", "lt", "lv", "mi", "mk", "ml",
+        "mr", "ms", "ne", "nl", "no", "pl", "pt", "ro", "ru", "sk",
+        "sl", "sr", "sv", "sw", "ta", "te", "th", "tl", "tr", "uk",
+        "ur", "vi", "yue", "zh",
     }
 )
+# fmt: on
 
 # ``client.realtime.connect()`` only completes the WebSocket handshake.  The
 # server confirms authentication and the effective session configuration in a
@@ -177,7 +194,11 @@ class OpenAIRealtimeStreamHandle:
         transcribed, which is what makes this the non-destructive answer to a
         turn that will not end on its own.
         """
-        if self._closed.is_set() or self._connection is None or not self._ready.is_set():
+        if (
+            self._closed.is_set()
+            or self._connection is None
+            or not self._ready.is_set()
+        ):
             return False
         try:
             self._connection.input_audio_buffer.commit()

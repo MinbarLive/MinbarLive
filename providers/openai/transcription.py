@@ -5,30 +5,45 @@ from __future__ import annotations
 from providers.openai.client import get_client
 from utils.cost_tracking import record_openai_transcription_usage
 
-# Source-language codes the file-transcription endpoint accepts: the Whisper
-# language set, which the gpt-4o-transcribe family shares (the docs point at
-# the Whisper list for whisper-1 and give no separate one for gpt-transcribe).
+# Source-language codes the file-transcription endpoint accepts.
 #
-# Deliberately WIDER than the Realtime session's allowlist in
-# providers/openai/realtime.py — Somali, Pashto, Bengali, Hausa and Albanian
-# transcribe here and are rejected there, which is why the two sets are
-# separate constants instead of one "OpenAI" set. Accuracy varies a lot across
-# the tail of this list; support here means "the API accepts it", not "it is
-# good at it".
+# NOT the Whisper 100 the docs point at. The endpoint validates ``language``
+# against a narrower list and refuses anything outside it with a 400 naming
+# the parameter ("Language code 'sq' is not recognized"), before any audio is
+# read. Measured against the live API 2026-09-03: 63 codes, identical on
+# gpt-4o-transcribe and gpt-4o-mini-transcribe -- the only two models the
+# dropdown offers. The previous 100-code set was the documented Whisper list,
+# and four languages in it (sq, ha, ps, so) are rejected outright.
+#
+# Kept separate from the Realtime allowlist in realtime.py even though that
+# set is currently this one plus 'iw' (Hebrew's legacy alias). The two have
+# already diverged in each direction, and each is measured against its own
+# endpoint; deriving one from the other is what put a rejected language in
+# the dropdown in the first place.
+#
+# CAVEAT: whisper-1, last in FALLBACK_TRANSCRIPTION_MODELS, is narrower still
+# (57 codes; it also rejects bn, gu, ka, ml, te, yue). No dropdown offers it,
+# so it cannot be selected -- but a segment in one of those six that falls all
+# the way through the chain to whisper-1 fails there rather than transcribing.
+#
+# Re-derive by probing, never from the docs: one 1-second tone per code is
+# enough. Acceptance means "the API takes the code", not "it is good at it".
+# These are data, not code: a grid of ISO codes is scanned by eye against an
+# API's own list, and one code per line makes that impossible to do and the
+# diff between two engine sets unreadable. Keep the formatter off it.
+# fmt: off
 SUPPORTED_LANGUAGE_CODES = frozenset(
     {
-        "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo",
-        "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es",
-        "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "ha", "haw",
-        "he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja",
-        "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo",
-        "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt",
-        "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt",
-        "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq",
-        "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl",
-        "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "yue", "zh",
+        "af", "ar", "az", "be", "bg", "bn", "bs", "ca", "cs", "cy",
+        "da", "de", "el", "en", "es", "et", "fa", "fi", "fr", "gl",
+        "gu", "he", "hi", "hr", "hu", "hy", "id", "is", "it", "ja",
+        "ka", "kk", "kn", "ko", "lt", "lv", "mi", "mk", "ml", "mr",
+        "ms", "ne", "nl", "no", "pl", "pt", "ro", "ru", "sk", "sl",
+        "sr", "sv", "sw", "ta", "te", "th", "tl", "tr", "uk", "ur",
+        "vi", "yue", "zh",
     }
 )
+# fmt: on
 
 
 class OpenAITranscriptionProvider:

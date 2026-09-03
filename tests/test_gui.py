@@ -333,7 +333,7 @@ class TestContinuousMode:
         assert w._block_translation_qcolor(newest=False) == w._history_qcolor()
 
     def test_the_ticker_leaves_the_stacked_original_muted(self, overlay):
-        """"All the subtitles white, BESIDES the original text" — the stacked
+        """ "All the subtitles white, BESIDES the original text" — the stacked
         original stays the muted tone, which is what marks it as the source
         rather than as already-said."""
         from PySide6.QtGui import QColor
@@ -368,9 +368,11 @@ class TestContinuousMode:
         assert wanted != muted, "theme gives both the same value — test proves nothing"
 
         image = w.grab().toImage()
-        found = {image.pixel(x, y) & 0xFFFFFF
-                 for y in range(0, image.height(), 2)
-                 for x in range(0, image.width(), 2)}
+        found = {
+            image.pixel(x, y) & 0xFFFFFF
+            for y in range(0, image.height(), 2)
+            for x in range(0, image.width(), 2)
+        }
         assert (wanted & 0xFFFFFF) in found, "no text drawn in the live colour"
         assert (muted & 0xFFFFFF) not in found, (
             "the ticker still painted a block in the muted history colour"
@@ -448,9 +450,7 @@ class TestAdaptiveCatchup:
         assert all(b >= a - 1e-9 for a, b in zip(speeds, speeds[1:], strict=False))
 
     def test_disabling_returns_to_the_base_speed(self, overlay):
-        w = overlay(
-            SUBTITLE_MODE_CONTINUOUS, adaptive_catchup=True, scroll_speed=1.0
-        )
+        w = overlay(SUBTITLE_MODE_CONTINUOUS, adaptive_catchup=True, scroll_speed=1.0)
         for de, _ in PAIRS * 5:
             w.add_subtitle(de)
         for _ in range(40):
@@ -596,7 +596,9 @@ class TestBackdropOpacity:
         import utils.settings as S
 
         path = tmp_path / "settings.json"
-        path.write_text(json.dumps({"subtitle_backdrop_opacity": 999}), encoding="utf-8")
+        path.write_text(
+            json.dumps({"subtitle_backdrop_opacity": 999}), encoding="utf-8"
+        )
         monkeypatch.setattr(S, "_settings_path", lambda: path)
         loaded = S.load_settings(use_cache=False)
         assert loaded.subtitle_backdrop_opacity == S.BACKDROP_OPACITY_MAX
@@ -796,7 +798,9 @@ class TestWindowIcon:
                 f"{ink.shape[1]} — that is a chord, so the node is sliced"
             )
 
-    def test_the_header_logo_is_rendered_for_the_screens_scale(self, qt_app, monkeypatch):
+    def test_the_header_logo_is_rendered_for_the_screens_scale(
+        self, qt_app, monkeypatch
+    ):
         """The header logo was built at exactly 30 px and handed to a QLabel
         with no device pixel ratio, so at 125% Qt stretched a 30 px bitmap to
         38 and it read as blurry next to crisp text. It has to be rasterised at
@@ -813,7 +817,9 @@ class TestWindowIcon:
             assert pixmap.height() == round(30 * ratio), (
                 f"rasterised at {pixmap.height()} device px, expected {round(30 * ratio)}"
             )
-            assert pixmap.height() / pixmap.devicePixelRatio() == pytest.approx(30, abs=1)
+            assert pixmap.height() / pixmap.devicePixelRatio() == pytest.approx(
+                30, abs=1
+            )
         finally:
             panel.deleteLater()
 
@@ -855,7 +861,11 @@ class TestWindowIcon:
         import subprocess
 
         result = subprocess.run(
-            [sys.executable, "-c", "import sys, utils.icons; print('tkinter' in sys.modules)"],
+            [
+                sys.executable,
+                "-c",
+                "import sys, utils.icons; print('tkinter' in sys.modules)",
+            ],
             capture_output=True,
             text=True,
             cwd=pathlib.Path(__file__).resolve().parents[1],
@@ -1290,9 +1300,7 @@ class TestControlPanelLayout:
         yield p
         p.close()
 
-    def test_the_default_height_clears_the_themed_card_stack(
-        self, qt_app, monkeypatch
-    ):
+    def test_the_default_height_clears_the_themed_card_stack(self, qt_app, monkeypatch):
         """A fresh install must not open already scrolled.
 
         The old default was 880x640 against a card stack needing a 659 px
@@ -1422,7 +1430,9 @@ class TestControlPanelLayout:
         for width, expected in ((1200, 3), (900, 2), (520, 1)):
             panel.resize(width, 800)
             panel._relayout_columns()
-            assert panel.card_grid.count == expected, f"{width}px should give {expected}"
+            assert panel.card_grid.count == expected, (
+                f"{width}px should give {expected}"
+            )
 
     def test_a_column_is_never_narrower_than_its_cards_need(self, panel):
         """The horizontal scrollbar is off, so a threshold that lets a column
@@ -1663,9 +1673,7 @@ class TestControlPanelLayout:
         qt_app.processEvents()
         assert panel.width() == dragged
 
-    def test_a_wide_log_window_dragged_wider_is_not_snapped_back(
-        self, panel, qt_app
-    ):
+    def test_a_wide_log_window_dragged_wider_is_not_snapped_back(self, panel, qt_app):
         """Same, for a window that was wide enough to begin with — opening took
         nothing from it, so closing owes it nothing."""
         wide = self._shown(panel, qt_app, self._log_width(panel) + 100)
@@ -1678,9 +1686,7 @@ class TestControlPanelLayout:
         qt_app.processEvents()
         assert panel.width() == dragged
 
-    def test_a_log_window_dragged_smaller_is_not_snapped_back_up(
-        self, panel, qt_app
-    ):
+    def test_a_log_window_dragged_smaller_is_not_snapped_back_up(self, panel, qt_app):
         """Reported live. A wide window (2 or 3 columns) is not widened by the
         log at all, so it records its own width; dragging it SMALLER and then
         closing the log used to snap it back up to the old size. Shrinking is a
@@ -1763,8 +1769,7 @@ class TestControlPanelLayout:
                 qt_app.processEvents()
                 seen.add(panel.card_grid.count)
             assert len(seen) == 1, (
-                f"{width}px never settled — oscillated between "
-                f"{sorted(seen)} columns"
+                f"{width}px never settled — oscillated between {sorted(seen)} columns"
             )
 
     def test_advanced_opens_only_when_it_has_a_column_to_itself(self, panel):
@@ -1779,9 +1784,14 @@ class TestControlPanelLayout:
         panel.resize(1200, 800)
         panel._relayout_columns()
         placed = {
-            panel.card_grid.grid.itemAt(i).widget() for i in range(panel.card_grid.grid.count())
+            panel.card_grid.grid.itemAt(i).widget()
+            for i in range(panel.card_grid.grid.count())
         }
-        assert placed == {panel.card_grid.col_a, panel.card_grid.col_b, panel.card_grid.col_c}
+        assert placed == {
+            panel.card_grid.col_a,
+            panel.card_grid.col_b,
+            panel.card_grid.col_c,
+        }
 
     def test_window_can_shrink_below_the_cards_natural_width(self, panel, qt_app):
         # Combos otherwise demand their longest entry and pin the window open.
@@ -1881,12 +1891,15 @@ class TestSourceLanguageChoices:
         assert "Arabic" in entries
 
     def test_the_same_language_is_offered_on_an_engine_that_takes_it(self, panel):
-        """Proof the filter is per-engine, not a blanket removal of Somali."""
-        from utils.settings import PIPELINE_MODE_SEGMENTED
+        """Proof the filter is per-engine, not a blanket removal.
 
-        panel.settings.pipeline_mode = PIPELINE_MODE_SEGMENTED
-        panel.settings.transcription_provider = "openai"
-        panel.settings.transcription_model = "gpt-4o-transcribe"
+        Somali is refused by both OpenAI endpoints and every Deepgram
+        model (probed 2026-09-03), but the Gemini paths send no language
+        field for an API to validate, so it stays offered there. Picking
+        Gemini is how an operator reaches it.
+        """
+        panel.settings.transcription_provider = "gemini_realtime"
+        panel.settings.transcription_model = ""
         panel._refresh_source_combo()
         assert "Somali" in self._entries(panel)
 
@@ -2181,7 +2194,7 @@ class TestFooterHideMode:
         assert panel.subtitle_window.stopped_hint is True
 
     def test_starting_and_stopping_moves_both_pills(self, panel):
-        """"When stopped" is only worth anything if start/stop actually
+        """ "When stopped" is only worth anything if start/stop actually
         re-evaluate it — the mode changes nothing on its own."""
         panel.settings.footer_hide_mode = "stopped"
         panel._running = True
@@ -2998,9 +3011,7 @@ class TestMinimumWindowWidth:
         )
         assert panel.minimumWidth() == expected
 
-    def test_a_wide_panel_can_still_be_dragged_back_to_one_column(
-        self, panel, qt_app
-    ):
+    def test_a_wide_panel_can_still_be_dragged_back_to_one_column(self, panel, qt_app):
         # The regression a host-based measurement causes: at three columns the
         # host's minimum is all three columns added up, which pins the window
         # open at the width it happens to have.
@@ -3131,9 +3142,7 @@ class TestEqualColumnHeights:
         }
         assert len(bottoms) == 1, f"columns end at {sorted(bottoms)}"
 
-    def test_the_cards_stop_at_the_tallest_one_not_at_the_window(
-        self, panel, qt_app
-    ):
+    def test_the_cards_stop_at_the_tallest_one_not_at_the_window(self, panel, qt_app):
         # The scroll area makes cards_host viewport-tall; without a stretch row
         # under the content the cards swallowed that surplus and ran to the
         # bottom of the window.
@@ -3241,9 +3250,7 @@ class TestEqualColumnHeights:
         # ...and levelling comes back once the section is closed again.
         assert self._bottom(panel.card_grid.tails[0][1]) == self._bottom(advanced)
 
-    def test_a_collapsed_advanced_is_padded_above_not_inflated(
-        self, panel, qt_app
-    ):
+    def test_a_collapsed_advanced_is_padded_above_not_inflated(self, panel, qt_app):
         # It was the shorter column's last card, so it took the levelling slack
         # into its own height — a header strip stretched into a tall empty box,
         # which is the one thing collapsing it is for. The spacer above it takes
@@ -3595,9 +3602,7 @@ class TestControlChrome:
         image = combo.grab().toImage()
         # Fractions of the image, so the device pixel ratio cannot shift the
         # sample off the widget (it silently did during development).
-        return image.pixelColor(
-            int(image.width() * 0.68), image.height() // 2
-        ).name()
+        return image.pixelColor(int(image.width() * 0.68), image.height() // 2).name()
 
     @staticmethod
     def _set_hover(widget, on: bool) -> None:
@@ -3645,9 +3650,7 @@ class TestControlChrome:
         dpr = image.devicePixelRatio()
 
         def at(fraction: float) -> str:
-            return image.pixelColor(
-                int(300 * fraction * dpr), int(7 * dpr)
-            ).name()
+            return image.pixelColor(int(300 * fraction * dpr), int(7 * dpr)).name()
 
         track = current_colors()["panel_soft"]
         # Green is deliberately NOT washed: doing so made a silent meter read
@@ -3741,9 +3744,7 @@ class TestControlChrome:
         assert qt_app.font().pointSizeF() > 0, "base font is not point-sized"
 
         messages: list[str] = []
-        previous = qInstallMessageHandler(
-            lambda mode, ctx, msg: messages.append(msg)
-        )
+        previous = qInstallMessageHandler(lambda mode, ctx, msg: messages.append(msg))
         combo = Dropdown(["Deutsch", "English"])
         combo.resize(240, 44)
         combo.show()
@@ -3999,7 +4000,9 @@ class TestHistoryBatchTab:
         from utils.history import BatchRun
 
         srt = tmp_path / "both.srt"
-        srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nHallo\n", encoding="utf-8-sig")
+        srt.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nHallo\n", encoding="utf-8-sig"
+        )
         runs = [
             BatchRun(
                 date="2026-07-19",
@@ -4330,9 +4333,7 @@ class TestUpdateBanner:
     def test_opting_out_makes_no_request(self, banner, monkeypatch):
         made, ub = banner
         calls = []
-        monkeypatch.setattr(
-            ub, "check_for_update", lambda *_: calls.append(1)
-        )
+        monkeypatch.setattr(ub, "check_for_update", lambda *_: calls.append(1))
         made.start_check(False)
         assert calls == []
         assert made.isHidden()
@@ -4390,7 +4391,7 @@ class TestUpdateBanner:
 
 
 class TestSkippingAnUpdate:
-    """"Skip this version" — the permanent half of dismissing the notice.
+    """ "Skip this version" — the permanent half of dismissing the notice.
 
     The ✕ beside it hides the banner until the next launch ("not now"); this
     records the release and stays quiet for it for good ("not this one"). A user
@@ -4485,7 +4486,7 @@ class TestSkippingAnUpdate:
 
 
 class TestReviewPrompt:
-    """"How are you finding MinbarLive?", asked after three completed sessions.
+    """ "How are you finding MinbarLive?", asked after three completed sessions.
 
     Three ways out, each meaning something different: clicking through to the
     form settles it for good, "Never show again" settles it for good without the
@@ -4819,7 +4820,9 @@ class TestBatchWindow:
 
     def test_a_long_filename_keeps_its_extension(self, batch):
         w, _ = batch
-        w._input_path = "C:/rec/" + "The episode is out now, catch it while it is gone.m4a"
+        w._input_path = (
+            "C:/rec/" + "The episode is out now, catch it while it is gone.m4a"
+        )
         assert w._file_button_text().endswith(".m4a")
         assert w._file_button_text().startswith("The episode")
 
@@ -4861,9 +4864,7 @@ class TestBatchWindow:
         assert w.status.objectName() == "status_error"
         assert "brew install ffmpeg" in w.status.text()
 
-    def test_no_known_command_falls_back_to_the_plain_message(
-        self, batch, monkeypatch
-    ):
+    def test_no_known_command_falls_back_to_the_plain_message(self, batch, monkeypatch):
         w, _ = batch
         monkeypatch.setattr(
             "utils.ffmpeg_download.ffmpeg_install_command", lambda: None
@@ -4930,8 +4931,9 @@ class TestBatchWindow:
 
         started = threading.Event()
 
-        def blocking_process_file(input_path, progress_callback=None,
-                                  cancel_event=None, **kwargs):
+        def blocking_process_file(
+            input_path, progress_callback=None, cancel_event=None, **kwargs
+        ):
             started.set()
             cancel_event.wait(timeout=5)
             return None
@@ -4942,9 +4944,7 @@ class TestBatchWindow:
             types.SimpleNamespace(
                 process_file=blocking_process_file,
                 # Same module surface as the fixture's stub, different run.
-                FfmpegNotFoundError=sys.modules[
-                    "batch.processor"
-                ].FfmpegNotFoundError,
+                FfmpegNotFoundError=sys.modules["batch.processor"].FfmpegNotFoundError,
             ),
         )
         w._input_path = "khutbah.mp3"
@@ -5278,9 +5278,7 @@ class TestThemedDialogs:
         assert not dialog.yes_btn.isDefault()
         dialog.close()
 
-    def test_a_destructive_confirm_is_not_painted_in_the_go_colour(
-        self, qt_app, texts
-    ):
+    def test_a_destructive_confirm_is_not_painted_in_the_go_colour(self, qt_app, texts):
         # #accent is the app's green "go": on a button that deletes something it
         # reads as the safe, recommended half of the choice. Opt-in, so the
         # ordinary confirms around it are unchanged.
@@ -5632,9 +5630,7 @@ class TestWizardProviderList:
 
     def _note_texts(self, wizard) -> list[str]:
         layout = wizard._notes_layout
-        return [
-            layout.itemAt(i).widget().label.text() for i in range(layout.count())
-        ]
+        return [layout.itemAt(i).widget().label.text() for i in range(layout.count())]
 
     def test_deepgram_warns_that_it_only_transcribes(self, wizard):
         # A Deepgram key alone is never a working setup: no translation model
@@ -5989,9 +5985,7 @@ def _reset_ok(keys=("openai",)):
 def _reset_failed(errors=("openai: the key is still in the keychain",)):
     from utils.factory_reset import ResetResult
 
-    return ResetResult(
-        data_dir=_RESET_DIR, data_dir_removed=False, errors=list(errors)
-    )
+    return ResetResult(data_dir=_RESET_DIR, data_dir_removed=False, errors=list(errors))
 
 
 class TestSettingsWindowFactoryReset:
@@ -6074,9 +6068,7 @@ class TestSettingsWindowFactoryReset:
         # of them. The sheet already carries the rule.
         assert win.reset_btn.objectName() == "danger"
 
-    def test_a_running_session_blocks_it_before_anything_is_asked(
-        self, reset_win
-    ):
+    def test_a_running_session_blocks_it_before_anything_is_asked(self, reset_win):
         # A live pipeline is writing history and holds the recordings directory
         # open, so rmtree would fail halfway through.
         win, calls = reset_win
@@ -6406,9 +6398,7 @@ class TestIntegratedWindows:
         monkeypatch.setattr(
             p, "reopen_secondary_windows", lambda: reopened.append(True)
         )
-        win.window_style_segment._buttons[
-            _STYLE_SEGMENTS.index("windowed")
-        ].click()
+        win.window_style_segment._buttons[_STYLE_SEGMENTS.index("windowed")].click()
         assert p.settings.window_style == "windowed"
         assert not p.uses_integrated_windows()
         assert reopened == [True]  # a window cannot change style in place
@@ -6637,7 +6627,7 @@ class TestSessionTracking:
 
 
 class TestAutoStartOnLaunch:
-    """"Start on launch" persisted its checkbox and then did nothing."""
+    """ "Start on launch" persisted its checkbox and then did nothing."""
 
     @staticmethod
     def _build(qt_app, monkeypatch, *, auto_start: bool):
@@ -6940,36 +6930,73 @@ class TestHistoryLayoutIsTabIndependent:
         import gui.history_window as hw
         from utils.history import BatchRun, HistorySession
 
-        monkeypatch.setattr(hw, "list_history_sessions", lambda: [
-            HistorySession(
-                date="2026-08-05", path="a.txt", start_time="12:35",
-                end_time="12:36", duration_minutes=1, active_seconds=53,
-                language_pair="AR → GE", entry_count=18, has_summary=False,
-            )
-        ])
-        monkeypatch.setattr(hw, "list_batch_runs", lambda: [
-            BatchRun(
-                date="2026-07-19", time="01:45", source_name="talk.mp3",
-                path="b.txt", duration_minutes=10, active_seconds=600,
-                language_pair="AU → GE", entry_count=83, has_summary=False,
-                formats=["srt", "txt"],
-            )
-        ])
-        monkeypatch.setattr(hw, "list_cost_sessions", lambda: [{
-            "id": "s1",
-            "started_at": "2026-08-05T10:35:00+00:00",
-            "ended_at": "2026-08-05T10:36:00+00:00",
-            "total_cost_usd": "0.0337",
-            "fully_priced": True,
-            "providers": {"openai": {
-                "requests": 18, "cost_usd": "0.0337",
-                "fully_priced": True, "models": {},
-            }},
-        }])
-        monkeypatch.setattr(hw, "list_log_files", lambda: [
-            type("LogFile", (), {"date": "2026-08-05", "path": "l.log",
-                                 "size_kb": 243})()
-        ])
+        monkeypatch.setattr(
+            hw,
+            "list_history_sessions",
+            lambda: [
+                HistorySession(
+                    date="2026-08-05",
+                    path="a.txt",
+                    start_time="12:35",
+                    end_time="12:36",
+                    duration_minutes=1,
+                    active_seconds=53,
+                    language_pair="AR → GE",
+                    entry_count=18,
+                    has_summary=False,
+                )
+            ],
+        )
+        monkeypatch.setattr(
+            hw,
+            "list_batch_runs",
+            lambda: [
+                BatchRun(
+                    date="2026-07-19",
+                    time="01:45",
+                    source_name="talk.mp3",
+                    path="b.txt",
+                    duration_minutes=10,
+                    active_seconds=600,
+                    language_pair="AU → GE",
+                    entry_count=83,
+                    has_summary=False,
+                    formats=["srt", "txt"],
+                )
+            ],
+        )
+        monkeypatch.setattr(
+            hw,
+            "list_cost_sessions",
+            lambda: [
+                {
+                    "id": "s1",
+                    "started_at": "2026-08-05T10:35:00+00:00",
+                    "ended_at": "2026-08-05T10:36:00+00:00",
+                    "total_cost_usd": "0.0337",
+                    "fully_priced": True,
+                    "providers": {
+                        "openai": {
+                            "requests": 18,
+                            "cost_usd": "0.0337",
+                            "fully_priced": True,
+                            "models": {},
+                        }
+                    },
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            hw,
+            "list_log_files",
+            lambda: [
+                type(
+                    "LogFile",
+                    (),
+                    {"date": "2026-08-05", "path": "l.log", "size_kb": 243},
+                )()
+            ],
+        )
         monkeypatch.setattr(hw, "parse_history_file", lambda _p: [])
         monkeypatch.setattr(hw, "read_summary", lambda _p: None)
         monkeypatch.setattr(hw, "read_batch_languages", lambda _p: ("Arabic", "German"))
@@ -7137,8 +7164,24 @@ class TestBatchFilePicker:
         from gui.batch_window import _MEDIA_EXTENSIONS
 
         tk_offered = {
-            "wav", "mp3", "m4a", "aac", "flac", "ogg", "opus", "mp4", "mkv",
-            "mov", "webm", "avi", "m4v", "wmv", "flv", "ts", "mpg", "mpeg",
+            "wav",
+            "mp3",
+            "m4a",
+            "aac",
+            "flac",
+            "ogg",
+            "opus",
+            "mp4",
+            "mkv",
+            "mov",
+            "webm",
+            "avi",
+            "m4v",
+            "wmv",
+            "flv",
+            "ts",
+            "mpg",
+            "mpeg",
         }
         assert tk_offered <= set(_MEDIA_EXTENSIONS)
 
@@ -7270,7 +7313,9 @@ class TestPairInkGap:
         trans_font, src_font = w._block_fonts(block)
         fm_s, fm_t = QFontMetrics(src_font), QFontMetrics(trans_font)
         source_h = w._measure(block.source, src_font)
-        source_ink_bottom = fm_s.ascent() + fm_s.tightBoundingRect(block.source).bottom()
+        source_ink_bottom = (
+            fm_s.ascent() + fm_s.tightBoundingRect(block.source).bottom()
+        )
         trans_ink_top = (
             source_h
             + w._pair_gap(block)
@@ -7375,9 +7420,7 @@ class TestTransparentStaticGeometry:
         assert w._effective_height_percent() == 23
         assert w._static_lift() == 0, "a band has nothing to lift"
 
-    @pytest.mark.parametrize(
-        "mode", [SUBTITLE_MODE_REALTIME, SUBTITLE_MODE_CONTINUOUS]
-    )
+    @pytest.mark.parametrize("mode", [SUBTITLE_MODE_REALTIME, SUBTITLE_MODE_CONTINUOUS])
     def test_a_feed_mode_still_obeys_it(self, overlay, mode):
         w = overlay(mode, window_height_percent=23, transparent_static=True)
         assert w._effective_height_percent() == 23
@@ -7388,9 +7431,7 @@ class TestTransparentStaticGeometry:
         Transparent left a 0%-tall overlay — one pixel, subtitles and footer
         gone, and only a drag of the height slider brought them back. The two
         meanings had one stored field and do not even share a floor."""
-        w = self._transparent(
-            overlay, static_lift_percent=0, window_height_percent=40
-        )
+        w = self._transparent(overlay, static_lift_percent=0, window_height_percent=40)
         assert w._static_lift() == 0, "this value is not the one that broke it"
         w.set_transparent_static(False)
         assert w._effective_height_percent() == 40
@@ -7448,9 +7489,7 @@ class TestTransparentStaticGeometry:
         assert w._fit_scale == 1.0, "the scale leaked out of the measurement"
 
     def test_a_short_band_shrinks_the_text_into_it(self, overlay):
-        w = overlay(
-            SUBTITLE_MODE_STATIC, bilingual_mode=True, transparent_static=False
-        )
+        w = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, transparent_static=False)
         screen = w._screen().geometry()
         w.resize(screen.width(), int(screen.height() * 0.2))
         block = _long_block()
@@ -7464,9 +7503,7 @@ class TestTransparentStaticGeometry:
         to fit and leaves the band half empty — the linear estimate undershoots,
         because wrapping moves in whole words. Text smaller than it needs to be
         is a legibility bug, not a cosmetic one."""
-        w = overlay(
-            SUBTITLE_MODE_STATIC, bilingual_mode=True, transparent_static=False
-        )
+        w = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, transparent_static=False)
         from gui.subtitle_window import _FIT_MIN_SCALE
 
         # Absolute heights rather than a share of this machine's screen, so the
@@ -7506,18 +7543,14 @@ class TestTransparentStaticGeometry:
         so on a thin band they asked for more room than the window had: the
         content area collapsed to one pixel and there was nothing left to fit
         the text into."""
-        w = overlay(
-            SUBTITLE_MODE_STATIC, bilingual_mode=True, transparent_static=False
-        )
+        w = overlay(SUBTITLE_MODE_STATIC, bilingual_mode=True, transparent_static=False)
         screen = w._screen().geometry()
         for percent in (5, 8, 12, 40):
             w.resize(screen.width(), max(1, int(screen.height() * percent / 100)))
             assert w.reserved_bottom() <= max(1, w.height() // 2), percent
             assert w._content_height() >= w.height() // 2, percent
 
-    def test_the_text_never_leaves_the_window_however_thin_the_band(
-        self, overlay
-    ):
+    def test_the_text_never_leaves_the_window_however_thin_the_band(self, overlay):
         # The reported symptom: at the slider's floor the block ran off the
         # bottom of the screen.
         from PySide6.QtGui import QPainter, QPixmap
@@ -7818,7 +7851,9 @@ class TestTransparentStaticRibbon:
             image.fill(0)
             painter = QPainter(image)
             try:
-                w._draw_ribbon(painter, w._ribbon_rects(self._runs(w, _long_block()), 0, 400))
+                w._draw_ribbon(
+                    painter, w._ribbon_rects(self._runs(w, _long_block()), 0, 400)
+                )
             finally:
                 painter.end()
             return max(
@@ -7935,17 +7970,13 @@ class TestAnnouncementBackdrop:
         return drawn
 
     def test_side_by_side_gives_the_announcement_a_card(self, overlay):
-        w = overlay(
-            SUBTITLE_MODE_REALTIME, side_by_side=True, bilingual_mode=True
-        )
+        w = overlay(SUBTITLE_MODE_REALTIME, side_by_side=True, bilingual_mode=True)
         assert w._backdrop().alpha() == 0, "premise: the window paints nothing"
         assert self._ribbons(w), "the announcement had no backdrop at all"
 
     def test_transparent_static_still_does(self, overlay):
         # The look the side-by-side case was asked to match; unchanged.
-        w = overlay(
-            SUBTITLE_MODE_STATIC, transparent_static=True, bilingual_mode=True
-        )
+        w = overlay(SUBTITLE_MODE_STATIC, transparent_static=True, bilingual_mode=True)
         assert self._ribbons(w)
 
     @pytest.mark.parametrize(
@@ -8015,9 +8046,7 @@ class TestSideBySideLayout:
         # it holds at any window size.
         assert gutter >= w._column_width() * 0.05
 
-    def test_the_panels_reach_much_closer_to_the_edge_than_a_text_margin(
-        self, overlay
-    ):
+    def test_the_panels_reach_much_closer_to_the_edge_than_a_text_margin(self, overlay):
         """The panels are the BACKDROP in this layout, not a line of text.
         Keeping them SIDE_MARGIN_RATIO off the edge made them read as two small
         boxes floating inside a big one."""
@@ -8146,9 +8175,7 @@ class TestSideBySideLayout:
         assert drawn[0] and drawn[1], "a column was given an empty ribbon"
         assert drawn[0][0].x() != drawn[1][0].x(), "both cards landed in one column"
 
-    def test_a_latin_original_drops_the_italic_beside_its_translation(
-        self, overlay
-    ):
+    def test_a_latin_original_drops_the_italic_beside_its_translation(self, overlay):
         """Italic marks the original as subordinate, which it only is when it
         is stacked ABOVE its translation. In a row of two equals it read as a
         quotation beside a sentence rather than the same thing twice."""
@@ -8459,9 +8486,7 @@ class TestLayoutAppearanceMemory:
         panel._on_side_by_side_toggled(True)
         assert self._live(panel) == (45, 45.0, "#FFD700", "#FFFFFF")
 
-    def test_the_controls_are_repainted_from_the_layout_that_was_restored(
-        self, panel
-    ):
+    def test_the_controls_are_repainted_from_the_layout_that_was_restored(self, panel):
         """The steppers and colour buttons show stored values, and a switch
         replaces all four at once — the translation stepper included, which
         only ``_step_font`` used to keep in step."""
@@ -8958,9 +8983,9 @@ class TestLiveLineRows:
             shown.append(w._live_rows())
         # Somewhere the visible text gets SHORTER than it was a word ago: that
         # is the row turning over rather than the text sliding along.
-        assert any(
-            len(b) < len(a) for a, b in zip(shown, shown[1:], strict=False)
-        ), "the row never turned over"
+        assert any(len(b) < len(a) for a, b in zip(shown, shown[1:], strict=False)), (
+            "the row never turned over"
+        )
         # And what is shown always fits the rows it is allowed.
         for text in shown:
             if text:
@@ -9506,9 +9531,13 @@ class TestAmpersandInACheckboxLabel:
         import json
         import re
 
-        keys = ("auto_stop_inactivity", "noise_filter",
-                "auto_cleanup_logs", "auto_cleanup_content",
-                "auto_start_on_launch")
+        keys = (
+            "auto_stop_inactivity",
+            "noise_filter",
+            "auto_cleanup_logs",
+            "auto_cleanup_content",
+            "auto_start_on_launch",
+        )
         for path in glob.glob("data/translations/gui/*.json"):
             with open(path, encoding="utf-8") as fh:
                 texts = json.load(fh)
