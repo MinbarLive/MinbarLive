@@ -1,7 +1,8 @@
 """Tests for the AI provider abstraction layer."""
 
-import sys
 import ssl
+import sys
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -1584,6 +1585,7 @@ class _FakeRealtimeConnection:
         self.session_updates = []
         self.appended_audio = []
         self.closed = False
+        self.closed_event = threading.Event()
         # The real connection exposes these as instance-attribute resources
         self.session = SimpleNamespace(
             update=lambda **kw: self.session_updates.append(kw)
@@ -1602,6 +1604,7 @@ class _FakeRealtimeConnection:
 
     def close(self):
         self.closed = True
+        self.closed_event.set()
 
 
 class _BlockingRealtimeConnection(_FakeRealtimeConnection):
@@ -1636,6 +1639,8 @@ class TestOpenAIRealtimeTranscriptionProvider:
         conn=None,
         confirmation="session.updated",
         connect_delay=0.0,
+        connect_entered=None,
+        connect_release=None,
     ):
         scripted_events = list(events)
         if confirmation:
@@ -1649,7 +1654,11 @@ class TestOpenAIRealtimeTranscriptionProvider:
         @contextmanager
         def fake_connect(**kwargs):
             captured["kwargs"] = kwargs
-            if connect_delay:
+            if connect_entered is not None:
+                connect_entered.set()
+            if connect_release is not None:
+                connect_release.wait()
+            elif connect_delay:
                 time.sleep(connect_delay)
             if connect_error is not None:
                 raise connect_error
@@ -1932,14 +1941,33 @@ class TestOpenAIRealtimeTranscriptionProvider:
         with pytest.raises(TimeoutError, match="session confirmation"):
             self._open(errors=[])
 
+        assert conn.closed_event.wait(timeout=1)
         assert conn.closed is True
 
     def test_slow_websocket_handshake_can_still_confirm(self, monkeypatch):
         """A connection that is merely slow must not lose a timeout race."""
-        self._fake_client(monkeypatch, [], connect_delay=0.04)
+        connect_entered = threading.Event()
+        connect_release = threading.Event()
+        self._fake_client(
+            monkeypatch,
+            [],
+            connect_entered=connect_entered,
+            connect_release=connect_release,
+        )
         monkeypatch.setattr(openai_realtime, "STARTUP_TIMEOUT_SECONDS", 0.1)
 
-        handle = self._open(errors=[])
+        handle_box = []
+
+        def _start() -> None:
+            handle_box.append(self._open(errors=[]))
+
+        thread = threading.Thread(target=_start)
+        thread.start()
+        assert connect_entered.wait(timeout=1)
+        connect_release.set()
+        thread.join(timeout=1)
+        assert not thread.is_alive()
+        handle = handle_box[0]
 
         assert handle._ready.is_set()
 

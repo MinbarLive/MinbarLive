@@ -31,11 +31,12 @@ four times (issue #106).
 from __future__ import annotations
 
 import base64
-import certifi
 import ssl
 import threading
 import time
 from collections.abc import Callable
+
+import certifi
 
 from providers.openai.client import get_client
 from utils.cost_tracking import record_openai_transcription_usage
