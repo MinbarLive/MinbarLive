@@ -31,6 +31,8 @@ four times (issue #106).
 from __future__ import annotations
 
 import base64
+import certifi
+import ssl
 import threading
 import time
 from collections.abc import Callable
@@ -147,6 +149,11 @@ _SPEECH_STOPPED_EVENT = "input_audio_buffer.speech_stopped"
 _EMPTY_COMMIT_ERROR_CODE = "input_audio_buffer_commit_empty"
 
 
+def _build_ssl_context() -> ssl.SSLContext:
+    """Build the websocket TLS context from the bundled CA store."""
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 class OpenAIRealtimeStreamHandle:
     """Implements providers.base.StreamHandle."""
 
@@ -251,6 +258,7 @@ class OpenAIRealtimeTranscriptionProvider:
                 with client.realtime.connect(
                     extra_query={"intent": "transcription"},
                     websocket_connection_options={
+                        "ssl": _build_ssl_context(),
                         "open_timeout": WEBSOCKET_OPEN_TIMEOUT_SECONDS,
                         "close_timeout": WEBSOCKET_CLOSE_TIMEOUT_SECONDS,
                     },
