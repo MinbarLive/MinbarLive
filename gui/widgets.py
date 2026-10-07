@@ -125,9 +125,7 @@ def _set_macos_window_level(window: QWidget, on_top: bool) -> None:
         if not ns_window:
             return
         level = (
-            _MACOS_WINDOW_LEVEL_SCREEN_SAVER
-            if on_top
-            else _MACOS_WINDOW_LEVEL_NORMAL
+            _MACOS_WINDOW_LEVEL_SCREEN_SAVER if on_top else _MACOS_WINDOW_LEVEL_NORMAL
         )
         objc_msg_send.restype = ctypes.c_void_p
         objc_msg_send.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
@@ -157,7 +155,11 @@ def set_window_on_top(window: QWidget, on_top: bool) -> None:
     the window is re-created and shown again there. It is the flash Windows
     was spared, in exchange for the setting working at all.
     """
-    if is_window_on_top(window) == on_top and not needs_remap() and sys.platform != "darwin":
+    if (
+        is_window_on_top(window) == on_top
+        and not needs_remap()
+        and sys.platform != "darwin"
+    ):
         # Skipped only where the cached flag is the truth. On X11 it is not:
         # the state lives in a property the window manager owns, and a window
         # that has been re-mapped since (the overlay's geometry repair does
