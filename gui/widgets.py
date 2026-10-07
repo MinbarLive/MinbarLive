@@ -78,11 +78,66 @@ def is_window_on_top(window: QWidget) -> bool:
 # withdraw/deiconify in _set_screen_position). Wayland has no always-on-top
 # protocol at all; see gui/app.py, which asks for xcb first for that reason.
 _REMAP_TO_RESTACK = ("xcb", "wayland")
+# AppKit window levels. The overlay must sit above the Dock and menu bar while
+# always-on-top is enabled, but it must still stay below the control panel.
+# The native constants are NSWindowLevelNormal (0) and
+# NSWindowLevelScreenSaver (1000): the latter is the one that places a window
+# above the desktop chrome without changing the panel's stacking order.
+_MACOS_WINDOW_LEVEL_NORMAL = 0  # NSWindowLevelNormal
+_MACOS_WINDOW_LEVEL_SCREEN_SAVER = 1000  # NSWindowLevelScreenSaver
 
 
 def needs_remap() -> bool:
     """Whether this platform applies such a request only on the next map."""
     return QGuiApplication.platformName().split(":")[0] in _REMAP_TO_RESTACK
+
+
+def _set_macos_window_level(window: QWidget, on_top: bool) -> None:
+    """Use the native AppKit NSWindow level for the overlay's stacking.
+
+    The system chrome (Dock + menu bar) sits on the named AppKit level, so the
+    overlay must be moved onto NSWindowLevelScreenSaver while enabled and back
+    to NSWindowLevelNormal when disabled. This keeps the real native window
+    ordering correct without changing any other platform behavior.
+    """
+    if sys.platform != "darwin":
+        return
+    if window.windowHandle() is None:
+        return
+    view_id = window.winId()
+    if not view_id:
+        return
+    try:
+        import ctypes
+
+        libobjc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+        sel_register = libobjc.sel_registerName
+        sel_register.restype = ctypes.c_void_p
+        sel_register.argtypes = [ctypes.c_char_p]
+
+        # Objective-C method dispatch is pointer-based: the NSView resolves to an
+        # NSWindow, then the window itself receives setLevel:. The argtypes must be
+        # set before each call and not reused across different signatures.
+        objc_msg_send = libobjc.objc_msgSend
+        objc_msg_send.restype = ctypes.c_void_p
+        objc_msg_send.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        ns_window = objc_msg_send(ctypes.c_void_p(view_id), sel_register(b"window"))
+        if not ns_window:
+            return
+        level = (
+            _MACOS_WINDOW_LEVEL_SCREEN_SAVER
+            if on_top
+            else _MACOS_WINDOW_LEVEL_NORMAL
+        )
+        objc_msg_send.restype = ctypes.c_void_p
+        objc_msg_send.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
+        objc_msg_send(
+            ctypes.c_void_p(ns_window),
+            sel_register(b"setLevel:"),
+            ctypes.c_long(level),
+        )
+    except (AttributeError, OSError, TypeError, ValueError):
+        return
 
 
 def set_window_on_top(window: QWidget, on_top: bool) -> None:
@@ -102,7 +157,7 @@ def set_window_on_top(window: QWidget, on_top: bool) -> None:
     the window is re-created and shown again there. It is the flash Windows
     was spared, in exchange for the setting working at all.
     """
-    if is_window_on_top(window) == on_top and not needs_remap():
+    if is_window_on_top(window) == on_top and not needs_remap() and sys.platform != "darwin":
         # Skipped only where the cached flag is the truth. On X11 it is not:
         # the state lives in a property the window manager owns, and a window
         # that has been re-mapped since (the overlay's geometry repair does
@@ -125,8 +180,12 @@ def set_window_on_top(window: QWidget, on_top: bool) -> None:
             # for one that never takes focus. Callers apply this to the overlay
             # first and the panel last, so the panel still ends up in front.
             window.raise_()
+        if sys.platform == "darwin" and window.isVisible():
+            _set_macos_window_level(window, on_top)
         return
     handle.setFlags(_with_on_top(handle.flags(), on_top))
+    if sys.platform == "darwin":
+        _set_macos_window_level(window, on_top)
 
 
 def _with_on_top(flags: Qt.WindowType, on_top: bool) -> Qt.WindowType:
