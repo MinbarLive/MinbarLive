@@ -539,16 +539,12 @@ class SubtitleWindow(QWidget):
         Windows taskbar, so it can have the whole screen. A window that is not
         topmost is painted over BY the taskbar, which would swallow the
         disclaimer pill and the last line of every subtitle — so it is laid out
-        inside the work area instead, ending above the taskbar. Same reasoning
-        the Tk overlay applies to the macOS Dock, which is always above it.
+        inside the work area instead, ending above the taskbar.
 
-        macOS is the exception to all of it: nothing puts a window above the
-        Dock or the menu bar there — a stays-on-top window sits at the floating
-        window level, which is still below both — so a full-height overlay lost
-        its bottom strip, disclaimer pill and all, behind the Dock. It is laid
-        out inside the work area whatever the stacking, which is the same call
-        the Tk overlay makes (gui/subtitle_window.py _set_screen_position) and
-        what the README already tells macOS users to expect.
+        On macOS the actual stacking is owned by AppKit's NSWindow level. The
+        topmost helper in gui/widgets.py raises the native window above the Dock
+        and menu bar when the overlay is enabled, so the topmost geometry can
+        cover the full screen again without a platform-specific workaround.
 
         Qt reports both rectangles in logical units already, so there is no DPI
         arithmetic here — that is what gui/scaling.py does by hand.
@@ -556,7 +552,7 @@ class SubtitleWindow(QWidget):
         screen = self._screen()
         if screen is None:
             return
-        over_the_taskbar = is_window_on_top(self) and not _MACOS
+        over_the_taskbar = is_window_on_top(self)
         g = screen.geometry() if over_the_taskbar else screen.availableGeometry()
         h = max(1, int(g.height() * self._effective_height_percent() / 100))
         # Kept, because it is a REQUEST: _fit_to_screen compares it against what
