@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import certifi
 import httpx
-from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from openai import OpenAI

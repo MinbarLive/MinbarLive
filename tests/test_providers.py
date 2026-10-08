@@ -1,7 +1,7 @@
 """Tests for the AI provider abstraction layer."""
 
-import sys
 import ssl
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -1935,9 +1935,9 @@ class TestOpenAIRealtimeTranscriptionProvider:
         assert conn.closed is True
 
     def test_slow_websocket_handshake_can_still_confirm(self, monkeypatch):
-        """A connection that is merely slow must not lose a timeout race."""
-        self._fake_client(monkeypatch, [], connect_delay=0.04)
-        monkeypatch.setattr(openai_realtime, "STARTUP_TIMEOUT_SECONDS", 0.1)
+        """Connect latency must not count against the session-confirmation timer."""
+        self._fake_client(monkeypatch, [], connect_delay=0.08)
+        monkeypatch.setattr(openai_realtime, "STARTUP_TIMEOUT_SECONDS", 0.05)
 
         handle = self._open(errors=[])
 
