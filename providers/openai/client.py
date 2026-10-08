@@ -4,11 +4,33 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import certifi
+import httpx
+
 if TYPE_CHECKING:
     from openai import OpenAI
 
 _client: OpenAI | None = None
 _api_key: str | None = None
+
+
+def _build_http_client() -> httpx.Client:
+    """Build the SDK HTTP client with an explicit CA bundle.
+
+    httpx already falls back to certifi by default, but the live GUI startup
+    runs in a different process environment than the ad-hoc terminal checks.
+    Pinning the bundle here keeps the OpenAI HTTP transport on the same trust
+    store on every platform and sidesteps a broken SSL_CERT_FILE/SSL_CERT_DIR
+    inherited from the launch context.
+    """
+    from openai import DEFAULT_CONNECTION_LIMITS, DEFAULT_TIMEOUT
+
+    return httpx.Client(
+        verify=certifi.where(),
+        timeout=DEFAULT_TIMEOUT,
+        limits=DEFAULT_CONNECTION_LIMITS,
+        follow_redirects=True,
+    )
 
 
 def set_api_key(api_key: str | None) -> None:
@@ -33,7 +55,7 @@ def get_client() -> OpenAI:
         # session or a Quran-embedding call), not at app startup.
         from openai import OpenAI  # noqa: PLC0415
 
-        _client = OpenAI(api_key=_api_key)
+        _client = OpenAI(api_key=_api_key, http_client=_build_http_client())
     return _client
 
 

@@ -1,5 +1,6 @@
 """Tests for the AI provider abstraction layer."""
 
+import ssl
 import sys
 import time
 from contextlib import contextmanager
@@ -998,6 +999,31 @@ class TestOpenAIClientKeyManagement:
         with pytest.raises(RuntimeError):
             openai_client.get_client()
 
+    def test_get_client_uses_explicit_ca_bundle(self, monkeypatch):
+        captured = {}
+
+        class _FakeHttpxClient:
+            def __init__(self, **kwargs):
+                captured["httpx_kwargs"] = kwargs
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured["openai_kwargs"] = kwargs
+
+        monkeypatch.setattr(openai_client.httpx, "Client", _FakeHttpxClient)
+        monkeypatch.setattr(openai_client.certifi, "where", lambda: "/tmp/cacert.pem")
+        monkeypatch.setattr("openai.OpenAI", _FakeOpenAI)
+        openai_client.set_api_key("sk-test")
+
+        client = openai_client.get_client()
+
+        assert client is not None
+        assert captured["httpx_kwargs"]["verify"] == "/tmp/cacert.pem"
+        assert captured["httpx_kwargs"]["follow_redirects"] is True
+        assert "timeout" in captured["httpx_kwargs"]
+        assert "limits" in captured["httpx_kwargs"]
+        assert captured["openai_kwargs"]["http_client"] is not None
+
 
 class TestPerProviderKeyEntries:
     def test_openai_entry_name_unchanged(self):
@@ -1844,6 +1870,8 @@ class TestOpenAIRealtimeTranscriptionProvider:
         assert _wait_until(lambda: len(conn.session_updates) == 1)
         assert captured["kwargs"]["extra_query"] == {"intent": "transcription"}
         transport_options = captured["kwargs"]["websocket_connection_options"]
+        assert isinstance(transport_options["ssl"], ssl.SSLContext)
+        assert transport_options["ssl"].check_hostname is True
         assert transport_options["open_timeout"] == (
             openai_realtime.WEBSOCKET_OPEN_TIMEOUT_SECONDS
         )
@@ -1907,9 +1935,9 @@ class TestOpenAIRealtimeTranscriptionProvider:
         assert conn.closed is True
 
     def test_slow_websocket_handshake_can_still_confirm(self, monkeypatch):
-        """A connection that is merely slow must not lose a timeout race."""
-        self._fake_client(monkeypatch, [], connect_delay=0.04)
-        monkeypatch.setattr(openai_realtime, "STARTUP_TIMEOUT_SECONDS", 0.1)
+        """Connect latency must not count against the session-confirmation timer."""
+        self._fake_client(monkeypatch, [], connect_delay=0.08)
+        monkeypatch.setattr(openai_realtime, "STARTUP_TIMEOUT_SECONDS", 0.05)
 
         handle = self._open(errors=[])
 

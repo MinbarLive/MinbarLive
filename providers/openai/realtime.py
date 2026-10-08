@@ -31,9 +31,12 @@ four times (issue #106).
 from __future__ import annotations
 
 import base64
+import ssl
 import threading
 import time
 from collections.abc import Callable
+
+import certifi
 
 from providers.openai.client import get_client
 from utils.cost_tracking import record_openai_transcription_usage
@@ -147,6 +150,11 @@ _SPEECH_STOPPED_EVENT = "input_audio_buffer.speech_stopped"
 _EMPTY_COMMIT_ERROR_CODE = "input_audio_buffer_commit_empty"
 
 
+def _build_ssl_context() -> ssl.SSLContext:
+    """Build the websocket TLS context from the bundled CA store."""
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 class OpenAIRealtimeStreamHandle:
     """Implements providers.base.StreamHandle."""
 
@@ -232,6 +240,7 @@ class OpenAIRealtimeTranscriptionProvider:
         on_speech_activity: Callable[[bool], None] | None = None,
     ) -> OpenAIRealtimeStreamHandle:
         handle = OpenAIRealtimeStreamHandle()
+        connect_done = threading.Event()
         startup_done = threading.Event()
         startup_errors: list[Exception] = []
 
@@ -239,7 +248,10 @@ class OpenAIRealtimeTranscriptionProvider:
             # Only the receive thread writes this list and open_stream reads it
             # after the Event synchronization point, so no additional lock is
             # needed.
-            if not startup_done.is_set():
+            if not connect_done.is_set():
+                startup_errors.append(exc)
+                connect_done.set()
+            elif not startup_done.is_set():
                 startup_errors.append(exc)
                 startup_done.set()
 
@@ -251,11 +263,13 @@ class OpenAIRealtimeTranscriptionProvider:
                 with client.realtime.connect(
                     extra_query={"intent": "transcription"},
                     websocket_connection_options={
+                        "ssl": _build_ssl_context(),
                         "open_timeout": WEBSOCKET_OPEN_TIMEOUT_SECONDS,
                         "close_timeout": WEBSOCKET_CLOSE_TIMEOUT_SECONDS,
                     },
                 ) as connection:
                     handle._attach(connection)
+                    connect_done.set()
                     log(
                         "OpenAI realtime WebSocket connected in "
                         f"{time.monotonic() - started_at:.2f}s",
@@ -384,6 +398,10 @@ class OpenAIRealtimeTranscriptionProvider:
         )
         thread.start()
 
+        connect_done.wait()
+        if startup_errors:
+            handle.close()
+            raise startup_errors[0]
         if not startup_done.wait(timeout=STARTUP_TIMEOUT_SECONDS):
             handle.close()
             raise TimeoutError(
