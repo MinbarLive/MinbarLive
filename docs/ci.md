@@ -226,7 +226,6 @@ Platform limits that are real, not build bugs:
 | Feature | On macOS |
 | ------- | -------- |
 | Loopback capture ("what the speakers play") | CoreAudio cannot record an output device — `soundcard`'s backend warns and returns the real inputs, so `gui/device_list.py` lists no loopback entries there at all. Users route through BlackHole/Loopback, which appear as ordinary inputs |
-| Overlay above the Dock / menu bar | No window level a Qt client can ask for sits above them — a stays-on-top window floats above other applications and still below both — so the overlay is laid out inside the work area instead of covering them (`_MACOS` in `gui/subtitle_window.py`). Windows and X11 keep the whole monitor, which is what OBS captures |
 
 Checks that fail loudly: the bundle's size (a lost `data/` payload shows up
 small), both `.npz` matrices being present inside the bundle, and

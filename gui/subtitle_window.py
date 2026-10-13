@@ -188,19 +188,11 @@ FEED_ANIM_MIN_STEP = 2.0  # px/frame floor, or the tail of a slide crawls
 FEED_ANIM_SNAP_PX = 1.0  # within this, land on the target and stop
 
 
-# macOS keeps the Dock and the menu bar above every window level a Qt client
-# can ask for — a stays-on-top window floats above other applications and still
-# under both — so the overlay is laid out inside the work area there whatever
-# its stacking, or its bottom strip disappears behind the Dock. The Tk overlay
-# reached the same conclusion (_MACOS_MENU_BAR_HEIGHT). A module constant
-# rather than an inline check, so a test can drive the other platform's branch
-# without faking sys.platform for the whole process.
-_MACOS = sys.platform == "darwin"
 # Windows keeps its taskbar in the SAME topmost band as the overlay, and the
 # order inside that band is whoever was raised last — so a click on the taskbar
 # lifts the shell over the subtitles and nothing ever lowers it again. The
 # overlay puts itself back (_keep_on_top) on this interval. A module constant
-# for the same reason as _MACOS: a test drives the branch without faking
+# rather than an inline check, so a test can drive the branch without faking
 # sys.platform for the whole process.
 _WINDOWS = sys.platform == "win32"
 # Slow on purpose. The fix is for a click that happened, not a race, and
