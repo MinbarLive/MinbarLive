@@ -31,6 +31,7 @@ four times (issue #106).
 from __future__ import annotations
 
 import base64
+import functools
 import ssl
 import threading
 import time
@@ -150,9 +151,25 @@ _SPEECH_STOPPED_EVENT = "input_audio_buffer.speech_stopped"
 _EMPTY_COMMIT_ERROR_CODE = "input_audio_buffer_commit_empty"
 
 
+@functools.cache
 def _build_ssl_context() -> ssl.SSLContext:
-    """Build the websocket TLS context from the bundled CA store."""
-    return ssl.create_default_context(cafile=certifi.where())
+    """The WebSocket's TLS context: the system trust store plus certifi's.
+
+    Without one, websockets falls back to ``ssl.create_default_context()``,
+    which trusts only the system store — and on macOS a python.org or frozen
+    build has an empty one, so every connect failed with
+    CERTIFICATE_VERIFY_FAILED. certifi is added rather than substituted
+    (``cafile=`` would skip the system store entirely), so a root installed
+    only in the Windows store, as corporate proxies and antivirus TLS scanning
+    do, is still trusted.
+
+    Cached because loading the stores measured ~200 ms, and built by
+    open_stream before the receive thread starts so that cost never runs
+    against STARTUP_TIMEOUT_SECONDS.
+    """
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
+    return context
 
 
 class OpenAIRealtimeStreamHandle:
@@ -240,7 +257,7 @@ class OpenAIRealtimeTranscriptionProvider:
         on_speech_activity: Callable[[bool], None] | None = None,
     ) -> OpenAIRealtimeStreamHandle:
         handle = OpenAIRealtimeStreamHandle()
-        connect_done = threading.Event()
+        ssl_context = _build_ssl_context()
         startup_done = threading.Event()
         startup_errors: list[Exception] = []
 
@@ -248,10 +265,7 @@ class OpenAIRealtimeTranscriptionProvider:
             # Only the receive thread writes this list and open_stream reads it
             # after the Event synchronization point, so no additional lock is
             # needed.
-            if not connect_done.is_set():
-                startup_errors.append(exc)
-                connect_done.set()
-            elif not startup_done.is_set():
+            if not startup_done.is_set():
                 startup_errors.append(exc)
                 startup_done.set()
 
@@ -263,13 +277,12 @@ class OpenAIRealtimeTranscriptionProvider:
                 with client.realtime.connect(
                     extra_query={"intent": "transcription"},
                     websocket_connection_options={
-                        "ssl": _build_ssl_context(),
+                        "ssl": ssl_context,
                         "open_timeout": WEBSOCKET_OPEN_TIMEOUT_SECONDS,
                         "close_timeout": WEBSOCKET_CLOSE_TIMEOUT_SECONDS,
                     },
                 ) as connection:
                     handle._attach(connection)
-                    connect_done.set()
                     log(
                         "OpenAI realtime WebSocket connected in "
                         f"{time.monotonic() - started_at:.2f}s",
@@ -398,10 +411,6 @@ class OpenAIRealtimeTranscriptionProvider:
         )
         thread.start()
 
-        connect_done.wait()
-        if startup_errors:
-            handle.close()
-            raise startup_errors[0]
         if not startup_done.wait(timeout=STARTUP_TIMEOUT_SECONDS):
             handle.close()
             raise TimeoutError(
