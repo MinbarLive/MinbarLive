@@ -12,8 +12,8 @@ for — they share almost nothing:
 | --- | --- | --- | --- |
 | What it changes | The control panel's own labels | What the audience reads on the overlay | What the STT engine is told to listen for |
 | Lives in | `data/translations/gui/{code}.json` | `data/translations/quran/{code}.json` + `.../athan/{code}.json` | Nothing on disk — it is a code sent to the API |
-| Registered in | `GUI_LANGUAGES` (`utils/settings.py`) | Nothing — auto-detected at runtime | `SOURCE_LANGUAGES` (`utils/settings.py`) **and** the per-engine sets |
-| Currently | de, en, ar, bs, sq, tr | de, en, tr, sq, bs | 68 + Automatic, **filtered per engine** |
+| Registered in | `GUI_LANGUAGES` (`utils/settings.py`) | `TARGET_LANGUAGES` + footer and status messages; the dictionaries are found at runtime | `SOURCE_LANGUAGES` (`utils/settings.py`) **and** the per-engine sets |
+| Currently | de, en, ar, bs, sq, tr | 37 targets; Quran file for 31, Athan file for 35 — gaps listed in `data/translations/quran/SOURCES.md` | 68 + Automatic, **filtered per engine** |
 
 Note the asymmetry: **`ar` is a GUI language but has no Quran/Athan dictionary** (the
 source text is already Arabic). That is correct, not a gap.
@@ -40,21 +40,40 @@ logical text with HarfBuzz. Do check it renders in the dropdowns and that any
 
 ## B. Target language (Quran + Athan)
 
-1. Find the translation key on [quranenc.com](https://quranenc.com). Keys already in use:
-   `german_bubenheim`, `english_hilali_khan`, `turkish_rwwad`, `albanian_nahi`,
-   `bosnian_rwwad`.
-2. Edit `notebooks/build_quran_dict.py` — set `language` and `translation_key` at the top
-   of the CONFIGURATION block, then run it from inside `notebooks/`:
-   ```bash
-   cd notebooks && python build_quran_dict.py
-   ```
-   It fetches all 114 suras from `quranapi.pages.dev` (Arabic) and `quranenc.com`
-   (translation) and writes `../data/translations/quran/{code}.json`. It is rate-limited
-   and takes a few minutes.
-3. Hand-write `data/translations/athan/{code}.json` — copy the shape from `de.json`. This
-   is a small fixed set of call-to-prayer phrases; it is not generated.
+### A new target
 
-No code changes and no registration — both directories are scanned at runtime.
+1. **Probe it on every offered translation model before anything else.** No API rejects
+   a target language — it is free text in the prompt — so a model that cannot write it
+   produces bad subtitles silently. Malayalam (2026-10-14) was correct on every current
+   model and broken on gpt-4o, gpt-4o-mini, gpt-4.1(-mini) and gpt-5.1, three of which
+   are OpenAI fallbacks. Record the result in a comment next to the entry.
+2. Add `("English Name", "code")` to `TARGET_LANGUAGES` in `utils/settings.py`, and an
+   endonym to `LANGUAGE_ENDONYMS` if it has none yet.
+3. Add the English name to `data/translations/footer_translations.json` (the disclaimer)
+   and to all five messages in `data/translations/status_messages.json` (shown to the
+   audience on errors). `tests/test_user_messages.py` fails until both are complete.
+4. Then the dictionaries below.
+
+### Its Quran and Athan dictionaries
+
+1. Find the translation key on [quranenc.com](https://quranenc.com) — its
+   `/api/v1/translations/list`, and try plausible keys too: `russian_rwwad`,
+   `italian_rwwad` and others are served without being listed. Check the **script and
+   variety** on a sample (Punjabi in Gurmukhi or Shahmukhi? Kurdish Sorani or Kurmanji?).
+2. Build it from inside `notebooks/`, several languages per run if you like:
+   ```bash
+   cd notebooks && python build_quran_dict.py fr=french_rashid es=spanish_garcia
+   ```
+   It writes `../data/translations/quran/{code}.json`, named after the target code
+   (`zh-hans`, not `zh`), retries and fails loudly, and strips footnote markers.
+3. **Check alignment, not just counts.** `tamil_omar` returns sura 111's text under sura
+   112's metadata and passes every structural test. Have a model judge a sample of verses
+   against the Arabic, including the last suras and one deliberately mismatched pair as a
+   control, and add the key, translator and reason to `data/translations/quran/SOURCES.md`.
+4. Hand-write `data/translations/athan/{code}.json` with the same nine keys as `de.json`,
+   rendering "Allah" the way that language's Quran file does.
+5. Update `_QURAN_GAPS` / `_ATHAN_GAPS` in `tests/test_dictionary.py`, which pin the
+   targets without a file.
 
 ## C. Spoken (source) language
 
