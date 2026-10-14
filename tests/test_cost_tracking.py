@@ -190,6 +190,17 @@ def test_duration_billed_transcription_usage():
     assert complete is True
 
 
+def test_gpt_transcribe_is_billed_per_minute():
+    # It reports seconds of audio (type "duration") in both the segmented and
+    # the Realtime path, unlike the token-billed gpt-4o-transcribe.
+    usage = openai_transcription_usage_values(
+        SimpleNamespace(type="duration", seconds=120)
+    )
+    cost, complete, _rates = estimate_usage_cost("gpt-transcribe", usage)
+    assert cost == Decimal("0.009")
+    assert complete is True
+
+
 def test_gemini_modality_breakdown_and_thoughts():
     metadata = SimpleNamespace(
         prompt_token_count=140,

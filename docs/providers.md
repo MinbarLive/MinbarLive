@@ -34,14 +34,14 @@ If the primary model fails, the fallback chain is tried in order. Your model sel
 
 | Engine | Default model | Notes |
 | ------ | ------------- | ----- |
-| **OpenAI** (default) | `gpt-4o-transcribe` | Fallbacks: `gpt-4o-mini-transcribe`, `whisper-1` |
+| **OpenAI** (default) | `gpt-4o-transcribe` | Fallbacks: `gpt-4o-mini-transcribe`, `whisper-1`. Dropdown also offers `gpt-transcribe` (newer, billed per minute and cheaper) |
 | **Google Gemini** | `gemini-3.5-flash` | Audio sent inline with a verbatim-transcription instruction (Gemini has no dedicated STT endpoint). `gemini-3.6-flash` is deliberately not offered here: ~11 s per 12 s segment cannot keep up |
 
 ### Real-time streaming (Processing Strategy: "Real-time streaming")
 
 | Engine | Models | API key | Notes |
 | ------ | ------ | ------- | ----- |
-| **OpenAI Realtime** (default) | `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` | Reuses your OpenAI key | Captures at 24 kHz (Realtime API requirement). The only engine measured to keep up with realtime input (1.00×) |
+| **OpenAI Realtime** (default) | `gpt-4o-transcribe`, `gpt-transcribe`, `gpt-4o-mini-transcribe` | Reuses your OpenAI key | Captures at 24 kHz (Realtime API requirement). The only engine measured to keep up with realtime input (1.00×) |
 | **Google Gemini Live** | `gemini-2.5-flash-native-audio-latest`, `…-preview-12-2025` | Reuses your Gemini key | Only live-verified models are offered; the Live API accepts no language hint, the model auto-detects internally. **Runs below realtime** (~0.75× and ~0.89× respectively), so subtitles drift further behind the longer someone speaks without pausing |
 | **Deepgram** | `nova-3` (default), `nova-2` | Own Deepgram key | |
 

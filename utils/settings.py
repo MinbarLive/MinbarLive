@@ -331,6 +331,11 @@ FALLBACK_TRANSLATION_MODELS = [
 # Available transcription models (display_name, model_id)
 TRANSCRIPTION_MODELS = [
     ("GPT-4o Transcribe (Recommended)", "gpt-4o-transcribe"),
+    # Live-probed 2026-10-14 on a 15 s Arabic clip: 1.07 s vs 1.31 s for
+    # gpt-4o-transcribe, both char-exact, and billed per minute ($0.0045 vs
+    # $0.006). Offered as an option, not the default: the clip was TTS speech,
+    # too clean to show how either copes with real mosque audio.
+    ("GPT Transcribe (Newest, Cheaper)", "gpt-transcribe"),
     ("GPT-4o Mini Transcribe (Faster & Cheaper)", "gpt-4o-mini-transcribe"),
 ]
 

@@ -1547,7 +1547,11 @@ class TestStreamingEngineHelpers:
                 "openai_realtime", "transcription"
             )
         ]
-        assert model_ids == ["gpt-4o-transcribe", "gpt-4o-mini-transcribe"]
+        assert model_ids == [
+            "gpt-4o-transcribe",
+            "gpt-transcribe",
+            "gpt-4o-mini-transcribe",
+        ]
 
 
 class _FakeRealtimeConnection:

@@ -89,6 +89,9 @@ MODEL_RATES: dict[str, ModelRates] = {
     "gpt-4o-transcribe": ModelRates(
         _d("2.5"), input_audio=_d("2.5"), output_text=_d("10")
     ),
+    # Reports its usage as seconds of audio, like whisper-1, in both the
+    # segmented and the Realtime path.
+    "gpt-transcribe": ModelRates(duration_minute=_d("0.0045")),
     "whisper-1": ModelRates(duration_minute=_d("0.006")),
     "text-embedding-3-large": ModelRates(input_text=_d("0.13")),
     "text-embedding-3-small": ModelRates(input_text=_d("0.02")),
