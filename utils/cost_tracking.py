@@ -70,6 +70,8 @@ def _d(value: str) -> Decimal:
 # Paid Standard list-price snapshot.  Matching supports dated model snapshots
 # (for example ``gpt-4o-mini-2024-07-18``); longest ids win.
 MODEL_RATES: dict[str, ModelRates] = {
+    "gpt-6-sol": ModelRates(_d("2"), _d("0.20"), output_text=_d("10")),
+    "gpt-5.6-luna": ModelRates(_d("0.20"), _d("0.02"), output_text=_d("1.20")),
     "gpt-5.5": ModelRates(_d("5"), _d("0.5"), output_text=_d("30")),
     "gpt-5.4-mini": ModelRates(_d("0.75"), _d("0.075"), output_text=_d("4.5")),
     "gpt-5.4-nano": ModelRates(_d("0.20"), _d("0.02"), output_text=_d("1.25")),

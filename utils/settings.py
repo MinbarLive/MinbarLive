@@ -300,9 +300,16 @@ DEFAULT_STREAMING_TRANSCRIPTION_PROVIDER = "openai_realtime"
 TRANSLATION_MODELS = [
     # Quality tier (gpt-5.5 live-probed 2026-07-15: 3.9s Arabic→German)
     ("GPT-5.5 (Highest Quality)", "gpt-5.5"),
+    # Live-probed 2026-10-14, median of 8 Arabic→German calls: gpt-6-sol 1.8s
+    # (gpt-5.2 1.9s on the same run), honorifics and code-switching intact.
+    # The rest of the gpt-6 / gpt-5.6 family was left out: 6-astra and 6.1-sol
+    # double the honorific ("Allahs ﷻ ﷺ"), 6-luna and 5.6-terra take ~3s.
+    ("GPT-6 Sol (Newest)", "gpt-6-sol"),
     ("GPT-5.4", "gpt-5.4"),
     ("GPT-5.2 (Stable High Quality)", "gpt-5.2"),
     # Balanced tier
+    # gpt-5.6-luna: 2.0s on the same probe at about a tenth of gpt-5.2's price.
+    ("GPT-5.6 Luna (Low Cost)", "gpt-5.6-luna"),
     ("GPT-5.1", "gpt-5.1"),
     ("GPT-5", "gpt-5"),
     ("GPT-4.1", "gpt-4.1"),
