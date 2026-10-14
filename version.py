@@ -1,12 +1,30 @@
 """Version information for MinbarLive."""
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 # Split version into numeric and optional suffix (e.g., 'beta')
 _version_parts = __version__.split("-")
 _version_nums = _version_parts[0].split(".")
 __version_info__ = tuple(int(x) for x in _version_nums)
 
 # Version history:
+# 1.1.0     - Verified Quran verses and the Athan in far more languages: Quran
+#             dictionaries for 31 target languages (was 5) and Athan
+#             dictionaries for 35 (was 5), so most audiences now see an
+#             established translation of a recognised verse instead of the
+#             model's (#122)
+#           - Azerbaijani and Malayalam as translation targets (#122)
+#           - New model options, each measured through the app before it was
+#             added: gpt-transcribe for both transcription modes (faster than
+#             gpt-4o-transcribe and billed per minute, $0.0045 vs $0.006), and
+#             gpt-6-sol and gpt-5.6-luna for OpenAI translation. The defaults
+#             are unchanged (#121)
+#           - macOS: the OpenAI real-time connection no longer fails with a
+#             certificate error; it trusts the system store plus certifi's
+#             (#120)
+#           - macOS: with always-on-top on, the subtitle overlay sits above the
+#             Dock and the menu bar instead of being laid out around them (#117)
+#           - bench/list_models.py and bench/probe_models.py check the
+#             providers for new and retired models (#121)
 # 1.0.1     - The spoken-language list now follows the transcription engine.
 #             The engines do not accept the same languages, and the picker
 #             offered all of them on every engine: choosing Somali on the
