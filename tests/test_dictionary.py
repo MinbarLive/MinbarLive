@@ -1,13 +1,18 @@
 """Tests for dictionary-based matching functions."""
 
-import pytest
+import json
+import re
 import sys
 from pathlib import Path
+
+import pytest
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from translation.dictionary import normalize_arabic, fuzzy_match_athan
+from config import ATHAN_TRANSLATIONS_DIR, QURAN_TRANSLATIONS_DIR
+from translation.dictionary import fuzzy_match_athan, normalize_arabic
+from utils.settings import TARGET_LANGUAGES
 
 
 class TestNormalizeArabic:
@@ -111,6 +116,54 @@ class TestFuzzyMatchAthanEdgeCases:
         """Should handle mixed Arabic and Latin text."""
         score, _, _ = fuzzy_match_athan("الله akbar")
         assert isinstance(score, float)
+
+
+def _load(directory: str, code: str) -> dict:
+    with open(Path(directory) / f"{code}.json", encoding="utf-8") as f:
+        return json.load(f)
+
+
+_QURAN_CODES = sorted(p.stem for p in Path(QURAN_TRANSLATIONS_DIR).glob("*.json"))
+_ATHAN_CODES = sorted(p.stem for p in Path(ATHAN_TRANSLATIONS_DIR).glob("*.json"))
+_VERSE_REF = re.compile(r"\((\d+:\d+)\)$")
+
+# Target languages without a file, and why (data/translations/quran/SOURCES.md).
+# Arabic needs neither: the Arabic is already the output. Pinned both ways: a new
+# target without dictionaries fails here, and so does a gap that gets filled.
+_QURAN_GAPS = {"ar", "ku", "ko", "pl", "sd", "zh-hant"}
+_ATHAN_GAPS = {"ar", "ku"}
+
+
+class TestDictionaryFiles:
+    """Every shipped dictionary has the reference file's shape.
+
+    A verified verse is shown verbatim, so a file that is partial or numbered
+    differently from the reference puts the wrong verse on screen as verified.
+    """
+
+    @pytest.mark.parametrize("code", _QURAN_CODES)
+    def test_quran_file_matches_the_reference_verse_for_verse(self, code):
+        reference = _load(QURAN_TRANSLATIONS_DIR, "de")
+        data = _load(QURAN_TRANSLATIONS_DIR, code)
+        assert data.keys() == reference.keys()
+        for arabic, text in data.items():
+            ref = _VERSE_REF.search(text)
+            assert ref, f"{code}: no (sura:ayah) at the end of {text[-40:]!r}"
+            expected = _VERSE_REF.search(reference[arabic]).group(1)
+            assert ref.group(1) == expected, f"{code}: {ref.group(1)} != {expected}"
+            assert text[: ref.start()].strip(), f"{code}: empty {expected}"
+
+    @pytest.mark.parametrize("code", _ATHAN_CODES)
+    def test_athan_file_has_every_phrase(self, code):
+        reference = _load(ATHAN_TRANSLATIONS_DIR, "de")
+        data = _load(ATHAN_TRANSLATIONS_DIR, code)
+        assert data.keys() == reference.keys()
+        assert all(value.strip() for value in data.values())
+
+    def test_every_target_language_has_its_dictionaries(self):
+        targets = {code for _, code in TARGET_LANGUAGES}
+        assert targets - set(_QURAN_CODES) == _QURAN_GAPS
+        assert targets - set(_ATHAN_CODES) == _ATHAN_GAPS
 
 
 if __name__ == "__main__":

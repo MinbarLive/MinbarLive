@@ -110,8 +110,8 @@
 │   │   ├── quran_embeddings_gemini.npz  # Optional Gemini-space matrix
 │   │   └── quran_embeddings.json        # Raw notebook output (git LFS, not bundled)
 │   └── translations/
-│       ├── quran/                   # Verse translations (de, en, tr, sq, bs)
-│       ├── athan/                   # Athan phrase translations (de, en, tr, sq, bs)
+│       ├── quran/                   # Verse translations, 31 languages (SOURCES.md)
+│       ├── athan/                   # Athan phrase translations, 35 languages
 │       ├── gui/                     # Control panel UI strings (de, en, ar, bs, sq, tr)
 │       ├── footer_translations.json # Subtitle disclaimer footer
 │       └── status_messages.json     # Audience-facing status/error messages

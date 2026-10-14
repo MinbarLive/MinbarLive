@@ -127,8 +127,8 @@ data/
 │   ├── quran_embeddings_gemini.npz   # used only when ai_provider=gemini AND present
 │   └── quran_embeddings.json         # raw notebook output (~418 MB, git LFS); NOT bundled into the EXE
 └── translations/
-    ├── quran/                  # Arabic → target-language verse mappings (de, en, tr, sq, bs)
-    ├── athan/                  # Athan phrase translations (de, en, tr, sq, bs)
+    ├── quran/                  # Arabic → target-language verse mappings, 31 languages (SOURCES.md)
+    ├── athan/                  # Athan phrase translations, 35 languages
     ├── gui/                    # control-panel UI strings (de, en, ar, bs, sq, tr)
     ├── footer_translations.json
     └── status_messages.json    # audience-facing messages, per target language

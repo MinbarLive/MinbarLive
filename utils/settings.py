@@ -117,6 +117,13 @@ TARGET_LANGUAGES = [
     ("Arabic", "ar"),
     ("Turkish", "tr"),
     ("Albanian", "sq"),
+    # Azerbaijani and Malayalam added 2026-10-14, each live-probed on every
+    # offered translation model. Azerbaijani: correct on all of them. Malayalam:
+    # correct on every gpt-5.x/gpt-6 and Gemini model, poor on the older OpenAI
+    # ones - gpt-4o, gpt-4o-mini, gpt-4.1(-mini) and gpt-5.1 leave Arabic or
+    # Persian words or write nonsense. Three of those are OpenAI fallbacks, so a
+    # Malayalam audience only gets good text while the chosen model is up.
+    ("Azerbaijani", "az"),
     ("Bengali", "bn"),
     ("Bosnian", "bs"),
     ("Chinese (Simplified)", "zh-hans"),
@@ -131,6 +138,7 @@ TARGET_LANGUAGES = [
     ("Korean", "ko"),
     ("Kurdish", "ku"),
     ("Malay", "ms"),
+    ("Malayalam", "ml"),
     ("Pashto", "ps"),
     ("Persian (Farsi)", "fa"),
     ("Polish", "pl"),
