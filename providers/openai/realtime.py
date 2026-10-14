@@ -31,9 +31,13 @@ four times (issue #106).
 from __future__ import annotations
 
 import base64
+import functools
+import ssl
 import threading
 import time
 from collections.abc import Callable
+
+import certifi
 
 from providers.openai.client import get_client
 from utils.cost_tracking import record_openai_transcription_usage
@@ -154,6 +158,27 @@ _SPEECH_STOPPED_EVENT = "input_audio_buffer.speech_stopped"
 _EMPTY_COMMIT_ERROR_CODE = "input_audio_buffer_commit_empty"
 
 
+@functools.cache
+def _build_ssl_context() -> ssl.SSLContext:
+    """The WebSocket's TLS context: the system trust store plus certifi's.
+
+    Without one, websockets falls back to ``ssl.create_default_context()``,
+    which trusts only the system store — and on macOS a python.org or frozen
+    build has an empty one, so every connect failed with
+    CERTIFICATE_VERIFY_FAILED. certifi is added rather than substituted
+    (``cafile=`` would skip the system store entirely), so a root installed
+    only in the Windows store, as corporate proxies and antivirus TLS scanning
+    do, is still trusted.
+
+    Cached because loading the stores measured ~200 ms, and built by
+    open_stream before the receive thread starts so that cost never runs
+    against STARTUP_TIMEOUT_SECONDS.
+    """
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
+    return context
+
+
 class OpenAIRealtimeStreamHandle:
     """Implements providers.base.StreamHandle."""
 
@@ -239,6 +264,7 @@ class OpenAIRealtimeTranscriptionProvider:
         on_speech_activity: Callable[[bool], None] | None = None,
     ) -> OpenAIRealtimeStreamHandle:
         handle = OpenAIRealtimeStreamHandle()
+        ssl_context = _build_ssl_context()
         startup_done = threading.Event()
         startup_errors: list[Exception] = []
 
@@ -258,6 +284,7 @@ class OpenAIRealtimeTranscriptionProvider:
                 with client.realtime.connect(
                     extra_query={"intent": "transcription"},
                     websocket_connection_options={
+                        "ssl": ssl_context,
                         "open_timeout": WEBSOCKET_OPEN_TIMEOUT_SECONDS,
                         "close_timeout": WEBSOCKET_CLOSE_TIMEOUT_SECONDS,
                     },

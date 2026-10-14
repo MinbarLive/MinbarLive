@@ -1,5 +1,6 @@
 """Tests for the AI provider abstraction layer."""
 
+import ssl
 import sys
 import time
 from contextlib import contextmanager
@@ -1848,6 +1849,8 @@ class TestOpenAIRealtimeTranscriptionProvider:
         assert _wait_until(lambda: len(conn.session_updates) == 1)
         assert captured["kwargs"]["extra_query"] == {"intent": "transcription"}
         transport_options = captured["kwargs"]["websocket_connection_options"]
+        assert isinstance(transport_options["ssl"], ssl.SSLContext)
+        assert transport_options["ssl"].check_hostname is True
         assert transport_options["open_timeout"] == (
             openai_realtime.WEBSOCKET_OPEN_TIMEOUT_SECONDS
         )
@@ -1918,6 +1921,49 @@ class TestOpenAIRealtimeTranscriptionProvider:
         handle = self._open(errors=[])
 
         assert handle._ready.is_set()
+
+    def test_slow_trust_store_load_does_not_spend_the_startup_budget(self, monkeypatch):
+        """Loading the CA stores measured ~200 ms. Inside the receive thread
+        that ran against the confirmation timer and failed the two tests
+        above, so it happens before the timer starts."""
+        real_context = openai_realtime._build_ssl_context()
+
+        def slow_context():
+            time.sleep(0.2)
+            return real_context
+
+        monkeypatch.setattr(openai_realtime, "_build_ssl_context", slow_context)
+        self._fake_client(monkeypatch, [])
+        monkeypatch.setattr(openai_realtime, "STARTUP_TIMEOUT_SECONDS", 0.1)
+
+        handle = self._open(errors=[])
+
+        assert handle._ready.is_set()
+
+    def test_tls_context_adds_certifi_to_the_system_store(self, monkeypatch):
+        """certifi fixes macOS's empty store; replacing the system store with
+        it would drop roots that exist only there (a Windows corporate root)."""
+        calls = []
+
+        class _SpyContext:
+            def load_verify_locations(self, **kwargs):
+                calls.append(("load_verify_locations", kwargs))
+
+        def fake_create_default_context(*args, **kwargs):
+            calls.append(("create_default_context", args, kwargs))
+            return _SpyContext()
+
+        monkeypatch.setattr(
+            openai_realtime.ssl, "create_default_context", fake_create_default_context
+        )
+        monkeypatch.setattr(openai_realtime.certifi, "where", lambda: "certifi.pem")
+
+        openai_realtime._build_ssl_context.__wrapped__()
+
+        assert calls == [
+            ("create_default_context", (), {}),
+            ("load_verify_locations", {"cafile": "certifi.pem"}),
+        ]
 
     def test_deliberate_close_suppresses_on_error(self, monkeypatch):
         """close() tears the socket down mid-recv; that expected shutdown
