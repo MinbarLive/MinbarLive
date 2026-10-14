@@ -116,10 +116,12 @@
 │       ├── footer_translations.json # Subtitle disclaimer footer
 │       └── status_messages.json     # Audience-facing status/error messages
 │
-├── bench/                   # Translation-latency harness. Makes real, PAID API calls —
-│   │                        #   not a test, not in CI, never run by pytest
+├── bench/                   # Latency harness + model-refresh tools. Mostly real, PAID
+│   │                        #   API calls — not a test, not in CI, never run by pytest
 │   ├── run_bench.py         # Runs the real translate_text path over a fixed corpus
-│   └── latency_corpus.py    # The 13 Arabic utterances it measures against
+│   ├── latency_corpus.py    # The 13 Arabic utterances it measures against
+│   ├── list_models.py       # Free: each provider's model listing vs. what the app offers
+│   └── probe_models.py      # Candidate models through the app's own providers
 │
 ├── notebooks/               # Development notebooks & scripts
 │   ├── Build_Quran_EmbeddingSpace.ipynb  # Generate raw verse embeddings (JSON)

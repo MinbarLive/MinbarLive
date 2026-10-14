@@ -47,6 +47,15 @@ If the primary model fails, the fallback chain is tried in order. Your model sel
 
 Streaming replaces only the transcription side; translation still runs through your configured translation provider, and Quran/Athan matching works as usual (for Arabic sources). Real-time mode requires an explicit source language; "Automatic" only works in segmented mode.
 
+## Keeping the Model Lists Current
+
+Providers add and retire models constantly, so check every couple of months, or whenever one announces new models:
+
+1. `python bench/list_models.py` (free). Shows, per provider, the models the app offers that are **no longer listed** (to remove), new **candidates**, and candidates **already rejected** before.
+2. `python bench/probe_models.py --translation provider:model … --stt engine:model …` (a few cents). Runs each candidate through the app's own provider code: translation latency and quality checks, transcription accuracy and real-time lag.
+
+A listed model is not necessarily usable: in the October 2026 refresh about half the candidates failed step 2. New models are added as options first; a default changes only after a real session with it. The full procedure, including what every added model needs (price, language set, tests), is the `refresh-models` skill in [.claude/skills/](../.claude/skills/refresh-models/SKILL.md).
+
 ## API Keys
 
 - Keys are stored in the **OS keychain** (service `MinbarLive`, one entry per provider: `<provider>_api_key`). On a normal Windows/macOS install this is always what happens, and nothing is written to `settings.json`.
