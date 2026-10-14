@@ -51,6 +51,11 @@ DEFAULT_REALTIME_MODEL = "gpt-4o-transcribe"
 # API runs them server-side against the live audio buffer.
 TRANSCRIPTION_MODELS = [
     ("GPT-4o Transcribe", "gpt-4o-transcribe"),
+    # Live-probed 2026-10-14, 52 s of Arabic streamed at real-time pace: kept
+    # up (last final 0.65 s after the speech ended) with finer-grained interims
+    # than gpt-4o-transcribe. gpt-live-transcribe and gpt-realtime-whisper are
+    # NOT offered: both refuse the server_vad turn detection this session uses.
+    ("GPT Transcribe", "gpt-transcribe"),
     ("GPT-4o Mini Transcribe", "gpt-4o-mini-transcribe"),
 ]
 
@@ -70,6 +75,8 @@ TRANSCRIPTION_MODELS = [
 # under a second; an accepted code simply never errors, so an 8-second
 # deadline separates them cleanly. Always probe a bogus code such as "zz" in
 # the same run as a control - if that one is not refused, the run is invalid.
+#
+# Identical on gpt-transcribe, re-probed 2026-10-14 when it was added.
 #
 # Relationship to the segmented set in transcription.py: this is that set plus
 # 'iw' (Hebrew's legacy alias). Keep the two constants separate anyway. They

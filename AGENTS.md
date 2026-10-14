@@ -105,7 +105,7 @@ with inline comments. Read them there — they are not duplicated in this file.
 | `providers/<id>/` | Per-provider implementations — the only place importing each SDK |
 | `batch/` | File/batch processing: `processor.py`, `srt_writer.py`, `text_writer.py` |
 | `gui/` | PySide6 tree, the only GUI — see [gui/AGENTS.md](gui/AGENTS.md) |
-| `bench/` | Translation-latency harness. **Makes real, paid API calls** — not a test, not in CI, never run by pytest |
+| `bench/` | Latency harness and model-refresh tools. **Most of it makes real, paid API calls** — not a test, not in CI, never run by pytest |
 | `utils/settings.py` | User-preferences dataclass, model lists, fallback chains, `GUI_LANGUAGES` |
 | `utils/keyring_storage.py` | OS keychain integration |
 | `gui/api_keys.py` | API key prompting (storage goes through `providers.save_api_key`) |
@@ -137,7 +137,8 @@ data/
 - Quran text from `quranapi.pages.dev`; translations from `quranenc.com`.
 - The dataset holds 6,054 verses (the source merges some ayahs), not the canonical 6,236 —
   embeddings cover all of them 1:1.
-- Adding a language or regenerating embeddings: use the skills in `.claude/skills/`.
+- Adding a language, regenerating embeddings or refreshing the model lists: use the skills
+  in `.claude/skills/`.
 
 ---
 
@@ -191,6 +192,13 @@ real `translate_text` path (RAG + LLM) over a fixed Arabic corpus — 13 utteran
 repeats of billed API calls. Use it to answer a latency question with numbers, then compare
 two runs with `--compare`. Results land in `bench/results/`, which is gitignored: a
 committed latency figure is a claim nobody can reproduce.
+
+**Model lists are refreshed by measurement, not by reading a provider's catalogue.**
+`python bench/list_models.py` (free) compares every provider's listing with what the app
+offers; `python bench/probe_models.py` (cents) runs candidates through the app's own
+providers. A listed model is not a usable one — about half of the October 2026 candidates
+failed the probe. Follow the `refresh-models` skill; new models go in as options, and a
+default changes only after a real session.
 
 Test conventions:
 

@@ -11,9 +11,11 @@ from utils.cost_tracking import record_openai_transcription_usage
 # against a narrower list and refuses anything outside it with a 400 naming
 # the parameter ("Language code 'sq' is not recognized"), before any audio is
 # read. Measured against the live API 2026-09-03: 63 codes, identical on
-# gpt-4o-transcribe and gpt-4o-mini-transcribe -- the only two models the
-# dropdown offers. The previous 100-code set was the documented Whisper list,
-# and four languages in it (sq, ha, ps, so) are rejected outright.
+# gpt-4o-transcribe and gpt-4o-mini-transcribe. gpt-transcribe, added to the
+# dropdown 2026-10-14, accepts all 63 plus 'iw' (Hebrew's legacy alias, which
+# the dropdown never sends -- it uses 'he'), so one set still fits all three.
+# The previous 100-code set was the documented Whisper list, and four
+# languages in it (sq, ha, ps, so) are rejected outright.
 #
 # Kept separate from the Realtime allowlist in realtime.py even though that
 # set is currently this one plus 'iw' (Hebrew's legacy alias). The two have
