@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -78,11 +78,111 @@ def is_window_on_top(window: QWidget) -> bool:
 # withdraw/deiconify in _set_screen_position). Wayland has no always-on-top
 # protocol at all; see gui/app.py, which asks for xcb first for that reason.
 _REMAP_TO_RESTACK = ("xcb", "wayland")
+# A module constant rather than an inline check, so a test can drive the macOS
+# branch without faking sys.platform for the whole process.
+_MACOS = sys.platform == "darwin"
+# AppKit window levels. Qt's stays-on-top level is still below the Dock (20)
+# and the menu bar (24), so the overlay lost its bottom strip behind the Dock
+# (#35). Every window set_window_on_top raises gets this level — the control
+# panel and its secondary windows too — so they share the overlay's band and
+# the panel stays in front of it the way it does on Windows: callers apply the
+# overlay first and the panel last. 1000 rather than the 25 that would clear
+# the menu bar because 1000 is the level that was tested on a real Mac.
+_MACOS_WINDOW_LEVEL_NORMAL = 0  # NSWindowLevelNormal
+_MACOS_WINDOW_LEVEL_SCREEN_SAVER = 1000  # NSWindowLevelScreenSaver
 
 
 def needs_remap() -> bool:
     """Whether this platform applies such a request only on the next map."""
     return QGuiApplication.platformName().split(":")[0] in _REMAP_TO_RESTACK
+
+
+def _set_macos_window_level(window: QWidget, on_top: bool) -> None:
+    """Use the native AppKit NSWindow level for an always-on-top window.
+
+    The system chrome (Dock + menu bar) sits on the named AppKit level, so the
+    window must be moved onto NSWindowLevelScreenSaver while enabled and back
+    to NSWindowLevelNormal when disabled. This keeps the real native window
+    ordering correct without changing any other platform behavior.
+
+    ctypes because Qt has no API for an NSWindow's level: its stays-on-top
+    flag maps to a fixed level below the Dock.
+    """
+    if not _MACOS:
+        return
+    if window.windowHandle() is None:
+        # Not created yet, so there is nothing to set the level on.
+        # _MacLevelOnShow applies it once the window is shown.
+        return
+    view_id = window.winId()
+    if not view_id:
+        return
+    try:
+        import ctypes
+
+        libobjc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+        sel_register = libobjc.sel_registerName
+        sel_register.restype = ctypes.c_void_p
+        sel_register.argtypes = [ctypes.c_char_p]
+
+        # Objective-C method dispatch is pointer-based: the NSView resolves to an
+        # NSWindow, then the window itself receives setLevel:. The argtypes must be
+        # set before each call and not reused across different signatures.
+        objc_msg_send = libobjc.objc_msgSend
+        objc_msg_send.restype = ctypes.c_void_p
+        objc_msg_send.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        ns_window = objc_msg_send(ctypes.c_void_p(view_id), sel_register(b"window"))
+        if not ns_window:
+            log(
+                f"macOS window level not set for {window.windowTitle()!r}: "
+                "its view has no NSWindow",
+                level="WARNING",
+            )
+            return
+        level = (
+            _MACOS_WINDOW_LEVEL_SCREEN_SAVER if on_top else _MACOS_WINDOW_LEVEL_NORMAL
+        )
+        objc_msg_send.restype = ctypes.c_void_p
+        objc_msg_send.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
+        objc_msg_send(
+            ctypes.c_void_p(ns_window),
+            sel_register(b"setLevel:"),
+            ctypes.c_long(level),
+        )
+    except (AttributeError, OSError, TypeError, ValueError) as e:
+        # Logged, because the overlay is laid out over the Dock on the strength
+        # of this call: when it fails, the bottom strip is hidden again (#35).
+        log(
+            f"macOS window level not set for {window.windowTitle()!r}: {e}",
+            level="WARNING",
+        )
+
+
+class _MacLevelOnShow(QObject):
+    """Re-applies the native level every time its window is shown.
+
+    set_window_on_top can only set the level on a window that is already on
+    screen, and the overlay is given its flag BEFORE its first show() (see
+    ControlPanel._ensure_subtitle_window), as is the panel at startup. Without
+    this, an overlay opened for an announcement while stopped sat below the
+    Dock while laid out over it — #35 again.
+
+    Deferred to the next event-loop turn because the Show event arrives before
+    Qt has put the native window on screen.
+    """
+
+    def __init__(self, window: QWidget):
+        super().__init__(window)
+        self._window = window
+        window.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.Show:
+            QTimer.singleShot(0, self, self._apply)
+        return False
+
+    def _apply(self) -> None:
+        _set_macos_window_level(self._window, is_window_on_top(self._window))
 
 
 def set_window_on_top(window: QWidget, on_top: bool) -> None:
@@ -102,15 +202,23 @@ def set_window_on_top(window: QWidget, on_top: bool) -> None:
     the window is re-created and shown again there. It is the flash Windows
     was spared, in exchange for the setting working at all.
     """
-    if is_window_on_top(window) == on_top and not needs_remap():
+    if is_window_on_top(window) == on_top and not needs_remap() and not _MACOS:
         # Skipped only where the cached flag is the truth. On X11 it is not:
         # the state lives in a property the window manager owns, and a window
         # that has been re-mapped since (the overlay's geometry repair does
         # that) can carry the flag in Qt and sit at the bottom of the stack on
         # screen. Re-asserting costs a flash; believing a stale flag cost the
         # overlay entirely — the panel obeyed the setting and the subtitles
-        # were left under the browser.
+        # were left under the browser. Nor on macOS, where the flag says
+        # nothing about the native level that actually decides the stacking.
         return
+    # Direct children only: a secondary window parented to the panel carries
+    # its own, which must not count as the panel's.
+    if (
+        _MACOS
+        and window.findChild(_MacLevelOnShow, "", Qt.FindDirectChildrenOnly) is None
+    ):
+        _MacLevelOnShow(window)
     handle = window.windowHandle()
     if handle is None or needs_remap():
         visible = window.isVisible()
@@ -127,6 +235,8 @@ def set_window_on_top(window: QWidget, on_top: bool) -> None:
             window.raise_()
         return
     handle.setFlags(_with_on_top(handle.flags(), on_top))
+    if _MACOS:
+        _set_macos_window_level(window, on_top)
 
 
 def _with_on_top(flags: Qt.WindowType, on_top: bool) -> Qt.WindowType:

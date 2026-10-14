@@ -143,12 +143,17 @@ packaging section below for the shipped build.
   family …" — which is what a hardcoded `sans-serif` tail and `"Consolas", "Menlo"` did on
   macOS. A test walks every `font-family` in the sheet; keep it passing rather than
   chasing the warning, which only ever names the first miss.
-- **The macOS overlay is laid out inside the work area, always.** Nothing a Qt client can
-  ask for puts a window above the Dock or the menu bar — a stays-on-top window floats
-  above other applications and still below both — so a full-height overlay loses its
-  bottom strip and the disclaimer pill with it. `_MACOS` in `gui/subtitle_window.py`.
-  Windows and X11 keep the whole monitor when topmost; OBS captures the full frame
-  because of it.
+- **On macOS, always-on-top is a native NSWindow level, not the Qt flag.** Qt's
+  stays-on-top level is still below the Dock and the menu bar, so a full-height overlay
+  lost its bottom strip and the disclaimer pill behind the Dock (#35).
+  `set_window_on_top` also sets level 1000 (`NSScreenSaverWindowLevel`) through
+  `objc_msgSend` — Qt has no API for it — on every window it raises, the panel included,
+  so the panel stays in front of the overlay. 1000 rather than the 25 that would clear
+  the menu bar because 1000 is what was tested on a real Mac (PR #117). The level only
+  exists once the native window does, and the overlay gets its flag before its first
+  show, so `_MacLevelOnShow` re-applies it after every show. A failure is logged: the
+  overlay is laid out over the Dock on the strength of that call, like Windows and X11
+  keep the whole monitor when topmost — OBS captures the full frame because of it.
 
 ## Layout parity — do not "simplify" these back out
 

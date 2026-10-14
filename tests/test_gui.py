@@ -9365,33 +9365,111 @@ class TestOverlayFitsTheScreen:
 
 
 class TestMacOsOverlayStacking:
-    """Nothing a Qt client can ask for puts a window above the macOS Dock or
-    menu bar: a stays-on-top window floats above other applications and still
-    below both. A full-height overlay therefore lost its bottom strip — the
-    disclaimer pill — behind the Dock."""
+    """Qt's stays-on-top level is still below the macOS Dock and menu bar, so
+    set_window_on_top also sets the native NSWindow level (#35) — and with it
+    the overlay covers the whole screen when topmost, as everywhere else.
 
-    def test_macos_is_laid_out_inside_the_work_area(self, overlay, monkeypatch):
-        import gui.subtitle_window as sw
+    The macOS branch is driven through ``widgets._MACOS``, never by faking
+    sys.platform for the whole process."""
 
-        w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
-        monkeypatch.setattr(sw, "_MACOS", True)
-        w._apply_geometry()
-        available = w._screen().availableGeometry()
-        assert w.geometry().bottom() == available.bottom()
-        assert w.width() == available.width()
+    def test_macos_native_window_level_uses_appkit_constants(self, qt_app, monkeypatch):
+        import ctypes
 
-    def test_everywhere_else_a_topmost_overlay_still_covers_the_taskbar(
-        self, overlay, monkeypatch
+        import gui.widgets as widgets
+
+        window = QWidget()
+        calls: list[tuple[object, ...]] = []
+
+        def fake_sel_register_name(name: bytes):
+            return name
+
+        def fake_objc_msg_send(*args):
+            calls.append(args)
+            return 1
+
+        class FakeLibObjc:
+            sel_registerName = staticmethod(fake_sel_register_name)
+            objc_msgSend = staticmethod(fake_objc_msg_send)
+
+        monkeypatch.setattr(window, "windowHandle", lambda: object())
+        monkeypatch.setattr(window, "winId", lambda: 123)
+        monkeypatch.setattr(ctypes, "CDLL", lambda _path: FakeLibObjc())
+        monkeypatch.setattr(widgets, "_MACOS", True)
+
+        widgets._set_macos_window_level(window, True)
+        widgets._set_macos_window_level(window, False)
+
+        assert len(calls) == 4
+        assert calls[0][1] == b"window"
+        assert calls[1][1] == b"setLevel:"
+        assert calls[1][2].value == widgets._MACOS_WINDOW_LEVEL_SCREEN_SAVER
+        assert calls[2][1] == b"window"
+        assert calls[3][1] == b"setLevel:"
+        assert calls[3][2].value == widgets._MACOS_WINDOW_LEVEL_NORMAL
+
+    def test_macos_set_window_on_top_uses_native_level_helper(
+        self, qt_app, monkeypatch
     ):
-        # Windows and X11 paint a topmost overlay over the taskbar, and OBS
-        # captures the whole frame because of it. Don't level that down.
-        import gui.subtitle_window as sw
+        import gui.widgets as widgets
 
+        window = QWidget()
+        window.show()
+        calls: list[bool] = []
+        monkeypatch.setattr(widgets, "needs_remap", lambda: False)
+        monkeypatch.setattr(widgets, "is_window_on_top", lambda _: False)
+        monkeypatch.setattr(
+            widgets,
+            "_set_macos_window_level",
+            lambda win, on_top: calls.append(on_top),
+        )
+        monkeypatch.setattr(widgets, "_MACOS", True)
+
+        try:
+            widgets.set_window_on_top(window, True)
+            widgets.set_window_on_top(window, False)
+        finally:
+            window.close()
+            window.deleteLater()
+
+        assert calls == [True, False]
+
+    def test_macos_level_reaches_a_window_flagged_before_its_first_show(
+        self, qt_app, monkeypatch
+    ):
+        """The overlay is given its flag before its first show(), and so is
+        the panel at startup. Setting the level only on a visible window left
+        an overlay opened for an announcement below the Dock."""
+        import gui.widgets as widgets
+
+        calls: list[bool] = []
+        monkeypatch.setattr(
+            widgets,
+            "_set_macos_window_level",
+            lambda win, on_top: calls.append(on_top),
+        )
+        monkeypatch.setattr(widgets, "_MACOS", True)
+        window = QWidget()
+
+        try:
+            widgets.set_window_on_top(window, True)
+            assert calls == []  # no native window to set it on yet
+            window.show()
+            qt_app.processEvents()
+        finally:
+            window.close()
+            window.deleteLater()
+
+        assert calls == [True]
+
+    def test_a_topmost_overlay_covers_the_whole_screen(self, overlay):
+        # Windows and X11 paint a topmost overlay over the taskbar, macOS over
+        # the Dock, and OBS captures the whole frame because of it. Don't level
+        # that down.
         w = overlay(SUBTITLE_MODE_STATIC, always_on_top=True)
-        monkeypatch.setattr(sw, "_MACOS", False)
         w._apply_geometry()
         screen = w._screen().geometry()
         assert w.geometry().bottom() == screen.bottom()
+        assert w.width() == screen.width()
 
 
 class TestDropdownPopupPlacement:
